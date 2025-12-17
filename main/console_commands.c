@@ -1,0 +1,419 @@
+#include "console_commands.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "argtable3/argtable3.h"
+#include "driver/uart.h"
+#include "esp_console.h"
+#include "esp_log.h"
+#include "esp_vfs_dev.h"
+#include "linenoise/linenoise.h"
+
+static const char* kTag = "console";
+
+static app_runtime_t* g_runtime = NULL;
+
+static calibration_point_t g_pending_points[CALIBRATION_MAX_POINTS];
+static size_t g_pending_points_count = 0;
+
+static int
+CommandStatus(int argc, char** argv)
+{
+  (void)argc;
+  (void)argv;
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const app_settings_t* settings = g_runtime->settings;
+
+  printf("node_id: %s\n", g_runtime->node_id_string);
+  printf("time_valid: %s\n", TimeSyncIsSystemTimeValid() ? "yes" : "no");
+  printf("log_period_ms: %u\n", (unsigned)settings->log_period_ms);
+  printf("fram: buffered=%u / cap=%u (flush_watermark=%u)\n",
+         (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
+         (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log),
+         (unsigned)settings->fram_flush_watermark_records);
+
+  printf("calibration: degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
+         (unsigned)settings->calibration.degree,
+         settings->calibration.coefficients[0],
+         settings->calibration.coefficients[1],
+         settings->calibration.coefficients[2],
+         settings->calibration.coefficients[3]);
+
+  printf("sd_mounted: %s\n", (g_runtime->sd_logger->is_mounted ? "yes" : "no"));
+  printf("mesh_connected: %s\n",
+         MeshTransportIsConnected(g_runtime->mesh) ? "yes" : "no");
+  printf("pending_cal_points: %u\n", (unsigned)g_pending_points_count);
+  return 0;
+}
+
+static int
+CommandRaw(int argc, char** argv)
+{
+  (void)argc;
+  (void)argv;
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  float raw_c = 0;
+  float resistance_ohm = 0;
+  esp_err_t result =
+    Max31865ReaderRead(g_runtime->sensor, &raw_c, &resistance_ohm);
+  if (result != ESP_OK) {
+    printf("read failed: %s\n", esp_err_to_name(result));
+    return 1;
+  }
+
+  const double calibrated =
+    CalibrationModelEvaluate(&g_runtime->settings->calibration, raw_c);
+
+  printf("raw_c: %.3f\n", raw_c);
+  printf("resistance_ohm: %.3f\n", resistance_ohm);
+  printf("cal_c: %.3f\n", calibrated);
+  return 0;
+}
+
+static esp_err_t
+FlushAllRecordsToSd(app_runtime_t* runtime)
+{
+  if (!runtime->sd_logger->is_mounted) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  log_record_t record;
+  uint32_t flushed = 0;
+  while (FramLogGetBufferedRecords(runtime->fram_log) > 0) {
+    esp_err_t peek_result = FramLogPeekOldest(runtime->fram_log, &record);
+    if (peek_result == ESP_ERR_NOT_FOUND) {
+      break;
+    }
+
+    esp_err_t write_result =
+      SdLoggerAppendCsv(runtime->sd_logger, runtime->node_id_string, &record);
+    if (write_result != ESP_OK) {
+      printf("flush stopped: SD write failed after %u records: %s\n",
+             (unsigned)flushed,
+             esp_err_to_name(write_result));
+      return write_result;
+    }
+
+    esp_err_t discard_result = FramLogDiscardOldest(runtime->fram_log);
+    if (discard_result != ESP_OK && discard_result != ESP_ERR_NOT_FOUND) {
+      return discard_result;
+    }
+
+    flushed++;
+    if ((flushed % 256u) == 0u) {
+      printf("flushed %u records...\n", (unsigned)flushed);
+    }
+  }
+  printf("flush complete: %u records\n", (unsigned)flushed);
+  return ESP_OK;
+}
+
+static int
+CommandFlush(int argc, char** argv)
+{
+  (void)argc;
+  (void)argv;
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  esp_err_t result = FlushAllRecordsToSd(g_runtime);
+  if (result != ESP_OK) {
+    printf("flush failed: %s
+", esp_err_to_name(result));
+    return 1;
+  }
+  return 0;
+}
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_int* interval_ms;
+  struct arg_end* end;
+} g_log_args;
+
+static int
+CommandLog(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_log_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_log_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_log_args.action->sval[0];
+  if (strcmp(action, "interval") == 0) {
+    if (g_log_args.interval_ms->count != 1) {
+      printf("usage: log interval <ms>\n");
+      return 1;
+    }
+    const int interval_ms = g_log_args.interval_ms->ival[0];
+    if (interval_ms < 100 || interval_ms > 3600000) {
+      printf("invalid interval\n");
+      return 1;
+    }
+    g_runtime->settings->log_period_ms = (uint32_t)interval_ms;
+    esp_err_t result = AppSettingsSaveLogPeriodMs((uint32_t)interval_ms);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("log_period_ms set to %d\n", interval_ms);
+    return 0;
+  }
+
+  if (strcmp(action, "show") == 0) {
+    printf("log_period_ms: %u\n", (unsigned)g_runtime->settings->log_period_ms);
+    return 0;
+  }
+
+  printf("unknown action. usage: log interval <ms> | log show\n");
+  return 1;
+}
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_dbl* raw_c;
+  struct arg_dbl* actual_c;
+  struct arg_end* end;
+} g_cal_args;
+
+static int
+CommandCal(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_cal_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_cal_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_cal_args.action->sval[0];
+
+  if (strcmp(action, "clear") == 0) {
+    CalibrationModelInitIdentity(&g_runtime->settings->calibration);
+    esp_err_t result =
+      AppSettingsSaveCalibration(&g_runtime->settings->calibration);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    g_pending_points_count = 0;
+    printf("calibration reset to identity (y=x)\n");
+    return 0;
+  }
+
+  if (strcmp(action, "add") == 0) {
+    if (g_cal_args.raw_c->count != 1 || g_cal_args.actual_c->count != 1) {
+      printf("usage: cal add <raw_c> <actual_c>\n");
+      return 1;
+    }
+    if (g_pending_points_count >= CALIBRATION_MAX_POINTS) {
+      printf("already have %u points; run 'cal apply' or 'cal clear'\n",
+             (unsigned)g_pending_points_count);
+      return 1;
+    }
+
+    g_pending_points[g_pending_points_count].raw_c = g_cal_args.raw_c->dval[0];
+    g_pending_points[g_pending_points_count].actual_c =
+      g_cal_args.actual_c->dval[0];
+    g_pending_points_count++;
+    printf("added point %u: raw=%.6f actual=%.6f\n",
+           (unsigned)g_pending_points_count,
+           g_cal_args.raw_c->dval[0],
+           g_cal_args.actual_c->dval[0]);
+    return 0;
+  }
+
+  if (strcmp(action, "list") == 0) {
+    printf("pending calibration points (%u):\n",
+           (unsigned)g_pending_points_count);
+    for (size_t index = 0; index < g_pending_points_count; ++index) {
+      printf("  %u: raw=%.6f actual=%.6f\n",
+             (unsigned)(index + 1),
+             g_pending_points[index].raw_c,
+             g_pending_points[index].actual_c);
+    }
+    return 0;
+  }
+
+  if (strcmp(action, "apply") == 0) {
+    if (g_pending_points_count < 1) {
+      printf("no points; use 'cal add <raw_c> <actual_c>' first\n");
+      return 1;
+    }
+
+    calibration_model_t model;
+    esp_err_t result = CalibrationModelFitFromPoints(
+      g_pending_points, g_pending_points_count, &model);
+    if (result != ESP_OK) {
+      printf("fit failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+
+    g_runtime->settings->calibration = model;
+    result = AppSettingsSaveCalibration(&model);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+
+    printf("calibration applied: degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
+           (unsigned)model.degree,
+           model.coefficients[0],
+           model.coefficients[1],
+           model.coefficients[2],
+           model.coefficients[3]);
+
+    g_pending_points_count = 0;
+    return 0;
+  }
+
+  printf("unknown action. usage: cal clear | cal add <raw_c> <actual_c> | cal "
+         "list | cal apply\n");
+  return 1;
+}
+
+static void
+RegisterCommands(void)
+{
+  const esp_console_cmd_t status_cmd = {
+    .command = "status",
+    .help = "Show current settings and runtime state",
+    .hint = NULL,
+    .func = &CommandStatus,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&status_cmd));
+
+  const esp_console_cmd_t raw_cmd = {
+    .command = "raw",
+    .help = "Print one raw reading and calibrated value",
+    .hint = NULL,
+    .func = &CommandRaw,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&raw_cmd));
+
+  const esp_console_cmd_t flush_cmd = {
+    .command = "flush",
+    .help = "Force flush FRAM -> SD (best-effort)",
+    .hint = NULL,
+    .func = &CommandFlush,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&flush_cmd));
+
+  g_log_args.action = arg_str1(NULL, NULL, "<action>", "interval|show");
+  g_log_args.interval_ms =
+    arg_int0(NULL, NULL, "<ms>", "Logging interval in ms (for 'interval')");
+  g_log_args.end = arg_end(2);
+  const esp_console_cmd_t log_cmd = {
+    .command = "log",
+    .help = "Logging config: log interval <ms> | log show",
+    .hint = NULL,
+    .func = &CommandLog,
+    .argtable = &g_log_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&log_cmd));
+
+  g_cal_args.action = arg_str1(NULL, NULL, "<action>", "clear|add|list|apply");
+  g_cal_args.raw_c =
+    arg_dbl0(NULL, NULL, "<raw_c>", "Raw temperature (C) from 'raw'");
+  g_cal_args.actual_c =
+    arg_dbl0(NULL, NULL, "<actual_c>", "Actual temperature (C)");
+  g_cal_args.end = arg_end(3);
+
+  const esp_console_cmd_t cal_cmd = {
+    .command = "cal",
+    .help = "Calibration: cal clear | cal add <raw_c> <actual_c> | cal list | "
+            "cal apply",
+    .hint = NULL,
+    .func = &CommandCal,
+    .argtable = &g_cal_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&cal_cmd));
+}
+
+static void
+ConsoleTask(void* context)
+{
+  (void)context;
+
+  printf("\nType 'help' to list commands.\n");
+  while (true) {
+    char* line = linenoise("pt100> ");
+    if (line == NULL) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    if (strlen(line) > 0) {
+      linenoiseHistoryAdd(line);
+      int run_result = 0;
+      esp_err_t result = esp_console_run(line, &run_result);
+      if (result == ESP_ERR_NOT_FOUND) {
+        printf("Unrecognized command\n");
+      } else if (result == ESP_ERR_INVALID_ARG) {
+        // Command already printed errors.
+      } else if (result != ESP_OK) {
+        printf("Command failed: %s\n", esp_err_to_name(result));
+      } else if (run_result != 0) {
+        printf("Command returned non-zero: %d\n", run_result);
+      }
+    }
+    linenoiseFree(line);
+  }
+}
+
+esp_err_t
+ConsoleCommandsStart(app_runtime_t* runtime)
+{
+  if (runtime == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  g_runtime = runtime;
+
+  const int uart_num = CONFIG_ESP_CONSOLE_UART_NUM;
+  uart_config_t uart_config = {
+    .baud_rate = 115200,
+    .data_bits = UART_DATA_8_BITS,
+    .parity = UART_PARITY_DISABLE,
+    .stop_bits = UART_STOP_BITS_1,
+    .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    .source_clk = UART_SCLK_DEFAULT,
+  };
+  ESP_ERROR_CHECK(uart_driver_install(uart_num, 256, 0, 0, NULL, 0));
+  ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
+  // Use default pins for UART0; for other UARTs, set pins via uart_set_pin().
+
+  esp_vfs_dev_uart_use_driver(CONFIG_ESP_CONSOLE_UART_NUM);
+
+  esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
+  console_config.max_cmdline_length = 256;
+  console_config.max_cmdline_args = 8;
+  ESP_ERROR_CHECK(esp_console_init(&console_config));
+
+  linenoiseSetDumbMode(1);
+  linenoiseHistorySetMaxLen(50);
+
+  RegisterCommands();
+
+  xTaskCreate(ConsoleTask, "console", 4096, NULL, 2, NULL);
+  return ESP_OK;
+}

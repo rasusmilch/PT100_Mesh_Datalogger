@@ -1,0 +1,38 @@
+Command: cmake -G Ninja -DPYTHON_DEPS_CHECKED=1 -DPYTHON=d:\ESP-IDF_Tools\python_env\idf5.5_py3.11_env\Scripts\python.exe -DESP_PLATFORM=1 -DSDKCONFIG='d:\Coding_Projects\PT100_Mesh_Datalogger\sdkconfig' -DCCACHE_ENABLE=1 D:\Coding_Projects\PT100_Mesh_Datalogger
+CMake Error at D:/esp/v5.5.1/esp-idf/tools/cmake/component.cmake:229 (message):
+  CMake Warning (dev) at build_properties.temp.cmake:8:
+
+    Syntax Warning in cmake code at column 106
+
+  
+
+    Argument not separated from preceding token by whitespace.
+
+  Call Stack (most recent call first):
+
+    D:/esp/v5.5.1/esp-idf/tools/cmake/scripts/component_get_requirements.cmake:3 (include)
+
+  This warning is for project developers.  Use -Wno-dev to suppress it.
+
+
+
+  CMake Error at
+  D:/Coding_Projects/PT100_Mesh_Datalogger/main/CMakeLists.txt:1:
+
+    Parse error.  Expected a command name, got bad character with text "\".
+
+  Call Stack (most recent call first):
+
+    D:/esp/v5.5.1/esp-idf/tools/cmake/scripts/component_get_requirements.cmake:107 (include)
+    D:/esp/v5.5.1/esp-idf/tools/cmake/scripts/component_get_requirements.cmake:160 (__component_get_requirements)
+
+  
+
+
+
+Call Stack (most recent call first):
+  D:/esp/v5.5.1/esp-idf/tools/cmake/build.cmake:664 (__component_get_requirements)
+  D:/esp/v5.5.1/esp-idf/tools/cmake/project.cmake:740 (idf_build_process)
+  CMakeLists.txt:8 (project)
+
+
