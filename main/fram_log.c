@@ -271,10 +271,9 @@ FramLogAppend(fram_log_t* log, const log_record_t* record)
     return ESP_ERR_INVALID_ARG;
   }
 
-  // If full, drop the oldest record to make room.
+  // If full, refuse to overwrite existing data. Caller should flush to SD first.
   if (log->record_count >= log->capacity_records) {
-    log->read_index++;
-    log->record_count--;
+    return ESP_ERR_NO_MEM;
   }
 
   log_record_t record_copy;

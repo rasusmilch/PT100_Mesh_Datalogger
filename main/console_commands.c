@@ -42,6 +42,9 @@ CommandStatus(int argc, char** argv)
          (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
          (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log),
          (unsigned)settings->fram_flush_watermark_records);
+  const bool fram_full = (g_runtime->fram_full != NULL) ? *g_runtime->fram_full
+                                                        : false;
+  printf("fram_full: %s\n", fram_full ? "yes" : "no");
 
   printf("calibration: degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
          (unsigned)settings->calibration.degree,

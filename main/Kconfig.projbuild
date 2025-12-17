@@ -93,7 +93,7 @@ config APP_FRAM_ADDR_BYTES
 config APP_FRAM_SIZE_BYTES
   int "FRAM size in bytes"
   range 4096 33554432
-  default 262144
+  default 32768
   help
     Total size of the FRAM device. Used to compute circular buffer capacity.
 

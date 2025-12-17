@@ -23,7 +23,7 @@ idf.py build flash monitor
 ## Logging pipeline (FRAM → SD with verification)
 
 - Sensor task samples MAX31865 at `log interval` (NVS-backed).
-- Each record is appended to a CRC-protected FRAM ring buffer; the persistent header tracks read/write indices and the next sequence number.
+- Each record is appended as a fixed-size binary struct (with CRC) to a FRAM ring buffer; the persistent header tracks read/write indices and the next sequence number.
 - The SD task builds large CSV batches (~64–256 KB, configurable) from FRAM without consuming it, then:
   1. Appends the batch to the daily CSV file (`YYYY-MM-DD.csv`) with `setvbuf` buffering.
   2. `fflush()` + `fsync()`.
@@ -32,6 +32,7 @@ idf.py build flash monitor
   5. On success: consumes the matching FRAM records.
 - CSV header (written once per day):  
   `seq,epoch_utc,iso8601_utc,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id`
+- FRAM is limited (default 32 KB); when it fills, logging pauses (no overwrite) until a flush frees space. A `fram_full` flag surfaces via `status`.
 
 ### Resume / crash safety
 
