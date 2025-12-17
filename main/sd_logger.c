@@ -2,44 +2,81 @@
 
 #include <errno.h>
 #include <inttypes.h>
-#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
-#include "driver/spi_master.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 
 static const char* kTag = "sd_logger";
 
+static size_t
+DefaultOr(const size_t value, const size_t fallback)
+{
+  return (value == 0) ? fallback : value;
+}
+
+void
+SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
+{
+  if (logger == NULL) {
+    return;
+  }
+  memset(logger, 0, sizeof(*logger));
+  strncpy(logger->mount_point, "/sdcard", sizeof(logger->mount_point) - 1);
+
+  const size_t default_batch = 128 * 1024;
+  const size_t default_tail_scan = 256 * 1024;
+  const size_t default_buffer = 64 * 1024;
+
+  logger->config.batch_target_bytes =
+    DefaultOr(config ? config->batch_target_bytes : 0, default_batch);
+  logger->config.tail_scan_bytes =
+    DefaultOr(config ? config->tail_scan_bytes : 0, default_tail_scan);
+  logger->config.file_buffer_bytes =
+    DefaultOr(config ? config->file_buffer_bytes : 0, default_buffer);
+}
+
 static void
 BuildDailyCsvPath(const sd_logger_t* logger,
                   int64_t epoch_seconds,
+                  char* date_out,
+                  size_t date_out_size,
                   char* path_out,
                   size_t path_out_size)
 {
-  // UTC date.
   time_t time_seconds = (time_t)epoch_seconds;
   struct tm time_info;
   gmtime_r(&time_seconds, &time_info);
 
-  char date_string[16];
-  strftime(date_string, sizeof(date_string), "%Y%m%d", &time_info);
+  strftime(date_out, date_out_size, "%Y-%m-%d", &time_info);
 
   snprintf(path_out,
            path_out_size,
-           "%s/pt100_log_%s.csv",
+           "%s/%s.csv",
            logger->mount_point,
-           date_string);
+           date_out);
 }
 
-static bool
-FileExists(const char* path)
+static esp_err_t
+WriteHeaderIfEmpty(sd_logger_t* logger)
 {
   struct stat stat_buffer;
-  return stat(path, &stat_buffer) == 0;
+  if (fstat(fileno(logger->file), &stat_buffer) != 0) {
+    return ESP_FAIL;
+  }
+  if (stat_buffer.st_size > 0) {
+    return ESP_OK;
+  }
+
+  static const char* const kHeader =
+    "seq,epoch_utc,iso8601_utc,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id\n";
+  const size_t header_len = strlen(kHeader);
+  return SdCsvAppendBatchWithReadbackVerify(
+    logger->file, (const uint8_t*)kHeader, header_len);
 }
 
 esp_err_t
@@ -48,8 +85,6 @@ SdLoggerMount(sd_logger_t* logger, spi_host_device_t host, int cs_gpio)
   if (logger == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  memset(logger, 0, sizeof(*logger));
-  strncpy(logger->mount_point, "/sdcard", sizeof(logger->mount_point) - 1);
 
   sdmmc_host_t sd_host = SDSPI_HOST_DEFAULT();
   sd_host.slot = host;
@@ -79,65 +114,117 @@ SdLoggerMount(sd_logger_t* logger, spi_host_device_t host, int cs_gpio)
   return ESP_OK;
 }
 
-esp_err_t
-SdLoggerAppendCsv(sd_logger_t* logger,
-                  const char* node_id,
-                  const log_record_t* record)
+static esp_err_t
+ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
 {
-  if (logger == NULL || node_id == NULL || record == NULL) {
+  SdCsvResumeInfo resume_info = { 0 };
+  esp_err_t resume_result = SdCsvFindLastSequenceAndRepairTail(
+    file, logger->config.tail_scan_bytes, &resume_info);
+  if (resume_result != ESP_OK) {
+    ESP_LOGE(kTag, "Failed to scan/repair %s: %s", path, esp_err_to_name(resume_result));
+    return resume_result;
+  }
+  if (resume_info.file_was_truncated) {
+    ESP_LOGW(kTag, "%s tail repaired after power loss", path);
+  }
+  if (resume_info.found_last_sequence) {
+    if (resume_info.last_sequence > logger->last_sequence_on_sd) {
+      logger->last_sequence_on_sd = resume_info.last_sequence;
+    }
+    ESP_LOGI(kTag, "Resume: last seq on %s = %u", path, resume_info.last_sequence);
+  }
+  return ESP_OK;
+}
+
+esp_err_t
+SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
+{
+  if (logger == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
   if (!logger->is_mounted) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  const int64_t epoch_seconds = record->timestamp_epoch_sec;
+  char date_string[16];
   char path[128];
-  BuildDailyCsvPath(logger,
-                    epoch_seconds == 0 ? (int64_t)time(NULL) : epoch_seconds,
-                    path,
-                    sizeof(path));
+  BuildDailyCsvPath(logger, epoch_utc, date_string, sizeof(date_string), path, sizeof(path));
 
-  const bool file_exists = FileExists(path);
+  if (logger->file != NULL && strcmp(logger->current_date, date_string) == 0) {
+    return ESP_OK; // already open for today
+  }
 
-  FILE* file = fopen(path, "a");
-  if (file == NULL) {
-    ESP_LOGW(kTag, "fopen failed: %s (%d)", strerror(errno), errno);
+  SdLoggerClose(logger);
+
+  logger->file = fopen(path, "a+b");
+  if (logger->file == NULL) {
+    ESP_LOGE(kTag, "fopen failed for %s: %s (%d)", path, strerror(errno), errno);
     return ESP_FAIL;
   }
 
-  if (!file_exists) {
-    // Header row.
-    fprintf(
-      file,
-      "node_id,epoch_sec,ms,raw_temp_c,temp_c,resistance_ohm,seq,flags\n");
+  if (logger->file_buffer != NULL) {
+    free(logger->file_buffer);
+    logger->file_buffer = NULL;
+  }
+  logger->file_buffer = (uint8_t*)malloc(logger->config.file_buffer_bytes);
+  if (logger->file_buffer != NULL) {
+    setvbuf((FILE*)logger->file,
+            (char*)logger->file_buffer,
+            _IOFBF,
+            logger->config.file_buffer_bytes);
   }
 
-  const double raw_c = record->raw_temp_milli_c / 1000.0;
-  const double temp_c = record->temp_milli_c / 1000.0;
-  const double resistance_ohm = record->resistance_milli_ohm / 1000.0;
-
-  fprintf(file,
-          "%s,%" PRId64 ",%d,%.3f,%.3f,%.3f,%u,0x%04x\n",
-          node_id,
-          record->timestamp_epoch_sec,
-          record->timestamp_millis,
-          raw_c,
-          temp_c,
-          resistance_ohm,
-          (unsigned)record->sequence,
-          (unsigned)record->flags);
-
-  if (fflush(file) != 0) {
-    ESP_LOGW(kTag, "fflush failed: %s (%d)", strerror(errno), errno);
-    fclose(file);
-    return ESP_FAIL;
+  esp_err_t resume_result = ApplyResumeInfo(logger, logger->file, path);
+  if (resume_result != ESP_OK) {
+    return resume_result;
   }
-  if (fsync(fileno(file)) != 0) {
-    ESP_LOGW(kTag, "fsync failed: %s (%d)", strerror(errno), errno);
-    fclose(file);
-    return ESP_FAIL;
+
+  esp_err_t header_result = WriteHeaderIfEmpty(logger);
+  if (header_result != ESP_OK) {
+    ESP_LOGE(kTag, "Failed to write header to %s", path);
+    return header_result;
   }
-  fclose(file);
+
+  strncpy(logger->current_date, date_string, sizeof(logger->current_date) - 1);
+  logger->current_date[sizeof(logger->current_date) - 1] = '\0';
   return ESP_OK;
+}
+
+esp_err_t
+SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
+                            const uint8_t* batch_bytes,
+                            size_t batch_length_bytes,
+                            uint32_t last_sequence_in_batch)
+{
+  if (logger == NULL || logger->file == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (batch_bytes == NULL || batch_length_bytes == 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  fseek(logger->file, 0, SEEK_END);
+  esp_err_t result =
+    SdCsvAppendBatchWithReadbackVerify(logger->file, batch_bytes, batch_length_bytes);
+  if (result == ESP_OK) {
+    logger->last_sequence_on_sd = last_sequence_in_batch;
+  }
+  return result;
+}
+
+void
+SdLoggerClose(sd_logger_t* logger)
+{
+  if (logger == NULL) {
+    return;
+  }
+  if (logger->file != NULL) {
+    fclose(logger->file);
+    logger->file = NULL;
+  }
+  if (logger->file_buffer != NULL) {
+    free(logger->file_buffer);
+    logger->file_buffer = NULL;
+  }
+  logger->current_date[0] = '\0';
 }

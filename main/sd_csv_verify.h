@@ -1,16 +1,23 @@
-#pragma once
+#ifndef PT100_LOGGER_SD_CSV_VERIFY_H_
+#define PT100_LOGGER_SD_CSV_VERIFY_H_
 
-#include <cstddef>
-#include <cstdint>
-#include <cstdio>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
 
 #include "esp_err.h"
 
-struct SdCsvResumeInfo {
-  bool file_was_truncated = false;
-  bool found_last_sequence = false;
-  uint32_t last_sequence = 0;  // 0 means "no samples present"
-};
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct
+{
+  bool file_was_truncated;
+  bool found_last_sequence;
+  uint32_t last_sequence;
+} SdCsvResumeInfo;
 
 // Repairs a power-loss tail (truncates to the last '\n' if needed) and returns
 // the last successfully written sequence number found in the file.
@@ -20,8 +27,8 @@ struct SdCsvResumeInfo {
 // - Header line should be "seq,..." and will be ignored.
 // - Comment lines beginning with '#' are ignored.
 esp_err_t SdCsvFindLastSequenceAndRepairTail(FILE* file_handle,
-                                            size_t tail_scan_max_bytes,
-                                            SdCsvResumeInfo* resume_info_out);
+                                             size_t tail_scan_max_bytes,
+                                             SdCsvResumeInfo* resume_info_out);
 
 // Appends a large buffer to the CSV file, then verifies by reading back the
 // appended region and comparing SHA-256 hashes.
@@ -29,24 +36,11 @@ esp_err_t SdCsvFindLastSequenceAndRepairTail(FILE* file_handle,
 // On verification failure, the function truncates the file back to its original
 // size and returns an error. FRAM must NOT be consumed unless this returns OK.
 esp_err_t SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
-                                            const uint8_t* batch_bytes,
-                                            size_t batch_length_bytes);
+                                             const uint8_t* batch_bytes,
+                                             size_t batch_length_bytes);
 
-// Minimal FRAM interface expected by FramConsumeUpToSequence.
-// Your FRAM ring buffer should provide "peek next seq" and "pop one record".
-class FramLogInterface {
- public:
-  virtual ~FramLogInterface() = default;
+#ifdef __cplusplus
+}
+#endif
 
-  // Returns true if a record exists and sets *sequence_out.
-  virtual bool PeekNextSequence(uint32_t* sequence_out) = 0;
-
-  // Pops exactly one record. Returns true on success.
-  virtual bool PopOneRecord() = 0;
-};
-
-// Pops records from FRAM while seq <= last_sequence_on_sd.
-// Use this after SdCsvFindLastSequenceAndRepairTail() at boot.
-esp_err_t FramConsumeUpToSequence(FramLogInterface* fram_log,
-                                 uint32_t last_sequence_on_sd,
-                                 uint32_t* records_consumed_out);
+#endif // PT100_LOGGER_SD_CSV_VERIFY_H_
