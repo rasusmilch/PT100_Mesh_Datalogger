@@ -1,3 +1,85 @@
 /.clangd
 /.devcontainer
-/.vscode
+
+# ============================================================
+# ESP-IDF build output (generated)
+# ============================================================
+build/
+build_*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+*.ninja
+.ninja_deps
+.ninja_log
+rules.ninja
+
+# Generated firmware artifacts
+*.elf
+*.bin
+*.map
+*.hex
+flasher_args.json
+flash_project_args
+bootloader-flash_args
+partition-table-flash_args
+
+# ============================================================
+# ESP-IDF project configuration
+# ============================================================
+# Treat sdkconfig as generated (portable approach is sdkconfig.defaults)
+sdkconfig
+sdkconfig.old
+sdkconfig.*.bak
+sdkconfig.*.tmp
+
+# Keep these (portable config checked into git)
+!sdkconfig.defaults
+!sdkconfig.defaults.*
+!sdkconfig.defaults.**
+
+# ============================================================
+# IDF Component Manager (recommended for multi-machine)
+# ============================================================
+# Generated dependency directory (recreated automatically by CMake)
+managed_components/
+
+# Lock file ensures reproducible dependency versions (commit it)
+!dependencies.lock
+
+# Manifests should be committed if you use them
+!idf_component.yml
+!components/**/idf_component.yml
+
+# ============================================================
+# VS Code (avoid machine-specific settings)
+# ============================================================
+.vscode/
+!.vscode/extensions.json
+# Optional: only keep settings if you ensure it contains NO absolute paths,
+# no COM port, no local toolchain paths.
+# !.vscode/settings.json
+
+# Workspace files are often machine/user specific
+*.code-workspace
+
+# ============================================================
+# Python tooling (host-side ingester, scripts)
+# ============================================================
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# ============================================================
+# OS/editor junk
+# ============================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
