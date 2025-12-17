@@ -41,6 +41,8 @@ typedef struct
 
   TickType_t last_flush_ticks;
   bool sd_error;
+  bool fram_full;
+  bool fram_full_logged;
 
   char node_id_string[32];
 } app_state_t;
@@ -351,6 +353,16 @@ SensorTask(void* context)
 
   while (true) {
     const uint32_t period_ms = state->settings.log_period_ms;
+
+    if (state->fram_full) {
+      if (!state->fram_full_logged) {
+        ESP_LOGW(kTag, "FRAM full; pausing sensor logging until flush succeeds");
+        state->fram_full_logged = true;
+      }
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
     float raw_c = 0;
     float resistance_ohm = 0;
 
@@ -408,16 +420,28 @@ StorageTask(void* context)
     if (xQueueReceive(state->log_queue, &record, pdMS_TO_TICKS(500)) ==
         pdTRUE) {
       esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
-      if (append_result != ESP_OK) {
+      if (append_result == ESP_ERR_NO_MEM) {
+        state->fram_full = true;
+        state->fram_full_logged = false;
+        ESP_LOGW(kTag, "FRAM is full; new samples will be dropped until flush");
+      } else if (append_result != ESP_OK) {
         ESP_LOGE(kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
-      }
+      } else {
+        if (state->fram_full &&
+            FramLogGetBufferedRecords(&state->fram_log) <
+              FramLogGetCapacityRecords(&state->fram_log)) {
+          state->fram_full = false;
+          state->fram_full_logged = false;
+          ESP_LOGI(kTag, "FRAM space available; resuming logging");
+        }
 
-      if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
-        (void)MeshTransportSendRecord(&state->mesh, &record);
-      }
+        if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
+          (void)MeshTransportSendRecord(&state->mesh, &record);
+        }
 
-      if (state->mesh.is_root) {
-        PrintJsonRecord(state->node_id_string, &record);
+        if (state->mesh.is_root) {
+          PrintJsonRecord(state->node_id_string, &record);
+        }
       }
     }
 
@@ -435,6 +459,11 @@ StorageTask(void* context)
       if (flush_result == ESP_OK || flush_result == ESP_ERR_NOT_FOUND) {
         state->sd_error = false;
         state->last_flush_ticks = now_ticks;
+        if (FramLogGetBufferedRecords(&state->fram_log) <
+            FramLogGetCapacityRecords(&state->fram_log)) {
+          state->fram_full = false;
+          state->fram_full_logged = false;
+        }
       } else {
         state->sd_error = true;
         ESP_LOGW(
@@ -598,6 +627,7 @@ app_main(void)
     .node_id_string = state.node_id_string,
     .flush_callback = &ConsoleFlush,
     .flush_context = &state,
+    .fram_full = &state.fram_full,
   };
   ESP_ERROR_CHECK(ConsoleCommandsStart(&runtime));
 

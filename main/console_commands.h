@@ -25,6 +25,7 @@ extern "C"
     const char* node_id_string;
     esp_err_t (*flush_callback)(void* context);
     void* flush_context;
+    bool* fram_full;
   } app_runtime_t;
 
   // Initializes and starts the serial console.
