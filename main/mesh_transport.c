@@ -1,8 +1,11 @@
 #include "mesh_transport.h"
 
+#include "esp_mac.h"   // MACSTR, MAC2STR
+#include "esp_netif.h" // esp_netif_init, esp_netif_t
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <inttypes.h>
+#include <stdio.h> // sscanf
 #include <string.h>
 #include <time.h>
 
@@ -59,6 +62,9 @@ MeshEventHandler(void* arg,
                  int32_t event_id,
                  void* event_data)
 {
+  (void)arg;
+  (void)event_base;
+
   if (g_mesh == NULL) {
     return;
   }
@@ -90,7 +96,7 @@ MeshEventHandler(void* arg,
       break;
 
     case MESH_EVENT_ROOT_ADDRESS:
-      memcpy(&g_mesh->root_address, &info->root_addr.addr, sizeof(mesh_addr_t));
+      memcpy(&g_mesh->root_address, &info->root_addr, sizeof(mesh_addr_t));
       ESP_LOGI(kTag,
                "MESH_EVENT_ROOT_ADDRESS: " MACSTR,
                MAC2STR(g_mesh->root_address.addr));

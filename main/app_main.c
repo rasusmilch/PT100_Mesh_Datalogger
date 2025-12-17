@@ -9,6 +9,8 @@
 #include "app_settings.h"
 #include "console_commands.h"
 #include "esp_log.h"
+#include "esp_mac.h"   // MACSTR, MAC2STR
+#include "esp_netif.h" // esp_netif_init, esp_netif_t
 #include "esp_system.h"
 #include "fram_log.h"
 #include "fram_spi.h"
@@ -21,6 +23,7 @@
 #include "nvs_flash.h"
 #include "sd_logger.h"
 #include "time_sync.h"
+#include <stdio.h> // sscanf
 
 static const char* kTag = "app";
 
@@ -62,7 +65,10 @@ FormatMacString(const uint8_t mac[6], char* out, size_t out_size)
 }
 
 static void
-BuildIso8601Utc(int64_t epoch_seconds, int32_t millis, char* out, size_t out_size)
+BuildIso8601Utc(int64_t epoch_seconds,
+                int32_t millis,
+                char* out,
+                size_t out_size)
 {
   if (epoch_seconds <= 0) {
     snprintf(out, out_size, "");
@@ -235,7 +241,8 @@ BuildBatchForDay(app_state_t* state,
 
     char line[196];
     size_t line_len = 0;
-    if (!FormatCsvLine(&record, state->node_id_string, line, sizeof(line), &line_len)) {
+    if (!FormatCsvLine(
+          &record, state->node_id_string, line, sizeof(line), &line_len)) {
       return ESP_ERR_NO_MEM;
     }
     if (used + line_len > buffer_size) {
@@ -272,8 +279,7 @@ FlushFramToSd(app_state_t* state, bool flush_all)
   uint32_t total_flushed = 0;
   while (FramLogGetBufferedRecords(&state->fram_log) > 0) {
     log_record_t first_record;
-    esp_err_t peek_result =
-      FramLogPeekOldest(&state->fram_log, &first_record);
+    esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       ESP_LOGE(kTag, "Cannot flush: corrupted FRAM record at head");
       (void)FramLogSkipCorruptedRecord(&state->fram_log);
@@ -286,10 +292,9 @@ FlushFramToSd(app_state_t* state, bool flush_all)
     char day_string[16];
     BuildDateStringFromRecord(&first_record, day_string, sizeof(day_string));
 
-    const int64_t epoch_for_file =
-      (first_record.timestamp_epoch_sec > 0)
-        ? first_record.timestamp_epoch_sec
-        : (int64_t)time(NULL);
+    const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
+                                     ? first_record.timestamp_epoch_sec
+                                     : (int64_t)time(NULL);
 
     esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
     if (sync_result != ESP_OK) {
@@ -356,7 +361,8 @@ SensorTask(void* context)
 
     if (state->fram_full) {
       if (!state->fram_full_logged) {
-        ESP_LOGW(kTag, "FRAM full; pausing sensor logging until flush succeeds");
+        ESP_LOGW(kTag,
+                 "FRAM full; pausing sensor logging until flush succeeds");
         state->fram_full_logged = true;
       }
       vTaskDelay(pdMS_TO_TICKS(100));
@@ -425,11 +431,11 @@ StorageTask(void* context)
         state->fram_full_logged = false;
         ESP_LOGW(kTag, "FRAM is full; new samples will be dropped until flush");
       } else if (append_result != ESP_OK) {
-        ESP_LOGE(kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
+        ESP_LOGE(
+          kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
       } else {
-        if (state->fram_full &&
-            FramLogGetBufferedRecords(&state->fram_log) <
-              FramLogGetCapacityRecords(&state->fram_log)) {
+        if (state->fram_full && FramLogGetBufferedRecords(&state->fram_log) <
+                                  FramLogGetCapacityRecords(&state->fram_log)) {
           state->fram_full = false;
           state->fram_full_logged = false;
           ESP_LOGI(kTag, "FRAM space available; resuming logging");
@@ -466,8 +472,7 @@ StorageTask(void* context)
         }
       } else {
         state->sd_error = true;
-        ESP_LOGW(
-          kTag, "SD flush failed: %s", esp_err_to_name(flush_result));
+        ESP_LOGW(kTag, "SD flush failed: %s", esp_err_to_name(flush_result));
       }
     }
   }
