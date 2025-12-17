@@ -25,6 +25,7 @@ typedef struct
   uint32_t write_index;
   uint32_t read_index;
   uint32_t record_count;
+  uint32_t next_sequence;
   uint32_t crc32_le;
 } fram_log_header_t;
 #pragma pack(pop)
@@ -75,6 +76,7 @@ ApplyHeaderToState(const fram_log_header_t* header, fram_log_t* log)
   log->write_index = header->write_index;
   log->read_index = header->read_index;
   log->record_count = header->record_count;
+  log->next_sequence = header->next_sequence;
 }
 
 static void
@@ -87,6 +89,7 @@ BuildHeaderFromState(const fram_log_t* log, fram_log_header_t* header_out)
   header_out->write_index = log->write_index;
   header_out->read_index = log->read_index;
   header_out->record_count = log->record_count;
+  header_out->next_sequence = log->next_sequence;
   header_out->crc32_le = ComputeHeaderCrc32(header_out);
 }
 
@@ -121,6 +124,7 @@ ReadRecord(const fram_log_t* log,
     return result;
   }
   if (record_out->magic != LOG_RECORD_MAGIC) {
+    ((fram_log_t*)log)->saw_corruption = true;
     return ESP_ERR_INVALID_RESPONSE;
   }
   const uint16_t expected_crc = record_out->crc16_ccitt;
@@ -129,6 +133,7 @@ ReadRecord(const fram_log_t* log,
     Crc16CcittFalse(record_out, sizeof(*record_out) - sizeof(uint16_t));
   record_out->crc16_ccitt = expected_crc;
   if (expected_crc != actual_crc) {
+    ((fram_log_t*)log)->saw_corruption = true;
     return ESP_ERR_INVALID_RESPONSE;
   }
   return ESP_OK;
@@ -169,6 +174,9 @@ FramLogInit(fram_log_t* log, fram_spi_t* fram, uint32_t fram_size_bytes)
     log->write_index = 0;
     log->read_index = 0;
     log->record_count = 0;
+    log->next_sequence = 1;
+    log->records_since_header_persist = 0;
+    log->saw_corruption = false;
     return FramLogPersistHeader(log);
   }
 
@@ -183,11 +191,28 @@ FramLogInit(fram_log_t* log, fram_spi_t* fram, uint32_t fram_size_bytes)
   }
 
   ApplyHeaderToState(chosen, log);
+  log->saw_corruption = false;
+  log->records_since_header_persist = 0;
 
   // Sanity clamp.
   if (log->record_count > log->capacity_records) {
     log->record_count = log->capacity_records;
   }
+
+  uint32_t max_sequence = log->next_sequence;
+  for (uint32_t idx = 0; idx < log->record_count; ++idx) {
+    log_record_t record;
+    if (FramLogPeekOffset(log, idx, &record) != ESP_OK) {
+      break;
+    }
+    if (record.sequence >= max_sequence) {
+      max_sequence = record.sequence + 1u;
+    }
+  }
+  if (max_sequence == 0) {
+    max_sequence = 1;
+  }
+  log->next_sequence = max_sequence;
 
   ESP_LOGI(kTag,
            "FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u",
@@ -195,7 +220,7 @@ FramLogInit(fram_log_t* log, fram_spi_t* fram, uint32_t fram_size_bytes)
            (unsigned)log->write_index,
            (unsigned)log->read_index,
            (unsigned)log->record_count,
-           (unsigned)log->header_sequence);
+           (unsigned)log->next_sequence);
   return ESP_OK;
 }
 
@@ -209,6 +234,12 @@ uint32_t
 FramLogGetBufferedRecords(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : log->record_count;
+}
+
+uint32_t
+FramLogNextSequence(const fram_log_t* log)
+{
+  return (log == NULL) ? 0 : log->next_sequence;
 }
 
 esp_err_t
@@ -240,19 +271,20 @@ FramLogAppend(fram_log_t* log, const log_record_t* record)
     return ESP_ERR_INVALID_ARG;
   }
 
-  // If full, drop the oldest record to make room.
+  // If full, refuse to overwrite existing data. Caller should flush to SD first.
   if (log->record_count >= log->capacity_records) {
-    log->read_index++;
-    log->record_count--;
+    return ESP_ERR_NO_MEM;
   }
 
   log_record_t record_copy;
   memcpy(&record_copy, record, sizeof(record_copy));
+  record_copy.sequence = log->next_sequence;
   esp_err_t result = WriteRecord(log, log->write_index, record_copy);
   if (result != ESP_OK) {
     return result;
   }
 
+  log->next_sequence++;
   log->write_index++;
   log->record_count++;
   log->records_since_header_persist++;
@@ -296,6 +328,40 @@ FramLogPeekOldest(const fram_log_t* log, log_record_t* record_out)
 }
 
 esp_err_t
+FramLogPeekOffset(const fram_log_t* log,
+                  uint32_t offset,
+                  log_record_t* record_out)
+{
+  if (log == NULL || record_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (offset >= log->record_count) {
+    return ESP_ERR_NOT_FOUND;
+  }
+  const uint32_t record_index = log->read_index + offset;
+  const uint32_t address = RecordAddressForIndex(log, record_index);
+  esp_err_t result =
+    FramSpiRead(log->fram, address, record_out, sizeof(*record_out));
+  if (result != ESP_OK) {
+    return result;
+  }
+  if (record_out->magic != LOG_RECORD_MAGIC) {
+    ((fram_log_t*)log)->saw_corruption = true;
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+  const uint16_t expected_crc = record_out->crc16_ccitt;
+  record_out->crc16_ccitt = 0;
+  const uint16_t actual_crc =
+    Crc16CcittFalse(record_out, sizeof(*record_out) - sizeof(uint16_t));
+  record_out->crc16_ccitt = expected_crc;
+  if (expected_crc != actual_crc) {
+    ((fram_log_t*)log)->saw_corruption = true;
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+  return ESP_OK;
+}
+
+esp_err_t
 FramLogDiscardOldest(fram_log_t* log)
 {
   if (log == NULL) {
@@ -325,11 +391,12 @@ FramLogPopOldest(fram_log_t* log, log_record_t* record_out)
 
   esp_err_t result = ReadRecord(log, log->read_index, record_out);
   if (result != ESP_OK) {
-    // Corruption in one slot: drop it and continue.
+    log->saw_corruption = true;
     ESP_LOGW(kTag,
-             "Bad record at index=%u: %s; dropping",
+             "Bad record at index=%u: %s; refusing to consume further",
              (unsigned)log->read_index,
              esp_err_to_name(result));
+    return result;
   }
 
   log->read_index++;
@@ -342,4 +409,65 @@ FramLogPopOldest(fram_log_t* log, log_record_t* record_out)
     return FramLogPersistHeader(log);
   }
   return ESP_OK;
+}
+
+esp_err_t
+FramLogSkipCorruptedRecord(fram_log_t* log)
+{
+  if (log == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (log->record_count == 0) {
+    return ESP_ERR_NOT_FOUND;
+  }
+  ESP_LOGW(kTag,
+           "Skipping corrupted record at index=%u",
+           (unsigned)log->read_index);
+  log->saw_corruption = true;
+  log->read_index++;
+  log->record_count--;
+  log->records_since_header_persist++;
+  log->header_sequence++;
+  return FramLogPersistHeader(log);
+}
+
+esp_err_t
+FramLogConsumeUpToSequence(fram_log_t* log,
+                           uint32_t max_sequence_inclusive,
+                           uint32_t* consumed_out)
+{
+  if (log == NULL || consumed_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  uint32_t consumed = 0;
+  esp_err_t status = ESP_OK;
+
+  while (FramLogGetBufferedRecords(log) > 0) {
+    log_record_t peeked;
+    esp_err_t peek_result = FramLogPeekOldest(log, &peeked);
+    if (peek_result == ESP_ERR_INVALID_RESPONSE) {
+      ESP_LOGE(kTag,
+               "Encountered corrupted record while consuming up to seq=%u",
+               (unsigned)max_sequence_inclusive);
+      status = ESP_ERR_INVALID_RESPONSE;
+      break;
+    }
+    if (peek_result != ESP_OK) {
+      status = peek_result;
+      break;
+    }
+    if (peeked.sequence > max_sequence_inclusive) {
+      break;
+    }
+    esp_err_t pop_result = FramLogPopOldest(log, &peeked);
+    if (pop_result != ESP_OK) {
+      status = pop_result;
+      break;
+    }
+    consumed++;
+  }
+
+  *consumed_out = consumed;
+  return status;
 }

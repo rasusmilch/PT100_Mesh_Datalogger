@@ -17,6 +17,10 @@ extern "C"
   {
     LOG_RECORD_FLAG_TIME_VALID = 1u << 0,
     LOG_RECORD_FLAG_CAL_VALID = 1u << 1,
+    LOG_RECORD_FLAG_SD_ERROR = 1u << 2,
+    LOG_RECORD_FLAG_MESH_CONNECTED = 1u << 3,
+    LOG_RECORD_FLAG_SENSOR_FAULT = 1u << 4,
+    LOG_RECORD_FLAG_FRAM_FULL = 1u << 5,
   } log_record_flags_t;
 
 #pragma pack(push, 1)

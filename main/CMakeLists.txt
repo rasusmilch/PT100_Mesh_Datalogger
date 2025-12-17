@@ -3,12 +3,13 @@ idf_component_register(
     "app_main.c"
     "app_settings.c"
     "calibration.c"
-   
-   
+    "console_commands.c"
+    "crc16.c"
     "fram_log.c"
     "fram_spi.c"
     "max31865_reader.c"
     "mesh_transport.c"
+    "sd_csv_verify.c"
     "sd_logger.c"
     "time_sync.c"
   INCLUDE_DIRS "."
@@ -24,7 +25,5 @@ idf_component_register(
     sdmmc
     driver
     esp_rom
-)
-
-
+    mbedtls
 )

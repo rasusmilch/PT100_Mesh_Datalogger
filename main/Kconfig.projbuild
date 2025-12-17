@@ -93,7 +93,7 @@ config APP_FRAM_ADDR_BYTES
 config APP_FRAM_SIZE_BYTES
   int "FRAM size in bytes"
   range 4096 33554432
-  default 262144
+  default 32768
   help
     Total size of the FRAM device. Used to compute circular buffer capacity.
 
@@ -117,6 +117,35 @@ config APP_FRAM_FLUSH_WATERMARK_RECORDS_DEFAULT
   help
     When buffered records in FRAM reach this watermark, the app will flush a batch
     of records to the SD card.
+
+config APP_SD_BATCH_BYTES_TARGET
+  int "Target SD batch size (bytes)"
+  range 65536 262144
+  default 131072
+  help
+    CSV flush batches are built up to roughly this many bytes before being
+    appended to SD. Larger batches improve wear and throughput.
+
+config APP_SD_PERIODIC_FLUSH_MS
+  int "Periodic flush interval (ms)"
+  range 1000 3600000
+  default 15000
+  help
+    Even if the FRAM watermark is not reached, the app will attempt to flush
+    buffered records after this many milliseconds to keep latency bounded.
+
+config APP_SD_TAIL_SCAN_BYTES
+  int "Bytes to scan when repairing SD tail"
+  range 4096 1048576
+  default 262144
+  help
+    On boot or day rollover, the logger scans this many bytes from the end of
+    the CSV file to find the last complete line and sequence number.
+
+config APP_SD_FILE_BUFFER_BYTES
+  int "Buffered FILE stream size for SD appends"
+  range 4096 262144
+  default 65536
 
 config APP_I2C_SDA_GPIO
   int "I2C SDA GPIO (DS3231)"

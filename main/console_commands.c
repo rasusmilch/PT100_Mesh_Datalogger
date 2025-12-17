@@ -35,10 +35,16 @@ CommandStatus(int argc, char** argv)
   printf("node_id: %s\n", g_runtime->node_id_string);
   printf("time_valid: %s\n", TimeSyncIsSystemTimeValid() ? "yes" : "no");
   printf("log_period_ms: %u\n", (unsigned)settings->log_period_ms);
+  printf("sd_flush_period_ms: %u\n", (unsigned)settings->sd_flush_period_ms);
+  printf("sd_batch_target_bytes: %u\n",
+         (unsigned)settings->sd_batch_bytes_target);
   printf("fram: buffered=%u / cap=%u (flush_watermark=%u)\n",
          (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
          (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log),
          (unsigned)settings->fram_flush_watermark_records);
+  const bool fram_full = (g_runtime->fram_full != NULL) ? *g_runtime->fram_full
+                                                        : false;
+  printf("fram_full: %s\n", fram_full ? "yes" : "no");
 
   printf("calibration: degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
          (unsigned)settings->calibration.degree,
@@ -48,6 +54,8 @@ CommandStatus(int argc, char** argv)
          settings->calibration.coefficients[3]);
 
   printf("sd_mounted: %s\n", (g_runtime->sd_logger->is_mounted ? "yes" : "no"));
+  printf("sd_last_seq: %u\n",
+         (unsigned)SdLoggerLastSequenceOnSd(g_runtime->sd_logger));
   printf("mesh_connected: %s\n",
          MeshTransportIsConnected(g_runtime->mesh) ? "yes" : "no");
   printf("pending_cal_points: %u\n", (unsigned)g_pending_points_count);
@@ -84,39 +92,10 @@ CommandRaw(int argc, char** argv)
 static esp_err_t
 FlushAllRecordsToSd(app_runtime_t* runtime)
 {
-  if (!runtime->sd_logger->is_mounted) {
+  if (runtime->flush_callback == NULL) {
     return ESP_ERR_INVALID_STATE;
   }
-
-  log_record_t record;
-  uint32_t flushed = 0;
-  while (FramLogGetBufferedRecords(runtime->fram_log) > 0) {
-    esp_err_t peek_result = FramLogPeekOldest(runtime->fram_log, &record);
-    if (peek_result == ESP_ERR_NOT_FOUND) {
-      break;
-    }
-
-    esp_err_t write_result =
-      SdLoggerAppendCsv(runtime->sd_logger, runtime->node_id_string, &record);
-    if (write_result != ESP_OK) {
-      printf("flush stopped: SD write failed after %u records: %s\n",
-             (unsigned)flushed,
-             esp_err_to_name(write_result));
-      return write_result;
-    }
-
-    esp_err_t discard_result = FramLogDiscardOldest(runtime->fram_log);
-    if (discard_result != ESP_OK && discard_result != ESP_ERR_NOT_FOUND) {
-      return discard_result;
-    }
-
-    flushed++;
-    if ((flushed % 256u) == 0u) {
-      printf("flushed %u records...\n", (unsigned)flushed);
-    }
-  }
-  printf("flush complete: %u records\n", (unsigned)flushed);
-  return ESP_OK;
+  return runtime->flush_callback(runtime->flush_context);
 }
 
 static int
@@ -130,8 +109,7 @@ CommandFlush(int argc, char** argv)
 
   esp_err_t result = FlushAllRecordsToSd(g_runtime);
   if (result != ESP_OK) {
-    printf("flush failed: %s
-", esp_err_to_name(result));
+    printf("flush failed: %s\n", esp_err_to_name(result));
     return 1;
   }
   return 0;
@@ -141,6 +119,9 @@ static struct
 {
   struct arg_str* action;
   struct arg_int* interval_ms;
+  struct arg_int* watermark_records;
+  struct arg_int* flush_period_ms;
+  struct arg_int* batch_bytes;
   struct arg_end* end;
 } g_log_args;
 
@@ -177,12 +158,81 @@ CommandLog(int argc, char** argv)
     return 0;
   }
 
-  if (strcmp(action, "show") == 0) {
-    printf("log_period_ms: %u\n", (unsigned)g_runtime->settings->log_period_ms);
+  if (strcmp(action, "watermark") == 0) {
+    if (g_log_args.watermark_records->count != 1) {
+      printf("usage: log watermark <records>\n");
+      return 1;
+    }
+    const int watermark = g_log_args.watermark_records->ival[0];
+    if (watermark < 1) {
+      printf("invalid watermark\n");
+      return 1;
+    }
+    g_runtime->settings->fram_flush_watermark_records = (uint32_t)watermark;
+    esp_err_t result =
+      AppSettingsSaveFramFlushWatermarkRecords((uint32_t)watermark);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("fram flush watermark set to %d\n", watermark);
     return 0;
   }
 
-  printf("unknown action. usage: log interval <ms> | log show\n");
+  if (strcmp(action, "flush_period") == 0) {
+    if (g_log_args.flush_period_ms->count != 1) {
+      printf("usage: log flush_period <ms>\n");
+      return 1;
+    }
+    const int period_ms = g_log_args.flush_period_ms->ival[0];
+    if (period_ms < 1000) {
+      printf("invalid period\n");
+      return 1;
+    }
+    g_runtime->settings->sd_flush_period_ms = (uint32_t)period_ms;
+    esp_err_t result =
+      AppSettingsSaveSdFlushPeriodMs((uint32_t)period_ms);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("sd_flush_period_ms set to %d\n", period_ms);
+    return 0;
+  }
+
+  if (strcmp(action, "batch") == 0) {
+    if (g_log_args.batch_bytes->count != 1) {
+      printf("usage: log batch <bytes>\n");
+      return 1;
+    }
+    const int batch_bytes = g_log_args.batch_bytes->ival[0];
+    if (batch_bytes < 4096) {
+      printf("invalid batch size\n");
+      return 1;
+    }
+    g_runtime->settings->sd_batch_bytes_target = (uint32_t)batch_bytes;
+    esp_err_t result = AppSettingsSaveSdBatchBytes((uint32_t)batch_bytes);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("sd batch target set to %d bytes\n", batch_bytes);
+    return 0;
+  }
+
+  if (strcmp(action, "show") == 0) {
+    printf("log_period_ms: %u\n", (unsigned)g_runtime->settings->log_period_ms);
+    printf("fram_flush_watermark_records: %u\n",
+           (unsigned)g_runtime->settings->fram_flush_watermark_records);
+    printf("sd_flush_period_ms: %u\n",
+           (unsigned)g_runtime->settings->sd_flush_period_ms);
+    printf("sd_batch_target_bytes: %u\n",
+           (unsigned)g_runtime->settings->sd_batch_bytes_target);
+    return 0;
+  }
+
+  printf("unknown action. usage: log interval <ms> | log watermark <records> | "
+         "log flush_period <ms> | log batch <bytes> | log show\n");
   return 1;
 }
 
@@ -319,13 +369,21 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&flush_cmd));
 
-  g_log_args.action = arg_str1(NULL, NULL, "<action>", "interval|show");
+  g_log_args.action =
+    arg_str1(NULL, NULL, "<action>", "interval|watermark|flush_period|batch|show");
   g_log_args.interval_ms =
     arg_int0(NULL, NULL, "<ms>", "Logging interval in ms (for 'interval')");
-  g_log_args.end = arg_end(2);
+  g_log_args.watermark_records = arg_int0(
+    NULL, NULL, "<records>", "FRAM flush watermark (for 'watermark')");
+  g_log_args.flush_period_ms = arg_int0(
+    NULL, NULL, "<ms>", "Periodic SD flush ms (for 'flush_period')");
+  g_log_args.batch_bytes = arg_int0(
+    NULL, NULL, "<bytes>", "Batch target bytes (for 'batch')");
+  g_log_args.end = arg_end(5);
   const esp_console_cmd_t log_cmd = {
     .command = "log",
-    .help = "Logging config: log interval <ms> | log show",
+    .help = "Logging config: log interval <ms> | log watermark <records> | log "
+            "flush_period <ms> | log batch <bytes> | log show",
     .hint = NULL,
     .func = &CommandLog,
     .argtable = &g_log_args,

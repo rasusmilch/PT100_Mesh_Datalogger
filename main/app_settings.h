@@ -15,6 +15,8 @@ extern "C"
   {
     uint32_t log_period_ms;
     uint32_t fram_flush_watermark_records;
+    uint32_t sd_flush_period_ms;
+    uint32_t sd_batch_bytes_target;
     calibration_model_t calibration;
   } app_settings_t;
 
@@ -27,6 +29,9 @@ extern "C"
   // Persists updated FRAM flush watermark to NVS.
   esp_err_t AppSettingsSaveFramFlushWatermarkRecords(
     uint32_t watermark_records);
+
+  esp_err_t AppSettingsSaveSdFlushPeriodMs(uint32_t period_ms);
+  esp_err_t AppSettingsSaveSdBatchBytes(uint32_t batch_bytes);
 
   // Persists updated calibration model to NVS.
   esp_err_t AppSettingsSaveCalibration(const calibration_model_t* model);

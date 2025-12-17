@@ -117,6 +117,18 @@ CalibrationModelFitFromPoints(const calibration_point_t* points,
     return ESP_ERR_INVALID_SIZE;
   }
 
+  if (num_points == 1) {
+    // Deterministic behavior: treat single-point as offset-only correction with
+    // slope=1.
+    const double offset = points[0].actual_c - points[0].raw_c;
+    CalibrationModelInitIdentity(model_out);
+    model_out->degree = 1;
+    model_out->coefficients[0] = offset;
+    model_out->coefficients[1] = 1.0;
+    model_out->is_valid = true;
+    return ESP_OK;
+  }
+
   // Build Vandermonde matrix for polynomial degree (N-1).
   const int dimension = (int)num_points;
   double matrix_a[CALIBRATION_MAX_POINTS][CALIBRATION_MAX_POINTS];
