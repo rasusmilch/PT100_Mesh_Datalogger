@@ -23,6 +23,8 @@ extern "C"
     mesh_transport_t* mesh;
     time_sync_t* time_sync;
     const char* node_id_string;
+    esp_err_t (*flush_callback)(void* context);
+    void* flush_context;
   } app_runtime_t;
 
   // Initializes and starts the serial console.
