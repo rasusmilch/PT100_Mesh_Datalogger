@@ -18,7 +18,6 @@ static const uint8_t kRegRtdMsb = 0x01;
 // Config bits.
 static const uint8_t kCfgVbias = 0x80;
 static const uint8_t kCfgConversionModeAuto = 0x40;
-static const uint8_t kCfg1Shot = 0x20;
 static const uint8_t kCfg3Wire = 0x10;
 static const uint8_t kCfgFaultStatusClear = 0x02;
 static const uint8_t kCfgFilter50Hz = 0x01;

@@ -71,9 +71,12 @@ BuildIso8601Utc(int64_t epoch_seconds,
                 size_t out_size)
 {
   if (epoch_seconds <= 0) {
-    snprintf(out, out_size, "");
+    if (out_size > 0) {
+      out[0] = '\0';
+    }
     return;
   }
+
   time_t time_seconds = (time_t)epoch_seconds;
   struct tm time_info;
   gmtime_r(&time_seconds, &time_info);
@@ -594,7 +597,12 @@ app_main(void)
   ESP_ERROR_CHECK(
     Max31865ReaderInit(&state.sensor, spi_host, CONFIG_APP_MAX31865_CS_GPIO));
 
-  const bool is_root = CONFIG_APP_NODE_IS_ROOT;
+#if CONFIG_APP_NODE_IS_ROOT
+  const bool is_root = true;
+#else
+  const bool is_root = false;
+#endif
+
   const char* router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
   const char* router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
 

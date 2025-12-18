@@ -26,9 +26,9 @@ ComputeSha256(const uint8_t* data, size_t length_bytes)
   mbedtls_sha256_init(&sha_context);
 
   const int use_sha256 = 0; // 0 => SHA-256, 1 => SHA-224
-  mbedtls_sha256_starts_ret(&sha_context, use_sha256);
-  mbedtls_sha256_update_ret(&sha_context, data, length_bytes);
-  mbedtls_sha256_finish_ret(&sha_context, digest.bytes);
+  mbedtls_sha256_starts(&sha_context, use_sha256);
+  mbedtls_sha256_update(&sha_context, data, length_bytes);
+  mbedtls_sha256_finish(&sha_context, digest.bytes);
 
   mbedtls_sha256_free(&sha_context);
   return digest;
@@ -45,8 +45,7 @@ GetFileSizeBytes(int file_descriptor, off_t* size_out)
 {
   struct stat file_stat;
   if (fstat(file_descriptor, &file_stat) != 0) {
-    ESP_LOGE(
-      kTag, "fstat() failed: errno=%d (%s)", errno, strerror(errno));
+    ESP_LOGE(kTag, "fstat() failed: errno=%d (%s)", errno, strerror(errno));
     return ESP_FAIL;
   }
   *size_out = file_stat.st_size;
@@ -54,12 +53,13 @@ GetFileSizeBytes(int file_descriptor, off_t* size_out)
 }
 
 static esp_err_t
-ReadExactly(
-  int file_descriptor, off_t offset, uint8_t* buffer, size_t length_bytes)
+ReadExactly(int file_descriptor,
+            off_t offset,
+            uint8_t* buffer,
+            size_t length_bytes)
 {
   if (lseek(file_descriptor, offset, SEEK_SET) < 0) {
-    ESP_LOGE(
-      kTag, "lseek() failed: errno=%d (%s)", errno, strerror(errno));
+    ESP_LOGE(kTag, "lseek() failed: errno=%d (%s)", errno, strerror(errno));
     return ESP_FAIL;
   }
 
@@ -68,8 +68,7 @@ ReadExactly(
     const ssize_t read_result =
       read(file_descriptor, buffer + total_read, length_bytes - total_read);
     if (read_result < 0) {
-      ESP_LOGE(
-        kTag, "read() failed: errno=%d (%s)", errno, strerror(errno));
+      ESP_LOGE(kTag, "read() failed: errno=%d (%s)", errno, strerror(errno));
       return ESP_FAIL;
     }
     if (read_result == 0) {
@@ -136,10 +135,9 @@ RepairTailToLastNewline(int file_descriptor,
     return ESP_OK; // already line-complete
   }
 
-  const off_t scan_start =
-    (file_size > (off_t)tail_scan_max_bytes)
-      ? (file_size - (off_t)tail_scan_max_bytes)
-      : 0;
+  const off_t scan_start = (file_size > (off_t)tail_scan_max_bytes)
+                             ? (file_size - (off_t)tail_scan_max_bytes)
+                             : 0;
   const size_t scan_length = (size_t)(file_size - scan_start);
 
   uint8_t* tail_bytes = (uint8_t*)malloc(scan_length);
@@ -172,8 +170,7 @@ RepairTailToLastNewline(int file_descriptor,
   free(tail_bytes);
 
   if (ftruncate(file_descriptor, new_size) != 0) {
-    ESP_LOGE(
-      kTag, "ftruncate() failed: errno=%d (%s)", errno, strerror(errno));
+    ESP_LOGE(kTag, "ftruncate() failed: errno=%d (%s)", errno, strerror(errno));
     return ESP_FAIL;
   }
 
@@ -207,10 +204,9 @@ FindLastSequenceInFile(int file_descriptor,
     return ESP_OK;
   }
 
-  const off_t scan_start =
-    (file_size > (off_t)tail_scan_max_bytes)
-      ? (file_size - (off_t)tail_scan_max_bytes)
-      : 0;
+  const off_t scan_start = (file_size > (off_t)tail_scan_max_bytes)
+                             ? (file_size - (off_t)tail_scan_max_bytes)
+                             : 0;
   const size_t scan_length = (size_t)(file_size - scan_start);
 
   uint8_t* tail_bytes = (uint8_t*)malloc(scan_length + 1);
@@ -337,7 +333,8 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
   const sha256_digest_t digest_before =
     ComputeSha256(batch_bytes, batch_length_bytes);
 
-  const size_t written = fwrite(batch_bytes, 1, batch_length_bytes, file_handle);
+  const size_t written =
+    fwrite(batch_bytes, 1, batch_length_bytes, file_handle);
   if (written != batch_length_bytes) {
     ESP_LOGE(kTag,
              "fwrite() short write: wrote=%u expected=%u",
@@ -349,16 +346,14 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
   }
 
   if (fflush(file_handle) != 0) {
-    ESP_LOGE(
-      kTag, "fflush() failed: errno=%d (%s)", errno, strerror(errno));
+    ESP_LOGE(kTag, "fflush() failed: errno=%d (%s)", errno, strerror(errno));
     ftruncate(file_descriptor, original_size);
     fsync(file_descriptor);
     return ESP_FAIL;
   }
 
   if (fsync(file_descriptor) != 0) {
-    ESP_LOGE(
-      kTag, "fsync() failed: errno=%d (%s)", errno, strerror(errno));
+    ESP_LOGE(kTag, "fsync() failed: errno=%d (%s)", errno, strerror(errno));
     ftruncate(file_descriptor, original_size);
     fsync(file_descriptor);
     return ESP_FAIL;
@@ -368,10 +363,9 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
   if (readback_bytes == NULL) {
     return ESP_ERR_NO_MEM;
   }
-  if (ReadExactly(file_descriptor,
-                  append_offset,
-                  readback_bytes,
-                  batch_length_bytes) != ESP_OK) {
+  if (ReadExactly(
+        file_descriptor, append_offset, readback_bytes, batch_length_bytes) !=
+      ESP_OK) {
     ESP_LOGE(kTag, "Read-back failed; truncating to original size.");
     free(readback_bytes);
     ftruncate(file_descriptor, original_size);
