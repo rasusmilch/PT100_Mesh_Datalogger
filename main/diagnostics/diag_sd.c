@@ -1,5 +1,6 @@
 #include "diagnostics/diag_sd.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -13,13 +14,13 @@ RunDiagSd(const app_runtime_t* runtime,
           bool full,
           bool format_if_needed,
           bool mount,
-          bool verbose)
+          diag_verbosity_t verbosity)
 {
   (void)format_if_needed;
   (void)mount;
 
   diag_ctx_t ctx;
-  DiagInitCtx(&ctx, "SD", verbose);
+  DiagInitCtx(&ctx, "SD", verbosity);
   const int total_steps = full ? 4 : 2;
 
   if (runtime == NULL || runtime->sd_logger == NULL) {
@@ -40,21 +41,36 @@ RunDiagSd(const app_runtime_t* runtime,
 
     if (runtime->sd_logger->is_mounted) {
       const char* path = runtime->sd_logger->mount_point;
-      FILE* f = fopen("/sdcard/diag_sd_test.bin", "wb");
+      char test_path[128];
+      snprintf(test_path, sizeof(test_path), "%s/diag_sd_test.bin", path);
+      FILE* f = fopen(test_path, "wb");
       if (f != NULL) {
         const char payload[] = "diag";
         fwrite(payload, 1, sizeof(payload), f);
         fflush(f);
         fclose(f);
-        FILE* r = fopen("/sdcard/diag_sd_test.bin", "rb");
+        FILE* r = fopen(test_path, "rb");
         char buffer[8] = {0};
         size_t n = fread(buffer, 1, sizeof(buffer), r);
         fclose(r);
         const bool match = (n >= sizeof(payload) && memcmp(payload, buffer, sizeof(payload)) == 0);
-        remove("/sdcard/diag_sd_test.bin");
-        DiagReportStep(&ctx, 3, total_steps, "file r/w", match ? ESP_OK : ESP_FAIL, "path=%s", path);
+        remove(test_path);
+        DiagReportStep(&ctx,
+                       3,
+                       total_steps,
+                       "file r/w",
+                       match ? ESP_OK : ESP_FAIL,
+                       "path=%s", test_path);
       } else {
-        DiagReportStep(&ctx, 3, total_steps, "file r/w", ESP_FAIL, "unable to open test file");
+        const esp_err_t err = ESP_FAIL;
+        DiagReportStep(&ctx,
+                       3,
+                       total_steps,
+                       "file r/w",
+                       err,
+                       "unable to open test file: %s (errno=%d)",
+                       strerror(errno),
+                       errno);
       }
     } else {
       DiagReportStep(&ctx, 3, total_steps, "file r/w", ESP_FAIL, "not mounted");

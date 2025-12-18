@@ -13,7 +13,7 @@ extern "C" {
 int RunDiagFram(const app_runtime_t* runtime,
                 bool full,
                 int bytes,
-                bool verbose);
+                diag_verbosity_t verbosity);
 
 #ifdef __cplusplus
 }

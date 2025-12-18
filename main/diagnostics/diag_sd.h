@@ -14,7 +14,7 @@ int RunDiagSd(const app_runtime_t* runtime,
               bool full,
               bool format_if_needed,
               bool mount,
-              bool verbose);
+              diag_verbosity_t verbosity);
 
 #ifdef __cplusplus
 }

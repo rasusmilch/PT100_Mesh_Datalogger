@@ -1,11 +1,12 @@
 #include "diagnostics/diag_common.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 void
-DiagInitCtx(diag_ctx_t* ctx, const char* name, bool verbose)
+DiagInitCtx(diag_ctx_t* ctx, const char* name, diag_verbosity_t verbosity)
 {
   if (ctx == NULL) {
     return;
@@ -13,7 +14,7 @@ DiagInitCtx(diag_ctx_t* ctx, const char* name, bool verbose)
   ctx->name = name;
   ctx->steps_failed = 0;
   ctx->steps_run = 0;
-  ctx->verbose = verbose;
+  ctx->verbosity = verbosity;
 }
 
 void
@@ -40,7 +41,7 @@ DiagReportStep(diag_ctx_t* ctx,
   }
   printf("\n");
 
-  if (details_fmt != NULL && ctx->verbose) {
+  if (details_fmt != NULL && ctx->verbosity >= kDiagVerbosity1) {
     va_list args;
     va_start(args, details_fmt);
     printf("      ");
@@ -66,9 +67,15 @@ DiagPrintSummary(const diag_ctx_t* ctx, int total_steps)
 }
 
 void
-DiagHexdump(const char* label, const uint8_t* bytes, size_t len)
+DiagHexdump(const diag_ctx_t* ctx,
+            const char* label,
+            const uint8_t* bytes,
+            size_t len)
 {
-  if (bytes == NULL || len == 0) {
+  if (bytes == NULL || len == 0 || ctx == NULL) {
+    return;
+  }
+  if (ctx->verbosity < kDiagVerbosity2) {
     return;
   }
   printf("%s (%u bytes):", label, (unsigned)len);
@@ -85,4 +92,13 @@ void
 DiagPrintErr(esp_err_t err)
 {
   printf("%s", esp_err_to_name(err));
+}
+
+void
+DiagPrintErrno(const char* prefix)
+{
+  if (prefix != NULL) {
+    printf("%s: ", prefix);
+  }
+  printf("errno=%d (%s)", errno, strerror(errno));
 }

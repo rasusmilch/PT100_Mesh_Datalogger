@@ -538,13 +538,17 @@ CommandDiagnostics(int argc, char** argv)
 
   const bool full = strcmp(mode, "full") == 0;
   int overall = 0;
+  const diag_verbosity_t diag_verbosity =
+    (verbosity >= 2) ? kDiagVerbosity2
+                     : ((verbosity > 0) ? kDiagVerbosity1 : kDiagVerbosity0);
 
   if (strcmp(target, "sd") == 0 || strcmp(target, "all") == 0) {
     if (RuntimeIsRunning()) {
       printf("Stop run mode first: run stop\n");
       overall = 1;
     } else {
-      overall |= RunDiagSd(runtime, full, format_if_needed, mount, verbosity > 0);
+      overall |= RunDiagSd(
+        runtime, full, format_if_needed, mount, diag_verbosity);
     }
     if (strcmp(target, "sd") == 0) {
       return overall;
@@ -556,7 +560,7 @@ CommandDiagnostics(int argc, char** argv)
       printf("Stop run mode first: run stop\n");
       overall = 1;
     } else {
-      overall |= RunDiagFram(runtime, full, bytes, verbosity > 0);
+      overall |= RunDiagFram(runtime, full, bytes, diag_verbosity);
     }
     if (strcmp(target, "fram") == 0) {
       return overall;
@@ -568,7 +572,7 @@ CommandDiagnostics(int argc, char** argv)
       printf("Stop run mode first: run stop\n");
       overall = 1;
     } else {
-      overall |= RunDiagRtd(runtime, full, samples, verbosity > 0);
+      overall |= RunDiagRtd(runtime, full, samples, diag_verbosity);
     }
     if (strcmp(target, "rtd") == 0) {
       return overall;
@@ -580,7 +584,7 @@ CommandDiagnostics(int argc, char** argv)
       printf("Stop run mode first: run stop\n");
       overall = 1;
     } else {
-      overall |= RunDiagRtc(runtime, full, set_known, verbosity > 0);
+      overall |= RunDiagRtc(runtime, full, set_known, diag_verbosity);
     }
     if (strcmp(target, "rtc") == 0) {
       return overall;
@@ -588,14 +592,14 @@ CommandDiagnostics(int argc, char** argv)
   }
 
   if (strcmp(target, "wifi") == 0 || strcmp(target, "all") == 0) {
-    overall |= RunDiagWifi(runtime, full, scan, connect, verbosity > 0);
+      overall |= RunDiagWifi(runtime, full, scan, connect, diag_verbosity);
     if (strcmp(target, "wifi") == 0) {
       return overall;
     }
   }
 
   if (strcmp(target, "mesh") == 0 || strcmp(target, "all") == 0) {
-    overall |= RunDiagMesh(runtime, full, start_mesh, stop_mesh, verbosity > 0);
+      overall |= RunDiagMesh(runtime, full, start_mesh, stop_mesh, diag_verbosity);
     if (strcmp(target, "mesh") == 0) {
       return overall;
     }

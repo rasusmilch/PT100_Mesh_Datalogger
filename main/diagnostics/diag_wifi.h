@@ -10,7 +10,11 @@
 extern "C" {
 #endif
 
-int RunDiagWifi(const app_runtime_t* runtime, bool full, bool scan, bool connect, bool verbose);
+int RunDiagWifi(const app_runtime_t* runtime,
+               bool full,
+               bool scan,
+               bool connect,
+               diag_verbosity_t verbosity);
 
 #ifdef __cplusplus
 }

@@ -11,11 +11,17 @@
 extern "C" {
 #endif
 
+typedef enum {
+  kDiagVerbosity0 = 0,
+  kDiagVerbosity1 = 1,
+  kDiagVerbosity2 = 2,
+} diag_verbosity_t;
+
 typedef struct {
   const char* name;
   int steps_run;
   int steps_failed;
-  bool verbose;
+  diag_verbosity_t verbosity;
 } diag_ctx_t;
 
 typedef struct {
@@ -23,7 +29,7 @@ typedef struct {
   esp_err_t result;
 } diag_step_result_t;
 
-void DiagInitCtx(diag_ctx_t* ctx, const char* name, bool verbose);
+void DiagInitCtx(diag_ctx_t* ctx, const char* name, diag_verbosity_t verbosity);
 
 void DiagReportStep(diag_ctx_t* ctx,
                     int step_index,
@@ -35,9 +41,14 @@ void DiagReportStep(diag_ctx_t* ctx,
 
 void DiagPrintSummary(const diag_ctx_t* ctx, int total_steps);
 
-void DiagHexdump(const char* label, const uint8_t* bytes, size_t len);
+void DiagHexdump(const diag_ctx_t* ctx,
+                 const char* label,
+                 const uint8_t* bytes,
+                 size_t len);
 
 void DiagPrintErr(esp_err_t err);
+
+void DiagPrintErrno(const char* prefix);
 
 #ifdef __cplusplus
 }

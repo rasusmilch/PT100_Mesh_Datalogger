@@ -10,7 +10,11 @@
 extern "C" {
 #endif
 
-int RunDiagMesh(const app_runtime_t* runtime, bool full, bool start, bool stop, bool verbose);
+int RunDiagMesh(const app_runtime_t* runtime,
+               bool full,
+               bool start,
+               bool stop,
+               diag_verbosity_t verbosity);
 
 #ifdef __cplusplus
 }
