@@ -40,7 +40,7 @@ app_main(void)
 
   const app_runtime_t* runtime = RuntimeGetRuntime();
   if (runtime != NULL) {
-    ESP_ERROR_CHECK(ConsoleCommandsStart((app_runtime_t*)runtime));
+    ESP_ERROR_CHECK(ConsoleCommandsStart((app_runtime_t*)runtime, boot_mode));
   } else {
     ESP_LOGE(kTag, "Runtime unavailable; console not started");
     return;

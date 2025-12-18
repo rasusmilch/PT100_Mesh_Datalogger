@@ -3,6 +3,7 @@
 
 #include "esp_err.h"
 #include "runtime_manager.h"
+#include "boot_mode.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -10,7 +11,8 @@ extern "C"
 #endif
 
   // Initializes and starts the serial console.
-  esp_err_t ConsoleCommandsStart(app_runtime_t* runtime);
+  esp_err_t ConsoleCommandsStart(app_runtime_t* runtime,
+                                 app_boot_mode_t boot_mode);
 
 #ifdef __cplusplus
 }
