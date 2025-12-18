@@ -61,6 +61,7 @@ idf.py build flash monitor
 - `cal list`
 - `cal apply` (1 point = offset-only; 2–4 points fit deg1–deg3)
 - `flush` (best-effort FRAM→SD flush with verification)
+- `diag check` (diagnostics mode only; sensor/FRAM/SD/mesh/time quick health check)
 
 All configuration changes persist to NVS.
 

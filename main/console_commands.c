@@ -20,6 +20,7 @@
 static const char* kTag = "console";
 
 static app_runtime_t* g_runtime = NULL;
+static app_boot_mode_t g_boot_mode = APP_BOOT_MODE_DIAGNOSTICS;
 
 static calibration_point_t g_pending_points[CALIBRATION_MAX_POINTS];
 static size_t g_pending_points_count = 0;
@@ -147,6 +148,12 @@ static struct
   struct arg_str* action;
   struct arg_end* end;
 } g_run_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_end* end;
+} g_diag_args;
 
 static int
 CommandLog(int argc, char** argv)
@@ -457,6 +464,92 @@ CommandRun(int argc, char** argv)
 }
 
 static int
+CommandDiagnostics(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_diag_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_diag_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_diag_args.action->sval[0];
+  if (strcmp(action, "check") != 0) {
+    printf("unknown action. usage: diag check\n");
+    return 1;
+  }
+
+  bool ok = true;
+
+  printf("Diagnostics summary:\n");
+
+  // Sensor
+  float raw_c = 0;
+  float resistance_ohm = 0;
+  esp_err_t read_result =
+    Max31865ReaderRead(g_runtime->sensor, &raw_c, &resistance_ohm);
+  if (read_result == ESP_OK) {
+    const double calibrated =
+      CalibrationModelEvaluate(&g_runtime->settings->calibration, raw_c);
+    printf("  sensor: ok (raw_c=%.3f cal_c=%.3f r_ohm=%.3f)\n",
+           raw_c,
+           calibrated,
+           resistance_ohm);
+  } else {
+    printf("  sensor: read failed (%s)\n", esp_err_to_name(read_result));
+    ok = false;
+  }
+
+  // FRAM
+  if (g_runtime->fram_log != NULL) {
+    printf("  fram: buffered=%u / capacity=%u\n",
+           (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
+           (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log));
+  } else {
+    printf("  fram: unavailable\n");
+    ok = false;
+  }
+
+  // SD card
+  if (g_runtime->sd_logger != NULL && g_runtime->sd_logger->is_mounted) {
+    printf("  sd: mounted (last_seq=%u)\n",
+           (unsigned)SdLoggerLastSequenceOnSd(g_runtime->sd_logger));
+  } else {
+    printf("  sd: not mounted\n");
+    ok = false;
+  }
+
+  // Mesh
+  if (g_runtime->mesh != NULL) {
+    const bool connected = MeshTransportIsConnected(g_runtime->mesh);
+    printf("  mesh: %s\n", connected ? "connected" : "not connected");
+  } else {
+    printf("  mesh: unavailable\n");
+  }
+
+  // Time
+  if (g_runtime->time_sync != NULL) {
+    if (TimeSyncIsSystemTimeValid()) {
+      int64_t epoch = 0;
+      int32_t millis = 0;
+      TimeSyncGetNow(&epoch, &millis);
+      printf("  time: valid (epoch=%" PRId64 ".%03d)\n",
+             epoch,
+             (int)millis);
+    } else {
+      printf("  time: invalid (year < 2023)\n");
+      ok = false;
+    }
+  } else {
+    printf("  time: unavailable\n");
+  }
+
+  return ok ? 0 : 1;
+}
+
+static int
 CommandReboot(int argc, char** argv)
 {
   (void)argc;
@@ -554,6 +647,19 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&run_cmd));
 
+  if (g_boot_mode == APP_BOOT_MODE_DIAGNOSTICS) {
+    g_diag_args.action = arg_str1(NULL, NULL, "<action>", "check");
+    g_diag_args.end = arg_end(1);
+    const esp_console_cmd_t diag_cmd = {
+      .command = "diag",
+      .help = "Diagnostics: diag check (sensor/fram/sd/mesh/time)",
+      .hint = NULL,
+      .func = &CommandDiagnostics,
+      .argtable = &g_diag_args,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&diag_cmd));
+  }
+
   const esp_console_cmd_t reboot_cmd = {
     .command = "reboot",
     .help = "Soft reboot the device",
@@ -595,12 +701,13 @@ ConsoleTask(void* context)
 }
 
 esp_err_t
-ConsoleCommandsStart(app_runtime_t* runtime)
+ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
 {
   if (runtime == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
   g_runtime = runtime;
+  g_boot_mode = boot_mode;
 
   const int uart_num = CONFIG_ESP_CONSOLE_UART_NUM;
   uart_config_t uart_config = {
