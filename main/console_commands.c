@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "argtable3/argtable3.h"
 #include "boot_mode.h"
@@ -15,6 +16,12 @@
 #include "esp_system.h"
 #include "esp_vfs_dev.h"
 #include "linenoise/linenoise.h"
+#include "diagnostics/diag_fram.h"
+#include "diagnostics/diag_mesh.h"
+#include "diagnostics/diag_rtc.h"
+#include "diagnostics/diag_rtd.h"
+#include "diagnostics/diag_sd.h"
+#include "diagnostics/diag_wifi.h"
 #include "runtime_manager.h"
 
 static const char* kTag = "console";
@@ -148,12 +155,6 @@ static struct
   struct arg_str* action;
   struct arg_end* end;
 } g_run_args;
-
-static struct
-{
-  struct arg_str* action;
-  struct arg_end* end;
-} g_diag_args;
 
 static int
 CommandLog(int argc, char** argv)
@@ -466,87 +467,150 @@ CommandRun(int argc, char** argv)
 static int
 CommandDiagnostics(int argc, char** argv)
 {
-  int errors = arg_parse(argc, argv, (void**)&g_diag_args);
-  if (errors != 0) {
-    arg_print_errors(stderr, g_diag_args.end, argv[0]);
-    return 1;
-  }
-  if (g_runtime == NULL) {
-    return 1;
+  if (argc < 2) {
+    printf("usage: diag help | diag all quick|full [--verbose N]\n");
+    return 2;
   }
 
-  const char* action = g_diag_args.action->sval[0];
-  if (strcmp(action, "check") != 0) {
-    printf("unknown action. usage: diag check\n");
-    return 1;
+  const char* target = argv[1];
+  int verbosity = 0;
+  bool format_if_needed = false;
+  bool mount = false;
+  bool scan = false;
+  bool connect = false;
+  bool set_known = false;
+  int bytes = 0;
+  int samples = 0;
+  bool start_mesh = false;
+  bool stop_mesh = false;
+
+  const app_runtime_t* runtime = RuntimeGetRuntime();
+
+  if (strcmp(target, "help") == 0) {
+    printf("diag help\n");
+    printf("diag all quick|full [--verbose N]\n");
+    printf("diag sd quick|full [--format-if-needed] [--mount] [--verbose N]\n");
+    printf("diag fram quick|full [--bytes N] [--verbose N]\n");
+    printf("diag rtd quick|full [--samples N] [--verbose N]\n");
+    printf("diag rtc quick|full [--set-known] [--verbose N]\n");
+    printf("diag wifi quick|full [--scan] [--connect] [--verbose N]\n");
+    printf("diag mesh quick|full [--start] [--stop] [--verbose N]\n");
+    return 0;
   }
 
-  bool ok = true;
-
-  printf("Diagnostics summary:\n");
-
-  // Sensor
-  float raw_c = 0;
-  float resistance_ohm = 0;
-  esp_err_t read_result =
-    Max31865ReaderRead(g_runtime->sensor, &raw_c, &resistance_ohm);
-  if (read_result == ESP_OK) {
-    const double calibrated =
-      CalibrationModelEvaluate(&g_runtime->settings->calibration, raw_c);
-    printf("  sensor: ok (raw_c=%.3f cal_c=%.3f r_ohm=%.3f)\n",
-           raw_c,
-           calibrated,
-           resistance_ohm);
-  } else {
-    printf("  sensor: read failed (%s)\n", esp_err_to_name(read_result));
-    ok = false;
+  const char* mode = (argc > 2) ? argv[2] : NULL;
+  if (strcmp(target, "check") == 0) {
+    target = "all";
+    mode = "quick";
   }
 
-  // FRAM
-  if (g_runtime->fram_log != NULL) {
-    printf("  fram: buffered=%u / capacity=%u\n",
-           (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
-           (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log));
-  } else {
-    printf("  fram: unavailable\n");
-    ok = false;
+  if (mode == NULL || (strcmp(mode, "quick") != 0 && strcmp(mode, "full") != 0)) {
+    printf("missing or invalid mode (quick|full)\n");
+    return 2;
   }
 
-  // SD card
-  if (g_runtime->sd_logger != NULL && g_runtime->sd_logger->is_mounted) {
-    printf("  sd: mounted (last_seq=%u)\n",
-           (unsigned)SdLoggerLastSequenceOnSd(g_runtime->sd_logger));
-  } else {
-    printf("  sd: not mounted\n");
-    ok = false;
-  }
-
-  // Mesh
-  if (g_runtime->mesh != NULL) {
-    const bool connected = MeshTransportIsConnected(g_runtime->mesh);
-    printf("  mesh: %s\n", connected ? "connected" : "not connected");
-  } else {
-    printf("  mesh: unavailable\n");
-  }
-
-  // Time
-  if (g_runtime->time_sync != NULL) {
-    if (TimeSyncIsSystemTimeValid()) {
-      int64_t epoch = 0;
-      int32_t millis = 0;
-      TimeSyncGetNow(&epoch, &millis);
-      printf("  time: valid (epoch=%" PRId64 ".%03d)\n",
-             epoch,
-             (int)millis);
+  for (int i = 3; i < argc; ++i) {
+    if (strcmp(argv[i], "--verbose") == 0 && (i + 1) < argc) {
+      verbosity = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--format-if-needed") == 0) {
+      format_if_needed = true;
+    } else if (strcmp(argv[i], "--mount") == 0) {
+      mount = true;
+    } else if (strcmp(argv[i], "--scan") == 0) {
+      scan = true;
+    } else if (strcmp(argv[i], "--connect") == 0) {
+      connect = true;
+    } else if (strcmp(argv[i], "--set-known") == 0) {
+      set_known = true;
+    } else if (strcmp(argv[i], "--bytes") == 0 && (i + 1) < argc) {
+      bytes = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--samples") == 0 && (i + 1) < argc) {
+      samples = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--start") == 0) {
+      start_mesh = true;
+    } else if (strcmp(argv[i], "--stop") == 0) {
+      stop_mesh = true;
     } else {
-      printf("  time: invalid (year < 2023)\n");
-      ok = false;
+      printf("unknown option: %s\n", argv[i]);
+      return 2;
     }
-  } else {
-    printf("  time: unavailable\n");
   }
 
-  return ok ? 0 : 1;
+  const bool full = strcmp(mode, "full") == 0;
+  int overall = 0;
+  const diag_verbosity_t diag_verbosity =
+    (verbosity >= 2) ? kDiagVerbosity2
+                     : ((verbosity > 0) ? kDiagVerbosity1 : kDiagVerbosity0);
+
+  if (strcmp(target, "sd") == 0 || strcmp(target, "all") == 0) {
+    if (RuntimeIsRunning()) {
+      printf("Stop run mode first: run stop\n");
+      overall = 1;
+    } else {
+      overall |= RunDiagSd(
+        runtime, full, format_if_needed, mount, diag_verbosity);
+    }
+    if (strcmp(target, "sd") == 0) {
+      return overall;
+    }
+  }
+
+  if (strcmp(target, "fram") == 0 || strcmp(target, "all") == 0) {
+    if (RuntimeIsRunning()) {
+      printf("Stop run mode first: run stop\n");
+      overall = 1;
+    } else {
+      overall |= RunDiagFram(runtime, full, bytes, diag_verbosity);
+    }
+    if (strcmp(target, "fram") == 0) {
+      return overall;
+    }
+  }
+
+  if (strcmp(target, "rtd") == 0 || strcmp(target, "all") == 0) {
+    if (RuntimeIsRunning()) {
+      printf("Stop run mode first: run stop\n");
+      overall = 1;
+    } else {
+      overall |= RunDiagRtd(runtime, full, samples, diag_verbosity);
+    }
+    if (strcmp(target, "rtd") == 0) {
+      return overall;
+    }
+  }
+
+  if (strcmp(target, "rtc") == 0 || strcmp(target, "all") == 0) {
+    if (RuntimeIsRunning()) {
+      printf("Stop run mode first: run stop\n");
+      overall = 1;
+    } else {
+      overall |= RunDiagRtc(runtime, full, set_known, diag_verbosity);
+    }
+    if (strcmp(target, "rtc") == 0) {
+      return overall;
+    }
+  }
+
+  if (strcmp(target, "wifi") == 0 || strcmp(target, "all") == 0) {
+      overall |= RunDiagWifi(runtime, full, scan, connect, diag_verbosity);
+    if (strcmp(target, "wifi") == 0) {
+      return overall;
+    }
+  }
+
+  if (strcmp(target, "mesh") == 0 || strcmp(target, "all") == 0) {
+      overall |= RunDiagMesh(runtime, full, start_mesh, stop_mesh, diag_verbosity);
+    if (strcmp(target, "mesh") == 0) {
+      return overall;
+    }
+  }
+
+  if (strcmp(target, "all") == 0) {
+    return overall;
+  }
+
+  printf("unknown diag target. try 'diag help'\n");
+  return 2;
 }
 
 static int
@@ -647,18 +711,14 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&run_cmd));
 
-  if (g_boot_mode == APP_BOOT_MODE_DIAGNOSTICS) {
-    g_diag_args.action = arg_str1(NULL, NULL, "<action>", "check");
-    g_diag_args.end = arg_end(1);
-    const esp_console_cmd_t diag_cmd = {
-      .command = "diag",
-      .help = "Diagnostics: diag check (sensor/fram/sd/mesh/time)",
-      .hint = NULL,
-      .func = &CommandDiagnostics,
-      .argtable = &g_diag_args,
-    };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&diag_cmd));
-  }
+  const esp_console_cmd_t diag_cmd = {
+    .command = "diag",
+    .help = "Diagnostics entry point",
+    .hint = NULL,
+    .func = &CommandDiagnostics,
+    .argtable = NULL,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&diag_cmd));
 
   const esp_console_cmd_t reboot_cmd = {
     .command = "reboot",
