@@ -622,6 +622,9 @@ ConsoleCommandsStart(app_runtime_t* runtime)
   console_config.max_cmdline_args = 8;
   ESP_ERROR_CHECK(esp_console_init(&console_config));
 
+  // Register built-in help so users can discover available commands.
+  ESP_ERROR_CHECK(esp_console_register_help_command());
+
   linenoiseSetDumbMode(1);
   linenoiseHistorySetMaxLen(50);
 
