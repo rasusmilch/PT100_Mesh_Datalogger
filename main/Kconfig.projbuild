@@ -164,4 +164,12 @@ config APP_DS3231_I2C_ADDR
   help
     104 decimal = 0x68.
 
+config APP_DIAGNOSTICS_OVERRIDE_GPIO
+  int "Diagnostics override GPIO (active high, -1 to disable)"
+  range -1 48
+  default -1
+  help
+    If set to a valid GPIO, holding the pin high at reset forces diagnostics
+    boot mode regardless of the stored NVS boot mode.
+
 endmenu
