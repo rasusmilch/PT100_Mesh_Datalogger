@@ -8,11 +8,14 @@
 #include <string.h>
 
 #include "argtable3/argtable3.h"
+#include "boot_mode.h"
 #include "driver/uart.h"
 #include "esp_console.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_vfs_dev.h"
 #include "linenoise/linenoise.h"
+#include "runtime_manager.h"
 
 static const char* kTag = "console";
 
@@ -20,6 +23,12 @@ static app_runtime_t* g_runtime = NULL;
 
 static calibration_point_t g_pending_points[CALIBRATION_MAX_POINTS];
 static size_t g_pending_points_count = 0;
+
+static const char*
+BootModeToString(app_boot_mode_t mode)
+{
+  return (mode == APP_BOOT_MODE_RUN) ? "run" : "diagnostics";
+}
 
 static int
 CommandStatus(int argc, char** argv)
@@ -33,6 +42,7 @@ CommandStatus(int argc, char** argv)
   const app_settings_t* settings = g_runtime->settings;
 
   printf("node_id: %s\n", g_runtime->node_id_string);
+  printf("runtime_running: %s\n", RuntimeIsRunning() ? "yes" : "no");
   printf("time_valid: %s\n", TimeSyncIsSystemTimeValid() ? "yes" : "no");
   printf("log_period_ms: %u\n", (unsigned)settings->log_period_ms);
   printf("sd_flush_period_ms: %u\n", (unsigned)settings->sd_flush_period_ms);
@@ -124,6 +134,19 @@ static struct
   struct arg_int* batch_bytes;
   struct arg_end* end;
 } g_log_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_str* mode_value;
+  struct arg_end* end;
+} g_mode_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_end* end;
+} g_run_args;
 
 static int
 CommandLog(int argc, char** argv)
@@ -342,6 +365,107 @@ CommandCal(int argc, char** argv)
   return 1;
 }
 
+static int
+CommandMode(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_mode_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_mode_args.end, argv[0]);
+    return 1;
+  }
+
+  const char* action = g_mode_args.action->sval[0];
+  if (strcmp(action, "show") == 0) {
+    const app_boot_mode_t stored = BootModeReadFromNvsOrDefault();
+    const app_boot_mode_t running =
+      RuntimeIsRunning() ? APP_BOOT_MODE_RUN : APP_BOOT_MODE_DIAGNOSTICS;
+    printf("nvs_boot_mode: %s\n", BootModeToString(stored));
+    printf("current_mode: %s\n", BootModeToString(running));
+    return 0;
+  }
+
+  app_boot_mode_t target = APP_BOOT_MODE_DIAGNOSTICS;
+  if (strcmp(action, "set") == 0 && g_mode_args.mode_value->count == 1) {
+    const char* mode = g_mode_args.mode_value->sval[0];
+    if (strcmp(mode, "diag") == 0) {
+      target = APP_BOOT_MODE_DIAGNOSTICS;
+    } else if (strcmp(mode, "run") == 0) {
+      target = APP_BOOT_MODE_RUN;
+    } else {
+      printf("usage: mode set diag|run\n");
+      return 1;
+    }
+    esp_err_t result = BootModeWriteToNvs(target);
+    if (result != ESP_OK) {
+      printf("write failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("set; reboot required\n");
+    return 0;
+  }
+
+  printf("unknown action. usage: mode show | mode set diag|run\n");
+  return 1;
+}
+
+static int
+CommandRun(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_run_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_run_args.end, argv[0]);
+    return 1;
+  }
+
+  const char* action = g_run_args.action->sval[0];
+
+  if (strcmp(action, "status") == 0) {
+    printf("running: %s\n", RuntimeIsRunning() ? "yes" : "no");
+    return 0;
+  }
+
+  if (strcmp(action, "start") == 0) {
+    if (RuntimeIsRunning()) {
+      printf("already running\n");
+      return 0;
+    }
+    esp_err_t result = RuntimeStart();
+    if (result != ESP_OK) {
+      printf("start failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("runtime started\n");
+    return 0;
+  }
+
+  if (strcmp(action, "stop") == 0) {
+    if (!RuntimeIsRunning()) {
+      printf("already stopped\n");
+      return 0;
+    }
+    esp_err_t result = RuntimeStop();
+    if (result != ESP_OK) {
+      printf("stop failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("runtime stopped\n");
+    return 0;
+  }
+
+  printf("unknown action. usage: run status | run start | run stop\n");
+  return 1;
+}
+
+static int
+CommandReboot(int argc, char** argv)
+{
+  (void)argc;
+  (void)argv;
+  printf("rebooting...\n");
+  esp_restart();
+  return 0;
+}
+
 static void
 RegisterCommands(void)
 {
@@ -406,6 +530,37 @@ RegisterCommands(void)
     .argtable = &g_cal_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&cal_cmd));
+
+  g_mode_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_mode_args.mode_value = arg_str0(NULL, NULL, "diag|run", "Target mode");
+  g_mode_args.end = arg_end(2);
+  const esp_console_cmd_t mode_cmd = {
+    .command = "mode",
+    .help = "mode show | mode set diag|run",
+    .hint = NULL,
+    .func = &CommandMode,
+    .argtable = &g_mode_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&mode_cmd));
+
+  g_run_args.action = arg_str1(NULL, NULL, "<action>", "status|start|stop");
+  g_run_args.end = arg_end(1);
+  const esp_console_cmd_t run_cmd = {
+    .command = "run",
+    .help = "run status | run start | run stop",
+    .hint = NULL,
+    .func = &CommandRun,
+    .argtable = &g_run_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&run_cmd));
+
+  const esp_console_cmd_t reboot_cmd = {
+    .command = "reboot",
+    .help = "Soft reboot the device",
+    .hint = NULL,
+    .func = &CommandReboot,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&reboot_cmd));
 }
 
 static void

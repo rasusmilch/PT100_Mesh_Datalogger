@@ -2,6 +2,7 @@ idf_component_register(
   SRCS
     "app_main.c"
     "app_settings.c"
+    "boot_mode.c"
     "calibration.c"
     "console_commands.c"
     "crc16.c"
@@ -9,6 +10,7 @@ idf_component_register(
     "fram_spi.c"
     "max31865_reader.c"
     "mesh_transport.c"
+    "runtime_manager.c"
     "sd_csv_verify.c"
     "sd_logger.c"
     "time_sync.c"
