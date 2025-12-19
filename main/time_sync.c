@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "esp_log.h"
+#include "i2c_bus.h"
 
 #if __has_include("esp_netif_sntp.h")
 #include "esp_netif_sntp.h"
@@ -39,81 +40,25 @@ YearLooksValid(int year_since_1900)
   return year >= 2023 && year <= 2100;
 }
 
-static esp_err_t
-I2cReadRegisters(i2c_port_t port,
-                 uint8_t device_addr,
-                 uint8_t reg,
-                 uint8_t* data_out,
-                 size_t length)
-{
-  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-  i2c_master_start(cmd);
-  i2c_master_write_byte(cmd, (device_addr << 1) | I2C_MASTER_WRITE, true);
-  i2c_master_write_byte(cmd, reg, true);
-  i2c_master_start(cmd);
-  i2c_master_write_byte(cmd, (device_addr << 1) | I2C_MASTER_READ, true);
-  if (length > 1) {
-    i2c_master_read(cmd, data_out, length - 1, I2C_MASTER_ACK);
-  }
-  i2c_master_read_byte(cmd, &data_out[length - 1], I2C_MASTER_NACK);
-  i2c_master_stop(cmd);
-  esp_err_t result = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(250));
-  i2c_cmd_link_delete(cmd);
-  return result;
-}
-
-static esp_err_t
-I2cWriteRegisters(i2c_port_t port,
-                  uint8_t device_addr,
-                  uint8_t reg,
-                  const uint8_t* data,
-                  size_t length)
-{
-  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-  i2c_master_start(cmd);
-  i2c_master_write_byte(cmd, (device_addr << 1) | I2C_MASTER_WRITE, true);
-  i2c_master_write_byte(cmd, reg, true);
-  i2c_master_write(cmd, (uint8_t*)data, length, true);
-  i2c_master_stop(cmd);
-  esp_err_t result = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(250));
-  i2c_cmd_link_delete(cmd);
-  return result;
-}
-
 esp_err_t
 TimeSyncInit(time_sync_t* time_sync,
-             i2c_port_t port,
-             int sda_gpio,
-             int scl_gpio,
+             i2c_bus_t* i2c_bus,
              uint8_t ds3231_addr)
 {
-  if (time_sync == NULL) {
+  if (time_sync == NULL || i2c_bus == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
   memset(time_sync, 0, sizeof(*time_sync));
-  time_sync->port = port;
+  time_sync->bus = i2c_bus;
   time_sync->ds3231_addr = ds3231_addr;
 
-  // Configure I2C (legacy driver for compatibility and simplicity).
-  const i2c_config_t config = {
-    .mode = I2C_MODE_MASTER,
-    .sda_io_num = sda_gpio,
-    .scl_io_num = scl_gpio,
-    .sda_pullup_en = GPIO_PULLUP_ENABLE,
-    .scl_pullup_en = GPIO_PULLUP_ENABLE,
-    .master.clk_speed = 400000,
-  };
-
-  esp_err_t result = i2c_param_config(port, &config);
+  esp_err_t result = I2cBusAddDevice(
+    i2c_bus, ds3231_addr, i2c_bus->frequency_hz, &time_sync->ds3231_device);
   if (result != ESP_OK) {
     return result;
   }
-  result = i2c_driver_install(port, I2C_MODE_MASTER, 0, 0, 0);
-  if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
-    return result;
-  }
 
-  time_sync->is_i2c_initialized = true;
+  time_sync->is_ds3231_ready = true;
   return ESP_OK;
 }
 
@@ -121,8 +66,8 @@ static esp_err_t
 Ds3231ReadTime(const time_sync_t* time_sync, struct tm* time_out)
 {
   uint8_t regs[7] = { 0 };
-  esp_err_t result = I2cReadRegisters(
-    time_sync->port, time_sync->ds3231_addr, 0x00, regs, sizeof(regs));
+  esp_err_t result = I2cBusReadRegister(
+    time_sync->ds3231_device, 0x00, regs, sizeof(regs));
   if (result != ESP_OK) {
     return result;
   }
@@ -152,14 +97,14 @@ Ds3231WriteTime(const time_sync_t* time_sync, const struct tm* time_value)
   regs[4] = BinaryToBcd((uint8_t)time_value->tm_mday);
   regs[5] = BinaryToBcd((uint8_t)(time_value->tm_mon + 1));
   regs[6] = BinaryToBcd((uint8_t)(time_value->tm_year - 100)); // store 00..99
-  return I2cWriteRegisters(
-    time_sync->port, time_sync->ds3231_addr, 0x00, regs, sizeof(regs));
+  return I2cBusWriteRegister(
+    time_sync->ds3231_device, 0x00, regs, sizeof(regs));
 }
 
 esp_err_t
 TimeSyncSetSystemFromRtc(const time_sync_t* time_sync)
 {
-  if (time_sync == NULL || !time_sync->is_i2c_initialized) {
+  if (time_sync == NULL || !time_sync->is_ds3231_ready) {
     return ESP_ERR_INVALID_STATE;
   }
   struct tm rtc_time;
@@ -197,7 +142,7 @@ TimeSyncSetSystemFromRtc(const time_sync_t* time_sync)
 esp_err_t
 TimeSyncSetRtcFromSystem(const time_sync_t* time_sync)
 {
-  if (time_sync == NULL || !time_sync->is_i2c_initialized) {
+  if (time_sync == NULL || !time_sync->is_ds3231_ready) {
     return ESP_ERR_INVALID_STATE;
   }
   time_t now_seconds = time(NULL);
@@ -320,4 +265,34 @@ TimeSyncSetSystemEpoch(int64_t epoch_seconds,
     (void)TimeSyncSetRtcFromSystem(time_sync);
   }
   return ESP_OK;
+}
+
+esp_err_t
+TimeSyncReadRtcRegisters(const time_sync_t* time_sync,
+                         uint8_t start_reg,
+                         uint8_t* data_out,
+                         size_t length)
+{
+  if (time_sync == NULL || !time_sync->is_ds3231_ready) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  return I2cBusReadRegister(time_sync->ds3231_device, start_reg, data_out, length);
+}
+
+esp_err_t
+TimeSyncReadRtcTime(const time_sync_t* time_sync, struct tm* time_out)
+{
+  if (time_sync == NULL || !time_sync->is_ds3231_ready) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  return Ds3231ReadTime(time_sync, time_out);
+}
+
+esp_err_t
+TimeSyncWriteRtcTime(const time_sync_t* time_sync, const struct tm* time_value)
+{
+  if (time_sync == NULL || !time_sync->is_ds3231_ready) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  return Ds3231WriteTime(time_sync, time_value);
 }

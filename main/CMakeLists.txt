@@ -15,6 +15,7 @@ idf_component_register(
     "crc16.c"
     "fram_log.c"
     "fram_spi.c"
+    "i2c_bus.c"
     "max31865_reader.c"
     "mesh_transport.c"
     "runtime_manager.c"

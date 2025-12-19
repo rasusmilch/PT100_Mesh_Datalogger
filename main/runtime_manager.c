@@ -14,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "i2c_bus.h"
 #include "max31865_reader.h"
 #include "mesh_transport.h"
 #include "sd_logger.h"
@@ -30,6 +31,7 @@ typedef struct
   max31865_reader_t sensor;
   mesh_transport_t mesh;
   time_sync_t time_sync;
+  i2c_bus_t i2c_bus;
 
   QueueHandle_t log_queue;
   uint8_t* batch_buffer;
@@ -582,6 +584,7 @@ InitializeRuntimeStruct(void)
   g_runtime.sensor = &g_state.sensor;
   g_runtime.mesh = &g_state.mesh;
   g_runtime.time_sync = &g_state.time_sync;
+  g_runtime.i2c_bus = &g_state.i2c_bus;
   g_runtime.node_id_string = g_state.node_id_string;
   g_runtime.flush_callback = &RuntimeFlushToSd;
   g_runtime.flush_context = &g_state;
@@ -620,6 +623,19 @@ RuntimeManagerInit(void)
              esp_err_to_name(settings_result));
   }
 
+  const uint32_t i2c_frequency_hz = 400000;
+  esp_err_t i2c_result = I2cBusInit(&g_state.i2c_bus,
+                                    I2C_NUM_0,
+                                    CONFIG_APP_I2C_SDA_GPIO,
+                                    CONFIG_APP_I2C_SCL_GPIO,
+                                    i2c_frequency_hz);
+  if (i2c_result != ESP_OK) {
+    if (first_error == ESP_OK) {
+      first_error = i2c_result;
+    }
+    ESP_LOGE(kTag, "I2cBusInit failed: %s", esp_err_to_name(i2c_result));
+  }
+
   sd_logger_config_t sd_config = {
     .batch_target_bytes = g_state.settings.sd_batch_bytes_target,
     .tail_scan_bytes = CONFIG_APP_SD_TAIL_SCAN_BYTES,
@@ -635,9 +651,7 @@ RuntimeManagerInit(void)
   }
 
   esp_err_t time_result = TimeSyncInit(&g_state.time_sync,
-                                       I2C_NUM_0,
-                                       CONFIG_APP_I2C_SDA_GPIO,
-                                       CONFIG_APP_I2C_SCL_GPIO,
+                                       &g_state.i2c_bus,
                                        (uint8_t)CONFIG_APP_DS3231_I2C_ADDR);
   if (time_result != ESP_OK) {
     if (first_error == ESP_OK) {

@@ -11,9 +11,9 @@ extern "C" {
 #endif
 
 int RunDiagRtc(const app_runtime_t* runtime,
-              bool full,
-              bool set_known,
-              diag_verbosity_t verbosity);
+               bool full,
+               bool set_known,
+               diag_verbosity_t verbosity);
 
 #ifdef __cplusplus
 }
