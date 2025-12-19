@@ -873,6 +873,6 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
 
   RegisterCommands();
 
-  xTaskCreate(ConsoleTask, "console", 4096, NULL, 2, NULL);
+  xTaskCreate(ConsoleTask, "console", 12288, NULL, 2, NULL);
   return ESP_OK;
 }
