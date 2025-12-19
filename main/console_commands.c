@@ -475,7 +475,8 @@ PrintDiagUsage(void)
   printf("diag fram quick|full [--bytes N] [--verbose N]\n");
   printf("diag rtd quick|full [--samples N] [--delay_ms M] [--verbose N]\n");
   printf("diag rtc quick|full [--set-known] [--verbose N]\n");
-  printf("diag wifi quick|full [--scan] [--connect] [--verbose N]\n");
+  printf("diag wifi quick|full [--scan 0|1] [--connect 0|1] [--dns 0|1] "
+         "[--keep-connected 0|1] [--verbose N]\n");
   printf("diag mesh quick|full [--start] [--stop] [--verbose N]\n");
 }
 
@@ -495,6 +496,23 @@ ParseVerbose(const char* value, int* verbosity_out)
 }
 
 static int
+ParseOptionalBool(int argc, char** argv, int* index, bool* target)
+{
+  if (argv == NULL || index == NULL || target == NULL) {
+    return 0;
+  }
+  const int i = *index;
+  if ((i + 1) < argc && (strcmp(argv[i + 1], "0") == 0 ||
+                         strcmp(argv[i + 1], "1") == 0)) {
+    *target = (argv[i + 1][0] == '1');
+    *index = i + 1;
+  } else {
+    *target = true;
+  }
+  return 1;
+}
+
+static int
 CommandDiagnostics(int argc, char** argv)
 {
   if (argc < 2) {
@@ -508,6 +526,8 @@ CommandDiagnostics(int argc, char** argv)
   bool mount = false;
   bool scan = false;
   bool connect = false;
+  bool dns_lookup = false;
+  bool keep_connected = false;
   bool set_known = false;
   int bytes = 0;
   int samples = 0;
@@ -543,6 +563,16 @@ CommandDiagnostics(int argc, char** argv)
     return 2;
   }
 
+  const bool full = strcmp(mode, "full") == 0;
+
+  if (strcmp(target, "wifi") == 0 || strcmp(target, "all") == 0) {
+    scan = true;
+    if (full) {
+      connect = true;
+      dns_lookup = true;
+    }
+  }
+
   for (int i = 3; i < argc; ++i) {
     if (strcmp(argv[i], "--verbose") == 0 && (i + 1) < argc) {
       if (!ParseVerbose(argv[i + 1], &verbosity)) {
@@ -556,9 +586,13 @@ CommandDiagnostics(int argc, char** argv)
     } else if (strcmp(argv[i], "--mount") == 0) {
       mount = true;
     } else if (strcmp(argv[i], "--scan") == 0) {
-      scan = true;
+      ParseOptionalBool(argc, argv, &i, &scan);
     } else if (strcmp(argv[i], "--connect") == 0) {
-      connect = true;
+      ParseOptionalBool(argc, argv, &i, &connect);
+    } else if (strcmp(argv[i], "--dns") == 0) {
+      ParseOptionalBool(argc, argv, &i, &dns_lookup);
+    } else if (strcmp(argv[i], "--keep-connected") == 0) {
+      ParseOptionalBool(argc, argv, &i, &keep_connected);
     } else if (strcmp(argv[i], "--set-known") == 0) {
       set_known = true;
     } else if (strcmp(argv[i], "--bytes") == 0 && (i + 1) < argc) {
@@ -578,7 +612,6 @@ CommandDiagnostics(int argc, char** argv)
     }
   }
 
-  const bool full = strcmp(mode, "full") == 0;
   int overall = 0;
   const diag_verbosity_t diag_verbosity =
     (verbosity >= 2) ? kDiagVerbosity2
@@ -634,7 +667,8 @@ CommandDiagnostics(int argc, char** argv)
   }
 
   if (strcmp(target, "wifi") == 0 || strcmp(target, "all") == 0) {
-    overall |= RunDiagWifi(runtime, full, scan, connect, diag_verbosity);
+    overall |= RunDiagWifi(
+      runtime, full, scan, connect, dns_lookup, keep_connected, diag_verbosity);
     if (strcmp(target, "wifi") == 0) {
       return overall;
     }
