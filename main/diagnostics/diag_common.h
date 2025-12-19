@@ -50,6 +50,11 @@ void DiagPrintErr(esp_err_t err);
 
 void DiagPrintErrno(const char* prefix);
 
+// Optional heap integrity check used during diagnostics when verbosity is
+// high. The check is intentionally gated to avoid expensive scans during
+// normal runs.
+void DiagHeapCheck(const diag_ctx_t* ctx, const char* label);
+
 #ifdef __cplusplus
 }
 #endif

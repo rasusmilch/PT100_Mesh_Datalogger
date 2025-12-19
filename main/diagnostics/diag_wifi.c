@@ -14,8 +14,8 @@
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "nvs.h"
-#include "net_stack.h"
 #include "sdkconfig.h"
+#include "wifi_service.h"
 #include "wifi_manager.h"
 
 typedef enum
@@ -291,7 +291,6 @@ RunDiagWifi(const app_runtime_t* runtime,
             bool keep_connected,
             diag_verbosity_t verbosity)
 {
-  (void)runtime;
   (void)full;
 
   diag_ctx_t ctx;
@@ -300,19 +299,30 @@ RunDiagWifi(const app_runtime_t* runtime,
   wifi_credentials_t creds;
   LoadCredentials(&creds);
   const bool has_ssid = creds.ssid[0] != '\0';
+  const wifi_service_mode_t active_mode = WifiServiceActiveMode();
 
   const int total_steps = 4 + (scan ? 1 : 0) + (connect ? 1 : 0) +
                           (dns_lookup ? 1 : 0);
   int step = 1;
 
   const bool runtime_running = RuntimeIsRunning();
+  const bool mesh_active = (runtime != NULL && runtime->mesh != NULL &&
+                            runtime->mesh->is_started);
   DiagReportStep(&ctx,
                  step++,
                  total_steps,
                  "runtime idle",
-                 runtime_running ? ESP_ERR_INVALID_STATE : ESP_OK,
-                 runtime_running ? "stop runtime first: `run stop`" : "idle");
-  if (runtime_running) {
+                 (runtime_running || mesh_active ||
+                  active_mode == WIFI_SERVICE_MODE_MESH)
+                   ? ESP_ERR_INVALID_STATE
+                   : ESP_OK,
+                 runtime_running
+                   ? "stop runtime first: `run stop`"
+                   : (mesh_active || active_mode == WIFI_SERVICE_MODE_MESH)
+                       ? "mesh active; stop runtime to use Wi-Fi diag"
+                       : "idle");
+  if (runtime_running || mesh_active ||
+      active_mode == WIFI_SERVICE_MODE_MESH) {
     DiagPrintSummary(&ctx, total_steps);
     return 1;
   }
@@ -320,8 +330,10 @@ RunDiagWifi(const app_runtime_t* runtime,
   log_level_guard_t log_guard = RaiseVerboseLogLevels(verbosity);
 
   heap_snapshot_t net_before = CaptureHeapSnapshot();
-  esp_err_t net_result = NetStackInitOnce();
+  DiagHeapCheck(&ctx, "pre_net");
+  esp_err_t net_result = WifiServiceInitOnce();
   heap_snapshot_t net_after = CaptureHeapSnapshot();
+  DiagHeapCheck(&ctx, "post_net");
   DiagReportStep(&ctx,
                  step++,
                  total_steps,
@@ -343,11 +355,13 @@ RunDiagWifi(const app_runtime_t* runtime,
   memset(&before_status, 0, sizeof(before_status));
   WifiManagerGetStatus(&before_status);
   heap_snapshot_t wifi_before = CaptureHeapSnapshot();
-  esp_err_t init_result = WifiManagerInit();
+  DiagHeapCheck(&ctx, "pre_wifi_start");
+  esp_err_t init_result = WifiServiceStart(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
   wifi_manager_status_t after_status;
   memset(&after_status, 0, sizeof(after_status));
   WifiManagerGetStatus(&after_status);
   heap_snapshot_t wifi_after = CaptureHeapSnapshot();
+  DiagHeapCheck(&ctx, "post_wifi_start");
   const bool sta_created =
     (!before_status.sta_netif_present && after_status.sta_netif_present);
 
@@ -373,6 +387,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   esp_err_t scan_result = ESP_ERR_INVALID_STATE;
   if (scan) {
     heap_snapshot_t scan_before = CaptureHeapSnapshot();
+    DiagHeapCheck(&ctx, "pre_scan");
     if (init_result == ESP_OK) {
       scan_result = WifiManagerScan(ap_records, 20, &ap_count);
     }
@@ -389,6 +404,7 @@ RunDiagWifi(const app_runtime_t* runtime,
     }
 
     heap_snapshot_t scan_after = CaptureHeapSnapshot();
+    DiagHeapCheck(&ctx, "post_scan");
     DiagReportStep(&ctx,
                    step++,
                    total_steps,
@@ -418,6 +434,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   if (connect) {
     heap_snapshot_t connect_before = CaptureHeapSnapshot();
     heap_snapshot_t connect_after = connect_before;
+    DiagHeapCheck(&ctx, "pre_connect");
     if (!has_ssid) {
       connect_result = ESP_OK;
       DiagReportStep(&ctx,
@@ -438,6 +455,7 @@ RunDiagWifi(const app_runtime_t* runtime,
         WifiManagerConnectSta(creds.ssid, creds.password, 30000);
       connected = (connect_result == ESP_OK);
       connect_after = CaptureHeapSnapshot();
+      DiagHeapCheck(&ctx, "post_connect");
 
       if (connected) {
         esp_netif_ip_info_t ip_info;
@@ -491,6 +509,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   if (dns_lookup) {
     heap_snapshot_t dns_before = CaptureHeapSnapshot();
     heap_snapshot_t dns_after = dns_before;
+    DiagHeapCheck(&ctx, "pre_dns");
     if (!connect) {
       DiagReportStep(&ctx,
                      step++,
@@ -513,6 +532,7 @@ RunDiagWifi(const app_runtime_t* runtime,
       struct addrinfo* results = NULL;
       const int gai_err = getaddrinfo(host, NULL, &hints, &results);
       dns_after = CaptureHeapSnapshot();
+      DiagHeapCheck(&ctx, "post_dns");
       if (gai_err != 0 || results == NULL) {
         DiagReportStep(&ctx,
                        step++,
@@ -560,12 +580,13 @@ RunDiagWifi(const app_runtime_t* runtime,
   }
 
   heap_snapshot_t teardown_before = CaptureHeapSnapshot();
+  DiagHeapCheck(&ctx, "pre_teardown");
   esp_err_t teardown_result = ESP_OK;
   if (!keep_connected) {
-    (void)WifiManagerDisconnectSta();
-    teardown_result = WifiManagerDeinit();
+    teardown_result = WifiServiceStop();
   }
   heap_snapshot_t teardown_after = CaptureHeapSnapshot();
+  DiagHeapCheck(&ctx, "post_teardown");
   DiagReportStep(&ctx,
                  step++,
                  total_steps,

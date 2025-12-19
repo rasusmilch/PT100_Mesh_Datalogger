@@ -20,6 +20,7 @@
 #include "mesh_transport.h"
 #include "sd_logger.h"
 #include "time_sync.h"
+#include "wifi_service.h"
 
 static const char* kTag = "runtime";
 
@@ -810,6 +811,12 @@ RuntimeStart(void)
   const char* router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
 
   if (!g_state.mesh_started) {
+    esp_err_t wifi_result = WifiServiceStart(WIFI_SERVICE_MODE_MESH);
+    if (wifi_result != ESP_OK) {
+      ESP_LOGE(kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
+      return wifi_result;
+    }
+
     esp_err_t mesh_result = MeshTransportStart(&g_state.mesh,
                                                is_root,
                                                router_ssid,
@@ -822,6 +829,7 @@ RuntimeStart(void)
       g_state.mesh_started = true;
     } else {
       ESP_LOGE(kTag, "Mesh start failed: %s", esp_err_to_name(mesh_result));
+      (void)WifiServiceStop();
       return mesh_result;
     }
   }
@@ -886,6 +894,12 @@ RuntimeStop(void)
           g_state.time_sync_task != NULL) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  if (g_state.mesh_started) {
+    (void)MeshTransportStop(&g_state.mesh);
+    g_state.mesh_started = false;
+    (void)WifiServiceStop();
   }
 
   SdLoggerClose(&g_state.sd_logger);
