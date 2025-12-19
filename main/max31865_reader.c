@@ -16,7 +16,7 @@ static const char* kTag = "max31865";
 // MAX31865 register map.
 static const uint8_t kRegConfig = 0x00;
 static const uint8_t kRegRtdMsb = 0x01;
-static const uint8_t kRegRtdLsb = 0x02;
+// static const uint8_t kRegRtdLsb = 0x02;
 static const uint8_t kRegHighFaultMsb = 0x03;
 static const uint8_t kRegHighFaultLsb = 0x04;
 static const uint8_t kRegLowFaultMsb = 0x05;
@@ -138,9 +138,8 @@ Max31865AdcCodeToResistance(uint16_t adc_code, double rref_ohm)
 static esp_err_t
 ClearFaults(max31865_reader_t* reader, uint8_t base_config)
 {
-  return Max31865WriteReg(reader,
-                          kRegConfig,
-                          (uint8_t)(base_config | kCfgFaultStatusClear));
+  return Max31865WriteReg(
+    reader, kRegConfig, (uint8_t)(base_config | kCfgFaultStatusClear));
 }
 
 static esp_err_t
@@ -194,8 +193,7 @@ ConvertTablePt100(double resistance_ohm, double r0_ohm)
   const double lower_temp = PT100_TABLE_MIN_C + (double)low;
 
   const double span = upper_val - lower_val;
-  const double fraction =
-    (span > 0.0) ? ((ohm_x100 - lower_val) / span) : 0.0;
+  const double fraction = (span > 0.0) ? ((ohm_x100 - lower_val) / span) : 0.0;
 
   return lower_temp + fraction;
 }
@@ -207,11 +205,9 @@ ConvertCvdIterative(double resistance_ohm, double r0_ohm)
     return NAN;
   }
   const double ratio = resistance_ohm / r0_ohm;
-  const double discriminant =
-    (kCvdA * kCvdA) - (4.0 * kCvdB * (1.0 - ratio));
+  const double discriminant = (kCvdA * kCvdA) - (4.0 * kCvdB * (1.0 - ratio));
   if (discriminant >= 0.0) {
-    const double temp =
-      (-kCvdA + sqrt(discriminant)) / (2.0 * kCvdB);
+    const double temp = (-kCvdA + sqrt(discriminant)) / (2.0 * kCvdB);
     if (temp >= 0.0) {
       return temp;
     }
@@ -224,8 +220,7 @@ ConvertCvdIterative(double resistance_ohm, double r0_ohm)
     const double t3 = t2 * t;
     f = 1.0 + kCvdA * t + kCvdB * t2 + kCvdC * (t - 100.0) * t3 - ratio;
     const double df =
-      kCvdA + 2.0 * kCvdB * t + 3.0 * kCvdC * t2 * (t - 100.0) +
-      kCvdC * t3;
+      kCvdA + 2.0 * kCvdB * t + 3.0 * kCvdC * t2 * (t - 100.0) + kCvdC * t3;
     if (fabs(df) < 1e-12) {
       break;
     }
@@ -269,12 +264,9 @@ Max31865FormatFault(uint8_t fault_status, char* out, size_t out_len)
     uint8_t bit;
     const char* label;
   } fault_map[] = {
-    { kFaultHighThreshold, "rtd_high" },
-    { kFaultLowThreshold, "rtd_low" },
-    { kFaultRefInLow, "refin_low" },
-    { kFaultRefInHigh, "refin_high" },
-    { kFaultRtdInLow, "rtdin_low" },
-    { kFaultOverUnder, "ov_uv" },
+    { kFaultHighThreshold, "rtd_high" }, { kFaultLowThreshold, "rtd_low" },
+    { kFaultRefInLow, "refin_low" },     { kFaultRefInHigh, "refin_high" },
+    { kFaultRtdInLow, "rtdin_low" },     { kFaultOverUnder, "ov_uv" },
     { kFaultRtdFlag, "fault_bit" },
   };
 
@@ -371,14 +363,14 @@ Max31865ReaderInit(max31865_reader_t* reader,
   }
 
   reader->is_initialized = true;
-  ESP_LOGI(kTag,
-           "Initialized MAX31865 (Rref=%.2fΩ R0=%.2fΩ wires=%u filter=%uHz mode=%s)",
-           reader->rref_ohm,
-           reader->rtd_nominal_ohm,
-           (unsigned)reader->wires,
-           (unsigned)reader->filter_hz,
-           (reader->conversion == kMax31865ConversionCvdIterative) ? "CVD"
-                                                                   : "TABLE");
+  ESP_LOGI(
+    kTag,
+    "Initialized MAX31865 (Rref=%.2fΩ R0=%.2fΩ wires=%u filter=%uHz mode=%s)",
+    reader->rref_ohm,
+    reader->rtd_nominal_ohm,
+    (unsigned)reader->wires,
+    (unsigned)reader->filter_hz,
+    (reader->conversion == kMax31865ConversionCvdIterative) ? "CVD" : "TABLE");
   return ESP_OK;
 }
 
@@ -422,9 +414,8 @@ Max31865ReadOnce(max31865_reader_t* reader, max31865_sample_t* sample_out)
     vTaskDelay(pdMS_TO_TICKS(reader->bias_settle_ms));
   }
 
-  result = Max31865WriteReg(reader,
-                            kRegConfig,
-                            (uint8_t)(base_config | kCfgVbias | kCfgOneShot));
+  result = Max31865WriteReg(
+    reader, kRegConfig, (uint8_t)(base_config | kCfgVbias | kCfgOneShot));
   if (result != ESP_OK) {
     (void)Max31865WriteReg(reader, kRegConfig, base_config);
     return result;
@@ -462,7 +453,8 @@ Max31865ReadOnce(max31865_reader_t* reader, max31865_sample_t* sample_out)
     combined_faults |= kFaultRtdFlag;
   }
 
-  const double resistance = Max31865AdcCodeToResistance(rtd_code, reader->rref_ohm);
+  const double resistance =
+    Max31865AdcCodeToResistance(rtd_code, reader->rref_ohm);
   const double temp_c = ResistanceToTemperature(reader, resistance);
 
   FillSample(sample_out, rtd_code, resistance, temp_c, combined_faults);
@@ -511,9 +503,10 @@ Max31865ReadAveraged(max31865_reader_t* reader,
       const double delta_temp = sample.temperature_c - mean_temp;
       mean_temp += delta_temp / (double)stats.valid_samples;
       m2 += delta_temp * (sample.temperature_c - mean_temp);
-      mean_res += (sample.resistance_ohm - mean_res) / (double)stats.valid_samples;
-      mean_code += ((double)sample.adc_code - mean_code) /
-                   (double)stats.valid_samples;
+      mean_res +=
+        (sample.resistance_ohm - mean_res) / (double)stats.valid_samples;
+      mean_code +=
+        ((double)sample.adc_code - mean_code) / (double)stats.valid_samples;
       if (sample.temperature_c < stats.min_temp_c) {
         stats.min_temp_c = sample.temperature_c;
       }
@@ -542,9 +535,8 @@ Max31865ReadAveraged(max31865_reader_t* reader,
   averaged_out->fault_status = 0;
   averaged_out->fault_present = false;
 
-  stats.stddev_temp_c =
-    sqrt((stats.valid_samples > 1) ? (m2 / (double)(stats.valid_samples - 1))
-                                   : 0.0);
+  stats.stddev_temp_c = sqrt(
+    (stats.valid_samples > 1) ? (m2 / (double)(stats.valid_samples - 1)) : 0.0);
 
   if (stats_out != NULL) {
     *stats_out = stats;
@@ -586,8 +578,8 @@ Max31865ReadEmaUpdate(max31865_reader_t* reader,
   } else {
     reader->ema_temp_c =
       alpha * sample.temperature_c + (1.0 - alpha) * reader->ema_temp_c;
-    reader->ema_resistance_ohm =
-      alpha * sample.resistance_ohm + (1.0 - alpha) * reader->ema_resistance_ohm;
+    reader->ema_resistance_ohm = alpha * sample.resistance_ohm +
+                                 (1.0 - alpha) * reader->ema_resistance_ohm;
   }
 
   FillSample(sample_out,
