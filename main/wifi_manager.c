@@ -1,5 +1,6 @@
 #include "wifi_manager.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -7,9 +8,9 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
-#include "freertos/semphr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "net_stack.h"
 
@@ -35,8 +36,14 @@ static wifi_err_reason_t s_last_disconnect_reason = WIFI_REASON_UNSPECIFIED;
 static int s_last_connect_attempts = 0;
 static SemaphoreHandle_t s_mutex = NULL;
 
+static esp_err_t
+CleanupLocked(bool release_resources);
+
 static void
-WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+WifiEventHandler(void* arg,
+                 esp_event_base_t event_base,
+                 int32_t event_id,
+                 void* event_data)
 {
   (void)arg;
   (void)event_base;
@@ -52,9 +59,11 @@ WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void*
       break;
 
     case WIFI_EVENT_STA_DISCONNECTED: {
-      wifi_event_sta_disconnected_t* info = (wifi_event_sta_disconnected_t*)event_data;
+      wifi_event_sta_disconnected_t* info =
+        (wifi_event_sta_disconnected_t*)event_data;
       s_wifi_connected = false;
-      s_last_disconnect_reason = (info != NULL) ? info->reason : WIFI_REASON_UNSPECIFIED;
+      s_last_disconnect_reason =
+        (info != NULL) ? info->reason : WIFI_REASON_UNSPECIFIED;
       xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT);
       xEventGroupSetBits(s_event_group, WIFI_FAIL_BIT);
       break;
@@ -70,7 +79,10 @@ WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void*
 }
 
 static void
-IpEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+IpEventHandler(void* arg,
+               esp_event_base_t event_base,
+               int32_t event_id,
+               void* event_data)
 {
   (void)arg;
   (void)event_data;
@@ -126,21 +138,38 @@ EnsureEventGroup(void)
   return (s_event_group != NULL) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+// Optional thin wrappers to make call sites self-documenting.
+static esp_err_t
+CleanupLocked(bool release_resources);
+
+static esp_err_t
+CleanupKeepResourcesLocked(void)
+{
+  return CleanupLocked(/*release_resources=*/false);
+}
+
+static esp_err_t
+CleanupReleaseResourcesLocked(void)
+{
+  return CleanupLocked(/*release_resources=*/true);
+}
+
 static esp_err_t
 CleanupLocked(bool release_resources)
 {
   esp_err_t result = ESP_OK;
+
   s_wifi_connected = false;
   s_last_disconnect_reason = WIFI_REASON_UNSPECIFIED;
 
+  // Stop/disconnect only if we started Wi-Fi in this module.
   if (s_wifi_started) {
     if (s_started_by_manager) {
       esp_err_t disconnect_result = esp_wifi_disconnect();
       if (disconnect_result != ESP_OK &&
           disconnect_result != ESP_ERR_WIFI_NOT_INIT &&
           disconnect_result != ESP_ERR_WIFI_NOT_STARTED &&
-          disconnect_result != ESP_ERR_WIFI_NOT_CONNECT &&
-          result == ESP_OK) {
+          disconnect_result != ESP_ERR_WIFI_NOT_CONNECT && result == ESP_OK) {
         result = disconnect_result;
       }
 
@@ -150,14 +179,18 @@ CleanupLocked(bool release_resources)
         result = stop_result;
       }
     }
+
     s_wifi_started = false;
     s_started_by_manager = false;
   }
 
-  if (s_wifi_handler_registered && s_wifi_handler != NULL) {
-    if (release_resources) {
-      (void)esp_event_handler_instance_unregister(
-        WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_handler);
+  // Unregister handlers only when releasing resources.
+  if (release_resources && s_wifi_handler_registered &&
+      s_wifi_handler != NULL) {
+    esp_err_t unregister_result = esp_event_handler_instance_unregister(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_handler);
+    if (result == ESP_OK && unregister_result != ESP_OK) {
+      result = unregister_result;
     }
   }
   if (release_resources) {
@@ -165,13 +198,11 @@ CleanupLocked(bool release_resources)
     s_wifi_handler = NULL;
   }
 
-  if (s_ip_handler_registered && s_ip_handler != NULL) {
-    if (release_resources) {
-      esp_err_t unregister_result = esp_event_handler_instance_unregister(
-        IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
-      if (result == ESP_OK && unregister_result != ESP_OK) {
-        result = unregister_result;
-      }
+  if (release_resources && s_ip_handler_registered && s_ip_handler != NULL) {
+    esp_err_t unregister_result = esp_event_handler_instance_unregister(
+      IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
+    if (result == ESP_OK && unregister_result != ESP_OK) {
+      result = unregister_result;
     }
   }
   if (release_resources) {
@@ -179,6 +210,8 @@ CleanupLocked(bool release_resources)
     s_ip_handler = NULL;
   }
 
+  // Deinit Wi-Fi only if we truly own init AND caller asked to release
+  // resources.
   if (release_resources && s_owns_wifi_init) {
     esp_err_t deinit_result = esp_wifi_deinit();
     if (deinit_result == ESP_ERR_WIFI_NOT_INIT) {
@@ -191,6 +224,7 @@ CleanupLocked(bool release_resources)
     s_owns_wifi_init = false;
   }
 
+  // Destroy netif only if we created it AND caller asked to release resources.
   if (release_resources && s_owns_sta_netif && s_sta_netif != NULL) {
     esp_netif_destroy(s_sta_netif);
     s_sta_netif = NULL;
@@ -247,13 +281,14 @@ WifiManagerInit(void)
     if (result == ESP_OK) {
       s_wifi_initialized = true;
       s_owns_wifi_init = true;
-    } else if (result == ESP_ERR_WIFI_INIT_STATE || result == ESP_ERR_WIFI_STATE) {
+    } else if (result == ESP_ERR_WIFI_INIT_STATE ||
+               result == ESP_ERR_WIFI_STATE) {
       s_wifi_initialized = true;
       s_owns_wifi_init = false;
       result = ESP_OK;
     } else {
       ESP_LOGE(kTag, "esp_wifi_init failed: %s", esp_err_to_name(result));
-      CleanupLocked();
+      CleanupReleaseResourcesLocked();
       Unlock();
       return result;
     }
@@ -264,14 +299,11 @@ WifiManagerInit(void)
       WIFI_EVENT, ESP_EVENT_ANY_ID, &WifiEventHandler, NULL, &s_wifi_handler);
     if (result == ESP_OK) {
       s_wifi_handler_registered = true;
-    } else if (result == ESP_ERR_INVALID_STATE) {
-      s_wifi_handler_registered = false;
-      s_wifi_handler = NULL;
-      result = ESP_OK;
+
     } else {
       ESP_LOGE(
         kTag, "wifi handler register failed: %s", esp_err_to_name(result));
-      CleanupLocked(true);
+      CleanupReleaseResourcesLocked();
       Unlock();
       return result;
     }
@@ -282,13 +314,9 @@ WifiManagerInit(void)
       IP_EVENT, IP_EVENT_STA_GOT_IP, &IpEventHandler, NULL, &s_ip_handler);
     if (result == ESP_OK) {
       s_ip_handler_registered = true;
-    } else if (result == ESP_ERR_INVALID_STATE) {
-      s_ip_handler_registered = false;
-      s_ip_handler = NULL;
-      result = ESP_OK;
     } else {
       ESP_LOGE(kTag, "ip handler register failed: %s", esp_err_to_name(result));
-      CleanupLocked(true);
+      CleanupReleaseResourcesLocked();
       Unlock();
       return result;
     }
@@ -297,7 +325,7 @@ WifiManagerInit(void)
   result = esp_wifi_set_mode(WIFI_MODE_STA);
   if (result != ESP_OK) {
     ESP_LOGE(kTag, "esp_wifi_set_mode failed: %s", esp_err_to_name(result));
-    CleanupLocked(true);
+    CleanupReleaseResourcesLocked();
     Unlock();
     return result;
   }
@@ -312,7 +340,7 @@ WifiManagerInit(void)
     result = ESP_OK;
   } else {
     ESP_LOGE(kTag, "esp_wifi_start failed: %s", esp_err_to_name(result));
-    CleanupLocked(true);
+    CleanupReleaseResourcesLocked();
     Unlock();
     return result;
   }
@@ -329,12 +357,21 @@ WifiManagerDeinit(void)
     return lock_result;
   }
 
-  esp_err_t result = CleanupLocked(true);
+  // IMPORTANT:
+  // In this project, mesh may also own and use Wi-Fi. A "hard deinit"
+  // here can
+  // break mesh or other networking users. Default behavior should be
+  // "stop only".
+  esp_err_t result = CleanupKeepResourcesLocked();
 
   Unlock();
   return result;
 }
 
+// If you truly need a hard teardown (generally: avoid in firmware),
+// implement and call this explicitly from controlled contexts only.
+// esp_err_t WifiManagerHardDeinit(void) { lock;
+// CleanupReleaseResourcesLocked(); unlock; }
 esp_err_t
 WifiManagerStop(void)
 {
@@ -343,14 +380,16 @@ WifiManagerStop(void)
     return lock_result;
   }
 
-  esp_err_t result = CleanupLocked(false);
+  esp_err_t result = CleanupKeepResourcesLocked();
 
   Unlock();
   return result;
 }
 
 esp_err_t
-WifiManagerScan(wifi_ap_record_t* out_records, size_t max_records, size_t* out_count)
+WifiManagerScan(wifi_ap_record_t* out_records,
+                size_t max_records,
+                size_t* out_count)
 {
   esp_err_t lock_result = Lock(pdMS_TO_TICKS(5000));
   if (lock_result != ESP_OK) {
@@ -373,11 +412,8 @@ WifiManagerScan(wifi_ap_record_t* out_records, size_t max_records, size_t* out_c
     goto exit;
   }
 
-  const EventBits_t bits = xEventGroupWaitBits(s_event_group,
-                                               WIFI_SCAN_DONE_BIT,
-                                               pdTRUE,
-                                               pdFALSE,
-                                               pdMS_TO_TICKS(15000));
+  const EventBits_t bits = xEventGroupWaitBits(
+    s_event_group, WIFI_SCAN_DONE_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(15000));
   if ((bits & WIFI_SCAN_DONE_BIT) == 0) {
     result = ESP_ERR_TIMEOUT;
     goto exit;
@@ -389,8 +425,8 @@ WifiManagerScan(wifi_ap_record_t* out_records, size_t max_records, size_t* out_c
     goto exit;
   }
 
-  uint16_t record_cap = (uint16_t)((max_records > UINT16_MAX) ? UINT16_MAX
-                                                             : max_records);
+  uint16_t record_cap =
+    (uint16_t)((max_records > UINT16_MAX) ? UINT16_MAX : max_records);
   if (out_records != NULL && record_cap > 0) {
     uint16_t record_count = record_cap;
     result = esp_wifi_scan_get_ap_records(&record_count, out_records);
@@ -429,9 +465,18 @@ WifiManagerConnectSta(const char* ssid, const char* password, int timeout_ms)
 
   wifi_config_t config;
   memset(&config, 0, sizeof(config));
-  strncpy((char*)config.sta.ssid, ssid, sizeof(config.sta.ssid));
+
+  // Ensure NUL termination (strncpy does not guarantee it).
+  // ESP-IDF provides strlcpy in many configs; if unavailable, do manual.
+  // Use a safe copy pattern.
+  size_t ssid_cap = sizeof(config.sta.ssid);
+  strncpy((char*)config.sta.ssid, ssid, ssid_cap - 1);
+  config.sta.ssid[ssid_cap - 1] = '\0';
+
   if (password != NULL) {
-    strncpy((char*)config.sta.password, password, sizeof(config.sta.password));
+    size_t pass_cap = sizeof(config.sta.password);
+    strncpy((char*)config.sta.password, password, pass_cap - 1);
+    config.sta.password[pass_cap - 1] = '\0';
   }
 
   result = esp_wifi_set_config(WIFI_IF_STA, &config);
@@ -465,11 +510,12 @@ WifiManagerConnectSta(const char* ssid, const char* password, int timeout_ms)
       wait_ms = 1000;
     }
 
-    const EventBits_t bits = xEventGroupWaitBits(s_event_group,
-                                                 WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                                 pdFALSE,
-                                                 pdFALSE,
-                                                 pdMS_TO_TICKS(wait_ms));
+    const EventBits_t bits =
+      xEventGroupWaitBits(s_event_group,
+                          WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                          pdFALSE,
+                          pdFALSE,
+                          pdMS_TO_TICKS(wait_ms));
     if ((bits & WIFI_CONNECTED_BIT) != 0) {
       s_wifi_connected = true;
       result = ESP_OK;
