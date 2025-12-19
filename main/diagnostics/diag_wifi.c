@@ -39,13 +39,6 @@ typedef struct
   size_t min_free;
 } heap_snapshot_t;
 
-typedef struct
-{
-  esp_log_level_t wifi;
-  esp_log_level_t netif;
-  bool changed;
-} log_level_guard_t;
-
 static const char*
 AuthModeToString(wifi_auth_mode_t mode)
 {
@@ -166,31 +159,6 @@ PrintHeapSnapshot(const diag_ctx_t* ctx,
          (unsigned)snapshot->free_8bit,
          (unsigned)snapshot->free_total,
          (unsigned)snapshot->min_free);
-}
-
-static log_level_guard_t
-RaiseVerboseLogLevels(diag_verbosity_t verbosity)
-{
-  log_level_guard_t guard = { 0 };
-  if (verbosity < kDiagVerbosity1) {
-    return guard;
-  }
-  guard.wifi = esp_log_level_get("wifi");
-  guard.netif = esp_log_level_get("esp_netif");
-  esp_log_level_set("wifi", ESP_LOG_DEBUG);
-  esp_log_level_set("esp_netif", ESP_LOG_INFO);
-  guard.changed = true;
-  return guard;
-}
-
-static void
-RestoreLogLevels(const log_level_guard_t* guard)
-{
-  if (guard == NULL || !guard->changed) {
-    return;
-  }
-  esp_log_level_set("wifi", guard->wifi);
-  esp_log_level_set("esp_netif", guard->netif);
 }
 
 static void
@@ -327,8 +295,6 @@ RunDiagWifi(const app_runtime_t* runtime,
     return 1;
   }
 
-  log_level_guard_t log_guard = RaiseVerboseLogLevels(verbosity);
-
   heap_snapshot_t net_before = CaptureHeapSnapshot();
   DiagHeapCheck(&ctx, "pre_net");
   esp_err_t net_result = WifiServiceInitOnce();
@@ -347,7 +313,6 @@ RunDiagWifi(const app_runtime_t* runtime,
   PrintHeapSnapshot(&ctx, "net_after", &net_after);
   if (net_result != ESP_OK) {
     DiagPrintSummary(&ctx, total_steps);
-    RestoreLogLevels(&log_guard);
     return 1;
   }
 
@@ -601,6 +566,5 @@ RunDiagWifi(const app_runtime_t* runtime,
   PrintHeapSnapshot(&ctx, "teardown_after", &teardown_after);
 
   DiagPrintSummary(&ctx, total_steps);
-  RestoreLogLevels(&log_guard);
   return (ctx.steps_failed == 0) ? 0 : 1;
 }
