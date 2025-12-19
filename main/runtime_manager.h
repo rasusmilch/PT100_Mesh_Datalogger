@@ -6,6 +6,7 @@
 #include "app_settings.h"
 #include "esp_err.h"
 #include "fram_log.h"
+#include "i2c_bus.h"
 #include "max31865_reader.h"
 #include "mesh_transport.h"
 #include "sd_logger.h"
@@ -23,6 +24,7 @@ extern "C" {
     max31865_reader_t* sensor;
     mesh_transport_t* mesh;
     time_sync_t* time_sync;
+    i2c_bus_t* i2c_bus;
     const char* node_id_string;
     esp_err_t (*flush_callback)(void* context);
     void* flush_context;
