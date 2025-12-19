@@ -40,9 +40,9 @@ RunDiagSd(const app_runtime_t* runtime,
     }
 
     if (runtime->sd_logger->is_mounted) {
-      const char* path = runtime->sd_logger->mount_point;
+      const char* mount_point = runtime->sd_logger->mount_point;
       char test_path[128];
-      snprintf(test_path, sizeof(test_path), "%s/diag_sd_test.bin", path);
+      snprintf(test_path, sizeof(test_path), "%s/diag_sd_test.bin", mount_point);
       FILE* f = fopen(test_path, "wb");
       if (f != NULL) {
         const char payload[] = "diag";
@@ -60,7 +60,9 @@ RunDiagSd(const app_runtime_t* runtime,
                        total_steps,
                        "file r/w",
                        match ? ESP_OK : ESP_FAIL,
-                       "path=%s", test_path);
+                       "mount=%s path=%s",
+                       mount_point,
+                       test_path);
       } else {
         const esp_err_t err = ESP_FAIL;
         DiagReportStep(&ctx,
@@ -68,9 +70,11 @@ RunDiagSd(const app_runtime_t* runtime,
                        total_steps,
                        "file r/w",
                        err,
-                       "unable to open test file: %s (errno=%d)",
-                       strerror(errno),
-                       errno);
+                       "mount=%s path=%s errno=%d (%s)",
+                       mount_point,
+                       test_path,
+                       errno,
+                       strerror(errno));
       }
     } else {
       DiagReportStep(&ctx, 3, total_steps, "file r/w", ESP_FAIL, "not mounted");
