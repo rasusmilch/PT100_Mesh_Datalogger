@@ -89,21 +89,24 @@ CommandRaw(int argc, char** argv)
     return 1;
   }
 
-  float raw_c = 0;
-  float resistance_ohm = 0;
-  esp_err_t result =
-    Max31865ReaderRead(g_runtime->sensor, &raw_c, &resistance_ohm);
+  max31865_sample_t sample;
+  esp_err_t result = Max31865ReadOnce(g_runtime->sensor, &sample);
   if (result != ESP_OK) {
     printf("read failed: %s\n", esp_err_to_name(result));
     return 1;
   }
 
   const double calibrated =
-    CalibrationModelEvaluate(&g_runtime->settings->calibration, raw_c);
+    CalibrationModelEvaluate(&g_runtime->settings->calibration,
+                             sample.temperature_c);
+  char fault[64] = { 0 };
+  Max31865FormatFault(sample.fault_status, fault, sizeof(fault));
 
-  printf("raw_c: %.3f\n", raw_c);
-  printf("resistance_ohm: %.3f\n", resistance_ohm);
-  printf("cal_c: %.3f\n", calibrated);
+  printf("adc_code_15: %u\n", (unsigned)sample.adc_code);
+  printf("resistance_ohm: %.3f\n", sample.resistance_ohm);
+  printf("temp_raw_c: %.3f\n", sample.temperature_c);
+  printf("temp_cal_c: %.3f\n", calibrated);
+  printf("fault: %s (0x%02x)\n", fault, (unsigned)sample.fault_status);
   return 0;
 }
 
@@ -470,7 +473,7 @@ PrintDiagUsage(void)
   printf("diag all quick|full [--verbose N]\n");
   printf("diag sd quick|full [--format-if-needed] [--mount] [--verbose N]\n");
   printf("diag fram quick|full [--bytes N] [--verbose N]\n");
-  printf("diag rtd quick|full [--samples N] [--verbose N]\n");
+  printf("diag rtd quick|full [--samples N] [--delay_ms M] [--verbose N]\n");
   printf("diag rtc quick|full [--set-known] [--verbose N]\n");
   printf("diag wifi quick|full [--scan] [--connect] [--verbose N]\n");
   printf("diag mesh quick|full [--start] [--stop] [--verbose N]\n");
@@ -508,6 +511,7 @@ CommandDiagnostics(int argc, char** argv)
   bool set_known = false;
   int bytes = 0;
   int samples = 0;
+  int delay_ms = -1;
   bool start_mesh = false;
   bool stop_mesh = false;
 
@@ -561,6 +565,8 @@ CommandDiagnostics(int argc, char** argv)
       bytes = atoi(argv[++i]);
     } else if (strcmp(argv[i], "--samples") == 0 && (i + 1) < argc) {
       samples = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--delay_ms") == 0 && (i + 1) < argc) {
+      delay_ms = atoi(argv[++i]);
     } else if (strcmp(argv[i], "--start") == 0) {
       start_mesh = true;
     } else if (strcmp(argv[i], "--stop") == 0) {
@@ -608,7 +614,7 @@ CommandDiagnostics(int argc, char** argv)
       printf("Stop run mode first: run stop\n");
       overall = 1;
     } else {
-      overall |= RunDiagRtd(runtime, full, samples, diag_verbosity);
+      overall |= RunDiagRtd(runtime, full, samples, delay_ms, diag_verbosity);
     }
     if (strcmp(target, "rtd") == 0) {
       return overall;

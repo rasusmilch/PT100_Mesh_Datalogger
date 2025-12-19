@@ -11,9 +11,10 @@ extern "C" {
 #endif
 
 int RunDiagRtd(const app_runtime_t* runtime,
-              bool full,
-              int samples,
-              diag_verbosity_t verbosity);
+               bool full,
+               int samples,
+               int delay_ms,
+               diag_verbosity_t verbosity);
 
 #ifdef __cplusplus
 }

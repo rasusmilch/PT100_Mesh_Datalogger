@@ -415,11 +415,9 @@ SensorTask(void* context)
       continue;
     }
 
-    float raw_c = 0;
-    float resistance_ohm = 0;
-
-    esp_err_t result =
-      Max31865ReaderRead(&state->sensor, &raw_c, &resistance_ohm);
+    max31865_sample_t sample;
+    memset(&sample, 0, sizeof(sample));
+    esp_err_t result = Max31865ReadOnce(&state->sensor, &sample);
 
     log_record_t record;
     memset(&record, 0, sizeof(record));
@@ -433,11 +431,16 @@ SensorTask(void* context)
     record.timestamp_millis = millis;
 
     if (result == ESP_OK) {
-      const double cal_c =
-        CalibrationModelEvaluate(&state->settings.calibration, raw_c);
-      record.raw_temp_milli_c = (int32_t)llround(raw_c * 1000.0);
+      const double cal_c = CalibrationModelEvaluate(&state->settings.calibration,
+                                                    sample.temperature_c);
+      record.raw_temp_milli_c =
+        (int32_t)llround(sample.temperature_c * 1000.0);
       record.temp_milli_c = (int32_t)llround(cal_c * 1000.0);
-      record.resistance_milli_ohm = (int32_t)llround(resistance_ohm * 1000.0);
+      record.resistance_milli_ohm =
+        (int32_t)llround(sample.resistance_ohm * 1000.0);
+      if (sample.fault_present) {
+        record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
+      }
     } else {
       ESP_LOGW(kTag, "sensor read failed: %s", esp_err_to_name(result));
       record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
