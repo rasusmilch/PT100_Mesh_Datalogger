@@ -199,8 +199,9 @@ InitWifiAndMesh(bool is_root,
     esp_err_t netif_result = esp_netif_create_default_wifi_mesh_netifs(
       &g_mesh_netif_sta, &g_mesh_netif_ap);
     if (netif_result != ESP_OK) {
-      ESP_LOGE(
-        kTag, "failed to create mesh netifs: %s", esp_err_to_name(netif_result));
+      ESP_LOGE(kTag,
+               "failed to create mesh netifs: %s",
+               esp_err_to_name(netif_result));
       return netif_result;
     }
   }
@@ -225,14 +226,16 @@ InitWifiAndMesh(bool is_root,
   esp_err_t handler_result = esp_event_handler_register(
     MESH_EVENT, ESP_EVENT_ANY_ID, &MeshEventHandler, NULL);
   if (handler_result != ESP_OK && handler_result != ESP_ERR_INVALID_STATE) {
-    ESP_LOGE(
-      kTag, "mesh event handler register failed: %s", esp_err_to_name(handler_result));
+    ESP_LOGE(kTag,
+             "mesh event handler register failed: %s",
+             esp_err_to_name(handler_result));
     return handler_result;
   }
 
   esp_err_t mesh_init_result = esp_mesh_init();
-  if (mesh_init_result != ESP_OK && mesh_init_result != ESP_ERR_MESH_INIT_STATE) {
-    ESP_LOGE(kTag, "esp_mesh_init failed: %s", esp_err_to_name(mesh_init_result));
+  if (mesh_init_result != ESP_OK && mesh_init_result != ESP_ERR_INVALID_STATE) {
+    ESP_LOGE(
+      kTag, "esp_mesh_init failed: %s", esp_err_to_name(mesh_init_result));
     return mesh_init_result;
   }
   ESP_ERROR_CHECK(esp_mesh_set_max_layer(6));
@@ -276,7 +279,8 @@ InitWifiAndMesh(bool is_root,
 
   esp_err_t mesh_start_result = esp_mesh_start();
   if (mesh_start_result != ESP_OK) {
-    ESP_LOGE(kTag, "esp_mesh_start failed: %s", esp_err_to_name(mesh_start_result));
+    ESP_LOGE(
+      kTag, "esp_mesh_start failed: %s", esp_err_to_name(mesh_start_result));
     return mesh_start_result;
   }
   ESP_LOGI(kTag, "mesh started (is_root=%d)", (int)is_root);
@@ -418,7 +422,7 @@ MeshTransportStop(mesh_transport_t* mesh)
   }
 
   esp_err_t result = esp_mesh_stop();
-  if (result == ESP_ERR_MESH_NOT_STARTED) {
+  if (result == ESP_ERR_MESH_NOT_START) {
     result = ESP_OK;
   }
   mesh->is_started = false;

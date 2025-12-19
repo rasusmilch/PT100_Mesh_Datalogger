@@ -17,10 +17,10 @@
 #include "diagnostics/diag_sd.h"
 #include "diagnostics/diag_wifi.h"
 #include "driver/uart.h"
+#include "driver/uart_vfs.h"
 #include "esp_console.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "esp_vfs_dev.h"
 #include "linenoise/linenoise.h"
 #include "runtime_manager.h"
 
@@ -96,9 +96,8 @@ CommandRaw(int argc, char** argv)
     return 1;
   }
 
-  const double calibrated =
-    CalibrationModelEvaluate(&g_runtime->settings->calibration,
-                             sample.temperature_c);
+  const double calibrated = CalibrationModelEvaluate(
+    &g_runtime->settings->calibration, sample.temperature_c);
   char fault[64] = { 0 };
   Max31865FormatFault(sample.fault_status, fault, sizeof(fault));
 
@@ -502,8 +501,8 @@ ParseOptionalBool(int argc, char** argv, int* index, bool* target)
     return 0;
   }
   const int i = *index;
-  if ((i + 1) < argc && (strcmp(argv[i + 1], "0") == 0 ||
-                         strcmp(argv[i + 1], "1") == 0)) {
+  if ((i + 1) < argc &&
+      (strcmp(argv[i + 1], "0") == 0 || strcmp(argv[i + 1], "1") == 0)) {
     *target = (argv[i + 1][0] == '1');
     *index = i + 1;
   } else {
@@ -859,7 +858,7 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
   // Use default pins for UART0; for other UARTs, set pins via uart_set_pin().
 
-  esp_vfs_dev_uart_use_driver(CONFIG_ESP_CONSOLE_UART_NUM);
+  uart_vfs_dev_use_driver(uart_num);
 
   esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
   console_config.max_cmdline_length = 256;
