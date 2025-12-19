@@ -132,12 +132,18 @@ WifiManagerInit(void)
     ESP_LOGE(kTag, "wifi handler register failed: %s", esp_err_to_name(result));
     return result;
   }
+  if (result == ESP_ERR_INVALID_STATE) {
+    s_wifi_handler = NULL;
+  }
 
   result = esp_event_handler_instance_register(
     IP_EVENT, IP_EVENT_STA_GOT_IP, &IpEventHandler, NULL, &s_ip_handler);
   if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
     ESP_LOGE(kTag, "ip handler register failed: %s", esp_err_to_name(result));
     return result;
+  }
+  if (result == ESP_ERR_INVALID_STATE) {
+    s_ip_handler = NULL;
   }
 
   result = esp_wifi_set_mode(WIFI_MODE_STA);
@@ -171,13 +177,17 @@ WifiManagerDeinit(void)
     s_wifi_started = false;
   }
 
-  (void)esp_event_handler_instance_unregister(
-    WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_handler);
-  s_wifi_handler = NULL;
+  if (s_wifi_handler != NULL) {
+    (void)esp_event_handler_instance_unregister(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_handler);
+    s_wifi_handler = NULL;
+  }
 
-  (void)esp_event_handler_instance_unregister(
-    IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
-  s_ip_handler = NULL;
+  if (s_ip_handler != NULL) {
+    (void)esp_event_handler_instance_unregister(
+      IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
+    s_ip_handler = NULL;
+  }
 
   esp_err_t result = esp_wifi_deinit();
   if (result == ESP_ERR_WIFI_NOT_INIT) {
@@ -188,11 +198,6 @@ WifiManagerDeinit(void)
   if (s_sta_netif != NULL) {
     esp_netif_destroy(s_sta_netif);
     s_sta_netif = NULL;
-  }
-
-  if (s_event_group != NULL) {
-    vEventGroupDelete(s_event_group);
-    s_event_group = NULL;
   }
 
   return result;
