@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "fram_spi.h"
+#include "fram_io.h"
 #include "log_record.h"
 
 #ifdef __cplusplus
@@ -16,7 +16,7 @@ extern "C"
 
   typedef struct
   {
-    fram_spi_t* fram;
+    fram_io_t io;
     uint32_t fram_size_bytes;
     uint32_t record_region_offset;
     uint32_t capacity_records;
@@ -32,7 +32,7 @@ extern "C"
   } fram_log_t;
 
   esp_err_t FramLogInit(fram_log_t* log,
-                        fram_spi_t* fram,
+                        fram_io_t io,
                         uint32_t fram_size_bytes);
 
   uint32_t FramLogNextSequence(const fram_log_t* log);

@@ -16,6 +16,27 @@ static const uint32_t kHeaderCopy0Address = 0;
 static const uint32_t kHeaderCopy1Address = 128;
 static const uint32_t kRecordRegionOffset = 256;
 
+static esp_err_t
+IoRead(const fram_log_t* log, uint32_t address, void* out, size_t len)
+{
+  if (log == NULL || log->io.read == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  return log->io.read(log->io.context, address, out, len);
+}
+
+static esp_err_t
+IoWrite(const fram_log_t* log,
+        uint32_t address,
+        const void* data,
+        size_t len)
+{
+  if (log == NULL || log->io.write == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  return log->io.write(log->io.context, address, data, len);
+}
+
 #pragma pack(push, 1)
 typedef struct
 {
@@ -54,19 +75,19 @@ HeaderLooksValid(const fram_log_header_t* header)
 }
 
 static esp_err_t
-ReadHeaderAt(const fram_spi_t* fram,
+ReadHeaderAt(const fram_log_t* log,
              uint32_t address,
              fram_log_header_t* header_out)
 {
-  return FramSpiRead(fram, address, header_out, sizeof(*header_out));
+  return IoRead(log, address, header_out, sizeof(*header_out));
 }
 
 static esp_err_t
-WriteHeaderAt(const fram_spi_t* fram,
+WriteHeaderAt(const fram_log_t* log,
               uint32_t address,
               const fram_log_header_t* header)
 {
-  return FramSpiWrite(fram, address, header, sizeof(*header));
+  return IoWrite(log, address, header, sizeof(*header));
 }
 
 static void
@@ -109,7 +130,7 @@ WriteRecord(const fram_log_t* log, uint32_t record_index, log_record_t record)
     Crc16CcittFalse(&record, sizeof(record) - sizeof(record.crc16_ccitt));
 
   const uint32_t address = RecordAddressForIndex(log, record_index);
-  return FramSpiWrite(log->fram, address, &record, sizeof(record));
+  return IoWrite(log, address, &record, sizeof(record));
 }
 
 static esp_err_t
@@ -119,7 +140,7 @@ ReadRecord(const fram_log_t* log,
 {
   const uint32_t address = RecordAddressForIndex(log, record_index);
   esp_err_t result =
-    FramSpiRead(log->fram, address, record_out, sizeof(*record_out));
+    IoRead(log, address, record_out, sizeof(*record_out));
   if (result != ESP_OK) {
     return result;
   }
@@ -140,13 +161,19 @@ ReadRecord(const fram_log_t* log,
 }
 
 esp_err_t
-FramLogInit(fram_log_t* log, fram_spi_t* fram, uint32_t fram_size_bytes)
+FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
 {
-  if (log == NULL || fram == NULL) {
+  if (log == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (fram_size_bytes == 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (io.read == NULL || io.write == NULL || io.context == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
   memset(log, 0, sizeof(*log));
-  log->fram = fram;
+  log->io = io;
   log->fram_size_bytes = fram_size_bytes;
   log->record_region_offset = kRecordRegionOffset;
 
@@ -162,8 +189,8 @@ FramLogInit(fram_log_t* log, fram_spi_t* fram, uint32_t fram_size_bytes)
 
   fram_log_header_t header0;
   fram_log_header_t header1;
-  esp_err_t result0 = ReadHeaderAt(fram, kHeaderCopy0Address, &header0);
-  esp_err_t result1 = ReadHeaderAt(fram, kHeaderCopy1Address, &header1);
+  esp_err_t result0 = ReadHeaderAt(log, kHeaderCopy0Address, &header0);
+  esp_err_t result1 = ReadHeaderAt(log, kHeaderCopy1Address, &header1);
 
   const bool header0_valid = (result0 == ESP_OK) && HeaderLooksValid(&header0);
   const bool header1_valid = (result1 == ESP_OK) && HeaderLooksValid(&header1);
@@ -257,7 +284,7 @@ FramLogPersistHeader(fram_log_t* log)
                              ? kHeaderCopy0Address
                              : kHeaderCopy1Address;
 
-  esp_err_t result = WriteHeaderAt(log->fram, address, &header);
+  esp_err_t result = WriteHeaderAt(log, address, &header);
   if (result == ESP_OK) {
     log->records_since_header_persist = 0;
   }
@@ -308,8 +335,7 @@ FramLogPeekOldest(const fram_log_t* log, log_record_t* record_out)
   }
   // Read raw bytes and validate. Always return populated bytes.
   const uint32_t address = RecordAddressForIndex(log, log->read_index);
-  esp_err_t result =
-    FramSpiRead(log->fram, address, record_out, sizeof(*record_out));
+  esp_err_t result = IoRead(log, address, record_out, sizeof(*record_out));
   if (result != ESP_OK) {
     return result;
   }
@@ -340,8 +366,7 @@ FramLogPeekOffset(const fram_log_t* log,
   }
   const uint32_t record_index = log->read_index + offset;
   const uint32_t address = RecordAddressForIndex(log, record_index);
-  esp_err_t result =
-    FramSpiRead(log->fram, address, record_out, sizeof(*record_out));
+  esp_err_t result = IoRead(log, address, record_out, sizeof(*record_out));
   if (result != ESP_OK) {
     return result;
   }

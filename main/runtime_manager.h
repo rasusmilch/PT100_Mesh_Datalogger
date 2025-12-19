@@ -5,6 +5,8 @@
 
 #include "app_settings.h"
 #include "esp_err.h"
+#include "fram_i2c.h"
+#include "fram_io.h"
 #include "fram_log.h"
 #include "i2c_bus.h"
 #include "max31865_reader.h"
@@ -19,6 +21,8 @@ extern "C" {
   typedef struct
   {
     app_settings_t* settings;
+    fram_i2c_t* fram_i2c;
+    fram_io_t* fram_io;
     fram_log_t* fram_log;
     sd_logger_t* sd_logger;
     max31865_reader_t* sensor;

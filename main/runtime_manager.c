@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "fram_i2c.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -25,7 +26,8 @@ static const char* kTag = "runtime";
 typedef struct
 {
   app_settings_t settings;
-  fram_spi_t fram_spi;
+  fram_i2c_t fram_i2c;
+  fram_io_t fram_io;
   fram_log_t fram_log;
   sd_logger_t sd_logger;
   max31865_reader_t sensor;
@@ -57,6 +59,33 @@ typedef struct
 static runtime_state_t g_state;
 static app_runtime_t g_runtime;
 static esp_err_t RuntimeFlushToSd(void* context);
+
+static esp_err_t
+FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
+{
+  if (context == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (addr > 0xFFFFu) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  return FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
+}
+
+static esp_err_t
+FramI2cWriteAdapter(void* context,
+                    uint32_t addr,
+                    const void* data,
+                    size_t len)
+{
+  if (context == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (addr > 0xFFFFu) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  return FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
+}
 
 static void
 FormatMacString(const uint8_t mac[6], char* out, size_t out_size)
@@ -579,6 +608,8 @@ InitializeRuntimeStruct(void)
   memset(&g_runtime, 0, sizeof(g_runtime));
 
   g_runtime.settings = &g_state.settings;
+  g_runtime.fram_i2c = &g_state.fram_i2c;
+  g_runtime.fram_io = &g_state.fram_io;
   g_runtime.fram_log = &g_state.fram_log;
   g_runtime.sd_logger = &g_state.sd_logger;
   g_runtime.sensor = &g_state.sensor;
@@ -635,6 +666,9 @@ RuntimeManagerInit(void)
     }
     ESP_LOGE(kTag, "I2cBusInit failed: %s", esp_err_to_name(i2c_result));
   }
+  g_state.fram_io.context = &g_state.fram_i2c;
+  g_state.fram_io.read = &FramI2cReadAdapter;
+  g_state.fram_io.write = &FramI2cWriteAdapter;
 
   sd_logger_config_t sd_config = {
     .batch_target_bytes = g_state.settings.sd_batch_bytes_target,
@@ -672,20 +706,24 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
   }
 
-  esp_err_t fram_spi_result = FramSpiInit(&g_state.fram_spi,
-                                          spi_host,
-                                          CONFIG_APP_FRAM_CS_GPIO,
-                                          CONFIG_APP_FRAM_ADDR_BYTES);
-  if (fram_spi_result != ESP_OK) {
+  esp_err_t fram_i2c_result = ESP_ERR_INVALID_STATE;
+  if (g_state.i2c_bus.initialized) {
+    fram_i2c_result = FramI2cInit(&g_state.fram_i2c,
+                                  g_state.i2c_bus.handle,
+                                  (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
+                                  CONFIG_APP_FRAM_SIZE_BYTES);
+  }
+  if (fram_i2c_result != ESP_OK) {
     if (first_error == ESP_OK) {
-      first_error = fram_spi_result;
+      first_error = fram_i2c_result;
     }
-    ESP_LOGE(
-      kTag, "FramSpiInit failed: %s", esp_err_to_name(fram_spi_result));
+    ESP_LOGE(kTag,
+             "FramI2cInit failed: %s",
+             esp_err_to_name(fram_i2c_result));
   }
 
   esp_err_t fram_log_result = FramLogInit(&g_state.fram_log,
-                                          &g_state.fram_spi,
+                                          g_state.fram_io,
                                           CONFIG_APP_FRAM_SIZE_BYTES);
   if (fram_log_result != ESP_OK) {
     if (first_error == ESP_OK) {
