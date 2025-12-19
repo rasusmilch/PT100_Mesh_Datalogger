@@ -5,23 +5,23 @@
 
 #include <inttypes.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "argtable3/argtable3.h"
 #include "boot_mode.h"
-#include "driver/uart.h"
-#include "esp_console.h"
-#include "esp_log.h"
-#include "esp_system.h"
-#include "esp_vfs_dev.h"
-#include "linenoise/linenoise.h"
 #include "diagnostics/diag_fram.h"
 #include "diagnostics/diag_mesh.h"
 #include "diagnostics/diag_rtc.h"
 #include "diagnostics/diag_rtd.h"
 #include "diagnostics/diag_sd.h"
 #include "diagnostics/diag_wifi.h"
+#include "driver/uart.h"
+#include "esp_console.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_vfs_dev.h"
+#include "linenoise/linenoise.h"
 #include "runtime_manager.h"
 
 static const char* kTag = "console";
@@ -60,8 +60,8 @@ CommandStatus(int argc, char** argv)
          (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
          (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log),
          (unsigned)settings->fram_flush_watermark_records);
-  const bool fram_full = (g_runtime->fram_full != NULL) ? *g_runtime->fram_full
-                                                        : false;
+  const bool fram_full =
+    (g_runtime->fram_full != NULL) ? *g_runtime->fram_full : false;
   printf("fram_full: %s\n", fram_full ? "yes" : "no");
 
   printf("calibration: degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
@@ -221,8 +221,7 @@ CommandLog(int argc, char** argv)
       return 1;
     }
     g_runtime->settings->sd_flush_period_ms = (uint32_t)period_ms;
-    esp_err_t result =
-      AppSettingsSaveSdFlushPeriodMs((uint32_t)period_ms);
+    esp_err_t result = AppSettingsSaveSdFlushPeriodMs((uint32_t)period_ms);
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -533,7 +532,8 @@ CommandDiagnostics(int argc, char** argv)
     return 2;
   }
 
-  if (mode == NULL || (strcmp(mode, "quick") != 0 && strcmp(mode, "full") != 0)) {
+  if (mode == NULL ||
+      (strcmp(mode, "quick") != 0 && strcmp(mode, "full") != 0)) {
     printf("missing or invalid mode (quick|full)\n");
     PrintDiagUsage();
     return 2;
@@ -583,8 +583,8 @@ CommandDiagnostics(int argc, char** argv)
       printf("Stop run mode first: run stop\n");
       overall = 1;
     } else {
-      overall |= RunDiagSd(
-        runtime, full, format_if_needed, mount, diag_verbosity);
+      overall |=
+        RunDiagSd(runtime, full, format_if_needed, mount, diag_verbosity);
     }
     if (strcmp(target, "sd") == 0) {
       return overall;
@@ -628,14 +628,15 @@ CommandDiagnostics(int argc, char** argv)
   }
 
   if (strcmp(target, "wifi") == 0 || strcmp(target, "all") == 0) {
-      overall |= RunDiagWifi(runtime, full, scan, connect, diag_verbosity);
+    overall |= RunDiagWifi(runtime, full, scan, connect, diag_verbosity);
     if (strcmp(target, "wifi") == 0) {
       return overall;
     }
   }
 
   if (strcmp(target, "mesh") == 0 || strcmp(target, "all") == 0) {
-      overall |= RunDiagMesh(runtime, full, start_mesh, stop_mesh, diag_verbosity);
+    overall |=
+      RunDiagMesh(runtime, full, start_mesh, stop_mesh, diag_verbosity);
     if (strcmp(target, "mesh") == 0) {
       return overall;
     }
@@ -686,16 +687,16 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&flush_cmd));
 
-  g_log_args.action =
-    arg_str1(NULL, NULL, "<action>", "interval|watermark|flush_period|batch|show");
+  g_log_args.action = arg_str1(
+    NULL, NULL, "<action>", "interval|watermark|flush_period|batch|show");
   g_log_args.interval_ms =
     arg_int0(NULL, NULL, "<ms>", "Logging interval in ms (for 'interval')");
-  g_log_args.watermark_records = arg_int0(
-    NULL, NULL, "<records>", "FRAM flush watermark (for 'watermark')");
-  g_log_args.flush_period_ms = arg_int0(
-    NULL, NULL, "<ms>", "Periodic SD flush ms (for 'flush_period')");
-  g_log_args.batch_bytes = arg_int0(
-    NULL, NULL, "<bytes>", "Batch target bytes (for 'batch')");
+  g_log_args.watermark_records =
+    arg_int0(NULL, NULL, "<records>", "FRAM flush watermark (for 'watermark')");
+  g_log_args.flush_period_ms =
+    arg_int0(NULL, NULL, "<ms>", "Periodic SD flush ms (for 'flush_period')");
+  g_log_args.batch_bytes =
+    arg_int0(NULL, NULL, "<bytes>", "Batch target bytes (for 'batch')");
   g_log_args.end = arg_end(5);
   const esp_console_cmd_t log_cmd = {
     .command = "log",
