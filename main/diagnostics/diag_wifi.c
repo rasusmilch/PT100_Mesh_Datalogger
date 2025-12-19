@@ -7,9 +7,14 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 
+#include "esp_event.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "nvs.h"
+#include "net_stack.h"
 #include "sdkconfig.h"
 #include "wifi_manager.h"
 
@@ -26,6 +31,20 @@ typedef struct
   char password[65];
   wifi_creds_source_t source;
 } wifi_credentials_t;
+
+typedef struct
+{
+  size_t free_8bit;
+  size_t free_total;
+  size_t min_free;
+} heap_snapshot_t;
+
+typedef struct
+{
+  esp_log_level_t wifi;
+  esp_log_level_t netif;
+  bool changed;
+} log_level_guard_t;
 
 static const char*
 AuthModeToString(wifi_auth_mode_t mode)
@@ -115,6 +134,63 @@ ReasonToString(wifi_err_reason_t reason)
     default:
       return "unknown";
   }
+}
+
+static const char*
+YesNo(bool value)
+{
+  return value ? "yes" : "no";
+}
+
+static heap_snapshot_t
+CaptureHeapSnapshot(void)
+{
+  heap_snapshot_t snapshot;
+  heap_caps_check_integrity_all(true);
+  snapshot.free_8bit = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+  snapshot.free_total = esp_get_free_heap_size();
+  snapshot.min_free = esp_get_minimum_free_heap_size();
+  return snapshot;
+}
+
+static void
+PrintHeapSnapshot(const diag_ctx_t* ctx,
+                  const char* label,
+                  const heap_snapshot_t* snapshot)
+{
+  if (ctx == NULL || ctx->verbosity < kDiagVerbosity1 || snapshot == NULL) {
+    return;
+  }
+  printf("      heap[%s]: free8=%u total=%u min=%u\n",
+         label,
+         (unsigned)snapshot->free_8bit,
+         (unsigned)snapshot->free_total,
+         (unsigned)snapshot->min_free);
+}
+
+static log_level_guard_t
+RaiseVerboseLogLevels(diag_verbosity_t verbosity)
+{
+  log_level_guard_t guard = { 0 };
+  if (verbosity < kDiagVerbosity1) {
+    return guard;
+  }
+  guard.wifi = esp_log_level_get("wifi");
+  guard.netif = esp_log_level_get("esp_netif");
+  esp_log_level_set("wifi", ESP_LOG_DEBUG);
+  esp_log_level_set("esp_netif", ESP_LOG_INFO);
+  guard.changed = true;
+  return guard;
+}
+
+static void
+RestoreLogLevels(const log_level_guard_t* guard)
+{
+  if (guard == NULL || !guard->changed) {
+    return;
+  }
+  esp_log_level_set("wifi", guard->wifi);
+  esp_log_level_set("esp_netif", guard->netif);
 }
 
 static void
@@ -215,6 +291,7 @@ RunDiagWifi(const app_runtime_t* runtime,
             bool keep_connected,
             diag_verbosity_t verbosity)
 {
+  (void)runtime;
   (void)full;
 
   diag_ctx_t ctx;
@@ -224,7 +301,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   LoadCredentials(&creds);
   const bool has_ssid = creds.ssid[0] != '\0';
 
-  const int total_steps = 2 + (scan ? 1 : 0) + (connect ? 1 : 0) +
+  const int total_steps = 4 + (scan ? 1 : 0) + (connect ? 1 : 0) +
                           (dns_lookup ? 1 : 0);
   int step = 1;
 
@@ -234,51 +311,98 @@ RunDiagWifi(const app_runtime_t* runtime,
                  total_steps,
                  "runtime idle",
                  runtime_running ? ESP_ERR_INVALID_STATE : ESP_OK,
-                 runtime_running ? "Stop run mode first: run stop" : "idle");
+                 runtime_running ? "stop runtime first: `run stop`" : "idle");
   if (runtime_running) {
     DiagPrintSummary(&ctx, total_steps);
     return 1;
   }
 
-  esp_err_t init_result = WifiManagerInit();
+  log_level_guard_t log_guard = RaiseVerboseLogLevels(verbosity);
+
+  heap_snapshot_t net_before = CaptureHeapSnapshot();
+  esp_err_t net_result = NetStackInitOnce();
+  heap_snapshot_t net_after = CaptureHeapSnapshot();
   DiagReportStep(&ctx,
                  step++,
                  total_steps,
-                 "init",
-                 init_result,
-                 "started=%s creds=%s",
-                 WifiManagerIsStarted() ? "yes" : "no",
-                 CredsSourceToString(creds.source));
-  if (init_result != ESP_OK) {
+                 "net stack",
+                 net_result,
+                 "heap8_before=%u heap8_after=%u min_free=%u",
+                 (unsigned)net_before.free_8bit,
+                 (unsigned)net_after.free_8bit,
+                 (unsigned)net_after.min_free);
+  PrintHeapSnapshot(&ctx, "net_before", &net_before);
+  PrintHeapSnapshot(&ctx, "net_after", &net_after);
+  if (net_result != ESP_OK) {
     DiagPrintSummary(&ctx, total_steps);
-    (void)WifiManagerDeinit();
+    RestoreLogLevels(&log_guard);
     return 1;
   }
+
+  wifi_manager_status_t before_status;
+  memset(&before_status, 0, sizeof(before_status));
+  WifiManagerGetStatus(&before_status);
+  heap_snapshot_t wifi_before = CaptureHeapSnapshot();
+  esp_err_t init_result = WifiManagerInit();
+  wifi_manager_status_t after_status;
+  memset(&after_status, 0, sizeof(after_status));
+  WifiManagerGetStatus(&after_status);
+  heap_snapshot_t wifi_after = CaptureHeapSnapshot();
+  const bool sta_created =
+    (!before_status.sta_netif_present && after_status.sta_netif_present);
+
+  DiagReportStep(&ctx,
+                 step++,
+                 total_steps,
+                 "wifi init",
+                 init_result,
+                 "sta_netif=%s (owned=%s created=%s) wifi_init_owned=%s handlers=%s/%s started=%s",
+                 YesNo(after_status.sta_netif_present),
+                 YesNo(after_status.owns_sta_netif),
+                 YesNo(sta_created),
+                 YesNo(after_status.owns_wifi_init),
+                 YesNo(after_status.wifi_handler_registered),
+                 YesNo(after_status.ip_handler_registered),
+                 YesNo(after_status.wifi_started));
+  PrintHeapSnapshot(&ctx, "wifi_init_before", &wifi_before);
+  PrintHeapSnapshot(&ctx, "wifi_init_after", &wifi_after);
 
   wifi_ap_record_t ap_records[20];
   memset(ap_records, 0, sizeof(ap_records));
   size_t ap_count = 0;
-  esp_err_t scan_result = ESP_OK;
+  esp_err_t scan_result = ESP_ERR_INVALID_STATE;
   if (scan) {
-    scan_result = WifiManagerScan(ap_records, 20, &ap_count);
+    heap_snapshot_t scan_before = CaptureHeapSnapshot();
+    if (init_result == ESP_OK) {
+      scan_result = WifiManagerScan(ap_records, 20, &ap_count);
+    }
     bool ssid_present = false;
     if (scan_result == ESP_OK && has_ssid) {
       for (size_t i = 0; i < ap_count; ++i) {
-        if (strncmp((const char*)ap_records[i].ssid, creds.ssid, sizeof(ap_records[i].ssid)) == 0) {
+        if (strncmp((const char*)ap_records[i].ssid,
+                    creds.ssid,
+                    sizeof(ap_records[i].ssid)) == 0) {
           ssid_present = true;
           break;
         }
       }
     }
 
+    heap_snapshot_t scan_after = CaptureHeapSnapshot();
     DiagReportStep(&ctx,
                    step++,
                    total_steps,
                    "scan",
                    scan_result,
-                   "aps=%u ssid_present=%s",
+                   "aps=%u ssid_present=%s heap8_before=%u heap8_after=%u min_free=%u",
                    (unsigned)ap_count,
-                   has_ssid ? (ssid_present ? "yes" : "no") : "n/a");
+                   has_ssid ? (ssid_present ? "yes" : "no") : "n/a",
+                   (unsigned)scan_before.free_8bit,
+                   (unsigned)scan_after.free_8bit,
+                   (unsigned)scan_after.min_free);
+    PrintHeapSnapshot(&ctx, "scan_before", &scan_before);
+    PrintHeapSnapshot(&ctx, "scan_after", &scan_after);
+
     if (scan_result == ESP_OK) {
       const size_t listed_count = (ap_count < (sizeof(ap_records) /
                                               sizeof(ap_records[0])))
@@ -290,14 +414,30 @@ RunDiagWifi(const app_runtime_t* runtime,
   }
 
   bool connected = false;
-  esp_err_t connect_result = ESP_OK;
+  esp_err_t connect_result = ESP_ERR_INVALID_STATE;
   if (connect) {
+    heap_snapshot_t connect_before = CaptureHeapSnapshot();
+    heap_snapshot_t connect_after = connect_before;
     if (!has_ssid) {
-      DiagReportStep(
-        &ctx, step++, total_steps, "connect", ESP_OK, "skipped: no SSID configured");
+      connect_result = ESP_OK;
+      DiagReportStep(&ctx,
+                     step++,
+                     total_steps,
+                     "connect",
+                     ESP_OK,
+                     "skipped: no SSID configured");
+    } else if (init_result != ESP_OK) {
+      DiagReportStep(&ctx,
+                     step++,
+                     total_steps,
+                     "connect",
+                     ESP_ERR_INVALID_STATE,
+                     "skipped: init failed");
     } else {
-      connect_result = WifiManagerConnectSta(creds.ssid, creds.password, 30000);
+      connect_result =
+        WifiManagerConnectSta(creds.ssid, creds.password, 30000);
       connected = (connect_result == ESP_OK);
+      connect_after = CaptureHeapSnapshot();
 
       if (connected) {
         esp_netif_ip_info_t ip_info;
@@ -318,13 +458,15 @@ RunDiagWifi(const app_runtime_t* runtime,
                        total_steps,
                        "connect",
                        (ip_result == ESP_OK) ? ESP_OK : ip_result,
-                       "ip=%s netmask=%s gw=%s rssi=%d ch=%u",
+                       "ip=%s netmask=%s gw=%s rssi=%d ch=%u heap8_before=%u heap8_after=%u min_free=%u",
                        ip,
                        mask,
                        gw,
                        (ap_info_result == ESP_OK) ? ap_info.rssi : 0,
-                       (ap_info_result == ESP_OK) ? (unsigned)ap_info.primary
-                                                  : 0U);
+                       (ap_info_result == ESP_OK) ? (unsigned)ap_info.primary : 0U,
+                       (unsigned)connect_before.free_8bit,
+                       (unsigned)connect_after.free_8bit,
+                       (unsigned)connect_after.min_free);
       } else {
         const wifi_err_reason_t reason = WifiManagerLastDisconnectReason();
         const int attempts = WifiManagerLastConnectAttempts();
@@ -333,15 +475,22 @@ RunDiagWifi(const app_runtime_t* runtime,
                        total_steps,
                        "connect",
                        connect_result,
-                       "attempts=%d reason=%d (%s)",
+                       "attempts=%d reason=%d (%s) heap8_before=%u heap8_after=%u min_free=%u",
                        attempts,
                        (int)reason,
-                       ReasonToString(reason));
+                       ReasonToString(reason),
+                       (unsigned)connect_before.free_8bit,
+                       (unsigned)connect_after.free_8bit,
+                       (unsigned)connect_after.min_free);
       }
     }
+    PrintHeapSnapshot(&ctx, "connect_before", &connect_before);
+    PrintHeapSnapshot(&ctx, "connect_after", &connect_after);
   }
 
   if (dns_lookup) {
+    heap_snapshot_t dns_before = CaptureHeapSnapshot();
+    heap_snapshot_t dns_after = dns_before;
     if (!connect) {
       DiagReportStep(&ctx,
                      step++,
@@ -363,13 +512,19 @@ RunDiagWifi(const app_runtime_t* runtime,
       hints.ai_family = AF_UNSPEC;
       struct addrinfo* results = NULL;
       const int gai_err = getaddrinfo(host, NULL, &hints, &results);
+      dns_after = CaptureHeapSnapshot();
       if (gai_err != 0 || results == NULL) {
         DiagReportStep(&ctx,
                        step++,
                        total_steps,
                        "dns",
                        ESP_FAIL,
-                       "host=%s err=%d", host, gai_err);
+                       "host=%s err=%d heap8_before=%u heap8_after=%u min_free=%u",
+                       host,
+                       gai_err,
+                       (unsigned)dns_before.free_8bit,
+                       (unsigned)dns_after.free_8bit,
+                       (unsigned)dns_after.min_free);
       } else {
         char addr_text[INET6_ADDRSTRLEN] = { 0 };
         int addr_count = 0;
@@ -392,18 +547,39 @@ RunDiagWifi(const app_runtime_t* runtime,
                        total_steps,
                        "dns",
                        ESP_OK,
-                       "host=%s resolved=%s",
+                       "host=%s resolved=%s heap8_before=%u heap8_after=%u min_free=%u",
                        host,
-                       resolved);
+                       resolved,
+                       (unsigned)dns_before.free_8bit,
+                       (unsigned)dns_after.free_8bit,
+                       (unsigned)dns_after.min_free);
       }
     }
+    PrintHeapSnapshot(&ctx, "dns_before", &dns_before);
+    PrintHeapSnapshot(&ctx, "dns_after", &dns_after);
   }
 
+  heap_snapshot_t teardown_before = CaptureHeapSnapshot();
+  esp_err_t teardown_result = ESP_OK;
   if (!keep_connected) {
     (void)WifiManagerDisconnectSta();
+    teardown_result = WifiManagerDeinit();
   }
-  (void)WifiManagerDeinit();
+  heap_snapshot_t teardown_after = CaptureHeapSnapshot();
+  DiagReportStep(&ctx,
+                 step++,
+                 total_steps,
+                 "teardown",
+                 teardown_result,
+                 "keep_connected=%s heap8_before=%u heap8_after=%u min_free=%u",
+                 YesNo(keep_connected),
+                 (unsigned)teardown_before.free_8bit,
+                 (unsigned)teardown_after.free_8bit,
+                 (unsigned)teardown_after.min_free);
+  PrintHeapSnapshot(&ctx, "teardown_before", &teardown_before);
+  PrintHeapSnapshot(&ctx, "teardown_after", &teardown_after);
 
   DiagPrintSummary(&ctx, total_steps);
+  RestoreLogLevels(&log_guard);
   return (ctx.steps_failed == 0) ? 0 : 1;
 }

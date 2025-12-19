@@ -6,6 +6,7 @@
 #include "runtime_manager.h"
 
 static const char* kTag = "app";
+static const app_runtime_t* g_runtime = NULL;
 
 static void
 InitNvs(void)
@@ -38,9 +39,9 @@ app_main(void)
     ESP_LOGE(kTag, "Runtime init reported error: %s", esp_err_to_name(runtime_result));
   }
 
-  const app_runtime_t* runtime = RuntimeGetRuntime();
-  if (runtime != NULL) {
-    ESP_ERROR_CHECK(ConsoleCommandsStart((app_runtime_t*)runtime, boot_mode));
+  g_runtime = RuntimeGetRuntime();
+  if (g_runtime != NULL) {
+    ESP_ERROR_CHECK(ConsoleCommandsStart((app_runtime_t*)g_runtime, boot_mode));
   } else {
     ESP_LOGE(kTag, "Runtime unavailable; console not started");
     return;

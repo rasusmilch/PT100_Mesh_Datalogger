@@ -12,6 +12,7 @@ idf_component_register(
     "diagnostics/diag_rtd.c"
     "diagnostics/diag_sd.c"
     "diagnostics/diag_wifi.c"
+    "net_stack.c"
     "crc16.c"
     "fram_i2c.c"
     "fram_log.c"
