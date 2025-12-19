@@ -12,6 +12,19 @@
 extern "C" {
 #endif
 
+  typedef struct
+  {
+    bool sta_netif_present;
+    bool owns_sta_netif;
+    bool wifi_initialized;
+    bool owns_wifi_init;
+    bool wifi_handler_registered;
+    bool ip_handler_registered;
+    bool wifi_started;
+    bool started_by_manager;
+    bool wifi_connected;
+  } wifi_manager_status_t;
+
 esp_err_t WifiManagerInit(void);
 
 esp_err_t WifiManagerDeinit(void);
@@ -35,6 +48,8 @@ esp_err_t WifiManagerGetIpInfo(esp_netif_ip_info_t* out_ip);
 wifi_err_reason_t WifiManagerLastDisconnectReason(void);
 
 int WifiManagerLastConnectAttempts(void);
+
+void WifiManagerGetStatus(wifi_manager_status_t* out_status);
 
 #ifdef __cplusplus
 }
