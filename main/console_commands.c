@@ -464,11 +464,39 @@ CommandRun(int argc, char** argv)
   return 1;
 }
 
+static void
+PrintDiagUsage(void)
+{
+  printf("diag help\n");
+  printf("diag all quick|full [--verbose N]\n");
+  printf("diag sd quick|full [--format-if-needed] [--mount] [--verbose N]\n");
+  printf("diag fram quick|full [--bytes N] [--verbose N]\n");
+  printf("diag rtd quick|full [--samples N] [--verbose N]\n");
+  printf("diag rtc quick|full [--set-known] [--verbose N]\n");
+  printf("diag wifi quick|full [--scan] [--connect] [--verbose N]\n");
+  printf("diag mesh quick|full [--start] [--stop] [--verbose N]\n");
+}
+
+static bool
+ParseVerbose(const char* value, int* verbosity_out)
+{
+  if (value == NULL || verbosity_out == NULL) {
+    return false;
+  }
+  char* end = NULL;
+  const long parsed = strtol(value, &end, 10);
+  if (end == NULL || *end != '\0') {
+    return false;
+  }
+  *verbosity_out = (int)parsed;
+  return true;
+}
+
 static int
 CommandDiagnostics(int argc, char** argv)
 {
   if (argc < 2) {
-    printf("usage: diag help | diag all quick|full [--verbose N]\n");
+    PrintDiagUsage();
     return 2;
   }
 
@@ -487,31 +515,38 @@ CommandDiagnostics(int argc, char** argv)
   const app_runtime_t* runtime = RuntimeGetRuntime();
 
   if (strcmp(target, "help") == 0) {
-    printf("diag help\n");
-    printf("diag all quick|full [--verbose N]\n");
-    printf("diag sd quick|full [--format-if-needed] [--mount] [--verbose N]\n");
-    printf("diag fram quick|full [--bytes N] [--verbose N]\n");
-    printf("diag rtd quick|full [--samples N] [--verbose N]\n");
-    printf("diag rtc quick|full [--set-known] [--verbose N]\n");
-    printf("diag wifi quick|full [--scan] [--connect] [--verbose N]\n");
-    printf("diag mesh quick|full [--start] [--stop] [--verbose N]\n");
+    PrintDiagUsage();
     return 0;
   }
 
+  const bool target_requires_mode =
+    strcmp(target, "all") == 0 || strcmp(target, "sd") == 0 ||
+    strcmp(target, "fram") == 0 || strcmp(target, "rtc") == 0 ||
+    strcmp(target, "rtd") == 0 || strcmp(target, "wifi") == 0 ||
+    strcmp(target, "mesh") == 0;
   const char* mode = (argc > 2) ? argv[2] : NULL;
   if (strcmp(target, "check") == 0) {
     target = "all";
     mode = "quick";
+  } else if (!target_requires_mode) {
+    printf("unknown diag target. try 'diag help'\n");
+    return 2;
   }
 
   if (mode == NULL || (strcmp(mode, "quick") != 0 && strcmp(mode, "full") != 0)) {
     printf("missing or invalid mode (quick|full)\n");
+    PrintDiagUsage();
     return 2;
   }
 
   for (int i = 3; i < argc; ++i) {
     if (strcmp(argv[i], "--verbose") == 0 && (i + 1) < argc) {
-      verbosity = atoi(argv[++i]);
+      if (!ParseVerbose(argv[i + 1], &verbosity)) {
+        printf("--verbose requires an integer value\n");
+        PrintDiagUsage();
+        return 2;
+      }
+      ++i;
     } else if (strcmp(argv[i], "--format-if-needed") == 0) {
       format_if_needed = true;
     } else if (strcmp(argv[i], "--mount") == 0) {
@@ -532,6 +567,7 @@ CommandDiagnostics(int argc, char** argv)
       stop_mesh = true;
     } else {
       printf("unknown option: %s\n", argv[i]);
+      PrintDiagUsage();
       return 2;
     }
   }
