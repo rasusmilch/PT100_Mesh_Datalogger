@@ -18,6 +18,7 @@ idf_component_register(
     "fram_spi.c"
     "i2c_bus.c"
     "max31865_reader.c"
+    "pt100_table.c"
     "mesh_transport.c"
     "runtime_manager.c"
     "sd_csv_verify.c"

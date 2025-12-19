@@ -75,6 +75,63 @@ config APP_MAX31865_CS_GPIO
   range -1 48
   default 10
 
+config APP_MAX31865_RREF_OHMS
+  int "MAX31865 reference resistor (ohms)"
+  range 10 100000
+  default 430
+
+config APP_RTD_R0_OHMS
+  int "RTD nominal resistance at 0°C (ohms)"
+  range 10 100000
+  default 100
+
+config APP_MAX31865_BIAS_SETTLE_MS
+  int "MAX31865 bias settle delay (ms)"
+  range 0 500
+  default 10
+  help
+    Extra delay after enabling VBIAS to allow RC filters on the RTD input to
+    settle before starting a one-shot conversion.
+
+choice APP_MAX31865_WIRES
+  prompt "MAX31865 wiring mode"
+  default APP_MAX31865_WIRES_4
+
+config APP_MAX31865_WIRES_2
+  bool "2-wire (highest lead error)"
+
+config APP_MAX31865_WIRES_3
+  bool "3-wire (lead compensation enabled)"
+
+config APP_MAX31865_WIRES_4
+  bool "4-wire (best accuracy)"
+
+endchoice
+
+choice APP_MAX31865_FILTER
+  prompt "MAX31865 notch filter"
+  default APP_MAX31865_FILTER_50HZ
+
+config APP_MAX31865_FILTER_50HZ
+  bool "50 Hz"
+
+config APP_MAX31865_FILTER_60HZ
+  bool "60 Hz"
+
+endchoice
+
+choice APP_MAX31865_CONVERSION
+  prompt "RTD temperature conversion method"
+  default APP_MAX31865_CONVERSION_TABLE_PT100
+
+config APP_MAX31865_CONVERSION_TABLE_PT100
+  bool "ITS-90 PT100 table (binary search + interpolation)"
+
+config APP_MAX31865_CONVERSION_CVD_ITERATIVE
+  bool "Callendar–Van Dusen iterative solve"
+
+endchoice
+
 config APP_SD_CS_GPIO
   int "SD card CS GPIO"
   range -1 48

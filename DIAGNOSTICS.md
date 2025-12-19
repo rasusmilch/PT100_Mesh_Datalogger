@@ -13,7 +13,7 @@ Available routes:
 - `diag all quick|full [--verbose N]`
 - `diag sd quick|full [--format-if-needed] [--mount] [--verbose N]`
 - `diag fram quick|full [--bytes N] [--verbose N]`
-- `diag rtd quick|full [--samples N] [--verbose N]`
+- `diag rtd quick|full [--samples N] [--delay_ms M] [--verbose N]`
 - `diag rtc quick|full [--set-known] [--verbose N]`
 - `diag wifi quick|full [--scan] [--connect] [--verbose N]`
 - `diag mesh quick|full [--start] [--stop] [--verbose N]`
