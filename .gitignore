@@ -84,3 +84,4 @@ Desktop.ini
 *.swo
 *~
 build/CMakeFiles/git-data/head-ref
+main/logger.zip
