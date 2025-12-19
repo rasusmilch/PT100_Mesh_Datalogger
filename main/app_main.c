@@ -4,6 +4,8 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "runtime_manager.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char* kTag = "app";
 static const app_runtime_t* g_runtime = NULL;
@@ -58,4 +60,10 @@ app_main(void)
 
   ESP_LOGI(kTag, "Boot complete (boot_mode=%s)",
            (boot_mode == APP_BOOT_MODE_RUN) ? "run" : "diagnostics");
+
+  // Keep the main task alive so any referenced state tied to its stack frame
+  // is preserved while background tasks execute.
+  while (true) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
 }

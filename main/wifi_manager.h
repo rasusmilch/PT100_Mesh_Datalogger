@@ -29,6 +29,10 @@ esp_err_t WifiManagerInit(void);
 
 esp_err_t WifiManagerDeinit(void);
 
+// Stops Wi-Fi without deinitializing esp_wifi or destroying the netif. This
+// is useful when ownership is controlled elsewhere (e.g., Wi-Fi service).
+esp_err_t WifiManagerStop(void);
+
 esp_err_t WifiManagerScan(wifi_ap_record_t* out_records,
                           size_t max_records,
                           size_t* out_count);

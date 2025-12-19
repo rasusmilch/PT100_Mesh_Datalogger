@@ -23,6 +23,8 @@ RunDiagSd(const app_runtime_t* runtime,
   DiagInitCtx(&ctx, "SD", verbosity);
   const int total_steps = full ? 4 : 2;
 
+  DiagHeapCheck(&ctx, "pre_sd_diag");
+
   if (runtime == NULL || runtime->sd_logger == NULL) {
     DiagReportStep(&ctx, 1, total_steps, "runtime available", ESP_ERR_INVALID_STATE, "runtime not initialized");
     DiagPrintSummary(&ctx, total_steps);
@@ -83,6 +85,7 @@ RunDiagSd(const app_runtime_t* runtime,
     DiagReportStep(&ctx, 4, total_steps, "last seq", ESP_OK, "last_sequence=%u", (unsigned)SdLoggerLastSequenceOnSd(runtime->sd_logger));
   }
 
+  DiagHeapCheck(&ctx, "post_sd_diag");
   DiagPrintSummary(&ctx, total_steps);
   return (ctx.steps_failed == 0) ? 0 : 1;
 }

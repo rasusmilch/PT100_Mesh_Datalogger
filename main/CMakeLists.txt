@@ -24,6 +24,7 @@ idf_component_register(
     "runtime_manager.c"
     "sd_csv_verify.c"
     "sd_logger.c"
+    "wifi_service.c"
     "wifi_manager.c"
     "time_sync.c"
   INCLUDE_DIRS "."

@@ -54,6 +54,10 @@ extern "C"
   // TIME_SYNC).
   esp_err_t MeshTransportRequestTime(const mesh_transport_t* mesh);
 
+  // Stops mesh transport and underlying Wi-Fi activity without deinitializing
+  // esp_wifi.
+  esp_err_t MeshTransportStop(mesh_transport_t* mesh);
+
 #ifdef __cplusplus
 }
 #endif

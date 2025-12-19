@@ -12,7 +12,9 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "net_stack.h"
 #include "nvs_flash.h"
+#include "wifi_service.h"
 
 static const char* kTag = "mesh";
 
@@ -34,6 +36,8 @@ typedef struct
 #pragma pack(pop)
 
 static mesh_transport_t* g_mesh = NULL;
+static esp_netif_t* g_mesh_netif_sta = NULL;
+static esp_netif_t* g_mesh_netif_ap = NULL;
 
 static bool
 ParseMeshIdFromConfig(const char* mesh_id_string, uint8_t* mesh_id_out)
@@ -186,26 +190,51 @@ InitWifiAndMesh(bool is_root,
                 const char* router_ssid,
                 const char* router_password)
 {
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_err_t net_result = NetStackInitOnce();
+  if (net_result != ESP_OK) {
+    return net_result;
+  }
 
-  esp_netif_t* netif_sta = NULL;
-  esp_netif_t* netif_ap = NULL;
-  ESP_ERROR_CHECK(
-    esp_netif_create_default_wifi_mesh_netifs(&netif_sta, &netif_ap));
+  if (g_mesh_netif_sta == NULL || g_mesh_netif_ap == NULL) {
+    esp_err_t netif_result = esp_netif_create_default_wifi_mesh_netifs(
+      &g_mesh_netif_sta, &g_mesh_netif_ap);
+    if (netif_result != ESP_OK) {
+      ESP_LOGE(
+        kTag, "failed to create mesh netifs: %s", esp_err_to_name(netif_result));
+      return netif_result;
+    }
+  }
 
   wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&wifi_config));
+  esp_err_t wifi_result = esp_wifi_init(&wifi_config);
+  if (wifi_result != ESP_OK && wifi_result != ESP_ERR_WIFI_INIT_STATE) {
+    ESP_LOGE(kTag, "esp_wifi_init failed: %s", esp_err_to_name(wifi_result));
+    return wifi_result;
+  }
 
   // MESH uses both STA and SoftAP.
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-  ESP_ERROR_CHECK(esp_wifi_start());
+  esp_err_t start_result = esp_wifi_start();
+  if (start_result != ESP_OK && start_result != ESP_ERR_WIFI_CONN &&
+      start_result != ESP_ERR_WIFI_STATE) {
+    ESP_LOGE(kTag, "esp_wifi_start failed: %s", esp_err_to_name(start_result));
+    return start_result;
+  }
 
-  ESP_ERROR_CHECK(esp_event_handler_register(
-    MESH_EVENT, ESP_EVENT_ANY_ID, &MeshEventHandler, NULL));
+  esp_err_t handler_result = esp_event_handler_register(
+    MESH_EVENT, ESP_EVENT_ANY_ID, &MeshEventHandler, NULL);
+  if (handler_result != ESP_OK && handler_result != ESP_ERR_INVALID_STATE) {
+    ESP_LOGE(
+      kTag, "mesh event handler register failed: %s", esp_err_to_name(handler_result));
+    return handler_result;
+  }
 
-  ESP_ERROR_CHECK(esp_mesh_init());
+  esp_err_t mesh_init_result = esp_mesh_init();
+  if (mesh_init_result != ESP_OK && mesh_init_result != ESP_ERR_MESH_INIT_STATE) {
+    ESP_LOGE(kTag, "esp_mesh_init failed: %s", esp_err_to_name(mesh_init_result));
+    return mesh_init_result;
+  }
   ESP_ERROR_CHECK(esp_mesh_set_max_layer(6));
   ESP_ERROR_CHECK(esp_mesh_set_vote_percentage(1.0f));
   ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(30));
@@ -245,7 +274,11 @@ InitWifiAndMesh(bool is_root,
     ESP_ERROR_CHECK(esp_mesh_set_type(MESH_NODE));
   }
 
-  ESP_ERROR_CHECK(esp_mesh_start());
+  esp_err_t mesh_start_result = esp_mesh_start();
+  if (mesh_start_result != ESP_OK) {
+    ESP_LOGE(kTag, "esp_mesh_start failed: %s", esp_err_to_name(mesh_start_result));
+    return mesh_start_result;
+  }
   ESP_LOGI(kTag, "mesh started (is_root=%d)", (int)is_root);
   return ESP_OK;
 }
@@ -270,10 +303,19 @@ MeshTransportStart(mesh_transport_t* mesh,
 
   g_mesh = mesh;
 
+  esp_err_t svc_result = WifiServiceStart(WIFI_SERVICE_MODE_MESH);
+  if (svc_result != ESP_OK) {
+    return svc_result;
+  }
+
   esp_err_t result = InitWifiAndMesh(is_root, router_ssid, router_password);
   if (result != ESP_OK) {
+    (void)WifiServiceStop();
     return result;
   }
+
+  mesh->is_started = true;
+  mesh->is_connected = false;
 
   xTaskCreate(MeshRxTask, "mesh_rx", 4096, NULL, 5, NULL);
   return ESP_OK;
@@ -361,4 +403,38 @@ MeshTransportRequestTime(const mesh_transport_t* mesh)
   message.type = MESH_MSG_TYPE_TIME_REQUEST;
   message.epoch_seconds = 0;
   return SendMessageTo(mesh, &mesh->root_address, &message);
+}
+
+esp_err_t
+MeshTransportStop(mesh_transport_t* mesh)
+{
+  if (mesh == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  mesh->is_connected = false;
+  if (!mesh->is_started) {
+    return ESP_OK;
+  }
+
+  esp_err_t result = esp_mesh_stop();
+  if (result == ESP_ERR_MESH_NOT_STARTED) {
+    result = ESP_OK;
+  }
+  mesh->is_started = false;
+
+  esp_err_t wifi_result = esp_wifi_stop();
+  if (wifi_result == ESP_ERR_WIFI_NOT_INIT ||
+      wifi_result == ESP_ERR_WIFI_NOT_STARTED) {
+    wifi_result = ESP_OK;
+  }
+
+  if (WifiServiceActiveMode() == WIFI_SERVICE_MODE_MESH) {
+    esp_err_t svc_result = WifiServiceStop();
+    if (result == ESP_OK && wifi_result == ESP_OK && svc_result != ESP_OK) {
+      result = svc_result;
+    }
+  }
+
+  return (result == ESP_OK) ? wifi_result : result;
 }

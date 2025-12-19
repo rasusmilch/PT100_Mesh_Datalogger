@@ -127,7 +127,7 @@ EnsureEventGroup(void)
 }
 
 static esp_err_t
-CleanupLocked(void)
+CleanupLocked(bool release_resources)
 {
   esp_err_t result = ESP_OK;
   s_wifi_connected = false;
@@ -155,23 +155,31 @@ CleanupLocked(void)
   }
 
   if (s_wifi_handler_registered && s_wifi_handler != NULL) {
-    (void)esp_event_handler_instance_unregister(
-      WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_handler);
-  }
-  s_wifi_handler_registered = false;
-  s_wifi_handler = NULL;
-
-  if (s_ip_handler_registered && s_ip_handler != NULL) {
-    esp_err_t unregister_result = esp_event_handler_instance_unregister(
-      IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
-    if (result == ESP_OK && unregister_result != ESP_OK) {
-      result = unregister_result;
+    if (release_resources) {
+      (void)esp_event_handler_instance_unregister(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_handler);
     }
   }
-  s_ip_handler_registered = false;
-  s_ip_handler = NULL;
+  if (release_resources) {
+    s_wifi_handler_registered = false;
+    s_wifi_handler = NULL;
+  }
 
-  if (s_owns_wifi_init) {
+  if (s_ip_handler_registered && s_ip_handler != NULL) {
+    if (release_resources) {
+      esp_err_t unregister_result = esp_event_handler_instance_unregister(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
+      if (result == ESP_OK && unregister_result != ESP_OK) {
+        result = unregister_result;
+      }
+    }
+  }
+  if (release_resources) {
+    s_ip_handler_registered = false;
+    s_ip_handler = NULL;
+  }
+
+  if (release_resources && s_owns_wifi_init) {
     esp_err_t deinit_result = esp_wifi_deinit();
     if (deinit_result == ESP_ERR_WIFI_NOT_INIT) {
       deinit_result = ESP_OK;
@@ -183,7 +191,7 @@ CleanupLocked(void)
     s_owns_wifi_init = false;
   }
 
-  if (s_owns_sta_netif && s_sta_netif != NULL) {
+  if (release_resources && s_owns_sta_netif && s_sta_netif != NULL) {
     esp_netif_destroy(s_sta_netif);
     s_sta_netif = NULL;
     s_owns_sta_netif = false;
@@ -263,7 +271,7 @@ WifiManagerInit(void)
     } else {
       ESP_LOGE(
         kTag, "wifi handler register failed: %s", esp_err_to_name(result));
-      CleanupLocked();
+      CleanupLocked(true);
       Unlock();
       return result;
     }
@@ -280,7 +288,7 @@ WifiManagerInit(void)
       result = ESP_OK;
     } else {
       ESP_LOGE(kTag, "ip handler register failed: %s", esp_err_to_name(result));
-      CleanupLocked();
+      CleanupLocked(true);
       Unlock();
       return result;
     }
@@ -289,7 +297,7 @@ WifiManagerInit(void)
   result = esp_wifi_set_mode(WIFI_MODE_STA);
   if (result != ESP_OK) {
     ESP_LOGE(kTag, "esp_wifi_set_mode failed: %s", esp_err_to_name(result));
-    CleanupLocked();
+    CleanupLocked(true);
     Unlock();
     return result;
   }
@@ -304,7 +312,7 @@ WifiManagerInit(void)
     result = ESP_OK;
   } else {
     ESP_LOGE(kTag, "esp_wifi_start failed: %s", esp_err_to_name(result));
-    CleanupLocked();
+    CleanupLocked(true);
     Unlock();
     return result;
   }
@@ -321,7 +329,21 @@ WifiManagerDeinit(void)
     return lock_result;
   }
 
-  esp_err_t result = CleanupLocked();
+  esp_err_t result = CleanupLocked(true);
+
+  Unlock();
+  return result;
+}
+
+esp_err_t
+WifiManagerStop(void)
+{
+  esp_err_t lock_result = Lock(pdMS_TO_TICKS(5000));
+  if (lock_result != ESP_OK) {
+    return lock_result;
+  }
+
+  esp_err_t result = CleanupLocked(false);
 
   Unlock();
   return result;

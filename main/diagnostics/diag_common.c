@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
+
 void
 DiagInitCtx(diag_ctx_t* ctx, const char* name, diag_verbosity_t verbosity)
 {
@@ -101,4 +103,16 @@ DiagPrintErrno(const char* prefix)
     printf("%s: ", prefix);
   }
   printf("errno=%d (%s)", errno, strerror(errno));
+}
+
+void
+DiagHeapCheck(const diag_ctx_t* ctx, const char* label)
+{
+  if (ctx == NULL || ctx->verbosity < kDiagVerbosity2) {
+    return;
+  }
+  if (label != NULL) {
+    printf("      heap_check[%s]\n", label);
+  }
+  heap_caps_check_integrity_all(true);
 }
