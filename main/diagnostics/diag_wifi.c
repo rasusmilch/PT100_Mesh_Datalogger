@@ -321,7 +321,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   WifiManagerGetStatus(&before_status);
   heap_snapshot_t wifi_before = CaptureHeapSnapshot();
   DiagHeapCheck(&ctx, "pre_wifi_start");
-  esp_err_t init_result = WifiServiceStart(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
+  esp_err_t init_result = WifiServiceAcquire(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
   wifi_manager_status_t after_status;
   memset(&after_status, 0, sizeof(after_status));
   WifiManagerGetStatus(&after_status);
@@ -335,11 +335,10 @@ RunDiagWifi(const app_runtime_t* runtime,
                  total_steps,
                  "wifi init",
                  init_result,
-                 "sta_netif=%s (owned=%s created=%s) wifi_init_owned=%s handlers=%s/%s started=%s",
+                 "sta_netif=%s (owned=%s created=%s) handlers=%s/%s started=%s",
                  YesNo(after_status.sta_netif_present),
                  YesNo(after_status.owns_sta_netif),
                  YesNo(sta_created),
-                 YesNo(after_status.owns_wifi_init),
                  YesNo(after_status.wifi_handler_registered),
                  YesNo(after_status.ip_handler_registered),
                  YesNo(after_status.wifi_started));
@@ -548,7 +547,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   DiagHeapCheck(&ctx, "pre_teardown");
   esp_err_t teardown_result = ESP_OK;
   if (!keep_connected) {
-    teardown_result = WifiServiceStop();
+    teardown_result = WifiServiceRelease();
   }
   heap_snapshot_t teardown_after = CaptureHeapSnapshot();
   DiagHeapCheck(&ctx, "post_teardown");

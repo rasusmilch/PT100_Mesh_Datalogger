@@ -811,7 +811,7 @@ RuntimeStart(void)
   const char* router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
 
   if (!g_state.mesh_started) {
-    esp_err_t wifi_result = WifiServiceStart(WIFI_SERVICE_MODE_MESH);
+    esp_err_t wifi_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
     if (wifi_result != ESP_OK) {
       ESP_LOGE(kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
       return wifi_result;
@@ -829,7 +829,7 @@ RuntimeStart(void)
       g_state.mesh_started = true;
     } else {
       ESP_LOGE(kTag, "Mesh start failed: %s", esp_err_to_name(mesh_result));
-      (void)WifiServiceStop();
+      (void)WifiServiceRelease();
       return mesh_result;
     }
   }
@@ -899,7 +899,7 @@ RuntimeStop(void)
   if (g_state.mesh_started) {
     (void)MeshTransportStop(&g_state.mesh);
     g_state.mesh_started = false;
-    (void)WifiServiceStop();
+    (void)WifiServiceRelease();
   }
 
   SdLoggerClose(&g_state.sd_logger);

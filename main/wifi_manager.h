@@ -17,7 +17,6 @@ extern "C" {
     bool sta_netif_present;
     bool owns_sta_netif;
     bool wifi_initialized;
-    bool owns_wifi_init;
     bool wifi_handler_registered;
     bool ip_handler_registered;
     bool wifi_started;
@@ -46,6 +45,10 @@ esp_err_t WifiManagerDisconnectSta(void);
 bool WifiManagerIsStarted(void);
 
 bool WifiManagerIsConnected(void);
+
+// Notifies the manager that Wi-Fi has been started elsewhere (e.g., Wi-Fi
+// service). This keeps internal state consistent when ownership is shared.
+void WifiManagerNotifyWifiStarted(void);
 
 esp_err_t WifiManagerGetIpInfo(esp_netif_ip_info_t* out_ip);
 

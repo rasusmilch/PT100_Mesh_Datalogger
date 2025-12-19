@@ -18,12 +18,13 @@ extern "C" {
 // Safe to call multiple times.
 esp_err_t WifiServiceInitOnce(void);
 
-// Starts the Wi-Fi service for the requested mode. Returns
-// ESP_ERR_INVALID_STATE when another mode is already active.
-esp_err_t WifiServiceStart(wifi_service_mode_t mode);
+// Acquires the Wi-Fi service for the requested mode, initializing and starting
+// esp_wifi on first use. Returns ESP_ERR_INVALID_STATE if a different mode is
+// already active.
+esp_err_t WifiServiceAcquire(wifi_service_mode_t mode);
 
-// Stops the active Wi-Fi service mode without deinitializing esp_wifi.
-esp_err_t WifiServiceStop(void);
+// Releases the Wi-Fi service. Stops esp_wifi when the last user releases.
+esp_err_t WifiServiceRelease(void);
 
 // Returns the currently active service mode.
 wifi_service_mode_t WifiServiceActiveMode(void);
