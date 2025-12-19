@@ -12,7 +12,6 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "net_stack.h"
 
 static const char* kTag = "wifi_mgr";
 
@@ -27,7 +26,6 @@ static esp_event_handler_instance_t s_ip_handler = NULL;
 static bool s_wifi_initialized = false;
 static bool s_wifi_started = false;
 static bool s_wifi_connected = false;
-static bool s_owns_wifi_init = false;
 static bool s_owns_sta_netif = false;
 static bool s_wifi_handler_registered = false;
 static bool s_ip_handler_registered = false;
@@ -163,21 +161,13 @@ CleanupLocked(bool release_resources)
   s_last_disconnect_reason = WIFI_REASON_UNSPECIFIED;
 
   // Stop/disconnect only if we started Wi-Fi in this module.
-  if (s_wifi_started) {
-    if (s_started_by_manager) {
-      esp_err_t disconnect_result = esp_wifi_disconnect();
-      if (disconnect_result != ESP_OK &&
-          disconnect_result != ESP_ERR_WIFI_NOT_INIT &&
-          disconnect_result != ESP_ERR_WIFI_NOT_STARTED &&
-          disconnect_result != ESP_ERR_WIFI_NOT_CONNECT && result == ESP_OK) {
-        result = disconnect_result;
-      }
-
-      esp_err_t stop_result = esp_wifi_stop();
-      if (stop_result != ESP_OK && stop_result != ESP_ERR_WIFI_NOT_INIT &&
-          stop_result != ESP_ERR_WIFI_NOT_STARTED && result == ESP_OK) {
-        result = stop_result;
-      }
+  if (s_wifi_started && s_started_by_manager) {
+    esp_err_t disconnect_result = esp_wifi_disconnect();
+    if (disconnect_result != ESP_OK &&
+        disconnect_result != ESP_ERR_WIFI_NOT_INIT &&
+        disconnect_result != ESP_ERR_WIFI_NOT_STARTED &&
+        disconnect_result != ESP_ERR_WIFI_NOT_CONNECT && result == ESP_OK) {
+      result = disconnect_result;
     }
 
     s_wifi_started = false;
@@ -210,20 +200,6 @@ CleanupLocked(bool release_resources)
     s_ip_handler = NULL;
   }
 
-  // Deinit Wi-Fi only if we truly own init AND caller asked to release
-  // resources.
-  if (release_resources && s_owns_wifi_init) {
-    esp_err_t deinit_result = esp_wifi_deinit();
-    if (deinit_result == ESP_ERR_WIFI_NOT_INIT) {
-      deinit_result = ESP_OK;
-    }
-    if (result == ESP_OK && deinit_result != ESP_OK) {
-      result = deinit_result;
-    }
-    s_wifi_initialized = false;
-    s_owns_wifi_init = false;
-  }
-
   // Destroy netif only if we created it AND caller asked to release resources.
   if (release_resources && s_owns_sta_netif && s_sta_netif != NULL) {
     esp_netif_destroy(s_sta_netif);
@@ -253,12 +229,6 @@ WifiManagerInit(void)
     return result;
   }
 
-  result = NetStackInitOnce();
-  if (result != ESP_OK) {
-    Unlock();
-    return result;
-  }
-
   if (s_sta_netif == NULL) {
     esp_netif_t* existing = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (existing != NULL) {
@@ -276,23 +246,9 @@ WifiManagerInit(void)
   }
 
   if (!s_wifi_initialized) {
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    result = esp_wifi_init(&cfg);
-    if (result == ESP_OK) {
-      s_wifi_initialized = true;
-      s_owns_wifi_init = true;
-    } else if (result == ESP_ERR_WIFI_INIT_STATE ||
-               result == ESP_ERR_WIFI_STATE) {
-      s_wifi_initialized = true;
-      s_owns_wifi_init = false;
-      result = ESP_OK;
-    } else {
-      ESP_LOGE(kTag, "esp_wifi_init failed: %s", esp_err_to_name(result));
-      CleanupReleaseResourcesLocked();
-      Unlock();
-      return result;
-    }
+    s_wifi_initialized = true;
   }
+  s_started_by_manager = true;
 
   if (!s_wifi_handler_registered) {
     result = esp_event_handler_instance_register(
@@ -325,21 +281,6 @@ WifiManagerInit(void)
   result = esp_wifi_set_mode(WIFI_MODE_STA);
   if (result != ESP_OK) {
     ESP_LOGE(kTag, "esp_wifi_set_mode failed: %s", esp_err_to_name(result));
-    CleanupReleaseResourcesLocked();
-    Unlock();
-    return result;
-  }
-
-  result = esp_wifi_start();
-  if (result == ESP_OK) {
-    s_wifi_started = true;
-    s_started_by_manager = true;
-  } else if (result == ESP_ERR_WIFI_CONN || result == ESP_ERR_WIFI_STATE) {
-    s_wifi_started = true;
-    s_started_by_manager = false;
-    result = ESP_OK;
-  } else {
-    ESP_LOGE(kTag, "esp_wifi_start failed: %s", esp_err_to_name(result));
     CleanupReleaseResourcesLocked();
     Unlock();
     return result;
@@ -580,7 +521,6 @@ WifiManagerGetStatus(wifi_manager_status_t* out_status)
   out_status->sta_netif_present = (s_sta_netif != NULL);
   out_status->owns_sta_netif = s_owns_sta_netif;
   out_status->wifi_initialized = s_wifi_initialized;
-  out_status->owns_wifi_init = s_owns_wifi_init;
   out_status->wifi_handler_registered = s_wifi_handler_registered;
   out_status->ip_handler_registered = s_ip_handler_registered;
   out_status->wifi_started = s_wifi_started;
@@ -600,6 +540,19 @@ bool
 WifiManagerIsConnected(void)
 {
   return s_wifi_connected;
+}
+
+void
+WifiManagerNotifyWifiStarted(void)
+{
+  if (Lock(pdMS_TO_TICKS(1000)) != ESP_OK) {
+    return;
+  }
+
+  s_wifi_started = true;
+  s_started_by_manager = true;
+
+  Unlock();
 }
 
 esp_err_t
