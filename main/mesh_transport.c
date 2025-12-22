@@ -264,6 +264,12 @@ InitWifiAndMesh(bool is_root,
   return ESP_OK;
 }
 
+bool
+MeshTransportIsStarted(const mesh_transport_t* mesh)
+{
+  return mesh != NULL && mesh->is_started;
+}
+
 esp_err_t
 MeshTransportStart(mesh_transport_t* mesh,
                    bool is_root,
@@ -306,6 +312,21 @@ bool
 MeshTransportIsConnected(const mesh_transport_t* mesh)
 {
   return mesh != NULL && mesh->is_connected;
+}
+
+esp_err_t
+MeshTransportGetRootAddress(const mesh_transport_t* mesh,
+                            mesh_addr_t* root_out)
+{
+  if (mesh == NULL || root_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!mesh->is_started) {
+    memset(root_out, 0, sizeof(*root_out));
+    return ESP_ERR_INVALID_STATE;
+  }
+  memcpy(root_out, &mesh->root_address, sizeof(*root_out));
+  return ESP_OK;
 }
 
 esp_err_t
