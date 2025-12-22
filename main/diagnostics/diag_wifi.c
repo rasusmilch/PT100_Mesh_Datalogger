@@ -359,225 +359,225 @@ RunDiagWifi(const app_runtime_t* runtime,
     if (init_result == ESP_OK && scan_result == ESP_ERR_INVALID_STATE) {
       scan_result = WifiManagerScan(ap_records, ap_records_capacity, &ap_count);
     }
-  }
-  bool ssid_present = false;
-  if (scan_result == ESP_OK && has_ssid) {
-    for (size_t i = 0; i < ap_count; ++i) {
-      if (strncmp((const char*)ap_records[i].ssid,
-                  creds.ssid,
-                  sizeof(ap_records[i].ssid)) == 0) {
-        ssid_present = true;
-        break;
+
+    bool ssid_present = false;
+    if (scan_result == ESP_OK && has_ssid) {
+      for (size_t i = 0; i < ap_count; ++i) {
+        if (strncmp((const char*)ap_records[i].ssid,
+                    creds.ssid,
+                    sizeof(ap_records[i].ssid)) == 0) {
+          ssid_present = true;
+          break;
+        }
       }
+    }
+
+    heap_snapshot_t scan_after = CaptureHeapSnapshot();
+    DiagHeapCheck(&ctx, "post_scan");
+    DiagReportStep(
+      &ctx,
+      step++,
+      total_steps,
+      "scan",
+      scan_result,
+      "aps=%u ssid_present=%s heap8_before=%u heap8_after=%u min_free=%u",
+      (unsigned)ap_count,
+      has_ssid ? (ssid_present ? "yes" : "no") : "n/a",
+      (unsigned)scan_before.free_8bit,
+      (unsigned)scan_after.free_8bit,
+      (unsigned)scan_after.min_free);
+    PrintHeapSnapshot(&ctx, "scan_before", &scan_before);
+    PrintHeapSnapshot(&ctx, "scan_after", &scan_after);
+
+    if (scan_result == ESP_OK) {
+      const size_t listed_count =
+        (ap_count < ap_records_capacity) ? ap_count : ap_records_capacity;
+      PrintScanResults(&ctx, ap_records, listed_count, ap_count);
     }
   }
 
-  heap_snapshot_t scan_after = CaptureHeapSnapshot();
-  DiagHeapCheck(&ctx, "post_scan");
-  DiagReportStep(
-    &ctx,
-    step++,
-    total_steps,
-    "scan",
-    scan_result,
-    "aps=%u ssid_present=%s heap8_before=%u heap8_after=%u min_free=%u",
-    (unsigned)ap_count,
-    has_ssid ? (ssid_present ? "yes" : "no") : "n/a",
-    (unsigned)scan_before.free_8bit,
-    (unsigned)scan_after.free_8bit,
-    (unsigned)scan_after.min_free);
-  PrintHeapSnapshot(&ctx, "scan_before", &scan_before);
-  PrintHeapSnapshot(&ctx, "scan_after", &scan_after);
-
-  if (scan_result == ESP_OK) {
-    const size_t listed_count =
-      (ap_count < ap_records_capacity) ? ap_count : ap_records_capacity;
-    PrintScanResults(&ctx, ap_records, listed_count, ap_count);
+  if (ap_records != NULL) {
+    free(ap_records);
+    ap_records = NULL;
   }
-}
 
-if (ap_records != NULL) {
-  free(ap_records);
-  ap_records = NULL;
-}
+  bool connected = false;
 
-bool connected = false;
+  esp_err_t connect_result = ESP_ERR_INVALID_STATE;
 
-esp_err_t connect_result = ESP_ERR_INVALID_STATE;
-
-if (connect) {
-  heap_snapshot_t connect_before = CaptureHeapSnapshot();
-  heap_snapshot_t connect_after = connect_before;
-  DiagHeapCheck(&ctx, "pre_connect");
-  if (!has_ssid) {
-    connect_result = ESP_OK;
-    DiagReportStep(&ctx,
-                   step++,
-                   total_steps,
-                   "connect",
-                   ESP_OK,
-                   "skipped: no SSID configured");
-  } else if (init_result != ESP_OK) {
-    DiagReportStep(&ctx,
-                   step++,
-                   total_steps,
-                   "connect",
-                   ESP_ERR_INVALID_STATE,
-                   "skipped: init failed");
-  } else {
-    connect_result = WifiManagerConnectSta(creds.ssid, creds.password, 30000);
-    connected = (connect_result == ESP_OK);
-    connect_after = CaptureHeapSnapshot();
-    DiagHeapCheck(&ctx, "post_connect");
-
-    if (connected) {
-      esp_netif_ip_info_t ip_info;
-      memset(&ip_info, 0, sizeof(ip_info));
-      esp_err_t ip_result = WifiManagerGetIpInfo(&ip_info);
-
-      wifi_ap_record_t ap_info;
-      memset(&ap_info, 0, sizeof(ap_info));
-      const esp_err_t ap_info_result = esp_wifi_sta_get_ap_info(&ap_info);
-
-      char ip[16] = { 0 }, mask[16] = { 0 }, gw[16] = { 0 };
-      esp_ip4addr_ntoa(&ip_info.ip, ip, sizeof(ip));
-      esp_ip4addr_ntoa(&ip_info.netmask, mask, sizeof(mask));
-      esp_ip4addr_ntoa(&ip_info.gw, gw, sizeof(gw));
-
+  if (connect) {
+    heap_snapshot_t connect_before = CaptureHeapSnapshot();
+    heap_snapshot_t connect_after = connect_before;
+    DiagHeapCheck(&ctx, "pre_connect");
+    if (!has_ssid) {
+      connect_result = ESP_OK;
       DiagReportStep(&ctx,
                      step++,
                      total_steps,
                      "connect",
-                     (ip_result == ESP_OK) ? ESP_OK : ip_result,
-                     "ip=%s netmask=%s gw=%s rssi=%d ch=%u heap8_before=%u "
-                     "heap8_after=%u min_free=%u",
-                     ip,
-                     mask,
-                     gw,
-                     (ap_info_result == ESP_OK) ? ap_info.rssi : 0,
-                     (ap_info_result == ESP_OK) ? (unsigned)ap_info.primary
-                                                : 0U,
-                     (unsigned)connect_before.free_8bit,
-                     (unsigned)connect_after.free_8bit,
-                     (unsigned)connect_after.min_free);
+                     ESP_OK,
+                     "skipped: no SSID configured");
+    } else if (init_result != ESP_OK) {
+      DiagReportStep(&ctx,
+                     step++,
+                     total_steps,
+                     "connect",
+                     ESP_ERR_INVALID_STATE,
+                     "skipped: init failed");
     } else {
-      const wifi_err_reason_t reason = WifiManagerLastDisconnectReason();
-      const int attempts = WifiManagerLastConnectAttempts();
-      DiagReportStep(
-        &ctx,
-        step++,
-        total_steps,
-        "connect",
-        connect_result,
-        "attempts=%d reason=%d (%s) heap8_before=%u heap8_after=%u min_free=%u",
-        attempts,
-        (int)reason,
-        ReasonToString(reason),
-        (unsigned)connect_before.free_8bit,
-        (unsigned)connect_after.free_8bit,
-        (unsigned)connect_after.min_free);
-    }
-  }
-  PrintHeapSnapshot(&ctx, "connect_before", &connect_before);
-  PrintHeapSnapshot(&ctx, "connect_after", &connect_after);
-}
+      connect_result = WifiManagerConnectSta(creds.ssid, creds.password, 30000);
+      connected = (connect_result == ESP_OK);
+      connect_after = CaptureHeapSnapshot();
+      DiagHeapCheck(&ctx, "post_connect");
 
-if (dns_lookup) {
-  heap_snapshot_t dns_before = CaptureHeapSnapshot();
-  heap_snapshot_t dns_after = dns_before;
-  DiagHeapCheck(&ctx, "pre_dns");
-  if (!connect) {
-    DiagReportStep(&ctx,
-                   step++,
-                   total_steps,
-                   "dns",
-                   ESP_OK,
-                   "skipped: connect not requested");
-  } else if (!connected) {
-    DiagReportStep(&ctx,
-                   step++,
-                   total_steps,
-                   "dns",
-                   ESP_ERR_INVALID_STATE,
-                   "skipped: not connected");
-  } else {
-    const char* host = PickDnsHost();
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    struct addrinfo* results = NULL;
-    const int gai_err = getaddrinfo(host, NULL, &hints, &results);
-    dns_after = CaptureHeapSnapshot();
-    DiagHeapCheck(&ctx, "post_dns");
-    if (gai_err != 0 || results == NULL) {
-      DiagReportStep(
-        &ctx,
-        step++,
-        total_steps,
-        "dns",
-        ESP_FAIL,
-        "host=%s err=%d heap8_before=%u heap8_after=%u min_free=%u",
-        host,
-        gai_err,
-        (unsigned)dns_before.free_8bit,
-        (unsigned)dns_after.free_8bit,
-        (unsigned)dns_after.min_free);
-    } else {
-      char addr_text[INET6_ADDRSTRLEN] = { 0 };
-      int addr_count = 0;
-      for (struct addrinfo* it = results; it != NULL && addr_count < 3;
-           it = it->ai_next, ++addr_count) {
-        void* addr_ptr = NULL;
-        if (it->ai_family == AF_INET) {
-          addr_ptr = &((struct sockaddr_in*)it->ai_addr)->sin_addr;
-        } else if (it->ai_family == AF_INET6) {
-          addr_ptr = &((struct sockaddr_in6*)it->ai_addr)->sin6_addr;
-        }
-        if (addr_ptr != NULL) {
-          inet_ntop(it->ai_family, addr_ptr, addr_text, sizeof(addr_text));
-        }
+      if (connected) {
+        esp_netif_ip_info_t ip_info;
+        memset(&ip_info, 0, sizeof(ip_info));
+        esp_err_t ip_result = WifiManagerGetIpInfo(&ip_info);
+
+        wifi_ap_record_t ap_info;
+        memset(&ap_info, 0, sizeof(ap_info));
+        const esp_err_t ap_info_result = esp_wifi_sta_get_ap_info(&ap_info);
+
+        char ip[16] = { 0 }, mask[16] = { 0 }, gw[16] = { 0 };
+        esp_ip4addr_ntoa(&ip_info.ip, ip, sizeof(ip));
+        esp_ip4addr_ntoa(&ip_info.netmask, mask, sizeof(mask));
+        esp_ip4addr_ntoa(&ip_info.gw, gw, sizeof(gw));
+
+        DiagReportStep(&ctx,
+                       step++,
+                       total_steps,
+                       "connect",
+                       (ip_result == ESP_OK) ? ESP_OK : ip_result,
+                       "ip=%s netmask=%s gw=%s rssi=%d ch=%u heap8_before=%u "
+                       "heap8_after=%u min_free=%u",
+                       ip,
+                       mask,
+                       gw,
+                       (ap_info_result == ESP_OK) ? ap_info.rssi : 0,
+                       (ap_info_result == ESP_OK) ? (unsigned)ap_info.primary
+                                                  : 0U,
+                       (unsigned)connect_before.free_8bit,
+                       (unsigned)connect_after.free_8bit,
+                       (unsigned)connect_after.min_free);
+      } else {
+        const wifi_err_reason_t reason = WifiManagerLastDisconnectReason();
+        const int attempts = WifiManagerLastConnectAttempts();
+        DiagReportStep(&ctx,
+                       step++,
+                       total_steps,
+                       "connect",
+                       connect_result,
+                       "attempts=%d reason=%d (%s) heap8_before=%u "
+                       "heap8_after=%u min_free=%u",
+                       attempts,
+                       (int)reason,
+                       ReasonToString(reason),
+                       (unsigned)connect_before.free_8bit,
+                       (unsigned)connect_after.free_8bit,
+                       (unsigned)connect_after.min_free);
       }
-      freeaddrinfo(results);
-      const char* resolved = (addr_text[0] != '\0') ? addr_text : "<none>";
-      DiagReportStep(
-        &ctx,
-        step++,
-        total_steps,
-        "dns",
-        ESP_OK,
-        "host=%s resolved=%s heap8_before=%u heap8_after=%u min_free=%u",
-        host,
-        resolved,
-        (unsigned)dns_before.free_8bit,
-        (unsigned)dns_after.free_8bit,
-        (unsigned)dns_after.min_free);
     }
+    PrintHeapSnapshot(&ctx, "connect_before", &connect_before);
+    PrintHeapSnapshot(&ctx, "connect_after", &connect_after);
   }
-  PrintHeapSnapshot(&ctx, "dns_before", &dns_before);
-  PrintHeapSnapshot(&ctx, "dns_after", &dns_after);
-}
 
-heap_snapshot_t teardown_before = CaptureHeapSnapshot();
-DiagHeapCheck(&ctx, "pre_teardown");
-esp_err_t teardown_result = ESP_OK;
-if (!keep_connected) {
-  teardown_result = WifiServiceRelease();
-}
-heap_snapshot_t teardown_after = CaptureHeapSnapshot();
-DiagHeapCheck(&ctx, "post_teardown");
-DiagReportStep(&ctx,
-               step++,
-               total_steps,
-               "teardown",
-               teardown_result,
-               "keep_connected=%s heap8_before=%u heap8_after=%u min_free=%u",
-               YesNo(keep_connected),
-               (unsigned)teardown_before.free_8bit,
-               (unsigned)teardown_after.free_8bit,
-               (unsigned)teardown_after.min_free);
-PrintHeapSnapshot(&ctx, "teardown_before", &teardown_before);
-PrintHeapSnapshot(&ctx, "teardown_after", &teardown_after);
+  if (dns_lookup) {
+    heap_snapshot_t dns_before = CaptureHeapSnapshot();
+    heap_snapshot_t dns_after = dns_before;
+    DiagHeapCheck(&ctx, "pre_dns");
+    if (!connect) {
+      DiagReportStep(&ctx,
+                     step++,
+                     total_steps,
+                     "dns",
+                     ESP_OK,
+                     "skipped: connect not requested");
+    } else if (!connected) {
+      DiagReportStep(&ctx,
+                     step++,
+                     total_steps,
+                     "dns",
+                     ESP_ERR_INVALID_STATE,
+                     "skipped: not connected");
+    } else {
+      const char* host = PickDnsHost();
+      struct addrinfo hints;
+      memset(&hints, 0, sizeof(hints));
+      hints.ai_family = AF_UNSPEC;
+      struct addrinfo* results = NULL;
+      const int gai_err = getaddrinfo(host, NULL, &hints, &results);
+      dns_after = CaptureHeapSnapshot();
+      DiagHeapCheck(&ctx, "post_dns");
+      if (gai_err != 0 || results == NULL) {
+        DiagReportStep(
+          &ctx,
+          step++,
+          total_steps,
+          "dns",
+          ESP_FAIL,
+          "host=%s err=%d heap8_before=%u heap8_after=%u min_free=%u",
+          host,
+          gai_err,
+          (unsigned)dns_before.free_8bit,
+          (unsigned)dns_after.free_8bit,
+          (unsigned)dns_after.min_free);
+      } else {
+        char addr_text[INET6_ADDRSTRLEN] = { 0 };
+        int addr_count = 0;
+        for (struct addrinfo* it = results; it != NULL && addr_count < 3;
+             it = it->ai_next, ++addr_count) {
+          void* addr_ptr = NULL;
+          if (it->ai_family == AF_INET) {
+            addr_ptr = &((struct sockaddr_in*)it->ai_addr)->sin_addr;
+          } else if (it->ai_family == AF_INET6) {
+            addr_ptr = &((struct sockaddr_in6*)it->ai_addr)->sin6_addr;
+          }
+          if (addr_ptr != NULL) {
+            inet_ntop(it->ai_family, addr_ptr, addr_text, sizeof(addr_text));
+          }
+        }
+        freeaddrinfo(results);
+        const char* resolved = (addr_text[0] != '\0') ? addr_text : "<none>";
+        DiagReportStep(
+          &ctx,
+          step++,
+          total_steps,
+          "dns",
+          ESP_OK,
+          "host=%s resolved=%s heap8_before=%u heap8_after=%u min_free=%u",
+          host,
+          resolved,
+          (unsigned)dns_before.free_8bit,
+          (unsigned)dns_after.free_8bit,
+          (unsigned)dns_after.min_free);
+      }
+    }
+    PrintHeapSnapshot(&ctx, "dns_before", &dns_before);
+    PrintHeapSnapshot(&ctx, "dns_after", &dns_after);
+  }
 
-DiagPrintSummary(&ctx, total_steps);
-return (ctx.steps_failed == 0) ? 0 : 1;
+  heap_snapshot_t teardown_before = CaptureHeapSnapshot();
+  DiagHeapCheck(&ctx, "pre_teardown");
+  esp_err_t teardown_result = ESP_OK;
+  if (!keep_connected) {
+    teardown_result = WifiServiceRelease();
+  }
+  heap_snapshot_t teardown_after = CaptureHeapSnapshot();
+  DiagHeapCheck(&ctx, "post_teardown");
+  DiagReportStep(&ctx,
+                 step++,
+                 total_steps,
+                 "teardown",
+                 teardown_result,
+                 "keep_connected=%s heap8_before=%u heap8_after=%u min_free=%u",
+                 YesNo(keep_connected),
+                 (unsigned)teardown_before.free_8bit,
+                 (unsigned)teardown_after.free_8bit,
+                 (unsigned)teardown_after.min_free);
+  PrintHeapSnapshot(&ctx, "teardown_before", &teardown_before);
+  PrintHeapSnapshot(&ctx, "teardown_after", &teardown_after);
+
+  DiagPrintSummary(&ctx, total_steps);
+  return (ctx.steps_failed == 0) ? 0 : 1;
 }
