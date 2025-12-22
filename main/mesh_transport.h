@@ -29,6 +29,8 @@ extern "C"
     const time_sync_t* time_sync; // used for RTC updates on time sync messages
   } mesh_transport_t;
 
+  bool MeshTransportIsStarted(const mesh_transport_t* mesh);
+
   // Initializes Wi-Fi + ESP-WIFI-MESH and starts background RX/TX tasks.
   // Root node connects to the external router and runs SNTP elsewhere
   // (app_main).
@@ -41,6 +43,9 @@ extern "C"
                                const time_sync_t* time_sync);
 
   bool MeshTransportIsConnected(const mesh_transport_t* mesh);
+
+  esp_err_t MeshTransportGetRootAddress(const mesh_transport_t* mesh,
+                                        mesh_addr_t* root_out);
 
   // Leaf nodes: send a log record upstream to the root.
   esp_err_t MeshTransportSendRecord(const mesh_transport_t* mesh,
