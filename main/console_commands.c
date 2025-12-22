@@ -476,7 +476,8 @@ PrintDiagUsage(void)
   printf("diag rtc quick|full [--set-known] [--verbose N]\n");
   printf("diag wifi quick|full [--scan 0|1] [--connect 0|1] [--dns 0|1] "
          "[--keep-connected 0|1] [--verbose N]\n");
-  printf("diag mesh quick|full [--start] [--stop] [--verbose N]\n");
+  printf("diag mesh quick|full [--start] [--stop] [--root] [--timeout_ms T] "
+         "[--verbose N]\n");
 }
 
 static bool
@@ -533,6 +534,8 @@ CommandDiagnostics(int argc, char** argv)
   int delay_ms = -1;
   bool start_mesh = false;
   bool stop_mesh = false;
+  bool mesh_force_root = false;
+  int mesh_timeout_ms = 10000;
 
   const app_runtime_t* runtime = RuntimeGetRuntime();
 
@@ -604,6 +607,10 @@ CommandDiagnostics(int argc, char** argv)
       start_mesh = true;
     } else if (strcmp(argv[i], "--stop") == 0) {
       stop_mesh = true;
+    } else if (strcmp(argv[i], "--root") == 0) {
+      mesh_force_root = true;
+    } else if (strcmp(argv[i], "--timeout_ms") == 0 && (i + 1) < argc) {
+      mesh_timeout_ms = atoi(argv[++i]);
     } else {
       printf("unknown option: %s\n", argv[i]);
       PrintDiagUsage();
@@ -674,8 +681,17 @@ CommandDiagnostics(int argc, char** argv)
   }
 
   if (strcmp(target, "mesh") == 0 || strcmp(target, "all") == 0) {
-    overall |=
-      RunDiagMesh(runtime, full, start_mesh, stop_mesh, diag_verbosity);
+    if (full && !start_mesh && !stop_mesh) {
+      start_mesh = true;
+      stop_mesh = true;
+    }
+    overall |= RunDiagMesh(runtime,
+                           full,
+                           start_mesh,
+                           stop_mesh,
+                           mesh_force_root,
+                           mesh_timeout_ms,
+                           diag_verbosity);
     if (strcmp(target, "mesh") == 0) {
       return overall;
     }

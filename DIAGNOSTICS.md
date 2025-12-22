@@ -16,7 +16,7 @@ Available routes:
 - `diag rtd quick|full [--samples N] [--delay_ms M] [--verbose N]`
 - `diag rtc quick|full [--set-known] [--verbose N]`
 - `diag wifi quick|full [--scan 0|1] [--connect 0|1] [--dns 0|1] [--keep-connected 0|1] [--verbose N]`
-- `diag mesh quick|full [--start] [--stop] [--verbose N]`
+- `diag mesh quick|full [--start] [--stop] [--root] [--timeout_ms T] [--verbose N]` (full defaults to `--start --stop`)
 - `diag check` (alias for `diag all quick`)
 
 Return codes follow the console convention: `0` for success, `1` for failures during
