@@ -9,21 +9,29 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_mesh.h"
+#include "esp_netif_ip_addr.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "mesh_transport.h"
-#include "net_stack.h"
 #include "sdkconfig.h"
 #include "wifi_service.h"
 
 static const char* kTag = "diag_mesh";
 
+// Heap integrity checks can trigger asserts when corruption already exists.
+// Keep them opt-in for diagnostics.
+#ifndef DIAG_MESH_ENABLE_HEAP_INTEGRITY_CHECKS
+#define DIAG_MESH_ENABLE_HEAP_INTEGRITY_CHECKS 0
+#endif
+
 #define DIAG_MESH_EVENT_PARENT_CONNECTED BIT0
 #define DIAG_MESH_EVENT_LAYER_CHANGED BIT1
-#define DIAG_MESH_EVENT_ROOT_GOT_IP BIT2
+#define DIAG_MESH_EVENT_ROOT_IP BIT2
 #define DIAG_MESH_EVENT_PARENT_DISCONNECTED BIT3
+#define DIAG_MESH_EVENT_TODS BIT4
+#define DIAG_MESH_EVENT_ROOT_ADDR BIT5
 
 typedef struct
 {
@@ -35,10 +43,18 @@ typedef struct
 typedef struct
 {
   EventGroupHandle_t group;
+  esp_event_handler_instance_t mesh_handler;
+  esp_event_handler_instance_t ip_handler;
   int last_layer;
   int last_disconnect_reason;
   mesh_addr_t parent;
   bool parent_known;
+  mesh_addr_t root_addr;
+  bool root_known;
+  esp_ip4_addr_t root_ip;
+  bool root_has_ip;
+  bool to_ds;
+  bool to_ds_known;
 } mesh_diag_events_t;
 
 typedef struct
@@ -51,10 +67,26 @@ typedef struct
   bool parent_known;
   mesh_addr_t mesh_id;
   bool mesh_id_known;
+  mesh_addr_t root_addr;
+  bool root_addr_known;
+  esp_ip4_addr_t root_ip;
+  bool root_ip_known;
+  int routing_table_size;
   int channel;
   wifi_service_mode_t owner_mode;
   int last_disconnect_reason;
 } mesh_status_t;
+
+typedef struct
+{
+  mesh_addr_t mesh_id;
+  bool mesh_id_valid;
+  size_t router_ssid_len;
+  size_t router_password_len;
+  bool router_password_valid;
+  size_t mesh_ap_password_len;
+  bool mesh_ap_password_valid;
+} mesh_diag_config_t;
 
 static const char*
 YesNo(bool value)
@@ -62,13 +94,24 @@ YesNo(bool value)
   return value ? "yes" : "no";
 }
 
+static void
+MeshDiagHeapCheck(const diag_ctx_t* ctx, const char* label)
+{
+#if DIAG_MESH_ENABLE_HEAP_INTEGRITY_CHECKS
+  DiagHeapCheck(ctx, label);
+#else
+  (void)ctx;
+  (void)label;
+#endif
+}
+
 static heap_snapshot_t
-CaptureHeapSnapshot(const diag_ctx_t* ctx)
+CaptureHeapSnapshot(void)
 {
   heap_snapshot_t snapshot;
-  if (ctx != NULL && ctx->verbosity >= kDiagVerbosity2) {
-    heap_caps_check_integrity_all(true);
-  }
+#if DIAG_MESH_ENABLE_HEAP_INTEGRITY_CHECKS
+  heap_caps_check_integrity_all(true);
+#endif
   snapshot.free_8bit = heap_caps_get_free_size(MALLOC_CAP_8BIT);
   snapshot.free_total = esp_get_free_heap_size();
   snapshot.min_free = esp_get_minimum_free_heap_size();
@@ -127,6 +170,71 @@ PrintStackSizeWarning(const diag_ctx_t* ctx)
 #endif
 }
 
+static bool
+ParseMeshId(const char* mesh_id_string, mesh_addr_t* mesh_id_out)
+{
+  if (mesh_id_string == NULL || mesh_id_out == NULL) {
+    return false;
+  }
+
+  int values[6] = { 0 };
+  if (sscanf(mesh_id_string,
+             "%x:%x:%x:%x:%x:%x",
+             &values[0],
+             &values[1],
+             &values[2],
+             &values[3],
+             &values[4],
+             &values[5]) != 6) {
+    return false;
+  }
+
+  for (int index = 0; index < 6; ++index) {
+    mesh_id_out->addr[index] = (uint8_t)values[index];
+  }
+  return true;
+}
+
+static esp_err_t
+ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
+{
+  if (config == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  memset(config, 0, sizeof(*config));
+
+  config->mesh_id_valid = ParseMeshId(CONFIG_APP_MESH_ID_HEX, &config->mesh_id);
+  if (!config->mesh_id_valid) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  config->router_ssid_len = strlen(CONFIG_APP_WIFI_ROUTER_SSID);
+  config->router_password_len = strlen(CONFIG_APP_WIFI_ROUTER_PASSWORD);
+  config->router_password_valid =
+    (config->router_password_len == 0 ||
+     (config->router_password_len >= 8 && config->router_password_len <= 63));
+
+  config->mesh_ap_password_len = strlen(CONFIG_APP_MESH_AP_PASSWORD);
+  config->mesh_ap_password_valid =
+    (config->mesh_ap_password_len == 0 ||
+     (config->mesh_ap_password_len >= 8 && config->mesh_ap_password_len <= 63));
+
+  if (!config->mesh_ap_password_valid) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (start_as_root) {
+    if (config->router_ssid_len == 0) {
+      return ESP_ERR_INVALID_ARG;
+    }
+    if (!config->router_password_valid) {
+      return ESP_ERR_INVALID_ARG;
+    }
+  }
+
+  return ESP_OK;
+}
+
 static void
 MeshDiagEventHandler(void* arg,
                      esp_event_base_t event_base,
@@ -138,54 +246,105 @@ MeshDiagEventHandler(void* arg,
     return;
   }
 
-  mesh_event_info_t* info = (mesh_event_info_t*)event_data;
-
   switch (event_id) {
-    case MESH_EVENT_PARENT_CONNECTED:
-      events->last_layer = (info != NULL) ? (int)info->connected.self_layer
+    case MESH_EVENT_PARENT_CONNECTED: {
+      const mesh_event_connected_t* info =
+        (const mesh_event_connected_t*)event_data;
+      events->last_layer = (info != NULL) ? (int)info->self_layer
                                           : esp_mesh_get_layer();
+
       if (info != NULL) {
-        memcpy(events->parent.addr, info->connected.parent_bssid, 6);
+        memcpy(events->parent.addr, info->connected.bssid, 6);
         events->parent_known = true;
       } else {
         mesh_addr_t parent;
+        memset(&parent, 0, sizeof(parent));
         if (esp_mesh_get_parent_bssid(&parent) == ESP_OK) {
           memcpy(events->parent.addr, parent.addr, 6);
           events->parent_known = true;
         }
       }
-      xEventGroupSetBits(events->group, DIAG_MESH_EVENT_PARENT_CONNECTED);
-      break;
 
-    case MESH_EVENT_LAYER_CHANGE:
-      events->last_layer = (info != NULL) ? (int)info->layer_change.new_layer
+      xEventGroupSetBits(events->group,
+                         DIAG_MESH_EVENT_PARENT_CONNECTED |
+                           DIAG_MESH_EVENT_LAYER_CHANGED);
+      break;
+    }
+
+    case MESH_EVENT_LAYER_CHANGE: {
+      const mesh_event_layer_change_t* info =
+        (const mesh_event_layer_change_t*)event_data;
+      events->last_layer = (info != NULL) ? (int)info->new_layer
                                           : esp_mesh_get_layer();
       xEventGroupSetBits(events->group, DIAG_MESH_EVENT_LAYER_CHANGED);
       break;
+    }
 
-    case MESH_EVENT_ROOT_GOT_IP:
-      xEventGroupSetBits(events->group, DIAG_MESH_EVENT_ROOT_GOT_IP);
-      break;
-
-    case MESH_EVENT_PARENT_DISCONNECTED:
-      if (info != NULL) {
-        events->last_disconnect_reason = info->disconnected.reason;
-      }
+    case MESH_EVENT_PARENT_DISCONNECTED: {
+      const mesh_event_disconnected_t* info =
+        (const mesh_event_disconnected_t*)event_data;
+      events->last_disconnect_reason = (info != NULL) ? info->reason : -1;
+      events->parent_known = false;
       xEventGroupSetBits(events->group, DIAG_MESH_EVENT_PARENT_DISCONNECTED);
       break;
+    }
+
+    case MESH_EVENT_ROOT_ADDRESS: {
+      const mesh_event_root_address_t* info =
+        (const mesh_event_root_address_t*)event_data;
+      if (info != NULL) {
+        memcpy(events->root_addr.addr, info->addr, 6);
+        events->root_known = true;
+      }
+      xEventGroupSetBits(events->group, DIAG_MESH_EVENT_ROOT_ADDR);
+      break;
+    }
+
+    case MESH_EVENT_TODS_STATE: {
+      const mesh_event_toDS_state_t* info =
+        (const mesh_event_toDS_state_t*)event_data;
+      events->to_ds_known = true;
+      events->to_ds = (info != NULL) ? info->toDS_state : false;
+      xEventGroupSetBits(events->group, DIAG_MESH_EVENT_TODS);
+      break;
+    }
 
     default:
       break;
   }
 }
 
-static esp_err_t
-InitEventTracking(mesh_diag_events_t* events,
-                  esp_event_handler_instance_t* handler_out)
+static void
+MeshDiagIpEventHandler(void* arg,
+                       esp_event_base_t event_base,
+                       int32_t event_id,
+                       void* event_data)
 {
-  if (events == NULL || handler_out == NULL) {
+  mesh_diag_events_t* events = (mesh_diag_events_t*)arg;
+  if (events == NULL || events->group == NULL || event_base != IP_EVENT ||
+      event_id != IP_EVENT_STA_GOT_IP) {
+    return;
+  }
+
+  const ip_event_got_ip_t* got_ip = (const ip_event_got_ip_t*)event_data;
+  events->root_has_ip = esp_mesh_is_root();
+  if (events->root_has_ip && got_ip != NULL) {
+    events->root_ip = got_ip->ip_info.ip;
+  }
+  if (events->root_has_ip) {
+    xEventGroupSetBits(events->group, DIAG_MESH_EVENT_ROOT_IP);
+  }
+}
+
+static void CleanupEventTracking(mesh_diag_events_t* events);
+
+static esp_err_t
+InitEventTracking(mesh_diag_events_t* events)
+{
+  if (events == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+
   memset(events, 0, sizeof(*events));
   events->last_layer = -1;
   events->last_disconnect_reason = -1;
@@ -194,22 +353,49 @@ InitEventTracking(mesh_diag_events_t* events,
     return ESP_ERR_NO_MEM;
   }
 
-  return esp_event_handler_instance_register(MESH_EVENT,
-                                             ESP_EVENT_ANY_ID,
-                                             &MeshDiagEventHandler,
-                                             events,
-                                             handler_out);
+  esp_err_t result = esp_event_handler_instance_register(MESH_EVENT,
+                                                          ESP_EVENT_ANY_ID,
+                                                          &MeshDiagEventHandler,
+                                                          events,
+                                                          &events->mesh_handler);
+  if (result != ESP_OK) {
+    CleanupEventTracking(events);
+    return result;
+  }
+
+  result = esp_event_handler_instance_register(IP_EVENT,
+                                                IP_EVENT_STA_GOT_IP,
+                                                &MeshDiagIpEventHandler,
+                                                events,
+                                                &events->ip_handler);
+  if (result != ESP_OK) {
+    CleanupEventTracking(events);
+    return result;
+  }
+
+  return ESP_OK;
 }
 
 static void
-CleanupEventTracking(mesh_diag_events_t* events,
-                     esp_event_handler_instance_t handler)
+CleanupEventTracking(mesh_diag_events_t* events)
 {
-  if (handler != NULL) {
-    (void)esp_event_handler_instance_unregister(
-      MESH_EVENT, ESP_EVENT_ANY_ID, handler);
+  if (events == NULL) {
+    return;
   }
-  if (events != NULL && events->group != NULL) {
+
+  if (events->mesh_handler != NULL) {
+    (void)esp_event_handler_instance_unregister(
+      MESH_EVENT, ESP_EVENT_ANY_ID, events->mesh_handler);
+    events->mesh_handler = NULL;
+  }
+
+  if (events->ip_handler != NULL) {
+    (void)esp_event_handler_instance_unregister(
+      IP_EVENT, IP_EVENT_STA_GOT_IP, events->ip_handler);
+    events->ip_handler = NULL;
+  }
+
+  if (events->group != NULL) {
     vEventGroupDelete(events->group);
     events->group = NULL;
   }
@@ -232,7 +418,10 @@ MeshReady(bool expect_root,
   const bool is_root = esp_mesh_is_root();
 
   if (expect_root || is_root) {
-    if ((bits & DIAG_MESH_EVENT_ROOT_GOT_IP) != 0) {
+    if ((bits & DIAG_MESH_EVENT_ROOT_IP) != 0) {
+      return true;
+    }
+    if (events != NULL && events->to_ds_known && events->to_ds) {
       return true;
     }
     return connected;
@@ -276,8 +465,9 @@ WaitForMeshReady(const mesh_transport_t* mesh,
       (void)xEventGroupWaitBits(events->group,
                                 DIAG_MESH_EVENT_PARENT_CONNECTED |
                                   DIAG_MESH_EVENT_LAYER_CHANGED |
-                                  DIAG_MESH_EVENT_ROOT_GOT_IP |
-                                  DIAG_MESH_EVENT_PARENT_DISCONNECTED,
+                                  DIAG_MESH_EVENT_ROOT_IP |
+                                  DIAG_MESH_EVENT_PARENT_DISCONNECTED |
+                                  DIAG_MESH_EVENT_TODS,
                                 pdFALSE,
                                 pdFALSE,
                                 pdMS_TO_TICKS(200));
@@ -345,6 +535,58 @@ CaptureMeshStatus(mesh_status_t* status,
     memcpy(&status->parent, &events->parent, sizeof(status->parent));
     status->parent_known = true;
   }
+
+  mesh_addr_t root_addr;
+  memset(&root_addr, 0, sizeof(root_addr));
+  if (esp_mesh_get_root_address(&root_addr) == ESP_OK) {
+    memcpy(&status->root_addr, &root_addr, sizeof(status->root_addr));
+    status->root_addr_known = true;
+  } else if (events != NULL && events->root_known) {
+    memcpy(&status->root_addr, &events->root_addr, sizeof(status->root_addr));
+    status->root_addr_known = true;
+  }
+
+  if (events != NULL && events->root_has_ip) {
+    status->root_ip = events->root_ip;
+    status->root_ip_known = true;
+  }
+
+  status->routing_table_size = esp_mesh_get_routing_table_size();
+}
+
+static void
+PrintRoutingTable(const diag_ctx_t* ctx)
+{
+  if (ctx == NULL || ctx->verbosity < kDiagVerbosity2) {
+    return;
+  }
+
+  const int routing_table_size = esp_mesh_get_routing_table_size();
+  if (routing_table_size <= 0) {
+    return;
+  }
+
+  mesh_addr_t routing_table[10];
+  int table_entries = 0;
+  const esp_err_t result = esp_mesh_get_routing_table(
+    routing_table, sizeof(routing_table), &table_entries);
+  if (result != ESP_OK || table_entries <= 0) {
+    return;
+  }
+
+  const int to_show = (table_entries < (int)(sizeof(routing_table) /
+                                             sizeof(routing_table[0])))
+                        ? table_entries
+                        : (int)(sizeof(routing_table) /
+                                sizeof(routing_table[0]));
+  printf("      routing table: %d entries (showing %d)\n",
+         routing_table_size,
+         to_show);
+  for (int index = 0; index < to_show; ++index) {
+    char mac[20] = { 0 };
+    FormatMac(mac, sizeof(mac), routing_table[index].addr);
+    printf("        %2d. %s\n", index + 1, mac);
+  }
 }
 
 int
@@ -361,31 +603,26 @@ RunDiagMesh(const app_runtime_t* runtime,
     MeshTransportIsStarted(mesh_available ? runtime->mesh : NULL);
   const bool mesh_connected_before =
     MeshTransportIsConnected(mesh_available ? runtime->mesh : NULL);
-  const bool wait_for_ready = full && (start || mesh_started_before);
-  const bool perform_stop = stop;
-  const int total_steps = 5 + (wait_for_ready ? 1 : 0) + (perform_stop ? 1 : 0);
-  int step_index = 1;
+  const bool wait_for_ready = (start || mesh_started_before) && full;
+  const bool perform_stop = stop || (start && !mesh_started_before);
+  const int total_steps = 7;
 
   diag_ctx_t ctx;
   DiagInitCtx(&ctx, "Mesh", verbosity);
 
-  esp_err_t runtime_result = ESP_OK;
+  int step_index = 1;
   const bool runtime_running = RuntimeIsRunning();
-  if (!mesh_available) {
-    runtime_result = ESP_ERR_INVALID_STATE;
-  } else if (runtime_running) {
-    runtime_result = ESP_ERR_INVALID_STATE;
-  }
-
-  DiagReportStep(
-    &ctx,
-    step_index++,
-    total_steps,
-    "runtime idle",
-    runtime_result,
-    (!mesh_available)
-      ? "runtime not initialized"
-      : (runtime_running ? "stop runtime first: run stop" : "idle"));
+  const esp_err_t runtime_result =
+    (!mesh_available || runtime_running) ? ESP_ERR_INVALID_STATE : ESP_OK;
+  DiagReportStep(&ctx,
+                 step_index++,
+                 total_steps,
+                 "runtime idle",
+                 runtime_result,
+                 (!mesh_available)
+                   ? "runtime not initialized"
+                   : (runtime_running ? "stop runtime first: run stop" :
+                                       "idle"));
   if (runtime_result != ESP_OK) {
     DiagPrintSummary(&ctx, total_steps);
     return 1;
@@ -410,26 +647,38 @@ RunDiagMesh(const app_runtime_t* runtime,
 
   PrintStackSizeWarning(&ctx);
 
-  heap_snapshot_t net_before = CaptureHeapSnapshot(&ctx);
-  DiagHeapCheck(&ctx, "pre_net");
-  const esp_err_t net_result = NetStackInitOnce();
-  heap_snapshot_t net_after = CaptureHeapSnapshot(&ctx);
-  DiagHeapCheck(&ctx, "post_net");
+  heap_snapshot_t wifi_before = CaptureHeapSnapshot();
+  heap_snapshot_t wifi_after = wifi_before;
+  MeshDiagHeapCheck(&ctx, "pre_wifi");
+  bool wifi_acquired = false;
+  const bool need_wifi = start && !mesh_started_before;
+  esp_err_t wifi_result = ESP_OK;
+  if (!mesh_available) {
+    wifi_result = ESP_ERR_INVALID_STATE;
+  } else if (!wifi_owner_ok) {
+    wifi_result = ESP_ERR_INVALID_STATE;
+  } else if (need_wifi) {
+    wifi_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
+    wifi_acquired = (wifi_result == ESP_OK);
+  }
+  wifi_after = CaptureHeapSnapshot();
+  MeshDiagHeapCheck(&ctx, "post_wifi");
   DiagReportStep(&ctx,
                  step_index++,
                  total_steps,
-                 "net stack",
-                 net_result,
-                 "heap8_before=%u heap8_after=%u min_free=%u",
-                 (unsigned)net_before.free_8bit,
-                 (unsigned)net_after.free_8bit,
-                 (unsigned)net_after.min_free);
-  PrintHeapSnapshot(&ctx, "net_before", &net_before);
-  PrintHeapSnapshot(&ctx, "net_after", &net_after);
-  if (net_result != ESP_OK) {
-    DiagPrintSummary(&ctx, total_steps);
-    return 1;
-  }
+                 "wifi/net stack",
+                 wifi_result,
+                 "need_wifi=%s acquired=%s mode_before=%s mode_after=%s"
+                 " heap8_before=%u heap8_after=%u min_free=%u",
+                 YesNo(need_wifi),
+                 YesNo(wifi_acquired),
+                 WifiModeToString(active_mode),
+                 WifiModeToString(WifiServiceActiveMode()),
+                 (unsigned)wifi_before.free_8bit,
+                 (unsigned)wifi_after.free_8bit,
+                 (unsigned)wifi_after.min_free);
+  PrintHeapSnapshot(&ctx, "wifi_before", &wifi_before);
+  PrintHeapSnapshot(&ctx, "wifi_after", &wifi_after);
 
 #if CONFIG_APP_NODE_IS_ROOT
   const bool default_root = true;
@@ -438,28 +687,52 @@ RunDiagMesh(const app_runtime_t* runtime,
 #endif
   const bool start_as_root = force_root || default_root;
 
+  mesh_diag_config_t diag_config;
+  memset(&diag_config, 0, sizeof(diag_config));
+  const esp_err_t config_result = (mesh_available && wifi_owner_ok)
+                                    ? ValidateMeshConfig(start_as_root, &diag_config)
+                                    : ESP_ERR_INVALID_STATE;
+  char mesh_id_str[20] = { 0 };
+  if (diag_config.mesh_id_valid) {
+    FormatMac(mesh_id_str, sizeof(mesh_id_str), diag_config.mesh_id.addr);
+  }
+  DiagReportStep(&ctx,
+                 step_index++,
+                 total_steps,
+                 "mesh config",
+                 config_result,
+                 "mesh_id=%s router_ssid_len=%u router_pwd_len=%u ap_pwd_len=%u"
+                 " root_required_ssid=%s pwd_valid=%s",
+                 diag_config.mesh_id_valid ? mesh_id_str : "<invalid>",
+                 (unsigned)diag_config.router_ssid_len,
+                 (unsigned)diag_config.router_password_len,
+                 (unsigned)diag_config.mesh_ap_password_len,
+                 YesNo(start_as_root),
+                 YesNo(diag_config.router_password_valid));
+
   mesh_diag_events_t events;
   memset(&events, 0, sizeof(events));
-  esp_event_handler_instance_t event_handler = NULL;
-  if (wait_for_ready) {
-    const esp_err_t handler_result = InitEventTracking(&events, &event_handler);
-    if (handler_result != ESP_OK) {
-      ESP_LOGW(kTag,
-               "mesh event tracking not available: %s",
-               esp_err_to_name(handler_result));
-      CleanupEventTracking(&events, NULL);
-      memset(&events, 0, sizeof(events));
+  const bool need_events = wait_for_ready || start;
+  esp_err_t event_result = ESP_OK;
+  if (need_events && runtime_result == ESP_OK && wifi_owner_ok) {
+    event_result = InitEventTracking(&events);
+    if (event_result != ESP_OK) {
+      ESP_LOGW(kTag, "event tracking unavailable: %s", esp_err_to_name(event_result));
     }
   }
 
-  heap_snapshot_t start_before = CaptureHeapSnapshot(&ctx);
+  heap_snapshot_t start_before = CaptureHeapSnapshot();
   heap_snapshot_t start_after = start_before;
-  DiagHeapCheck(&ctx, "pre_mesh_start");
+  MeshDiagHeapCheck(&ctx, "pre_mesh_start");
   esp_err_t start_result = ESP_OK;
   bool mesh_started = mesh_started_before;
   bool mesh_connected = mesh_connected_before;
+  bool mesh_started_by_diag = false;
+
   if (start) {
     if (!mesh_available) {
+      start_result = ESP_ERR_INVALID_STATE;
+    } else if (!wifi_owner_ok || config_result != ESP_OK) {
       start_result = ESP_ERR_INVALID_STATE;
     } else if (mesh_started_before) {
       start_result = ESP_OK;
@@ -471,131 +744,142 @@ RunDiagMesh(const app_runtime_t* runtime,
                                         NULL,
                                         NULL,
                                         runtime->time_sync);
-      if (start_result == ESP_ERR_INVALID_STATE &&
-          MeshTransportIsStarted(runtime->mesh)) {
-        start_result = ESP_OK;
-      }
+      mesh_started_by_diag = (start_result == ESP_OK);
     }
-    mesh_started = MeshTransportIsStarted(runtime->mesh);
-    mesh_connected = MeshTransportIsConnected(runtime->mesh);
-    start_after = CaptureHeapSnapshot(&ctx);
-  }
-  DiagHeapCheck(&ctx, "post_mesh_start");
-  const wifi_service_mode_t mode_after_start = WifiServiceActiveMode();
-  DiagReportStep(&ctx,
-                 step_index++,
-                 total_steps,
-                 "mesh start",
-                 start ? start_result : ESP_OK,
-                 "requested=%s root=%s started=%s connected=%s wifi_mode=%s "
-                 "heap8_before=%u heap8_after=%u min_free=%u",
-                 YesNo(start),
-                 YesNo(start_as_root),
-                 YesNo(mesh_started),
-                 YesNo(mesh_connected),
-                 WifiModeToString(mode_after_start),
-                 (unsigned)start_before.free_8bit,
-                 (unsigned)start_after.free_8bit,
-                 (unsigned)start_after.min_free);
-  PrintHeapSnapshot(&ctx, "start_before", &start_before);
-  PrintHeapSnapshot(&ctx, "start_after", &start_after);
 
+    mesh_started = MeshTransportIsStarted(mesh_available ? runtime->mesh : NULL);
+    mesh_connected =
+      MeshTransportIsConnected(mesh_available ? runtime->mesh : NULL);
+    start_after = CaptureHeapSnapshot();
+  }
+  MeshDiagHeapCheck(&ctx, "post_mesh_start");
+  const wifi_service_mode_t mode_after_start = WifiServiceActiveMode();
+
+  bool ready = mesh_connected;
+  int waited_ms = 0;
+  int wait_layer = mesh_started ? esp_mesh_get_layer() : -1;
+  esp_err_t wait_result = ESP_OK;
   if (wait_for_ready) {
-    bool ready = mesh_connected;
-    int waited_ms = 0;
-    int wait_layer = mesh_started ? esp_mesh_get_layer() : -1;
-    esp_err_t wait_result = ESP_OK;
     if (!mesh_started) {
       wait_result = ESP_ERR_INVALID_STATE;
+    } else if (event_result != ESP_OK) {
+      wait_result = ESP_ERR_INVALID_STATE;
     } else {
-      wait_result = WaitForMeshReady(runtime->mesh,
-                                     (event_handler != NULL) ? &events : NULL,
+      wait_result = WaitForMeshReady(mesh_available ? runtime->mesh : NULL,
+                                     (event_result == ESP_OK) ? &events : NULL,
                                      start_as_root,
                                      timeout_ms,
                                      &ready,
                                      &waited_ms,
                                      &wait_layer);
     }
-    DiagReportStep(&ctx,
-                   step_index++,
-                   total_steps,
-                   "mesh ready wait",
-                   wait_result,
-                   "ready=%s waited_ms=%d layer=%d bits=0x%02x",
-                   YesNo(ready),
-                   waited_ms,
-                   wait_layer,
-                   (unsigned)((event_handler != NULL && events.group != NULL)
-                                ? xEventGroupGetBits(events.group)
-                                : 0U));
   }
+
+  const esp_err_t mesh_start_step_result =
+    (start_result != ESP_OK) ? start_result : wait_result;
+  DiagReportStep(&ctx,
+                 step_index++,
+                 total_steps,
+                 "mesh start/wait",
+                 mesh_start_step_result,
+                 "requested=%s root=%s started=%s connected=%s ready=%s"
+                 " waited_ms=%d layer=%d wifi_mode=%s event_result=%s"
+                 " heap8_before=%u heap8_after=%u min_free=%u",
+                 YesNo(start),
+                 YesNo(start_as_root),
+                 YesNo(mesh_started),
+                 YesNo(mesh_connected),
+                 YesNo(ready),
+                 waited_ms,
+                 wait_layer,
+                 WifiModeToString(mode_after_start),
+                 esp_err_to_name(event_result),
+                 (unsigned)start_before.free_8bit,
+                 (unsigned)start_after.free_8bit,
+                 (unsigned)start_after.min_free);
+  PrintHeapSnapshot(&ctx, "mesh_start_before", &start_before);
+  PrintHeapSnapshot(&ctx, "mesh_start_after", &start_after);
 
   mesh_status_t status;
   CaptureMeshStatus(&status,
                     mesh_available ? runtime->mesh : NULL,
-                    (event_handler != NULL) ? &events : NULL);
+                    (event_result == ESP_OK) ? &events : NULL);
+
   char parent_str[20] = { 0 };
   if (status.parent_known) {
     FormatMac(parent_str, sizeof(parent_str), status.parent.addr);
   }
-  char mesh_id_str[20] = { 0 };
+  char status_mesh_id[20] = { 0 };
   if (status.mesh_id_known) {
-    FormatMac(mesh_id_str, sizeof(mesh_id_str), status.mesh_id.addr);
+    FormatMac(status_mesh_id, sizeof(status_mesh_id), status.mesh_id.addr);
   }
-  DiagReportStep(
-    &ctx,
-    step_index++,
-    total_steps,
-    "mesh status",
-    ESP_OK,
-    "started=%s connected=%s root=%s layer=%d parent=%s mesh_id=%s ch=%d "
-    "owner=%s last_disc_reason=%d",
-    YesNo(status.started),
-    YesNo(status.connected),
-    YesNo(status.is_root),
-    status.layer,
-    status.parent_known ? parent_str : "<none>",
-    status.mesh_id_known ? mesh_id_str : "<unknown>",
-    status.channel,
-    WifiModeToString(status.owner_mode),
-    status.last_disconnect_reason);
-
-  if (perform_stop) {
-    heap_snapshot_t stop_before = CaptureHeapSnapshot(&ctx);
-    heap_snapshot_t stop_after = stop_before;
-    DiagHeapCheck(&ctx, "pre_mesh_stop");
-    esp_err_t stop_result = ESP_OK;
-    if (mesh_available && MeshTransportIsStarted(runtime->mesh)) {
-      stop_result = MeshTransportStop(runtime->mesh);
-    }
-    const wifi_service_mode_t mode_after_stop = WifiServiceActiveMode();
-    if (mode_after_stop == WIFI_SERVICE_MODE_MESH) {
-      const esp_err_t release_result = WifiServiceRelease();
-      if (stop_result == ESP_OK && release_result != ESP_OK) {
-        stop_result = release_result;
-      }
-    }
-    stop_after = CaptureHeapSnapshot(&ctx);
-    DiagHeapCheck(&ctx, "post_mesh_stop");
-    DiagReportStep(&ctx,
-                   step_index++,
-                   total_steps,
-                   "mesh stop",
-                   stop_result,
-                   "requested=%s started_after=%s wifi_mode=%s heap8_before=%u "
-                   "heap8_after=%u min_free=%u",
-                   YesNo(perform_stop),
-                   YesNo(MeshTransportIsStarted(mesh_available ? runtime->mesh
-                                                               : NULL)),
-                   WifiModeToString(mode_after_stop),
-                   (unsigned)stop_before.free_8bit,
-                   (unsigned)stop_after.free_8bit,
-                   (unsigned)stop_after.min_free);
-    PrintHeapSnapshot(&ctx, "stop_before", &stop_before);
-    PrintHeapSnapshot(&ctx, "stop_after", &stop_after);
+  char root_addr_str[20] = { 0 };
+  if (status.root_addr_known) {
+    FormatMac(root_addr_str, sizeof(root_addr_str), status.root_addr.addr);
   }
 
-  CleanupEventTracking((event_handler != NULL) ? &events : NULL, event_handler);
+  DiagReportStep(&ctx,
+                 step_index++,
+                 total_steps,
+                 "mesh status",
+                 ESP_OK,
+                 "started=%s connected=%s root=%s layer=%d parent=%s mesh_id=%s"
+                 " root_addr=%s rt_size=%d owner=%s last_disc_reason=%d"
+                 " root_ip=%s",
+                 YesNo(status.started),
+                 YesNo(status.connected),
+                 YesNo(status.is_root),
+                 status.layer,
+                 status.parent_known ? parent_str : "<none>",
+                 status.mesh_id_known ? status_mesh_id : "<unknown>",
+                 status.root_addr_known ? root_addr_str : "<none>",
+                 status.routing_table_size,
+                 WifiModeToString(status.owner_mode),
+                 status.last_disconnect_reason,
+                 status.root_ip_known ? ip4addr_ntoa(&status.root_ip)
+                                      : "<unknown>");
+
+  PrintRoutingTable(&ctx);
+
+  CleanupEventTracking((event_result == ESP_OK) ? &events : NULL);
+
+  heap_snapshot_t stop_before = CaptureHeapSnapshot();
+  heap_snapshot_t stop_after = stop_before;
+  MeshDiagHeapCheck(&ctx, "pre_mesh_stop");
+  esp_err_t stop_result = ESP_OK;
+  if (!mesh_available) {
+    stop_result = ESP_ERR_INVALID_STATE;
+  } else if (perform_stop && MeshTransportIsStarted(runtime->mesh)) {
+    stop_result = MeshTransportStop(runtime->mesh);
+  }
+
+  if (wifi_acquired) {
+    const esp_err_t release_result = WifiServiceRelease();
+    if (stop_result == ESP_OK && release_result != ESP_OK) {
+      stop_result = release_result;
+    }
+  }
+  stop_after = CaptureHeapSnapshot();
+  MeshDiagHeapCheck(&ctx, "post_mesh_stop");
+  const wifi_service_mode_t mode_after_stop = WifiServiceActiveMode();
+  DiagReportStep(&ctx,
+                 step_index++,
+                 total_steps,
+                 "teardown",
+                 stop_result,
+                 "stop_requested=%s started_before=%s started_after=%s"
+                 " wifi_mode_after=%s heap8_before=%u heap8_after=%u"
+                 " min_free=%u",
+                 YesNo(perform_stop),
+                 YesNo(mesh_started_before),
+                 YesNo(MeshTransportIsStarted(mesh_available ? runtime->mesh
+                                                             : NULL)),
+                 WifiModeToString(mode_after_stop),
+                 (unsigned)stop_before.free_8bit,
+                 (unsigned)stop_after.free_8bit,
+                 (unsigned)stop_after.min_free);
+  PrintHeapSnapshot(&ctx, "stop_before", &stop_before);
+  PrintHeapSnapshot(&ctx, "stop_after", &stop_after);
 
   DiagPrintSummary(&ctx, total_steps);
   return (ctx.steps_failed == 0) ? 0 : 1;
