@@ -37,6 +37,7 @@ typedef struct
 static mesh_transport_t* g_mesh = NULL;
 static esp_netif_t* g_mesh_netif_sta = NULL;
 static esp_netif_t* g_mesh_netif_ap = NULL;
+static TaskHandle_t g_mesh_rx_task = NULL;
 
 static bool
 ParseMeshIdFromConfig(const char* mesh_id_string, uint8_t* mesh_id_out)
@@ -192,7 +193,7 @@ InitWifiAndMesh(bool is_root,
   if (g_mesh_netif_sta == NULL || g_mesh_netif_ap == NULL) {
     esp_err_t netif_result = esp_netif_create_default_wifi_mesh_netifs(
       &g_mesh_netif_sta, &g_mesh_netif_ap);
-    if (netif_result != ESP_OK) {
+    if (netif_result != ESP_OK && g_mesh_netif_sta == NULL) {
       ESP_LOGE(kTag,
                "failed to create mesh netifs: %s",
                esp_err_to_name(netif_result));
@@ -215,10 +216,33 @@ InitWifiAndMesh(bool is_root,
       kTag, "esp_mesh_init failed: %s", esp_err_to_name(mesh_init_result));
     return mesh_init_result;
   }
-  ESP_ERROR_CHECK(esp_mesh_set_max_layer(6));
-  ESP_ERROR_CHECK(esp_mesh_set_vote_percentage(1.0f));
-  ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(30));
-  ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, true));
+  esp_err_t param_result = esp_mesh_set_max_layer(6);
+  if (param_result != ESP_OK) {
+    ESP_LOGE(
+      kTag, "esp_mesh_set_max_layer failed: %s", esp_err_to_name(param_result));
+    return param_result;
+  }
+  param_result = esp_mesh_set_vote_percentage(1.0f);
+  if (param_result != ESP_OK) {
+    ESP_LOGE(kTag,
+             "esp_mesh_set_vote_percentage failed: %s",
+             esp_err_to_name(param_result));
+    return param_result;
+  }
+  param_result = esp_mesh_set_ap_assoc_expire(30);
+  if (param_result != ESP_OK) {
+    ESP_LOGE(kTag,
+             "esp_mesh_set_ap_assoc_expire failed: %s",
+             esp_err_to_name(param_result));
+    return param_result;
+  }
+  param_result = esp_mesh_set_self_organized(true, true);
+  if (param_result != ESP_OK) {
+    ESP_LOGE(kTag,
+             "esp_mesh_set_self_organized failed: %s",
+             esp_err_to_name(param_result));
+    return param_result;
+  }
 
   mesh_cfg_t cfg = MESH_INIT_CONFIG_DEFAULT();
   cfg.channel = CONFIG_APP_MESH_CHANNEL;
@@ -246,12 +270,32 @@ InitWifiAndMesh(bool is_root,
           CONFIG_APP_MESH_AP_PASSWORD,
           sizeof(cfg.mesh_ap.password));
 
-  ESP_ERROR_CHECK(esp_mesh_set_config(&cfg));
+  esp_err_t cfg_result = esp_mesh_set_config(&cfg);
+  if (cfg_result != ESP_OK) {
+    ESP_LOGE(
+      kTag, "esp_mesh_set_config failed: %s", esp_err_to_name(cfg_result));
+    return cfg_result;
+  }
 
   if (is_root) {
-    ESP_ERROR_CHECK(esp_mesh_set_type(MESH_ROOT));
+    if (router_ssid == NULL || router_ssid[0] == '\0' ||
+        router_password == NULL || router_password[0] == '\0') {
+      ESP_LOGE(kTag, "router SSID/password required for mesh root start");
+      return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t type_result = esp_mesh_set_type(MESH_ROOT);
+    if (type_result != ESP_OK) {
+      ESP_LOGE(kTag,
+               "esp_mesh_set_type(MESH_ROOT) failed: %s",
+               esp_err_to_name(type_result));
+      return type_result;
+    }
   } else {
-    ESP_ERROR_CHECK(esp_mesh_set_type(MESH_NODE));
+    esp_err_t fix_result = esp_mesh_fix_root(true);
+    if (fix_result != ESP_OK) {
+      ESP_LOGW(
+        kTag, "esp_mesh_fix_root(true) failed: %s", esp_err_to_name(fix_result));
+    }
   }
 
   esp_err_t mesh_start_result = esp_mesh_start();
@@ -297,6 +341,7 @@ MeshTransportStart(mesh_transport_t* mesh,
 
   esp_err_t result = InitWifiAndMesh(is_root, router_ssid, router_password);
   if (result != ESP_OK) {
+    g_mesh = NULL;
     (void)WifiServiceRelease();
     return result;
   }
@@ -304,7 +349,16 @@ MeshTransportStart(mesh_transport_t* mesh,
   mesh->is_started = true;
   mesh->is_connected = false;
 
-  xTaskCreate(MeshRxTask, "mesh_rx", 4096, NULL, 5, NULL);
+  if (g_mesh_rx_task == NULL) {
+    const BaseType_t task_result =
+      xTaskCreate(MeshRxTask, "mesh_rx", 4096, NULL, 5, &g_mesh_rx_task);
+    if (task_result != pdPASS) {
+      ESP_LOGE(kTag, "failed to start mesh RX task");
+      (void)MeshTransportStop(mesh);
+      g_mesh = NULL;
+      return ESP_ERR_NO_MEM;
+    }
+  }
   return ESP_OK;
 }
 
