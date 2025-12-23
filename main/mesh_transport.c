@@ -1,17 +1,172 @@
 #include "mesh_transport.h"
 
+#include <stddef.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_log.h"
 #include "esp_mesh_lite.h"
 #include "esp_mesh_lite_core.h"
 #include "esp_mesh_lite_port.h"
+#include "esp_wifi.h"
 #include "wifi_service.h"
 
 static const char* kTag = "mesh";
 static const char* kMeshSoftApSsid = "PT100_MESH";
 
 static mesh_transport_t* g_mesh = NULL;
+
+typedef enum
+{
+  MESH_MESSAGE_RECORD = 1,
+  MESH_MESSAGE_TIME_REQUEST = 2,
+  MESH_MESSAGE_TIME_SYNC = 3,
+} mesh_message_type_t;
+
+#pragma pack(push, 1)
+typedef struct
+{
+  uint8_t type;
+  uint8_t src_mac[6];
+  union
+  {
+    log_record_t record;
+    int64_t epoch_seconds;
+  } payload;
+} mesh_message_t;
+#pragma pack(pop)
+
+static const uint32_t kMeshMsgIdRecord = 0x01u;
+static const uint32_t kMeshMsgIdTimeRequest = 0x02u;
+static const uint32_t kMeshMsgIdTimeSync = 0x03u;
+
+static size_t
+MeshMessageHeaderSize(void)
+{
+  return offsetof(mesh_message_t, payload);
+}
+
+static esp_err_t
+PopulateMeshMessageSrc(mesh_message_t* msg)
+{
+  if (msg == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  uint8_t local_mac[6] = { 0 };
+  esp_err_t result = esp_wifi_get_mac(WIFI_IF_STA, local_mac);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag,
+             "esp_wifi_get_mac failed: %s",
+             esp_err_to_name(result));
+    return result;
+  }
+  memcpy(msg->src_mac, local_mac, sizeof(msg->src_mac));
+  return ESP_OK;
+}
+
+static esp_err_t
+SendRawMessage(uint32_t msg_id,
+               const uint8_t* data,
+               size_t size,
+               esp_err_t (*raw_resend)(const uint8_t* data, size_t size))
+{
+  esp_mesh_lite_msg_config_t config = {
+    .raw_msg = {
+      .msg_id = msg_id,
+      .expect_resp_msg_id = 0,
+      .max_retry = 0,
+      .retry_interval = 0,
+      .data = data,
+      .size = size,
+      .raw_resend = raw_resend,
+      .raw_send_fail = NULL,
+    },
+  };
+  return esp_mesh_lite_send_msg(ESP_MESH_LITE_RAW_MSG, &config);
+}
+
+static esp_err_t
+HandleMeshMessage(uint8_t* data,
+                  uint32_t len,
+                  uint8_t** out_data,
+                  uint32_t* out_len,
+                  uint32_t seq)
+{
+  (void)seq;
+  if (out_data != NULL) {
+    *out_data = NULL;
+  }
+  if (out_len != NULL) {
+    *out_len = 0;
+  }
+  if (g_mesh == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  const size_t header_size = MeshMessageHeaderSize();
+  if (len < header_size) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+
+  mesh_message_t msg;
+  memset(&msg, 0, sizeof(msg));
+  memcpy(&msg, data, header_size);
+  if (len > header_size) {
+    const size_t payload_len = len - header_size;
+    const size_t copy_len =
+      (payload_len > sizeof(msg.payload)) ? sizeof(msg.payload) : payload_len;
+    memcpy(&msg.payload, data + header_size, copy_len);
+  }
+
+  pt100_mesh_addr_t from = Pt100MeshAddrFromMac(msg.src_mac);
+
+  switch (msg.type) {
+    case MESH_MESSAGE_RECORD:
+      if (len < header_size + sizeof(log_record_t)) {
+        return ESP_ERR_INVALID_SIZE;
+      }
+      if (g_mesh->record_rx_callback != NULL) {
+        g_mesh->record_rx_callback(
+          &from, &msg.payload.record, g_mesh->record_rx_context);
+      }
+      break;
+    case MESH_MESSAGE_TIME_REQUEST:
+      if (g_mesh->is_root && TimeSyncIsSystemTimeValid()) {
+        const int64_t now_seconds = (int64_t)time(NULL);
+        mesh_message_t response = {
+          .type = MESH_MESSAGE_TIME_SYNC,
+          .payload.epoch_seconds = now_seconds,
+        };
+        if (PopulateMeshMessageSrc(&response) == ESP_OK) {
+          const size_t response_size =
+            MeshMessageHeaderSize() + sizeof(response.payload.epoch_seconds);
+          (void)SendRawMessage(kMeshMsgIdTimeSync,
+                               (const uint8_t*)&response,
+                               response_size,
+                               esp_mesh_lite_send_broadcast_raw_msg_to_child);
+        }
+      }
+      break;
+    case MESH_MESSAGE_TIME_SYNC:
+      if (!g_mesh->is_root && g_mesh->time_sync != NULL) {
+        if (len < header_size + sizeof(int64_t)) {
+          return ESP_ERR_INVALID_SIZE;
+        }
+        (void)TimeSyncSetSystemEpoch(
+          msg.payload.epoch_seconds, true, g_mesh->time_sync);
+      }
+      break;
+    default:
+      return ESP_ERR_INVALID_RESPONSE;
+  }
+  return ESP_OK;
+}
+
+static const esp_mesh_lite_raw_msg_action_t kMeshRawActions[] = {
+  { kMeshMsgIdRecord, 0, HandleMeshMessage },
+  { kMeshMsgIdTimeRequest, 0, HandleMeshMessage },
+  { kMeshMsgIdTimeSync, 0, HandleMeshMessage },
+  { 0, 0, NULL },
+};
 
 esp_err_t __attribute__((weak))
 esp_mesh_lite_stop(void)
@@ -75,6 +230,13 @@ MeshTransportStart(mesh_transport_t* mesh,
 
   ESP_LOGI(kTag, "starting Mesh-Lite (root=%d)", (int)is_root);
   esp_mesh_lite_init(&mesh_lite_config);
+  esp_err_t raw_action_result =
+    esp_mesh_lite_raw_msg_action_list_register(kMeshRawActions);
+  if (raw_action_result != ESP_OK) {
+    ESP_LOGW(kTag,
+             "raw msg register failed: %s",
+             esp_err_to_name(raw_action_result));
+  }
 
   if (is_root) {
     (void)esp_mesh_lite_set_allowed_level(1);
@@ -149,7 +311,20 @@ MeshTransportSendRecord(const mesh_transport_t* mesh,
   if (!mesh->mesh_lite_started || !mesh->is_connected) {
     return ESP_ERR_INVALID_STATE;
   }
-  return ESP_ERR_NOT_SUPPORTED;
+  mesh_message_t msg = {
+    .type = MESH_MESSAGE_RECORD,
+    .payload.record = *record,
+  };
+  esp_err_t mac_result = PopulateMeshMessageSrc(&msg);
+  if (mac_result != ESP_OK) {
+    return mac_result;
+  }
+  const size_t msg_size = MeshMessageHeaderSize() + sizeof(log_record_t);
+  return SendRawMessage(
+    kMeshMsgIdRecord,
+    (const uint8_t*)&msg,
+    msg_size,
+    esp_mesh_lite_send_raw_msg_to_root);
 }
 
 esp_err_t
@@ -161,8 +336,21 @@ MeshTransportBroadcastTime(const mesh_transport_t* mesh, int64_t epoch_seconds)
   if (!mesh->mesh_lite_started || !mesh->is_connected) {
     return ESP_ERR_INVALID_STATE;
   }
-  (void)epoch_seconds;
-  return ESP_ERR_NOT_SUPPORTED;
+  mesh_message_t msg = {
+    .type = MESH_MESSAGE_TIME_SYNC,
+    .payload.epoch_seconds = epoch_seconds,
+  };
+  esp_err_t mac_result = PopulateMeshMessageSrc(&msg);
+  if (mac_result != ESP_OK) {
+    return mac_result;
+  }
+  const size_t msg_size =
+    MeshMessageHeaderSize() + sizeof(msg.payload.epoch_seconds);
+  return SendRawMessage(
+    kMeshMsgIdTimeSync,
+    (const uint8_t*)&msg,
+    msg_size,
+    esp_mesh_lite_send_broadcast_raw_msg_to_child);
 }
 
 esp_err_t
@@ -174,7 +362,19 @@ MeshTransportRequestTime(const mesh_transport_t* mesh)
   if (!mesh->mesh_lite_started || !mesh->is_connected) {
     return ESP_ERR_INVALID_STATE;
   }
-  return ESP_ERR_NOT_SUPPORTED;
+  mesh_message_t msg = {
+    .type = MESH_MESSAGE_TIME_REQUEST,
+  };
+  esp_err_t mac_result = PopulateMeshMessageSrc(&msg);
+  if (mac_result != ESP_OK) {
+    return mac_result;
+  }
+  const size_t msg_size = MeshMessageHeaderSize();
+  return SendRawMessage(
+    kMeshMsgIdTimeRequest,
+    (const uint8_t*)&msg,
+    msg_size,
+    esp_mesh_lite_send_raw_msg_to_root);
 }
 
 esp_err_t
