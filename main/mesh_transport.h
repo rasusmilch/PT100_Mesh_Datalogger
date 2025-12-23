@@ -26,6 +26,8 @@ extern "C"
     volatile bool is_root;
     volatile bool is_started;
     volatile bool is_connected;
+    volatile bool mesh_lite_started;
+    int last_level; // cached esp_mesh_lite_get_level()
     pt100_mesh_addr_t root_address;
     mesh_record_rx_callback_t record_rx_callback;
     void* record_rx_context;
@@ -34,9 +36,9 @@ extern "C"
 
   bool MeshTransportIsStarted(const mesh_transport_t* mesh);
 
-  // Initializes Wi-Fi + ESP-WIFI-MESH and starts background RX/TX tasks.
-  // Root node connects to the external router and runs SNTP elsewhere
-  // (app_main).
+  // Initializes Wi-Fi + Mesh-Lite and starts background activity for mesh
+  // transport. Root node connects to the external router and runs SNTP
+  // elsewhere (app_main).
   esp_err_t MeshTransportStart(mesh_transport_t* mesh,
                                bool is_root,
                                const char* router_ssid,
