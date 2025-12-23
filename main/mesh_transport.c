@@ -256,6 +256,12 @@ MeshTransportIsStarted(const mesh_transport_t* mesh)
   return mesh != NULL && mesh->mesh_lite_started;
 }
 
+bool
+MeshTransportMeshLiteIsActive(void)
+{
+  return g_mesh != NULL && g_mesh->mesh_lite_started;
+}
+
 esp_err_t
 MeshTransportStart(mesh_transport_t* mesh,
                    bool is_root,

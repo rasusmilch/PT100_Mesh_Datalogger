@@ -35,6 +35,7 @@ extern "C"
   } mesh_transport_t;
 
   bool MeshTransportIsStarted(const mesh_transport_t* mesh);
+  bool MeshTransportMeshLiteIsActive(void);
 
   // Initializes Wi-Fi + Mesh-Lite and starts background activity for mesh
   // transport. Root node connects to the external router and runs SNTP
