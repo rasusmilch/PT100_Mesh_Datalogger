@@ -1,383 +1,42 @@
 #include "mesh_transport.h"
 
-#include "esp_mac.h"   // MACSTR, MAC2STR
-#include "esp_mesh.h"
-#include "esp_netif.h" // esp_netif_init, esp_netif_t
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include <inttypes.h>
-#include <stdio.h> // sscanf
 #include <string.h>
-#include <time.h>
 
-#include "esp_event.h"
 #include "esp_log.h"
-#include "esp_wifi.h"
-#include "nvs_flash.h"
+#include "esp_mesh_lite.h"
+#include "esp_mesh_lite_core.h"
 #include "wifi_service.h"
 
 static const char* kTag = "mesh";
 
-typedef enum
-{
-  MESH_MSG_TYPE_RECORD = 1,
-  MESH_MSG_TYPE_TIME_SYNC = 2,
-  MESH_MSG_TYPE_TIME_REQUEST = 3,
-} mesh_msg_type_t;
-
-#pragma pack(push, 1)
-typedef struct
-{
-  uint8_t type;
-  uint8_t reserved[3];
-  int64_t epoch_seconds; // used for time sync / request
-  log_record_t record;   // valid when type==MESH_MSG_TYPE_RECORD
-} mesh_message_t;
-#pragma pack(pop)
-
 static mesh_transport_t* g_mesh = NULL;
-static esp_netif_t* g_mesh_netif_sta = NULL;
-static esp_netif_t* g_mesh_netif_ap = NULL;
-static TaskHandle_t g_mesh_rx_task = NULL;
-static volatile bool g_mesh_rx_stop_requested = false;
 
-static mesh_addr_t
-ToEspMeshAddr(const pt100_mesh_addr_t* addr)
+esp_err_t __attribute__((weak))
+esp_mesh_lite_stop(void)
 {
-  mesh_addr_t esp_addr;
-  memset(&esp_addr, 0, sizeof(esp_addr));
-  if (addr != NULL) {
-    memcpy(esp_addr.addr, addr->addr, sizeof(esp_addr.addr));
-  }
-  return esp_addr;
+  return ESP_ERR_NOT_SUPPORTED;
 }
 
-static pt100_mesh_addr_t
-FromEspMeshAddr(const mesh_addr_t* addr)
+esp_err_t __attribute__((weak))
+esp_mesh_lite_deinit(void)
 {
-  if (addr == NULL) {
-    static const pt100_mesh_addr_t kZeroAddr = { 0 };
-    return kZeroAddr;
-  }
-  return Pt100MeshAddrFromMac(addr->addr);
+  return ESP_ERR_NOT_SUPPORTED;
 }
 
 static void
-RequestMeshRxStop(void)
+CacheMeshLevel(mesh_transport_t* mesh)
 {
-  g_mesh_rx_stop_requested = true;
-}
-
-static void
-ClearMeshRxStopRequest(void)
-{
-  g_mesh_rx_stop_requested = false;
-}
-
-static bool
-ParseMeshIdFromConfig(const char* mesh_id_string, uint8_t* mesh_id_out)
-{
-  // Expected: "77:77:77:77:77:77"
-  int values[6] = { 0 };
-  if (sscanf(mesh_id_string,
-             "%x:%x:%x:%x:%x:%x",
-             &values[0],
-             &values[1],
-             &values[2],
-             &values[3],
-             &values[4],
-             &values[5]) != 6) {
-    return false;
-  }
-  for (int index = 0; index < 6; ++index) {
-    mesh_id_out[index] = (uint8_t)values[index];
-  }
-  return true;
-}
-
-static void
-MeshEventHandler(void* arg,
-                 esp_event_base_t event_base,
-                 int32_t event_id,
-                 void* event_data)
-{
-  (void)arg;
-  (void)event_base;
-
-  if (g_mesh == NULL) {
+  if (mesh == NULL) {
     return;
   }
-
-  mesh_event_info_t* info = (mesh_event_info_t*)event_data;
-
-  switch (event_id) {
-    case MESH_EVENT_STARTED:
-      ESP_LOGI(kTag, "MESH_EVENT_STARTED");
-      g_mesh->is_started = true;
-      break;
-
-    case MESH_EVENT_STOPPED:
-      ESP_LOGI(kTag, "MESH_EVENT_STOPPED");
-      g_mesh->is_started = false;
-      g_mesh->is_connected = false;
-      break;
-
-    case MESH_EVENT_PARENT_CONNECTED:
-      ESP_LOGI(kTag,
-               "MESH_EVENT_PARENT_CONNECTED, layer=%d",
-               (int)info->connected.self_layer);
-      g_mesh->is_connected = true;
-      break;
-
-    case MESH_EVENT_PARENT_DISCONNECTED:
-      ESP_LOGI(kTag, "MESH_EVENT_PARENT_DISCONNECTED");
-      g_mesh->is_connected = false;
-      break;
-
-    case MESH_EVENT_ROOT_ADDRESS:
-      g_mesh->root_address = FromEspMeshAddr(&info->root_addr);
-      ESP_LOGI(kTag,
-               "MESH_EVENT_ROOT_ADDRESS: " MACSTR,
-               MAC2STR(g_mesh->root_address.addr));
-      break;
-
-    default:
-      break;
-  }
-}
-
-static esp_err_t
-SendMessageTo(const mesh_transport_t* mesh,
-              const pt100_mesh_addr_t* destination,
-              const mesh_message_t* message)
-{
-  mesh_data_t data;
-  data.data = (uint8_t*)message;
-  data.size = sizeof(*message);
-  data.proto = MESH_PROTO_BIN;
-  data.tos = MESH_TOS_P2P;
-
-  // Set flag 0 for normal P2P.
-  mesh_addr_t esp_destination = ToEspMeshAddr(destination);
-  return esp_mesh_send(&esp_destination, &data, 0, NULL, 0);
-}
-
-static void
-MeshRxTask(void* context)
-{
-  (void)context;
-
-  uint8_t rx_buffer[sizeof(mesh_message_t)];
-  mesh_data_t data;
-  data.data = rx_buffer;
-  data.size = sizeof(rx_buffer);
-  data.proto = MESH_PROTO_BIN;
-  data.tos = MESH_TOS_P2P;
-
-  TickType_t last_unexpected_log_ticks = 0;
-
-  while (true) {
-    if (g_mesh_rx_stop_requested) {
-      break;
-    }
-
-    const volatile mesh_transport_t* mesh = g_mesh;
-    if (mesh == NULL || !mesh->is_started) {
-      vTaskDelay(pdMS_TO_TICKS(250));
-      continue;
-    }
-
-    mesh_addr_t from;
-    int flag = 0;
-    data.size = sizeof(rx_buffer);
-
-    esp_err_t result =
-      esp_mesh_recv(&from, &data, pdMS_TO_TICKS(500), &flag, NULL, 0);
-    if (result == ESP_ERR_MESH_TIMEOUT) {
-      continue;
-    }
-    if (result != ESP_OK) {
-      // When mesh is stopping or Wi-Fi is being reconfigured, esp_mesh_recv
-      // can start returning NOT_INIT/NOT_START. Do not spam the console.
-      if (result == ESP_ERR_MESH_NOT_INIT || result == ESP_ERR_MESH_NOT_START) {
-        // Back off and allow stop paths to complete.
-        vTaskDelay(pdMS_TO_TICKS(250));
-        continue;
-      }
-
-      // Rate-limit unexpected errors to at most 1 log per 2 seconds.
-      const TickType_t now = xTaskGetTickCount();
-      if ((now - last_unexpected_log_ticks) > pdMS_TO_TICKS(2000)) {
-        last_unexpected_log_ticks = now;
-        ESP_LOGW(kTag, "esp_mesh_recv: %s", esp_err_to_name(result));
-      }
-      vTaskDelay(pdMS_TO_TICKS(50));
-      continue;
-    }
-    if (data.size != sizeof(mesh_message_t)) {
-      continue;
-    }
-
-    const mesh_message_t* message = (const mesh_message_t*)rx_buffer;
-    const pt100_mesh_addr_t from_pt100 = FromEspMeshAddr(&from);
-
-    const volatile mesh_transport_t* current_mesh = g_mesh;
-    const mesh_transport_t* mesh_params = (const mesh_transport_t*)current_mesh;
-
-    if (message->type == MESH_MSG_TYPE_RECORD) {
-      if (mesh_params != NULL && mesh_params->record_rx_callback != NULL) {
-        mesh_params->record_rx_callback(
-          &from_pt100, &message->record, mesh_params->record_rx_context);
-      }
-    } else if (message->type == MESH_MSG_TYPE_TIME_SYNC) {
-      // Apply time update on all nodes.
-      const time_sync_t* time_sync =
-        (mesh_params != NULL) ? mesh_params->time_sync : NULL;
-      (void)TimeSyncSetSystemEpoch(message->epoch_seconds, true, time_sync);
-    } else if (message->type == MESH_MSG_TYPE_TIME_REQUEST) {
-      // Only root should respond.
-      if (mesh_params != NULL && current_mesh != NULL && current_mesh->is_root) {
-        mesh_message_t reply;
-        memset(&reply, 0, sizeof(reply));
-        reply.type = MESH_MSG_TYPE_TIME_SYNC;
-        reply.epoch_seconds = (int64_t)time(NULL);
-        (void)SendMessageTo(mesh_params, &from_pt100, &reply);
-      }
-    }
-  }
-
-  // Mark as stopped and exit.
-  g_mesh_rx_task = NULL;
-  vTaskDelete(NULL);
-}
-
-static esp_err_t
-InitWifiAndMesh(bool is_root,
-                const char* router_ssid,
-                const char* router_password)
-{
-  if (g_mesh_netif_sta == NULL || g_mesh_netif_ap == NULL) {
-    esp_err_t netif_result = esp_netif_create_default_wifi_mesh_netifs(
-      &g_mesh_netif_sta, &g_mesh_netif_ap);
-    if (netif_result != ESP_OK && g_mesh_netif_sta == NULL) {
-      ESP_LOGE(kTag,
-               "failed to create mesh netifs: %s",
-               esp_err_to_name(netif_result));
-      return netif_result;
-    }
-  }
-
-  esp_err_t handler_result = esp_event_handler_register(
-    MESH_EVENT, ESP_EVENT_ANY_ID, &MeshEventHandler, NULL);
-  if (handler_result != ESP_OK && handler_result != ESP_ERR_INVALID_STATE) {
-    ESP_LOGE(kTag,
-             "mesh event handler register failed: %s",
-             esp_err_to_name(handler_result));
-    return handler_result;
-  }
-
-  esp_err_t mesh_init_result = esp_mesh_init();
-  if (mesh_init_result != ESP_OK && mesh_init_result != ESP_ERR_INVALID_STATE) {
-    ESP_LOGE(
-      kTag, "esp_mesh_init failed: %s", esp_err_to_name(mesh_init_result));
-    return mesh_init_result;
-  }
-  esp_err_t param_result = esp_mesh_set_max_layer(6);
-  if (param_result != ESP_OK) {
-    ESP_LOGE(
-      kTag, "esp_mesh_set_max_layer failed: %s", esp_err_to_name(param_result));
-    return param_result;
-  }
-  param_result = esp_mesh_set_vote_percentage(1.0f);
-  if (param_result != ESP_OK) {
-    ESP_LOGE(kTag,
-             "esp_mesh_set_vote_percentage failed: %s",
-             esp_err_to_name(param_result));
-    return param_result;
-  }
-  param_result = esp_mesh_set_ap_assoc_expire(30);
-  if (param_result != ESP_OK) {
-    ESP_LOGE(kTag,
-             "esp_mesh_set_ap_assoc_expire failed: %s",
-             esp_err_to_name(param_result));
-    return param_result;
-  }
-  param_result = esp_mesh_set_self_organized(true, true);
-  if (param_result != ESP_OK) {
-    ESP_LOGE(kTag,
-             "esp_mesh_set_self_organized failed: %s",
-             esp_err_to_name(param_result));
-    return param_result;
-  }
-
-  mesh_cfg_t cfg = MESH_INIT_CONFIG_DEFAULT();
-  cfg.channel = CONFIG_APP_MESH_CHANNEL;
-
-  uint8_t mesh_id[6] = { 0 };
-  if (!ParseMeshIdFromConfig(CONFIG_APP_MESH_ID_HEX, mesh_id)) {
-    ESP_LOGE(kTag, "Invalid mesh ID config: %s", CONFIG_APP_MESH_ID_HEX);
-    return ESP_ERR_INVALID_ARG;
-  }
-  memcpy((uint8_t*)&cfg.mesh_id, mesh_id, 6);
-
-  // Router config is required for root connection to external network.
-  if (router_ssid != NULL && router_ssid[0] != '\0') {
-    strncpy((char*)cfg.router.ssid, router_ssid, sizeof(cfg.router.ssid));
-    cfg.router.ssid_len = strlen(router_ssid);
-  }
-  if (router_password != NULL && router_password[0] != '\0') {
-    strncpy(
-      (char*)cfg.router.password, router_password, sizeof(cfg.router.password));
-  }
-
-  // SoftAP for children.
-  cfg.mesh_ap.max_connection = CONFIG_APP_MESH_AP_CONNECTIONS;
-  strncpy((char*)cfg.mesh_ap.password,
-          CONFIG_APP_MESH_AP_PASSWORD,
-          sizeof(cfg.mesh_ap.password));
-
-  esp_err_t cfg_result = esp_mesh_set_config(&cfg);
-  if (cfg_result != ESP_OK) {
-    ESP_LOGE(
-      kTag, "esp_mesh_set_config failed: %s", esp_err_to_name(cfg_result));
-    return cfg_result;
-  }
-
-  if (is_root) {
-    if (router_ssid == NULL || router_ssid[0] == '\0' ||
-        router_password == NULL || router_password[0] == '\0') {
-      ESP_LOGE(kTag, "router SSID/password required for mesh root start");
-      return ESP_ERR_INVALID_ARG;
-    }
-    esp_err_t type_result = esp_mesh_set_type(MESH_ROOT);
-    if (type_result != ESP_OK) {
-      ESP_LOGE(kTag,
-               "esp_mesh_set_type(MESH_ROOT) failed: %s",
-               esp_err_to_name(type_result));
-      return type_result;
-    }
-  } else {
-    esp_err_t fix_result = esp_mesh_fix_root(true);
-    if (fix_result != ESP_OK) {
-      ESP_LOGW(
-        kTag, "esp_mesh_fix_root(true) failed: %s", esp_err_to_name(fix_result));
-    }
-  }
-
-  esp_err_t mesh_start_result = esp_mesh_start();
-  if (mesh_start_result != ESP_OK) {
-    ESP_LOGE(
-      kTag, "esp_mesh_start failed: %s", esp_err_to_name(mesh_start_result));
-    return mesh_start_result;
-  }
-  ESP_LOGI(kTag, "mesh started (is_root=%d)", (int)is_root);
-  return ESP_OK;
+  mesh->last_level = esp_mesh_lite_get_level();
+  mesh->is_connected = (mesh->last_level > 0);
 }
 
 bool
 MeshTransportIsStarted(const mesh_transport_t* mesh)
 {
-  return mesh != NULL && mesh->is_started;
+  return mesh != NULL && mesh->mesh_lite_started;
 }
 
 esp_err_t
@@ -389,6 +48,9 @@ MeshTransportStart(mesh_transport_t* mesh,
                    void* record_rx_context,
                    const time_sync_t* time_sync)
 {
+  (void)router_ssid;
+  (void)router_password;
+
   if (mesh == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -398,41 +60,38 @@ MeshTransportStart(mesh_transport_t* mesh,
   mesh->record_rx_context = record_rx_context;
   mesh->time_sync = time_sync;
 
-  ClearMeshRxStopRequest();
   g_mesh = mesh;
 
   esp_err_t svc_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
   if (svc_result != ESP_OK) {
+    g_mesh = NULL;
     return svc_result;
   }
 
-  esp_err_t result = InitWifiAndMesh(is_root, router_ssid, router_password);
-  if (result != ESP_OK) {
-    g_mesh = NULL;
-    (void)WifiServiceRelease();
-    return result;
-  }
+  esp_mesh_lite_config_t mesh_lite_config = ESP_MESH_LITE_DEFAULT_INIT();
+  mesh_lite_config.join_mesh_ignore_router_status = true;
+  mesh_lite_config.join_mesh_without_configured_wifi = !is_root;
 
+  ESP_LOGI(kTag, "starting Mesh-Lite (root=%d)", (int)is_root);
+  esp_mesh_lite_init(&mesh_lite_config);
+  esp_mesh_lite_start();
+
+  mesh->mesh_lite_started = true;
   mesh->is_started = true;
-  mesh->is_connected = false;
+  CacheMeshLevel(mesh);
 
-  if (g_mesh_rx_task == NULL) {
-    const BaseType_t task_result =
-      xTaskCreate(MeshRxTask, "mesh_rx", 4096, NULL, 5, &g_mesh_rx_task);
-    if (task_result != pdPASS) {
-      ESP_LOGE(kTag, "failed to start mesh RX task");
-      (void)MeshTransportStop(mesh);
-      g_mesh = NULL;
-      return ESP_ERR_NO_MEM;
-    }
-  }
   return ESP_OK;
 }
 
 bool
 MeshTransportIsConnected(const mesh_transport_t* mesh)
 {
-  return mesh != NULL && mesh->is_connected;
+  if (mesh == NULL || !mesh->mesh_lite_started) {
+    return false;
+  }
+
+  CacheMeshLevel((mesh_transport_t*)mesh);
+  return mesh->is_connected;
 }
 
 esp_err_t
@@ -442,7 +101,7 @@ MeshTransportGetRootAddress(const mesh_transport_t* mesh,
   if (mesh == NULL || root_out == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  if (!mesh->is_started) {
+  if (!mesh->mesh_lite_started) {
     memset(root_out, 0, sizeof(*root_out));
     return ESP_ERR_INVALID_STATE;
   }
@@ -457,19 +116,10 @@ MeshTransportSendRecord(const mesh_transport_t* mesh,
   if (mesh == NULL || record == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  if (!mesh->is_started || !mesh->is_connected) {
+  if (!mesh->mesh_lite_started || !mesh->is_connected) {
     return ESP_ERR_INVALID_STATE;
   }
-  if (mesh->is_root) {
-    return ESP_ERR_NOT_SUPPORTED;
-  }
-
-  mesh_message_t message;
-  memset(&message, 0, sizeof(message));
-  message.type = MESH_MSG_TYPE_RECORD;
-  memcpy(&message.record, record, sizeof(*record));
-
-  return SendMessageTo(mesh, &mesh->root_address, &message);
+  return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t
@@ -478,39 +128,11 @@ MeshTransportBroadcastTime(const mesh_transport_t* mesh, int64_t epoch_seconds)
   if (mesh == NULL || !mesh->is_root) {
     return ESP_ERR_INVALID_STATE;
   }
-  if (!mesh->is_started || !mesh->is_connected) {
+  if (!mesh->mesh_lite_started || !mesh->is_connected) {
     return ESP_ERR_INVALID_STATE;
   }
-
-  mesh_message_t message;
-  memset(&message, 0, sizeof(message));
-  message.type = MESH_MSG_TYPE_TIME_SYNC;
-  message.epoch_seconds = epoch_seconds;
-
-  // Send to all nodes in the routing table.
-  const int routing_table_size = esp_mesh_get_routing_table_size();
-  if (routing_table_size <= 0) {
-    return ESP_OK;
-  }
-
-  mesh_addr_t routing_table[64];
-  int routing_table_entries = 0;
-  esp_err_t result = esp_mesh_get_routing_table(
-    routing_table, sizeof(routing_table), &routing_table_entries);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  for (int index = 0; index < routing_table_entries; ++index) {
-    // Skip self (root).
-    if (memcmp(routing_table[index].addr, mesh->root_address.addr, 6) == 0) {
-      continue;
-    }
-    const pt100_mesh_addr_t destination =
-      FromEspMeshAddr(&routing_table[index]);
-    (void)SendMessageTo(mesh, &destination, &message);
-  }
-  return ESP_OK;
+  (void)epoch_seconds;
+  return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t
@@ -519,15 +141,10 @@ MeshTransportRequestTime(const mesh_transport_t* mesh)
   if (mesh == NULL || mesh->is_root) {
     return ESP_ERR_INVALID_STATE;
   }
-  if (!mesh->is_started || !mesh->is_connected) {
+  if (!mesh->mesh_lite_started || !mesh->is_connected) {
     return ESP_ERR_INVALID_STATE;
   }
-
-  mesh_message_t message;
-  memset(&message, 0, sizeof(message));
-  message.type = MESH_MSG_TYPE_TIME_REQUEST;
-  message.epoch_seconds = 0;
-  return SendMessageTo(mesh, &mesh->root_address, &message);
+  return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t
@@ -537,32 +154,33 @@ MeshTransportStop(mesh_transport_t* mesh)
     return ESP_ERR_INVALID_ARG;
   }
 
-  // Stop the RX task first to avoid tight-loop logging when mesh is being
-  // torn down.
-  RequestMeshRxStop();
-
   mesh->is_connected = false;
-  if (!mesh->is_started) {
+  if (!mesh->mesh_lite_started) {
     g_mesh = NULL;
     return ESP_OK;
   }
 
-  esp_err_t result = esp_mesh_stop();
-  if (result == ESP_ERR_MESH_NOT_START) {
-    result = ESP_OK;
+  esp_err_t result = ESP_OK;
+
+  esp_err_t stop_result = esp_mesh_lite_stop();
+  if (stop_result != ESP_ERR_NOT_SUPPORTED && stop_result != ESP_OK) {
+    result = stop_result;
+    ESP_LOGW(
+      kTag, "esp_mesh_lite_stop returned: %s", esp_err_to_name(stop_result));
   }
 
-  // Fully deinit mesh to ensure internal scan/retry tasks are torn down.
-  // This helps diagnostics and prevents background log spam after stop.
-  esp_err_t deinit_result = esp_mesh_deinit();
-  if (deinit_result != ESP_OK && deinit_result != ESP_ERR_INVALID_STATE &&
+  esp_err_t deinit_result = esp_mesh_lite_deinit();
+  if (deinit_result != ESP_ERR_NOT_SUPPORTED && deinit_result != ESP_OK &&
       result == ESP_OK) {
     result = deinit_result;
+    ESP_LOGW(kTag,
+             "esp_mesh_lite_deinit returned: %s",
+             esp_err_to_name(deinit_result));
   }
-  mesh->is_started = false;
 
-  // Detach global pointer so the event handler and RX task do not touch a
-  // stale instance.
+  mesh->mesh_lite_started = false;
+  mesh->is_started = false;
+  mesh->last_level = -1;
   g_mesh = NULL;
 
   if (WifiServiceActiveMode() == WIFI_SERVICE_MODE_MESH) {
@@ -570,13 +188,6 @@ MeshTransportStop(mesh_transport_t* mesh)
     if (result == ESP_OK && svc_result != ESP_OK) {
       result = svc_result;
     }
-  }
-
-  // Best-effort wait for RX task to exit (bounded).
-  const TickType_t start_ticks = xTaskGetTickCount();
-  while (g_mesh_rx_task != NULL &&
-         (xTaskGetTickCount() - start_ticks) < pdMS_TO_TICKS(1500)) {
-    vTaskDelay(pdMS_TO_TICKS(25));
   }
 
   return result;
