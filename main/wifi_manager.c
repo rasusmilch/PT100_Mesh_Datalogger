@@ -6,12 +6,14 @@
 
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_mesh_lite_core.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "mesh_transport.h"
 
 static const char* kTag = "wifi_mgr";
 
@@ -352,7 +354,11 @@ WifiManagerScan(wifi_ap_record_t* out_records,
   memset(&config, 0, sizeof(config));
 
   esp_err_t result = ESP_OK;
-  result = esp_wifi_scan_start(&config, false);
+  if (MeshTransportMeshLiteIsActive()) {
+    result = esp_mesh_lite_wifi_scan_start(&config, pdMS_TO_TICKS(15000));
+  } else {
+    result = esp_wifi_scan_start(&config, false);
+  }
   if (result != ESP_OK) {
     goto exit;
   }
