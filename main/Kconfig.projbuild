@@ -19,6 +19,13 @@ config APP_WIFI_ROUTER_PASSWORD
   help
     External Wi-Fi password used by the mesh root.
 
+config APP_MESH_DISABLE_ROUTER
+  bool "Disable router backhaul (Mesh-Lite only mode)"
+  default n
+  help
+    If enabled, the mesh root will not attempt to connect to an upstream router.
+    Use this to form a routerless Mesh-Lite network with a fixed root.
+
 config APP_SNTP_SERVER
   string "SNTP server"
   default "pool.ntp.org"
