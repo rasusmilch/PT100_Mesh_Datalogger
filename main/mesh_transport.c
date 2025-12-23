@@ -363,7 +363,8 @@ MeshTransportGetRootAddress(const mesh_transport_t* mesh,
     memset(root_out, 0, sizeof(*root_out));
     return ESP_ERR_INVALID_STATE;
   }
-  memcpy(root_out, &mesh->root_address, sizeof(*root_out));
+  pt100_mesh_addr_t root_addr = mesh->root_address;
+  *root_out = root_addr;
   return ESP_OK;
 }
 
