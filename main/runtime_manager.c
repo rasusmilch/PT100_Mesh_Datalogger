@@ -209,7 +209,7 @@ PrintJsonRecord(const char* node_id, const log_record_t* record)
 }
 
 static void
-RootRecordRxCallback(const mesh_addr_t* from,
+RootRecordRxCallback(const pt100_mesh_addr_t* from,
                      const log_record_t* record,
                      void* context)
 {
