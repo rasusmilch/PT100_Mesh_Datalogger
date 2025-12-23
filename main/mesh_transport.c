@@ -5,9 +5,11 @@
 #include "esp_log.h"
 #include "esp_mesh_lite.h"
 #include "esp_mesh_lite_core.h"
+#include "esp_mesh_lite_port.h"
 #include "wifi_service.h"
 
 static const char* kTag = "mesh";
+static const char* kMeshSoftApSsid = "PT100_MESH";
 
 static mesh_transport_t* g_mesh = NULL;
 
@@ -48,9 +50,6 @@ MeshTransportStart(mesh_transport_t* mesh,
                    void* record_rx_context,
                    const time_sync_t* time_sync)
 {
-  (void)router_ssid;
-  (void)router_password;
-
   if (mesh == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -71,9 +70,40 @@ MeshTransportStart(mesh_transport_t* mesh,
   esp_mesh_lite_config_t mesh_lite_config = ESP_MESH_LITE_DEFAULT_INIT();
   mesh_lite_config.join_mesh_ignore_router_status = true;
   mesh_lite_config.join_mesh_without_configured_wifi = !is_root;
+  mesh_lite_config.softap_ssid = kMeshSoftApSsid;
+  mesh_lite_config.softap_password = CONFIG_APP_MESH_AP_PASSWORD;
 
   ESP_LOGI(kTag, "starting Mesh-Lite (root=%d)", (int)is_root);
   esp_mesh_lite_init(&mesh_lite_config);
+
+  if (is_root) {
+    (void)esp_mesh_lite_set_allowed_level(1);
+    (void)esp_mesh_lite_allow_others_to_join(true);
+  } else {
+    (void)esp_mesh_lite_set_disallowed_level(1);
+    (void)esp_mesh_lite_allow_others_to_join(false);
+  }
+
+  bool router_disabled = false;
+#ifdef CONFIG_APP_MESH_DISABLE_ROUTER
+  router_disabled = CONFIG_APP_MESH_DISABLE_ROUTER;
+#endif
+
+  if (!router_disabled && router_ssid != NULL && router_ssid[0] != '\0') {
+    mesh_lite_sta_config_t router_config = { 0 };
+    strlcpy((char*)router_config.ssid,
+            router_ssid,
+            sizeof(router_config.ssid));
+    strlcpy((char*)router_config.password,
+            (router_password != NULL) ? router_password : "",
+            sizeof(router_config.password));
+
+    esp_err_t router_result = esp_mesh_lite_set_router_config(&router_config);
+    if (router_result != ESP_OK) {
+      return router_result;
+    }
+  }
+
   esp_mesh_lite_start();
 
   mesh->mesh_lite_started = true;
