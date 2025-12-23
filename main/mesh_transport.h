@@ -21,12 +21,11 @@ extern "C"
   typedef struct
   {
     // NOTE: These flags are read/written from multiple tasks (event handler,
-    // RX task, console/diagnostics). Mark volatile to prevent the compiler
-    // from caching values across loop iterations.
-    volatile bool is_root;
-    volatile bool is_started;
-    volatile bool is_connected;
-    volatile bool mesh_lite_started;
+    // RX task, console/diagnostics).
+    bool is_root;
+    bool is_started;
+    bool is_connected;
+    bool mesh_lite_started;
     int last_level; // cached esp_mesh_lite_get_level()
     pt100_mesh_addr_t root_address;
     mesh_record_rx_callback_t record_rx_callback;
