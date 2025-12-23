@@ -43,7 +43,7 @@ sdkconfig.*.tmp
 # IDF Component Manager (recommended for multi-machine)
 # ============================================================
 # Generated dependency directory (recreated automatically by CMake)
-managed_components/
+# managed_components/
 
 # Lock file ensures reproducible dependency versions (commit it)
 !dependencies.lock

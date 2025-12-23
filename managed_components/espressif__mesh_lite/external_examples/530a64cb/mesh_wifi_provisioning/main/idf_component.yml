@@ -1,0 +1,8 @@
+dependencies:
+  idf: '>=5.0'
+  mesh_lite:
+    version: '*'
+  wifi_provisioning:
+    git: https://github.com/espressif/esp-mesh-lite.git
+    path: components/wifi_provisioning
+    version: 3d80e05e
