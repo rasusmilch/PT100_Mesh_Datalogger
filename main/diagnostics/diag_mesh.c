@@ -4,16 +4,15 @@
 #include <string.h>
 
 #include "esp_err.h"
-#include "esp_event.h"
 #include "esp_heap_caps.h"
-#include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_mesh.h"
+#include "esp_mesh_lite.h"
+#include "esp_mesh_lite_port.h"
 #include "esp_netif_ip_addr.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "mesh_addr.h"
 #include "mesh_transport.h"
 #include "sdkconfig.h"
 #include "wifi_service.h"
@@ -26,13 +25,6 @@ static const char* kTag = "diag_mesh";
 #define DIAG_MESH_ENABLE_HEAP_INTEGRITY_CHECKS 0
 #endif
 
-#define DIAG_MESH_EVENT_PARENT_CONNECTED BIT0
-#define DIAG_MESH_EVENT_LAYER_CHANGED BIT1
-#define DIAG_MESH_EVENT_ROOT_IP BIT2
-#define DIAG_MESH_EVENT_PARENT_DISCONNECTED BIT3
-#define DIAG_MESH_EVENT_TODS BIT4
-#define DIAG_MESH_EVENT_ROOT_ADDR BIT5
-
 typedef struct
 {
   size_t free_8bit;
@@ -42,32 +34,15 @@ typedef struct
 
 typedef struct
 {
-  EventGroupHandle_t group;
-  esp_event_handler_instance_t mesh_handler;
-  esp_event_handler_instance_t ip_handler;
-  int last_layer;
-  int last_disconnect_reason;
-  mesh_addr_t parent;
-  bool parent_known;
-  mesh_addr_t root_addr;
-  bool root_known;
-  esp_ip4_addr_t root_ip;
-  bool root_has_ip;
-  bool to_ds;
-  bool to_ds_known;
-} mesh_diag_events_t;
-
-typedef struct
-{
   bool started;
   bool connected;
   bool is_root;
   int layer;
-  mesh_addr_t parent;
+  pt100_mesh_addr_t parent;
   bool parent_known;
-  mesh_addr_t mesh_id;
+  uint8_t mesh_id;
   bool mesh_id_known;
-  mesh_addr_t root_addr;
+  pt100_mesh_addr_t root_addr;
   bool root_addr_known;
   esp_ip4_addr_t root_ip;
   bool root_ip_known;
@@ -79,7 +54,7 @@ typedef struct
 
 typedef struct
 {
-  mesh_addr_t mesh_id;
+  pt100_mesh_addr_t mesh_id;
   bool mesh_id_valid;
   size_t router_ssid_len;
   size_t router_password_len;
@@ -171,7 +146,7 @@ PrintStackSizeWarning(const diag_ctx_t* ctx)
 }
 
 static bool
-ParseMeshId(const char* mesh_id_string, mesh_addr_t* mesh_id_out)
+ParseMeshId(const char* mesh_id_string, pt100_mesh_addr_t* mesh_id_out)
 {
   if (mesh_id_string == NULL || mesh_id_out == NULL) {
     return false;
@@ -235,208 +210,29 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
   return ESP_OK;
 }
 
-static void
-MeshDiagEventHandler(void* arg,
-                     esp_event_base_t event_base,
-                     int32_t event_id,
-                     void* event_data)
-{
-  mesh_diag_events_t* events = (mesh_diag_events_t*)arg;
-  if (events == NULL || events->group == NULL || event_base != MESH_EVENT) {
-    return;
-  }
-
-  switch (event_id) {
-    case MESH_EVENT_PARENT_CONNECTED: {
-      const mesh_event_connected_t* info =
-        (const mesh_event_connected_t*)event_data;
-      events->last_layer =
-        (info != NULL) ? (int)info->self_layer : esp_mesh_get_layer();
-
-      if (info != NULL) {
-        memcpy(events->parent.addr, info->connected.bssid, 6);
-        events->parent_known = true;
-      } else {
-        mesh_addr_t parent;
-        memset(&parent, 0, sizeof(parent));
-        if (esp_mesh_get_parent_bssid(&parent) == ESP_OK) {
-          memcpy(events->parent.addr, parent.addr, 6);
-          events->parent_known = true;
-        }
-      }
-
-      xEventGroupSetBits(events->group,
-                         DIAG_MESH_EVENT_PARENT_CONNECTED |
-                           DIAG_MESH_EVENT_LAYER_CHANGED);
-      break;
-    }
-
-    case MESH_EVENT_LAYER_CHANGE: {
-      const mesh_event_layer_change_t* info =
-        (const mesh_event_layer_change_t*)event_data;
-      events->last_layer =
-        (info != NULL) ? (int)info->new_layer : esp_mesh_get_layer();
-      xEventGroupSetBits(events->group, DIAG_MESH_EVENT_LAYER_CHANGED);
-      break;
-    }
-
-    case MESH_EVENT_PARENT_DISCONNECTED: {
-      const mesh_event_disconnected_t* info =
-        (const mesh_event_disconnected_t*)event_data;
-      events->last_disconnect_reason = (info != NULL) ? info->reason : -1;
-      events->parent_known = false;
-      xEventGroupSetBits(events->group, DIAG_MESH_EVENT_PARENT_DISCONNECTED);
-      break;
-    }
-
-    case MESH_EVENT_ROOT_ADDRESS: {
-      const mesh_event_root_address_t* info =
-        (const mesh_event_root_address_t*)event_data;
-      if (info != NULL) {
-        memcpy(events->root_addr.addr, info->addr, 6);
-        events->root_known = true;
-      }
-      xEventGroupSetBits(events->group, DIAG_MESH_EVENT_ROOT_ADDR);
-      break;
-    }
-
-    case MESH_EVENT_TODS_STATE: {
-      const mesh_event_toDS_state_t* info =
-        (const mesh_event_toDS_state_t*)event_data;
-      events->to_ds_known = true;
-      events->to_ds = (info != NULL) ? (*info) : false;
-      xEventGroupSetBits(events->group, DIAG_MESH_EVENT_TODS);
-      break;
-    }
-
-    default:
-      break;
-  }
-}
-
-static void
-MeshDiagIpEventHandler(void* arg,
-                       esp_event_base_t event_base,
-                       int32_t event_id,
-                       void* event_data)
-{
-  mesh_diag_events_t* events = (mesh_diag_events_t*)arg;
-  if (events == NULL || events->group == NULL || event_base != IP_EVENT ||
-      event_id != IP_EVENT_STA_GOT_IP) {
-    return;
-  }
-
-  const ip_event_got_ip_t* got_ip = (const ip_event_got_ip_t*)event_data;
-  events->root_has_ip = esp_mesh_is_root();
-  if (events->root_has_ip && got_ip != NULL) {
-    events->root_ip = got_ip->ip_info.ip;
-  }
-  if (events->root_has_ip) {
-    xEventGroupSetBits(events->group, DIAG_MESH_EVENT_ROOT_IP);
-  }
-}
-
-static void
-CleanupEventTracking(mesh_diag_events_t* events);
-
-static esp_err_t
-InitEventTracking(mesh_diag_events_t* events)
-{
-  if (events == NULL) {
-    return ESP_ERR_INVALID_ARG;
-  }
-
-  memset(events, 0, sizeof(*events));
-  events->last_layer = -1;
-  events->last_disconnect_reason = -1;
-  events->group = xEventGroupCreate();
-  if (events->group == NULL) {
-    return ESP_ERR_NO_MEM;
-  }
-
-  esp_err_t result = esp_event_handler_instance_register(MESH_EVENT,
-                                                         ESP_EVENT_ANY_ID,
-                                                         &MeshDiagEventHandler,
-                                                         events,
-                                                         &events->mesh_handler);
-  if (result != ESP_OK) {
-    CleanupEventTracking(events);
-    return result;
-  }
-
-  result = esp_event_handler_instance_register(IP_EVENT,
-                                               IP_EVENT_STA_GOT_IP,
-                                               &MeshDiagIpEventHandler,
-                                               events,
-                                               &events->ip_handler);
-  if (result != ESP_OK) {
-    CleanupEventTracking(events);
-    return result;
-  }
-
-  return ESP_OK;
-}
-
-static void
-CleanupEventTracking(mesh_diag_events_t* events)
-{
-  if (events == NULL) {
-    return;
-  }
-
-  if (events->mesh_handler != NULL) {
-    (void)esp_event_handler_instance_unregister(
-      MESH_EVENT, ESP_EVENT_ANY_ID, events->mesh_handler);
-    events->mesh_handler = NULL;
-  }
-
-  if (events->ip_handler != NULL) {
-    (void)esp_event_handler_instance_unregister(
-      IP_EVENT, IP_EVENT_STA_GOT_IP, events->ip_handler);
-    events->ip_handler = NULL;
-  }
-
-  if (events->group != NULL) {
-    vEventGroupDelete(events->group);
-    events->group = NULL;
-  }
-}
-
 static bool
-MeshReady(bool expect_root,
-          const mesh_transport_t* mesh,
-          const mesh_diag_events_t* events)
+MeshReady(bool expect_root, const mesh_transport_t* mesh, int* layer_out)
 {
   if (mesh == NULL || !MeshTransportIsStarted(mesh)) {
+    if (layer_out != NULL) {
+      *layer_out = -1;
+    }
     return false;
   }
 
-  const EventBits_t bits = (events != NULL && events->group != NULL)
-                             ? xEventGroupGetBits(events->group)
-                             : 0;
-  const bool connected = MeshTransportIsConnected(mesh);
-  const int layer = esp_mesh_get_layer();
-  const bool is_root = esp_mesh_is_root();
-
-  if (expect_root || is_root) {
-    if ((bits & DIAG_MESH_EVENT_ROOT_IP) != 0) {
-      return true;
-    }
-    if (events != NULL && events->to_ds_known && events->to_ds) {
-      return true;
-    }
-    return connected;
+  const int layer = (int)esp_mesh_lite_get_level();
+  if (layer_out != NULL) {
+    *layer_out = layer;
   }
 
-  if ((bits & DIAG_MESH_EVENT_PARENT_CONNECTED) != 0) {
-    return true;
+  if (expect_root) {
+    return layer == 1;
   }
-  return (connected && layer > 0);
+  return layer >= 2;
 }
 
 static esp_err_t
 WaitForMeshReady(const mesh_transport_t* mesh,
-                 mesh_diag_events_t* events,
                  bool expect_root,
                  int timeout_ms,
                  bool* ready_out,
@@ -459,30 +255,16 @@ WaitForMeshReady(const mesh_transport_t* mesh,
   const TickType_t start_ticks = xTaskGetTickCount();
   const TickType_t timeout_ticks =
     pdMS_TO_TICKS((timeout_ms > 0) ? timeout_ms : 10000);
-  bool ready = MeshReady(expect_root, mesh, events);
+  bool ready = MeshReady(expect_root, mesh, layer_out);
 
   while (!ready && (xTaskGetTickCount() - start_ticks) < timeout_ticks) {
-    if (events != NULL && events->group != NULL) {
-      (void)xEventGroupWaitBits(
-        events->group,
-        DIAG_MESH_EVENT_PARENT_CONNECTED | DIAG_MESH_EVENT_LAYER_CHANGED |
-          DIAG_MESH_EVENT_ROOT_IP | DIAG_MESH_EVENT_PARENT_DISCONNECTED |
-          DIAG_MESH_EVENT_TODS,
-        pdFALSE,
-        pdFALSE,
-        pdMS_TO_TICKS(200));
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(200));
-    }
-    ready = MeshReady(expect_root, mesh, events);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    ready = MeshReady(expect_root, mesh, layer_out);
   }
 
   const TickType_t elapsed = xTaskGetTickCount() - start_ticks;
   if (waited_ms_out != NULL) {
     *waited_ms_out = (int)pdTICKS_TO_MS(elapsed);
-  }
-  if (layer_out != NULL) {
-    *layer_out = esp_mesh_get_layer();
   }
   if (ready_out != NULL) {
     *ready_out = ready;
@@ -491,9 +273,7 @@ WaitForMeshReady(const mesh_transport_t* mesh,
 }
 
 static void
-CaptureMeshStatus(mesh_status_t* status,
-                  const mesh_transport_t* mesh,
-                  const mesh_diag_events_t* events)
+CaptureMeshStatus(mesh_status_t* status, const mesh_transport_t* mesh)
 {
   if (status == NULL) {
     return;
@@ -501,8 +281,7 @@ CaptureMeshStatus(mesh_status_t* status,
   memset(status, 0, sizeof(*status));
   status->layer = -1;
   status->channel = -1;
-  status->last_disconnect_reason =
-    (events != NULL) ? events->last_disconnect_reason : -1;
+  status->last_disconnect_reason = -1;
   status->owner_mode = WifiServiceActiveMode();
 
   if (mesh == NULL) {
@@ -514,52 +293,32 @@ CaptureMeshStatus(mesh_status_t* status,
     return;
   }
 
-  status->is_root = esp_mesh_is_root();
-  status->layer = esp_mesh_get_layer();
+  status->is_root = mesh->is_root;
+  status->layer = (int)esp_mesh_lite_get_level();
+  status->mesh_id = esp_mesh_lite_get_mesh_id();
+  status->mesh_id_known = true;
 
-  mesh_cfg_t cfg;
-  memset(&cfg, 0, sizeof(cfg));
-  if (esp_mesh_get_config(&cfg) == ESP_OK) {
-    memcpy(&status->mesh_id, &cfg.mesh_id, sizeof(status->mesh_id));
-    status->mesh_id_known = true;
-    status->channel = cfg.channel;
-  }
-
-  mesh_addr_t parent;
-  memset(&parent, 0, sizeof(parent));
-  if (esp_mesh_get_parent_bssid(&parent) == ESP_OK) {
-    memcpy(&status->parent, &parent, sizeof(status->parent));
+  mesh_lite_ap_record_t ap_record = { 0 };
+  if (esp_mesh_lite_get_ap_record(&ap_record) == ESP_OK) {
+    memcpy(status->parent.addr, ap_record.bssid, sizeof(status->parent.addr));
     status->parent_known = true;
-  } else if (events != NULL && events->parent_known) {
-    memcpy(&status->parent, &events->parent, sizeof(status->parent));
-    status->parent_known = true;
+    status->channel = ap_record.primary;
   }
 
-  mesh_addr_t root_addr;
-  memset(&root_addr, 0, sizeof(root_addr));
-  // esp_mesh.h does not expose a direct API to query the current root MAC.
-  // - If we are the root, the root address is our own mesh ID.
-  // - Otherwise, rely on the cached MESH_EVENT_ROOT_ADDRESS tracking (if
-  //   enabled for this diagnostic run).
-  bool root_addr_known = false;
-  if (status->is_root) {
-    if (esp_mesh_get_id(&root_addr) == ESP_OK) {
-      memcpy(&status->root_addr, &root_addr, sizeof(status->root_addr));
-      status->root_addr_known = true;
-      root_addr_known = true;
-    }
-  }
-  if (!root_addr_known && events != NULL && events->root_known) {
-    memcpy(&status->root_addr, &events->root_addr, sizeof(status->root_addr));
+  pt100_mesh_addr_t root_addr = { 0 };
+  if (MeshTransportGetRootAddress(mesh, &root_addr) == ESP_OK &&
+      !Pt100MeshAddrIsZero(&root_addr)) {
+    memcpy(&status->root_addr, &root_addr, sizeof(status->root_addr));
     status->root_addr_known = true;
   }
 
-  if (events != NULL && events->root_has_ip) {
-    status->root_ip = events->root_ip;
+  esp_ip_addr_t root_ip = { 0 };
+  if (esp_mesh_lite_get_root_ip(ESP_IPADDR_TYPE_V4, &root_ip) == ESP_OK) {
+    status->root_ip.addr = root_ip.u_addr.ip4.addr;
     status->root_ip_known = true;
   }
 
-  status->routing_table_size = esp_mesh_get_routing_table_size();
+  status->routing_table_size = (int)esp_mesh_lite_get_mesh_node_number();
 }
 
 static void
@@ -569,31 +328,41 @@ PrintRoutingTable(const diag_ctx_t* ctx)
     return;
   }
 
-  const int routing_table_size = esp_mesh_get_routing_table_size();
-  if (routing_table_size <= 0) {
+#if CONFIG_MESH_LITE_NODE_INFO_REPORT
+  uint32_t total_nodes = 0;
+  const node_info_list_t* node = esp_mesh_lite_get_nodes_list(&total_nodes);
+  if (node == NULL || total_nodes == 0) {
     return;
   }
 
-  mesh_addr_t routing_table[10];
-  int table_entries = 0;
-  const esp_err_t result = esp_mesh_get_routing_table(
-    routing_table, sizeof(routing_table), &table_entries);
-  if (result != ESP_OK || table_entries <= 0) {
-    return;
-  }
-
-  const int to_show =
-    (table_entries < (int)(sizeof(routing_table) / sizeof(routing_table[0])))
-      ? table_entries
-      : (int)(sizeof(routing_table) / sizeof(routing_table[0]));
-  printf("      routing table: %d entries (showing %d)\n",
-         routing_table_size,
+  const int to_show = (total_nodes < 10u) ? (int)total_nodes : 10;
+  printf("      mesh nodes: %u entries (showing %d)\n",
+         (unsigned)total_nodes,
          to_show);
-  for (int index = 0; index < to_show; ++index) {
+  int index = 0;
+  for (const node_info_list_t* entry = node;
+       entry != NULL && index < to_show;
+       entry = entry->next, ++index) {
     char mac[20] = { 0 };
-    FormatMac(mac, sizeof(mac), routing_table[index].addr);
-    printf("        %2d. %s\n", index + 1, mac);
+    const esp_mesh_lite_node_info_t* info = entry->node;
+    if (info != NULL) {
+      FormatMac(mac, sizeof(mac), info->mac_addr);
+    }
+    ip4_addr_t node_ip = { 0 };
+    const char* node_ip_str = "<unknown>";
+    if (info != NULL && info->ip_addr != 0) {
+      node_ip.addr = info->ip_addr;
+      node_ip_str = ip4addr_ntoa(&node_ip);
+    }
+    printf("        %2d. %s level=%u ip=%s\n",
+           index + 1,
+           (info != NULL) ? mac : "<unknown>",
+           (info != NULL) ? (unsigned)info->level : 0u,
+           node_ip_str);
   }
+#else
+  (void)ctx;
+#endif
 }
 
 int
@@ -720,18 +489,6 @@ RunDiagMesh(const app_runtime_t* runtime,
                  YesNo(start_as_root),
                  YesNo(diag_config.router_password_valid));
 
-  mesh_diag_events_t events;
-  memset(&events, 0, sizeof(events));
-  const bool need_events = wait_for_ready || start;
-  esp_err_t event_result = ESP_OK;
-  if (need_events && runtime_result == ESP_OK && wifi_owner_ok) {
-    event_result = InitEventTracking(&events);
-    if (event_result != ESP_OK) {
-      ESP_LOGW(
-        kTag, "event tracking unavailable: %s", esp_err_to_name(event_result));
-    }
-  }
-
   heap_snapshot_t start_before = CaptureHeapSnapshot();
   heap_snapshot_t start_after = start_before;
   MeshDiagHeapCheck(&ctx, "pre_mesh_start");
@@ -768,16 +525,14 @@ RunDiagMesh(const app_runtime_t* runtime,
 
   bool ready = mesh_connected;
   int waited_ms = 0;
-  int wait_layer = mesh_started ? esp_mesh_get_layer() : -1;
+  int wait_layer =
+    mesh_started ? (int)esp_mesh_lite_get_level() : -1;
   esp_err_t wait_result = ESP_OK;
   if (wait_for_ready) {
     if (!mesh_started) {
       wait_result = ESP_ERR_INVALID_STATE;
-    } else if (event_result != ESP_OK) {
-      wait_result = ESP_ERR_INVALID_STATE;
     } else {
       wait_result = WaitForMeshReady(mesh_available ? runtime->mesh : NULL,
-                                     (event_result == ESP_OK) ? &events : NULL,
                                      start_as_root,
                                      timeout_ms,
                                      &ready,
@@ -795,7 +550,7 @@ RunDiagMesh(const app_runtime_t* runtime,
     "mesh start/wait",
     mesh_start_step_result,
     "requested=%s root=%s started_by_diag=%s started=%s connected=%s ready=%s"
-    " waited_ms=%d layer=%d wifi_mode=%s event_result=%s"
+    " waited_ms=%d layer=%d wifi_mode=%s"
     " heap8_before=%u heap8_after=%u min_free=%u",
     YesNo(start),
     YesNo(start_as_root),
@@ -806,7 +561,6 @@ RunDiagMesh(const app_runtime_t* runtime,
     waited_ms,
     wait_layer,
     WifiModeToString(mode_after_start),
-    esp_err_to_name(event_result),
     (unsigned)start_before.free_8bit,
     (unsigned)start_after.free_8bit,
     (unsigned)start_after.min_free);
@@ -814,9 +568,7 @@ RunDiagMesh(const app_runtime_t* runtime,
   PrintHeapSnapshot(&ctx, "mesh_start_after", &start_after);
 
   mesh_status_t status;
-  CaptureMeshStatus(&status,
-                    mesh_available ? runtime->mesh : NULL,
-                    (event_result == ESP_OK) ? &events : NULL);
+  CaptureMeshStatus(&status, mesh_available ? runtime->mesh : NULL);
 
   char parent_str[20] = { 0 };
   if (status.parent_known) {
@@ -824,7 +576,10 @@ RunDiagMesh(const app_runtime_t* runtime,
   }
   char status_mesh_id[20] = { 0 };
   if (status.mesh_id_known) {
-    FormatMac(status_mesh_id, sizeof(status_mesh_id), status.mesh_id.addr);
+    snprintf(status_mesh_id,
+             sizeof(status_mesh_id),
+             "0x%02x",
+             status.mesh_id);
   }
   char root_addr_str[20] = { 0 };
   if (status.root_addr_known) {
@@ -859,8 +614,6 @@ RunDiagMesh(const app_runtime_t* runtime,
                  root_ip_str);
 
   PrintRoutingTable(&ctx);
-
-  CleanupEventTracking((event_result == ESP_OK) ? &events : NULL);
 
   heap_snapshot_t stop_before = CaptureHeapSnapshot();
   heap_snapshot_t stop_after = stop_before;
