@@ -5,8 +5,8 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "esp_mesh.h"
 #include "log_record.h"
+#include "mesh_addr.h"
 #include "time_sync.h"
 
 #ifdef __cplusplus
@@ -14,7 +14,7 @@ extern "C"
 {
 #endif
 
-  typedef void (*mesh_record_rx_callback_t)(const mesh_addr_t* from,
+  typedef void (*mesh_record_rx_callback_t)(const pt100_mesh_addr_t* from,
                                             const log_record_t* record,
                                             void* context);
 
@@ -26,7 +26,7 @@ extern "C"
     volatile bool is_root;
     volatile bool is_started;
     volatile bool is_connected;
-    mesh_addr_t root_address;
+    pt100_mesh_addr_t root_address;
     mesh_record_rx_callback_t record_rx_callback;
     void* record_rx_context;
     const time_sync_t* time_sync; // used for RTC updates on time sync messages
@@ -48,7 +48,7 @@ extern "C"
   bool MeshTransportIsConnected(const mesh_transport_t* mesh);
 
   esp_err_t MeshTransportGetRootAddress(const mesh_transport_t* mesh,
-                                        mesh_addr_t* root_out);
+                                        pt100_mesh_addr_t* root_out);
 
   // Leaf nodes: send a log record upstream to the root.
   esp_err_t MeshTransportSendRecord(const mesh_transport_t* mesh,

@@ -1,6 +1,7 @@
 #include "mesh_transport.h"
 
 #include "esp_mac.h"   // MACSTR, MAC2STR
+#include "esp_mesh.h"
 #include "esp_netif.h" // esp_netif_init, esp_netif_t
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -39,6 +40,27 @@ static esp_netif_t* g_mesh_netif_sta = NULL;
 static esp_netif_t* g_mesh_netif_ap = NULL;
 static TaskHandle_t g_mesh_rx_task = NULL;
 static volatile bool g_mesh_rx_stop_requested = false;
+
+static mesh_addr_t
+ToEspMeshAddr(const pt100_mesh_addr_t* addr)
+{
+  mesh_addr_t esp_addr;
+  memset(&esp_addr, 0, sizeof(esp_addr));
+  if (addr != NULL) {
+    memcpy(esp_addr.addr, addr->addr, sizeof(esp_addr.addr));
+  }
+  return esp_addr;
+}
+
+static pt100_mesh_addr_t
+FromEspMeshAddr(const mesh_addr_t* addr)
+{
+  if (addr == NULL) {
+    static const pt100_mesh_addr_t kZeroAddr = { 0 };
+    return kZeroAddr;
+  }
+  return Pt100MeshAddrFromMac(addr->addr);
+}
 
 static void
 RequestMeshRxStop(void)
@@ -113,7 +135,7 @@ MeshEventHandler(void* arg,
       break;
 
     case MESH_EVENT_ROOT_ADDRESS:
-      memcpy(&g_mesh->root_address, &info->root_addr, sizeof(mesh_addr_t));
+      g_mesh->root_address = FromEspMeshAddr(&info->root_addr);
       ESP_LOGI(kTag,
                "MESH_EVENT_ROOT_ADDRESS: " MACSTR,
                MAC2STR(g_mesh->root_address.addr));
@@ -126,7 +148,7 @@ MeshEventHandler(void* arg,
 
 static esp_err_t
 SendMessageTo(const mesh_transport_t* mesh,
-              const mesh_addr_t* destination,
+              const pt100_mesh_addr_t* destination,
               const mesh_message_t* message)
 {
   mesh_data_t data;
@@ -136,7 +158,8 @@ SendMessageTo(const mesh_transport_t* mesh,
   data.tos = MESH_TOS_P2P;
 
   // Set flag 0 for normal P2P.
-  return esp_mesh_send(destination, &data, 0, NULL, 0);
+  mesh_addr_t esp_destination = ToEspMeshAddr(destination);
+  return esp_mesh_send(&esp_destination, &data, 0, NULL, 0);
 }
 
 static void
@@ -196,6 +219,7 @@ MeshRxTask(void* context)
     }
 
     const mesh_message_t* message = (const mesh_message_t*)rx_buffer;
+    const pt100_mesh_addr_t from_pt100 = FromEspMeshAddr(&from);
 
     const volatile mesh_transport_t* current_mesh = g_mesh;
     const mesh_transport_t* mesh_params = (const mesh_transport_t*)current_mesh;
@@ -203,7 +227,7 @@ MeshRxTask(void* context)
     if (message->type == MESH_MSG_TYPE_RECORD) {
       if (mesh_params != NULL && mesh_params->record_rx_callback != NULL) {
         mesh_params->record_rx_callback(
-          &from, &message->record, mesh_params->record_rx_context);
+          &from_pt100, &message->record, mesh_params->record_rx_context);
       }
     } else if (message->type == MESH_MSG_TYPE_TIME_SYNC) {
       // Apply time update on all nodes.
@@ -217,7 +241,7 @@ MeshRxTask(void* context)
         memset(&reply, 0, sizeof(reply));
         reply.type = MESH_MSG_TYPE_TIME_SYNC;
         reply.epoch_seconds = (int64_t)time(NULL);
-        (void)SendMessageTo(mesh_params, &from, &reply);
+        (void)SendMessageTo(mesh_params, &from_pt100, &reply);
       }
     }
   }
@@ -413,7 +437,7 @@ MeshTransportIsConnected(const mesh_transport_t* mesh)
 
 esp_err_t
 MeshTransportGetRootAddress(const mesh_transport_t* mesh,
-                            mesh_addr_t* root_out)
+                            pt100_mesh_addr_t* root_out)
 {
   if (mesh == NULL || root_out == NULL) {
     return ESP_ERR_INVALID_ARG;
@@ -482,7 +506,9 @@ MeshTransportBroadcastTime(const mesh_transport_t* mesh, int64_t epoch_seconds)
     if (memcmp(routing_table[index].addr, mesh->root_address.addr, 6) == 0) {
       continue;
     }
-    (void)SendMessageTo(mesh, &routing_table[index], &message);
+    const pt100_mesh_addr_t destination =
+      FromEspMeshAddr(&routing_table[index]);
+    (void)SendMessageTo(mesh, &destination, &message);
   }
   return ESP_OK;
 }
