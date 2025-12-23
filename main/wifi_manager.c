@@ -162,6 +162,10 @@ CleanupLocked(bool release_resources)
 
   // Stop/disconnect only if we started Wi-Fi in this module.
   if (s_wifi_started && s_started_by_manager) {
+    // Stop any in-flight scans to avoid scan done callbacks arriving during
+    // teardown/reconfiguration.
+    (void)esp_wifi_scan_stop();
+
     esp_err_t disconnect_result = esp_wifi_disconnect();
     if (disconnect_result != ESP_OK &&
         disconnect_result != ESP_ERR_WIFI_NOT_INIT &&
@@ -356,6 +360,17 @@ WifiManagerScan(wifi_ap_record_t* out_records,
   const EventBits_t bits = xEventGroupWaitBits(
     s_event_group, WIFI_SCAN_DONE_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(15000));
   if ((bits & WIFI_SCAN_DONE_BIT) == 0) {
+    // A scan can outlive the caller's timeout. If the caller then stops Wi-Fi
+    // soon after, the late SCAN_DONE event can arrive during teardown and
+    // trigger hard-to-debug crashes. Best-effort stop the scan before returning.
+    (void)esp_wifi_scan_stop();
+    // Give the driver a moment to post SCAN_DONE (if it will) to drain event
+    // processing.
+    (void)xEventGroupWaitBits(s_event_group,
+                             WIFI_SCAN_DONE_BIT,
+                             pdTRUE,
+                             pdFALSE,
+                             pdMS_TO_TICKS(1000));
     result = ESP_ERR_TIMEOUT;
     goto exit;
   }

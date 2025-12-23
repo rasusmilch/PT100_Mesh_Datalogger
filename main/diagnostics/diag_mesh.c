@@ -610,6 +610,7 @@ RunDiagMesh(const app_runtime_t* runtime,
     MeshTransportIsStarted(mesh_available ? runtime->mesh : NULL);
   const bool mesh_connected_before =
     MeshTransportIsConnected(mesh_available ? runtime->mesh : NULL);
+  bool mesh_started_by_diag = false;
   const bool wait_for_ready = (start || mesh_started_before) && full;
   const bool perform_stop = stop || (start && !mesh_started_before);
   const int total_steps = 7;
@@ -737,8 +738,6 @@ RunDiagMesh(const app_runtime_t* runtime,
   esp_err_t start_result = ESP_OK;
   bool mesh_started = mesh_started_before;
   bool mesh_connected = mesh_connected_before;
-  // Whether this diagnostic invocation started the mesh (used for teardown).
-  bool mesh_started_by_diag = false;
 
   if (start) {
     if (!mesh_available) {

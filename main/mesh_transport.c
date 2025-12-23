@@ -38,6 +38,19 @@ static mesh_transport_t* g_mesh = NULL;
 static esp_netif_t* g_mesh_netif_sta = NULL;
 static esp_netif_t* g_mesh_netif_ap = NULL;
 static TaskHandle_t g_mesh_rx_task = NULL;
+static volatile bool g_mesh_rx_stop_requested = false;
+
+static void
+RequestMeshRxStop(void)
+{
+  g_mesh_rx_stop_requested = true;
+}
+
+static void
+ClearMeshRxStopRequest(void)
+{
+  g_mesh_rx_stop_requested = false;
+}
 
 static bool
 ParseMeshIdFromConfig(const char* mesh_id_string, uint8_t* mesh_id_out)
@@ -138,8 +151,15 @@ MeshRxTask(void* context)
   data.proto = MESH_PROTO_BIN;
   data.tos = MESH_TOS_P2P;
 
+  TickType_t last_unexpected_log_ticks = 0;
+
   while (true) {
-    if (g_mesh == NULL || !g_mesh->is_started) {
+    if (g_mesh_rx_stop_requested) {
+      break;
+    }
+
+    const volatile mesh_transport_t* mesh = g_mesh;
+    if (mesh == NULL || !mesh->is_started) {
       vTaskDelay(pdMS_TO_TICKS(250));
       continue;
     }
@@ -154,7 +174,21 @@ MeshRxTask(void* context)
       continue;
     }
     if (result != ESP_OK) {
-      ESP_LOGW(kTag, "esp_mesh_recv: %s", esp_err_to_name(result));
+      // When mesh is stopping or Wi-Fi is being reconfigured, esp_mesh_recv
+      // can start returning NOT_INIT/NOT_START. Do not spam the console.
+      if (result == ESP_ERR_MESH_NOT_INIT || result == ESP_ERR_MESH_NOT_START) {
+        // Back off and allow stop paths to complete.
+        vTaskDelay(pdMS_TO_TICKS(250));
+        continue;
+      }
+
+      // Rate-limit unexpected errors to at most 1 log per 2 seconds.
+      const TickType_t now = xTaskGetTickCount();
+      if ((now - last_unexpected_log_ticks) > pdMS_TO_TICKS(2000)) {
+        last_unexpected_log_ticks = now;
+        ESP_LOGW(kTag, "esp_mesh_recv: %s", esp_err_to_name(result));
+      }
+      vTaskDelay(pdMS_TO_TICKS(50));
       continue;
     }
     if (data.size != sizeof(mesh_message_t)) {
@@ -163,26 +197,34 @@ MeshRxTask(void* context)
 
     const mesh_message_t* message = (const mesh_message_t*)rx_buffer;
 
+    const volatile mesh_transport_t* current_mesh = g_mesh;
+    const mesh_transport_t* mesh_params = (const mesh_transport_t*)current_mesh;
+
     if (message->type == MESH_MSG_TYPE_RECORD) {
-      if (g_mesh->record_rx_callback != NULL) {
-        g_mesh->record_rx_callback(
-          &from, &message->record, g_mesh->record_rx_context);
+      if (mesh_params != NULL && mesh_params->record_rx_callback != NULL) {
+        mesh_params->record_rx_callback(
+          &from, &message->record, mesh_params->record_rx_context);
       }
     } else if (message->type == MESH_MSG_TYPE_TIME_SYNC) {
       // Apply time update on all nodes.
-      (void)TimeSyncSetSystemEpoch(
-        message->epoch_seconds, true, g_mesh->time_sync);
+      const time_sync_t* time_sync =
+        (mesh_params != NULL) ? mesh_params->time_sync : NULL;
+      (void)TimeSyncSetSystemEpoch(message->epoch_seconds, true, time_sync);
     } else if (message->type == MESH_MSG_TYPE_TIME_REQUEST) {
       // Only root should respond.
-      if (g_mesh->is_root) {
+      if (mesh_params != NULL && current_mesh != NULL && current_mesh->is_root) {
         mesh_message_t reply;
         memset(&reply, 0, sizeof(reply));
         reply.type = MESH_MSG_TYPE_TIME_SYNC;
         reply.epoch_seconds = (int64_t)time(NULL);
-        (void)SendMessageTo(g_mesh, &from, &reply);
+        (void)SendMessageTo(mesh_params, &from, &reply);
       }
     }
   }
+
+  // Mark as stopped and exit.
+  g_mesh_rx_task = NULL;
+  vTaskDelete(NULL);
 }
 
 static esp_err_t
@@ -332,6 +374,7 @@ MeshTransportStart(mesh_transport_t* mesh,
   mesh->record_rx_context = record_rx_context;
   mesh->time_sync = time_sync;
 
+  ClearMeshRxStopRequest();
   g_mesh = mesh;
 
   esp_err_t svc_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
@@ -468,8 +511,13 @@ MeshTransportStop(mesh_transport_t* mesh)
     return ESP_ERR_INVALID_ARG;
   }
 
+  // Stop the RX task first to avoid tight-loop logging when mesh is being
+  // torn down.
+  RequestMeshRxStop();
+
   mesh->is_connected = false;
   if (!mesh->is_started) {
+    g_mesh = NULL;
     return ESP_OK;
   }
 
@@ -477,13 +525,32 @@ MeshTransportStop(mesh_transport_t* mesh)
   if (result == ESP_ERR_MESH_NOT_START) {
     result = ESP_OK;
   }
+
+  // Fully deinit mesh to ensure internal scan/retry tasks are torn down.
+  // This helps diagnostics and prevents background log spam after stop.
+  esp_err_t deinit_result = esp_mesh_deinit();
+  if (deinit_result != ESP_OK && deinit_result != ESP_ERR_INVALID_STATE &&
+      result == ESP_OK) {
+    result = deinit_result;
+  }
   mesh->is_started = false;
+
+  // Detach global pointer so the event handler and RX task do not touch a
+  // stale instance.
+  g_mesh = NULL;
 
   if (WifiServiceActiveMode() == WIFI_SERVICE_MODE_MESH) {
     esp_err_t svc_result = WifiServiceRelease();
     if (result == ESP_OK && svc_result != ESP_OK) {
       result = svc_result;
     }
+  }
+
+  // Best-effort wait for RX task to exit (bounded).
+  const TickType_t start_ticks = xTaskGetTickCount();
+  while (g_mesh_rx_task != NULL &&
+         (xTaskGetTickCount() - start_ticks) < pdMS_TO_TICKS(1500)) {
+    vTaskDelay(pdMS_TO_TICKS(25));
   }
 
   return result;
