@@ -12,6 +12,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/ip4_addr.h"
 #include "mesh_addr.h"
 #include "mesh_transport.h"
 #include "sdkconfig.h"
@@ -587,10 +588,11 @@ RunDiagMesh(const app_runtime_t* runtime,
   }
 
   ip4_addr_t root_ip_lwip = { 0 };
+  char root_ip_buf[IP4ADDR_STRLEN_MAX] = { 0 };
   const char* root_ip_str = "<unknown>";
   if (status.root_ip_known) {
     root_ip_lwip.addr = status.root_ip.addr;
-    root_ip_str = ip4addr_ntoa(&root_ip_lwip);
+    root_ip_str = ip4addr_ntoa_r(&root_ip_lwip, root_ip_buf, sizeof(root_ip_buf));
   }
 
   DiagReportStep(&ctx,
