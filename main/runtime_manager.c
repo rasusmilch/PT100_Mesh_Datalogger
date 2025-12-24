@@ -404,16 +404,6 @@ SensorTask(void* context)
   while (!state->stop_requested) {
     const uint32_t period_ms = state->settings.log_period_ms;
 
-    if (state->fram_full) {
-      if (!state->fram_full_logged) {
-        ESP_LOGW(kTag,
-                 "FRAM full; pausing sensor logging until flush succeeds");
-        state->fram_full_logged = true;
-      }
-      vTaskDelay(pdMS_TO_TICKS(100));
-      continue;
-    }
-
     max31865_sample_t sample;
     memset(&sample, 0, sizeof(sample));
     esp_err_t result = Max31865ReadOnce(&state->sensor, &sample);
@@ -453,6 +443,9 @@ SensorTask(void* context)
     if (state->sd_error) {
       record.flags |= LOG_RECORD_FLAG_SD_ERROR;
     }
+    if (state->fram_full) {
+      record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
+    }
     if (MeshTransportIsConnected(&state->mesh)) {
       record.flags |= LOG_RECORD_FLAG_MESH_CONNECTED;
     }
@@ -476,25 +469,36 @@ StorageTask(void* context)
     log_record_t record;
     if (xQueueReceive(state->log_queue, &record, pdMS_TO_TICKS(500)) ==
         pdTRUE) {
+      if (state->fram_full) {
+        record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
+      }
       PrintJsonRecord(state->node_id_string, &record);
-      esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
-      if (append_result == ESP_ERR_NO_MEM) {
-        state->fram_full = true;
-        state->fram_full_logged = false;
-        ESP_LOGW(kTag, "FRAM is full; new samples will be dropped until flush");
-      } else if (append_result != ESP_OK) {
-        ESP_LOGE(
-          kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
-      } else {
-        if (state->fram_full && FramLogGetBufferedRecords(&state->fram_log) <
-                                  FramLogGetCapacityRecords(&state->fram_log)) {
-          state->fram_full = false;
-          state->fram_full_logged = false;
-          ESP_LOGI(kTag, "FRAM space available; resuming logging");
-        }
 
-        if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
-          (void)MeshTransportSendRecord(&state->mesh, &record);
+      if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
+        (void)MeshTransportSendRecord(&state->mesh, &record);
+      }
+
+      if (state->fram_i2c.initialized) {
+        if (state->fram_full) {
+          if (!state->fram_full_logged) {
+            ESP_LOGW(
+              kTag,
+              "FRAM is full; skipping new appends until flush succeeds");
+            state->fram_full_logged = true;
+          }
+        } else {
+          esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
+          if (append_result == ESP_ERR_NO_MEM) {
+            state->fram_full = true;
+            state->fram_full_logged = false;
+            record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
+            ESP_LOGW(
+              kTag, "FRAM is full; new samples will be dropped until flush");
+            PrintJsonRecord(state->node_id_string, &record);
+          } else if (append_result != ESP_OK) {
+            ESP_LOGE(
+              kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
+          }
         }
       }
     }
