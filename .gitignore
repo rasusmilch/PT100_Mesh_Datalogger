@@ -87,3 +87,7 @@ build/CMakeFiles/git-data/head-ref
 main/logger.zip
 main/logger_1.zip
 main.zip
+main.tar.gz
+build/CMakeFiles/CMakeConfigureLog.yaml
+dependencies.lock
+build/CMakeFiles/git-data/grabRef.cmake

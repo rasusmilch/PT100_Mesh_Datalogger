@@ -155,6 +155,6 @@ dependencies:
 direct_dependencies:
 - espressif/mesh_lite
 - idf
-manifest_hash: 829f575d277da1e645cf855ae2b9d1dee5ef010af18f2d251b23d2becbd63f95
+manifest_hash: 07ff476a8accdf96252f16dd98e93c0785123374b6eeb9ed2d619a71b7442c29
 target: esp32s3
 version: 2.0.0

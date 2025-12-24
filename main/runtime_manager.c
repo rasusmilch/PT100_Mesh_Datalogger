@@ -715,7 +715,8 @@ RuntimeManagerInit(void)
     fram_i2c_result = FramI2cInit(&g_state.fram_i2c,
                                   g_state.i2c_bus.handle,
                                   (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
-                                  CONFIG_APP_FRAM_SIZE_BYTES);
+                                  CONFIG_APP_FRAM_SIZE_BYTES,
+                                  g_state.i2c_bus.frequency_hz);
   }
   if (fram_i2c_result != ESP_OK) {
     if (first_error == ESP_OK) {

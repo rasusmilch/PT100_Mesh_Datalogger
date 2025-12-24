@@ -24,6 +24,7 @@ extern "C" {
     i2c_master_bus_handle_t bus;
     i2c_master_dev_handle_t device;
     uint8_t i2c_addr_7bit;
+    uint32_t scl_speed_hz;
     size_t fram_size_bytes;
     bool initialized;
   } fram_i2c_t;
@@ -31,7 +32,8 @@ extern "C" {
   esp_err_t FramI2cInit(fram_i2c_t* fram,
                         i2c_master_bus_handle_t bus,
                         uint8_t i2c_addr_7bit,
-                        size_t fram_size_bytes);
+                        size_t fram_size_bytes,
+                        uint32_t scl_speed_hz);
 
   esp_err_t FramI2cRead(const fram_i2c_t* fram,
                         uint16_t addr,

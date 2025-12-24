@@ -36,7 +36,8 @@ esp_err_t
 FramI2cInit(fram_i2c_t* fram,
             i2c_master_bus_handle_t bus,
             uint8_t i2c_addr_7bit,
-            size_t fram_size_bytes)
+            size_t fram_size_bytes,
+            uint32_t scl_speed_hz)
 {
   if (fram == NULL || bus == NULL) {
     return ESP_ERR_INVALID_ARG;
@@ -49,11 +50,15 @@ FramI2cInit(fram_i2c_t* fram,
   fram->bus = bus;
   fram->i2c_addr_7bit = i2c_addr_7bit;
   fram->fram_size_bytes = fram_size_bytes;
+  if (scl_speed_hz == 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  fram->scl_speed_hz = scl_speed_hz;
 
   const i2c_device_config_t config = {
     .dev_addr_length = I2C_ADDR_BIT_LEN_7,
     .device_address = i2c_addr_7bit,
-    .scl_speed_hz = 0, // inherit bus speed
+    .scl_speed_hz = scl_speed_hz,
   };
   esp_err_t result = i2c_master_bus_add_device(bus, &config, &fram->device);
   if (result != ESP_OK) {
@@ -152,7 +157,7 @@ FramI2cReadDeviceId(const fram_i2c_t* fram, fram_device_id_t* out)
   const i2c_device_config_t config = {
     .dev_addr_length = I2C_ADDR_BIT_LEN_7,
     .device_address = kReservedIdAddr7bit,
-    .scl_speed_hz = 0,
+    .scl_speed_hz = fram->scl_speed_hz,
   };
   esp_err_t result =
     i2c_master_bus_add_device(fram->bus, &config, &id_device);
