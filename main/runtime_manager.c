@@ -476,6 +476,7 @@ StorageTask(void* context)
     log_record_t record;
     if (xQueueReceive(state->log_queue, &record, pdMS_TO_TICKS(500)) ==
         pdTRUE) {
+      PrintJsonRecord(state->node_id_string, &record);
       esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
       if (append_result == ESP_ERR_NO_MEM) {
         state->fram_full = true;
@@ -494,10 +495,6 @@ StorageTask(void* context)
 
         if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
           (void)MeshTransportSendRecord(&state->mesh, &record);
-        }
-
-        if (state->mesh.is_root) {
-          PrintJsonRecord(state->node_id_string, &record);
         }
       }
     }
