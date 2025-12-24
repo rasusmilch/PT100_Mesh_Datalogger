@@ -91,3 +91,5 @@ main.tar.gz
 build/CMakeFiles/CMakeConfigureLog.yaml
 dependencies.lock
 build/CMakeFiles/git-data/grabRef.cmake
+*.patch
+*.tar.gz

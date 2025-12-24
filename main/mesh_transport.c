@@ -435,6 +435,21 @@ MeshTransportStart(mesh_transport_t* mesh,
   ESP_LOGI(kTag, "starting Mesh-Lite (root=%d)", (int)is_root);
   esp_mesh_lite_init(&mesh_lite_config);
 
+  // Routerless root nodes do not configure an upstream STA SSID, but Mesh-Lite
+  // can still run its reconnect/scan loop and repeatedly call esp_wifi_connect()
+  // which then fails with ESP_ERR_WIFI_SSID (0x300a) and spams the console.
+  //
+  // Mitigation:
+  //  - Rate-limit Mesh-Lite reconnect/scan intervals to a large value.
+  //  - Reduce Mesh-Lite vendor_ie logging to ERROR (keeps errors visible).
+  if (is_root && router_disabled) {
+    esp_mesh_lite_set_wifi_reconnect_interval(
+      /*retry_connect_parent_interval=*/3600,
+      /*retry_connect_parent_count=*/1,
+      /*reconnect_interval=*/3600);
+    esp_log_level_set("vendor_ie", ESP_LOG_ERROR);
+  }
+
   // Match the Mesh-Lite "no_router" example behavior: configure the SoftAP
   // channel explicitly. If the root later connects to an upstream router, the
   // Wi-Fi driver will move APSTA to the router's channel.
@@ -473,6 +488,14 @@ MeshTransportStart(mesh_transport_t* mesh,
   }
 
   esp_mesh_lite_start();
+
+  // In routerless root mode there is no upstream to reconnect to. Stop the
+  // Mesh-Lite reconnect machinery so it doesn't keep attempting STA connects.
+  if (is_root && router_disabled) {
+    esp_mesh_lite_comm_stop_reconnect();
+    esp_mesh_lite_clear_scan_status();
+    esp_mesh_lite_comm_clear_scan_status();
+  }
 
   mesh->mesh_lite_started = true;
   mesh->is_started = true;

@@ -477,10 +477,8 @@ PrintDiagUsage(void)
   printf("diag wifi quick|full [--scan 0|1] [--connect 0|1] [--dns 0|1] "
          "[--keep-connected 0|1] [--verbose N]\n");
   printf("diag mesh quick|full [--start] [--stop] [--root] [--timeout_ms T] "
-         "[--verbose N]
-"
-         "  note: if you use --start without --stop, the mesh stays running
-");
+         "[--verbose N]\n"
+         "  note: if you use --start without --stop, the mesh stays running\n");
 }
 
 static bool
