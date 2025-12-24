@@ -4,6 +4,9 @@
 #include <string.h>
 #include <time.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "esp_log.h"
 #include "esp_mesh_lite.h"
 #include "esp_mesh_lite_core.h"
@@ -17,8 +20,7 @@ static const char* kMeshSoftApSsid = "PT100_MESH";
 static mesh_transport_t* g_mesh = NULL;
 
 #ifndef ESP_MESH_LITE_RAW_MSG_ACTION_END
-#define ESP_MESH_LITE_RAW_MSG_ACTION_END \
-  { 0, 0, NULL }
+#define ESP_MESH_LITE_RAW_MSG_ACTION_END { 0, 0, NULL }
 #endif
 
 typedef enum
@@ -63,9 +65,7 @@ PopulateMeshMessageSrc(mesh_message_t* msg)
   uint8_t local_mac[6] = { 0 };
   esp_err_t result = esp_wifi_get_mac(WIFI_IF_STA, local_mac);
   if (result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "esp_wifi_get_mac failed: %s",
-             esp_err_to_name(result));
+    ESP_LOGW(kTag, "esp_wifi_get_mac failed: %s", esp_err_to_name(result));
     return result;
   }
   memcpy(msg->src_mac, local_mac, sizeof(msg->src_mac));
@@ -240,6 +240,136 @@ esp_mesh_lite_deinit(void)
   return ESP_ERR_NOT_SUPPORTED;
 }
 
+// Mesh-Lite component currently does not publish a public "stop" API surface
+// for all internal background work (reconnect scans, resend timers, etc.), but
+// the prebuilt library exports private helpers that are used by examples.
+//
+// We provide weak fallbacks so the app still builds if the symbol set changes.
+void __attribute__((weak))
+esp_mesh_lite_comm_stop_reconnect(void)
+{
+}
+
+void __attribute__((weak))
+esp_mesh_lite_stop_resend_raw_msg(void)
+{
+}
+
+void __attribute__((weak))
+esp_mesh_lite_stop_resend_json_msg(void)
+{
+}
+
+void __attribute__((weak))
+esp_mesh_lite_clear_scan_status(void)
+{
+}
+
+void __attribute__((weak))
+esp_mesh_lite_comm_clear_scan_status(void)
+{
+}
+
+static bool
+IsValidWifiChannel(int channel)
+{
+  return (channel >= 1) && (channel <= 14);
+}
+
+static void
+ApplyMeshSoftApChannelBestEffort(int channel)
+{
+  if (!IsValidWifiChannel(channel)) {
+    ESP_LOGW(kTag, "mesh channel %d out of range; ignoring", channel);
+    return;
+  }
+
+  wifi_config_t ap_config;
+  memset(&ap_config, 0, sizeof(ap_config));
+  esp_err_t get_result = esp_wifi_get_config(WIFI_IF_AP, &ap_config);
+  if (get_result != ESP_OK) {
+    // Mesh-Lite may not have configured the SoftAP yet. Build a full AP config
+    // using our menuconfig defaults so the channel takes effect immediately.
+    ESP_LOGW(kTag,
+             "esp_wifi_get_config(AP) failed: %s; applying full AP config",
+             esp_err_to_name(get_result));
+
+    memset(&ap_config, 0, sizeof(ap_config));
+    strlcpy((char*)ap_config.ap.ssid, kMeshSoftApSsid, sizeof(ap_config.ap.ssid));
+    ap_config.ap.ssid_len = (uint8_t)strlen((const char*)ap_config.ap.ssid);
+
+#ifdef CONFIG_APP_MESH_AP_PASSWORD
+    strlcpy((char*)ap_config.ap.password,
+            CONFIG_APP_MESH_AP_PASSWORD,
+            sizeof(ap_config.ap.password));
+#endif
+
+    if (ap_config.ap.password[0] == '\0') {
+      ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    } else {
+      ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    }
+
+    ap_config.ap.ssid_hidden = 0;
+    ap_config.ap.beacon_interval = 100;
+
+#ifdef CONFIG_APP_MESH_AP_CONNECTIONS
+    ap_config.ap.max_connection = (uint8_t)CONFIG_APP_MESH_AP_CONNECTIONS;
+#else
+    ap_config.ap.max_connection = 6;
+#endif
+  }
+
+  ap_config.ap.channel = (uint8_t)channel;
+
+#ifdef CONFIG_APP_MESH_AP_CONNECTIONS
+  // If max_connection is unset, apply the menuconfig default.
+  if (ap_config.ap.max_connection == 0) {
+    ap_config.ap.max_connection = (uint8_t)CONFIG_APP_MESH_AP_CONNECTIONS;
+  }
+#endif
+
+  esp_err_t set_result = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+  if (set_result != ESP_OK) {
+    ESP_LOGW(kTag,
+             "esp_wifi_set_config(AP) failed: %s",
+             esp_err_to_name(set_result));
+    return;
+  }
+
+  // Best-effort: force the primary channel immediately. In APSTA mode the
+  // radio has a single primary channel.
+  (void)esp_wifi_set_channel((uint8_t)channel, WIFI_SECOND_CHAN_NONE);
+  ESP_LOGI(kTag, "mesh SoftAP channel set to %d", channel);
+}
+
+static void
+StopMeshLiteBackgroundWorkBestEffort(void)
+{
+  // If Wi-Fi teardown posts late DISCONNECTED/STOP events, Mesh-Lite may
+  // re-arm its reconnect timer. Make the timer effectively inert before we
+  // stop it, so even if it is restarted it will not spam scans.
+  esp_mesh_lite_set_wifi_reconnect_interval(/*retry_connect_parent_interval=*/3600,
+                                           /*retry_connect_parent_count=*/1,
+                                           /*reconnect_interval=*/3600);
+
+  // Stop Mesh-Lite reconnect scans (this is the source of the ESP_FAIL:0x3002
+  // spam when Wi-Fi has already been stopped).
+  esp_mesh_lite_comm_stop_reconnect();
+
+  // Clear any internal scan-in-progress flags so Mesh-Lite doesn't immediately
+  // re-arm scanning after teardown.
+  esp_mesh_lite_clear_scan_status();
+  esp_mesh_lite_comm_clear_scan_status();
+
+  // Stop resend timers for raw/json messages.
+  esp_mesh_lite_stop_resend_raw_msg();
+  esp_mesh_lite_stop_resend_json_msg();
+
+  // Best-effort: cancel any in-flight scan.
+  (void)esp_wifi_scan_stop();
+}
+
 static void
 CacheMeshLevel(mesh_transport_t* mesh)
 {
@@ -288,20 +418,35 @@ MeshTransportStart(mesh_transport_t* mesh,
     return svc_result;
   }
 
+  bool router_disabled = false;
+#ifdef CONFIG_APP_MESH_DISABLE_ROUTER
+  router_disabled = CONFIG_APP_MESH_DISABLE_ROUTER;
+#endif
+
   esp_mesh_lite_config_t mesh_lite_config = ESP_MESH_LITE_DEFAULT_INIT();
   mesh_lite_config.join_mesh_ignore_router_status = true;
-  mesh_lite_config.join_mesh_without_configured_wifi = !is_root;
+  // Required for "no-router" deployments: allow forming/joining a mesh even
+  // when there is no configured upstream Wi-Fi router.
+  mesh_lite_config.join_mesh_without_configured_wifi =
+    router_disabled || !is_root;
   mesh_lite_config.softap_ssid = kMeshSoftApSsid;
   mesh_lite_config.softap_password = CONFIG_APP_MESH_AP_PASSWORD;
 
   ESP_LOGI(kTag, "starting Mesh-Lite (root=%d)", (int)is_root);
   esp_mesh_lite_init(&mesh_lite_config);
+
+  // Match the Mesh-Lite "no_router" example behavior: configure the SoftAP
+  // channel explicitly. If the root later connects to an upstream router, the
+  // Wi-Fi driver will move APSTA to the router's channel.
+#ifdef CONFIG_APP_MESH_CHANNEL
+  ApplyMeshSoftApChannelBestEffort(CONFIG_APP_MESH_CHANNEL);
+#endif
+
   esp_err_t raw_action_result =
     esp_mesh_lite_raw_msg_action_list_register(kMeshRawActions);
   if (raw_action_result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "raw msg register failed: %s",
-             esp_err_to_name(raw_action_result));
+    ESP_LOGW(
+      kTag, "raw msg register failed: %s", esp_err_to_name(raw_action_result));
   }
 
   if (is_root) {
@@ -312,16 +457,11 @@ MeshTransportStart(mesh_transport_t* mesh,
     (void)esp_mesh_lite_allow_others_to_join(false);
   }
 
-  bool router_disabled = false;
-#ifdef CONFIG_APP_MESH_DISABLE_ROUTER
-  router_disabled = CONFIG_APP_MESH_DISABLE_ROUTER;
-#endif
-
-  if (!router_disabled && router_ssid != NULL && router_ssid[0] != '\0') {
+  // Only the root should be configured with an upstream router.
+  if (is_root && !router_disabled && router_ssid != NULL &&
+      router_ssid[0] != '\0') {
     mesh_lite_sta_config_t router_config = { 0 };
-    strlcpy((char*)router_config.ssid,
-            router_ssid,
-            sizeof(router_config.ssid));
+    strlcpy((char*)router_config.ssid, router_ssid, sizeof(router_config.ssid));
     strlcpy((char*)router_config.password,
             (router_password != NULL) ? router_password : "",
             sizeof(router_config.password));
@@ -387,11 +527,10 @@ MeshTransportSendRecord(const mesh_transport_t* mesh,
     return mac_result;
   }
   const size_t msg_size = MeshMessageHeaderSize() + sizeof(log_record_t);
-  return SendRawMessage(
-    kRawMsgIdRecord,
-    (const uint8_t*)&msg,
-    msg_size,
-    esp_mesh_lite_send_raw_msg_to_root);
+  return SendRawMessage(kRawMsgIdRecord,
+                        (const uint8_t*)&msg,
+                        msg_size,
+                        esp_mesh_lite_send_raw_msg_to_root);
 }
 
 esp_err_t
@@ -413,11 +552,10 @@ MeshTransportBroadcastTime(const mesh_transport_t* mesh, int64_t epoch_seconds)
   }
   const size_t msg_size =
     MeshMessageHeaderSize() + sizeof(msg.payload.epoch_seconds);
-  return SendRawMessage(
-    kRawMsgIdTimeSync,
-    (const uint8_t*)&msg,
-    msg_size,
-    esp_mesh_lite_send_broadcast_raw_msg_to_child);
+  return SendRawMessage(kRawMsgIdTimeSync,
+                        (const uint8_t*)&msg,
+                        msg_size,
+                        esp_mesh_lite_send_broadcast_raw_msg_to_child);
 }
 
 esp_err_t
@@ -437,11 +575,10 @@ MeshTransportRequestTime(const mesh_transport_t* mesh)
     return mac_result;
   }
   const size_t msg_size = MeshMessageHeaderSize();
-  return SendRawMessage(
-    kRawMsgIdTimeRequest,
-    (const uint8_t*)&msg,
-    msg_size,
-    esp_mesh_lite_send_raw_msg_to_root);
+  return SendRawMessage(kRawMsgIdTimeRequest,
+                        (const uint8_t*)&msg,
+                        msg_size,
+                        esp_mesh_lite_send_raw_msg_to_root);
 }
 
 esp_err_t
@@ -458,6 +595,10 @@ MeshTransportStop(mesh_transport_t* mesh)
   }
 
   esp_err_t result = ESP_OK;
+
+  // Stop reconnect scan loops before stopping Wi-Fi or tearing down Mesh-Lite.
+  // This prevents the periodic ESP_FAIL:0x3002 spam after diagnostics teardown.
+  StopMeshLiteBackgroundWorkBestEffort();
 
   esp_err_t stop_result = esp_mesh_lite_stop();
   if (stop_result != ESP_ERR_NOT_SUPPORTED && stop_result != ESP_OK) {
@@ -486,6 +627,15 @@ MeshTransportStop(mesh_transport_t* mesh)
       result = svc_result;
     }
   }
+
+  // Wi-Fi teardown triggers WIFI_EVENT_STA_STOP / DISCONNECTED events.
+  // Mesh-Lite may re-arm its reconnect timer in those handlers, so yield briefly
+  // and then stop background work again.
+  vTaskDelay(pdMS_TO_TICKS(250));
+
+  // One more best-effort stop after Wi-Fi teardown to ensure no background
+  // tasks keep trying to scan.
+  StopMeshLiteBackgroundWorkBestEffort();
 
   return result;
 }

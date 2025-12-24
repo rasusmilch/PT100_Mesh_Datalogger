@@ -59,7 +59,8 @@ typedef struct
 
 static runtime_state_t g_state;
 static app_runtime_t g_runtime;
-static esp_err_t RuntimeFlushToSd(void* context);
+static esp_err_t
+RuntimeFlushToSd(void* context);
 
 static esp_err_t
 FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
@@ -74,10 +75,7 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
 }
 
 static esp_err_t
-FramI2cWriteAdapter(void* context,
-                    uint32_t addr,
-                    const void* data,
-                    size_t len)
+FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
 {
   if (context == NULL) {
     return ESP_ERR_INVALID_ARG;
@@ -197,7 +195,7 @@ PrintJsonRecord(const char* node_id, const log_record_t* record)
   const double temp_c = record->temp_milli_c / 1000.0;
   const double resistance_ohm = record->resistance_milli_ohm / 1000.0;
   printf("{\"type\":\"temp\",\"node\":\"%s\",\"ts\":%" PRId64
-         ",\"temp_c\":%.3f,\"raw_c\":%.3f,\"r_ohm\":%.3f,\"seq\":%u,"\
+         ",\"temp_c\":%.3f,\"raw_c\":%.3f,\"r_ohm\":%.3f,\"seq\":%u,"
          "\"flags\":%u}\n",
          node_id,
          record->timestamp_epoch_sec,
@@ -432,10 +430,9 @@ SensorTask(void* context)
     record.timestamp_millis = millis;
 
     if (result == ESP_OK) {
-      const double cal_c = CalibrationModelEvaluate(&state->settings.calibration,
-                                                    sample.temperature_c);
-      record.raw_temp_milli_c =
-        (int32_t)llround(sample.temperature_c * 1000.0);
+      const double cal_c = CalibrationModelEvaluate(
+        &state->settings.calibration, sample.temperature_c);
+      record.raw_temp_milli_c = (int32_t)llround(sample.temperature_c * 1000.0);
       record.temp_milli_c = (int32_t)llround(cal_c * 1000.0);
       record.resistance_milli_ohm =
         (int32_t)llround(sample.resistance_ohm * 1000.0);
@@ -653,9 +650,8 @@ RuntimeManagerInit(void)
     if (first_error == ESP_OK) {
       first_error = settings_result;
     }
-    ESP_LOGE(kTag,
-             "AppSettingsLoad failed: %s",
-             esp_err_to_name(settings_result));
+    ESP_LOGE(
+      kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
 
   const uint32_t i2c_frequency_hz = 400000;
@@ -688,9 +684,8 @@ RuntimeManagerInit(void)
     g_state.batch_buffer = (uint8_t*)malloc(g_state.batch_buffer_size);
   }
 
-  esp_err_t time_result = TimeSyncInit(&g_state.time_sync,
-                                       &g_state.i2c_bus,
-                                       (uint8_t)CONFIG_APP_DS3231_I2C_ADDR);
+  esp_err_t time_result = TimeSyncInit(
+    &g_state.time_sync, &g_state.i2c_bus, (uint8_t)CONFIG_APP_DS3231_I2C_ADDR);
   if (time_result != ESP_OK) {
     if (first_error == ESP_OK) {
       first_error = time_result;
@@ -707,7 +702,8 @@ RuntimeManagerInit(void)
     if (first_error == ESP_OK) {
       first_error = bus_result;
     }
-    ESP_LOGE(kTag, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
+    ESP_LOGE(
+      kTag, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
   }
 
   esp_err_t fram_i2c_result = ESP_ERR_INVALID_STATE;
@@ -722,33 +718,28 @@ RuntimeManagerInit(void)
     if (first_error == ESP_OK) {
       first_error = fram_i2c_result;
     }
-    ESP_LOGE(kTag,
-             "FramI2cInit failed: %s",
-             esp_err_to_name(fram_i2c_result));
+    ESP_LOGE(kTag, "FramI2cInit failed: %s", esp_err_to_name(fram_i2c_result));
   }
 
-  esp_err_t fram_log_result = FramLogInit(&g_state.fram_log,
-                                          g_state.fram_io,
-                                          CONFIG_APP_FRAM_SIZE_BYTES);
+  esp_err_t fram_log_result =
+    FramLogInit(&g_state.fram_log, g_state.fram_io, CONFIG_APP_FRAM_SIZE_BYTES);
   if (fram_log_result != ESP_OK) {
     if (first_error == ESP_OK) {
       first_error = fram_log_result;
     }
-    ESP_LOGE(
-      kTag, "FramLogInit failed: %s", esp_err_to_name(fram_log_result));
+    ESP_LOGE(kTag, "FramLogInit failed: %s", esp_err_to_name(fram_log_result));
   }
 
   (void)SdLoggerMount(&g_state.sd_logger, spi_host, CONFIG_APP_SD_CS_GPIO);
 
-  esp_err_t sensor_result = Max31865ReaderInit(
-    &g_state.sensor, spi_host, CONFIG_APP_MAX31865_CS_GPIO);
+  esp_err_t sensor_result =
+    Max31865ReaderInit(&g_state.sensor, spi_host, CONFIG_APP_MAX31865_CS_GPIO);
   if (sensor_result != ESP_OK) {
     if (first_error == ESP_OK) {
       first_error = sensor_result;
     }
-    ESP_LOGE(kTag,
-             "Max31865ReaderInit failed: %s",
-             esp_err_to_name(sensor_result));
+    ESP_LOGE(
+      kTag, "Max31865ReaderInit failed: %s", esp_err_to_name(sensor_result));
   }
 
   g_state.log_queue = xQueueCreate(64, sizeof(log_record_t));
@@ -808,24 +799,36 @@ RuntimeStart(void)
   const bool is_root = false;
 #endif
 
-  const char* router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
-  const char* router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
+  // Only the root should ever be configured with upstream router credentials.
+  // Non-root nodes should focus on joining the Mesh-Lite network.
+  const char* router_ssid = "";
+  const char* router_password = "";
+
+  bool router_disabled = false;
+#ifdef CONFIG_APP_MESH_DISABLE_ROUTER + router_disabled =
+  CONFIG_APP_MESH_DISABLE_ROUTER;
+#endif
+  if (is_root && !router_disabled) {
+    router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
+    router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
+  }
 
   if (!g_state.mesh_started) {
     esp_err_t wifi_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
     if (wifi_result != ESP_OK) {
-      ESP_LOGE(kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
+      ESP_LOGE(
+        kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
       return wifi_result;
     }
 
-    esp_err_t mesh_result = MeshTransportStart(&g_state.mesh,
-                                               is_root,
-                                               router_ssid,
-                                               router_password,
-                                               is_root ? &RootRecordRxCallback
-                                                       : NULL,
-                                               NULL,
-                                               &g_state.time_sync);
+    esp_err_t mesh_result =
+      MeshTransportStart(&g_state.mesh,
+                         is_root,
+                         router_ssid,
+                         router_password,
+                         is_root ? &RootRecordRxCallback : NULL,
+                         NULL,
+                         &g_state.time_sync);
     if (mesh_result == ESP_OK) {
       g_state.mesh_started = true;
     } else {
@@ -855,8 +858,8 @@ RuntimeStart(void)
 
   g_state.is_running = true;
 
-  BaseType_t sensor_created = xTaskCreate(
-    &SensorTask, "sensor", 4096, &g_state, 5, &g_state.sensor_task);
+  BaseType_t sensor_created =
+    xTaskCreate(&SensorTask, "sensor", 4096, &g_state, 5, &g_state.sensor_task);
   BaseType_t storage_created = xTaskCreate(
     &StorageTask, "storage", 6144, &g_state, 6, &g_state.storage_task);
   BaseType_t time_created = xTaskCreate(
