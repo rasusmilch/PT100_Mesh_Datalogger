@@ -26,6 +26,7 @@ idf_component_register(
     "sd_logger.c"
     "wifi_service.c"
     "wifi_manager.c"
+    "wifi_scan_wrap.c"
     "time_sync.c"
   INCLUDE_DIRS "."
   REQUIRES
@@ -42,3 +43,18 @@ idf_component_register(
     esp_rom
     mbedtls
 )
+
+# Mesh-Lite invokes esp_wifi_scan_start() internally. We observed scan configs reaching the
+# Wi-Fi driver with a non-zero/garbage channel bitmap, which triggers warnings like:
+#   - "2g bitmap contains only invalid channels=..."
+#   - "In 2G band, 5G channel bitmap does not take effect"
+# Without modifying the mesh_lite component, wrap esp_wifi_scan_start() at link-time and
+# sanitize the scan config to "scan all allowed channels" (bitmap=0) and always clear
+# the 5G bitmap (ESP32-S3 is 2.4 GHz-only).
+
+idf_build_get_property(project_elf EXECUTABLE)
+if(project_elf)
+  target_link_options(${project_elf} PRIVATE "-Wl,--wrap=esp_wifi_scan_start")
+else()
+  idf_build_set_property(LINK_OPTIONS "-Wl,--wrap=esp_wifi_scan_start" APPEND)
+endif()

@@ -1,0 +1,66 @@
+--- a/main/diagnostics/diag_mesh.c
++++ b/main/diagnostics/diag_mesh.c
+@@ -398,7 +398,9 @@
+     MeshTransportIsConnected(mesh_available ? runtime->mesh : NULL);
+   bool mesh_started_by_diag = false;
+   const bool wait_for_ready = (start || mesh_started_before) && full;
+-  const bool perform_stop = stop || (start && !mesh_started_before);
++  // Only tear down the mesh if the user explicitly requested --stop.
++  // This allows `diag mesh full --start` to leave the mesh running.
++  const bool perform_stop = stop;
+   const int total_steps = 7;
+ 
+   diag_ctx_t ctx;
+@@ -650,12 +652,21 @@
+     stop_result = MeshTransportStop(runtime->mesh);
+   }
+ 
+-  if (wifi_acquired) {
++  // Release the Wi-Fi service if we have fully stopped the mesh. This handles
++  // both the common "start+stop in one command" case and the "start and keep
++  // running, then stop later" case without relying on per-invocation state.
++  bool released_wifi = false;
++  const bool mesh_started_after_stop =
++    MeshTransportIsStarted(mesh_available ? runtime->mesh : NULL);
++  if (perform_stop && WifiServiceActiveMode() == WIFI_SERVICE_MODE_MESH &&
++      !mesh_started_after_stop) {
+     const esp_err_t release_result = WifiServiceRelease();
++    released_wifi = (release_result == ESP_OK);
+     if (stop_result == ESP_OK && release_result != ESP_OK) {
+       stop_result = release_result;
+     }
+   }
++
+   stop_after = CaptureHeapSnapshot();
+   MeshDiagHeapCheck(&ctx, "post_mesh_stop");
+   const wifi_service_mode_t mode_after_stop = WifiServiceActiveMode();
+@@ -665,12 +676,13 @@
+     total_steps,
+     "teardown",
+     stop_result,
+-    "stop_requested=%s started_before=%s started_after=%s"
++    "stop_requested=%s released_wifi=%s started_before=%s started_after=%s"
+     " wifi_mode_after=%s heap8_before=%u heap8_after=%u"
+     " min_free=%u",
+     YesNo(perform_stop),
++    YesNo(released_wifi),
+     YesNo(mesh_started_before),
+-    YesNo(MeshTransportIsStarted(mesh_available ? runtime->mesh : NULL)),
++    YesNo(mesh_started_after_stop),
+     WifiModeToString(mode_after_stop),
+     (unsigned)stop_before.free_8bit,
+     (unsigned)stop_after.free_8bit,
+--- a/main/console_commands.c
++++ b/main/console_commands.c
+@@ -477,7 +477,10 @@
+   printf("diag wifi quick|full [--scan 0|1] [--connect 0|1] [--dns 0|1] "
+          "[--keep-connected 0|1] [--verbose N]\n");
+   printf("diag mesh quick|full [--start] [--stop] [--root] [--timeout_ms T] "
+-         "[--verbose N]\n");
++         "[--verbose N]
++"
++         "  note: if you use --start without --stop, the mesh stays running
++");
+ }
+ 
+ static bool

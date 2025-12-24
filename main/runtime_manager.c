@@ -805,8 +805,11 @@ RuntimeStart(void)
   const char* router_password = "";
 
   bool router_disabled = false;
-#ifdef CONFIG_APP_MESH_DISABLE_ROUTER + router_disabled =
-  CONFIG_APP_MESH_DISABLE_ROUTER;
+#if defined(CONFIG_APP_MESH_DISABLE_ROUTER)
+  // CONFIG_APP_MESH_DISABLE_ROUTER
+  // is a Kconfig bool and
+  // expands to 0 or 1.
+  router_disabled = (CONFIG_APP_MESH_DISABLE_ROUTER != 0);
 #endif
   if (is_root && !router_disabled) {
     router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;

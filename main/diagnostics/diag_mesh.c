@@ -179,6 +179,13 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
   }
   memset(config, 0, sizeof(*config));
 
+  bool router_disabled = false;
+#if defined(CONFIG_APP_MESH_DISABLE_ROUTER)
+  // CONFIG_APP_MESH_DISABLE_ROUTER
+  // is a Kconfig bool and
+  // expands to 0 or 1.
+  router_disabled = (CONFIG_APP_MESH_DISABLE_ROUTER != 0);
+#endif
   config->mesh_id_valid = ParseMeshId(CONFIG_APP_MESH_ID_HEX, &config->mesh_id);
   if (!config->mesh_id_valid) {
     return ESP_ERR_INVALID_ARG;
@@ -199,11 +206,21 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
     return ESP_ERR_INVALID_ARG;
   }
 
-  if (start_as_root) {
+  // In a "no router" deployment, the root must be allowed to start without
+  // upstream router credentials. When router backhaul is enabled, require
+  // the SSID (and a valid password if present).
+  const bool require_router_credentials = start_as_root && !router_disabled;
+  if (require_router_credentials) {
     if (config->router_ssid_len == 0) {
       return ESP_ERR_INVALID_ARG;
     }
     if (!config->router_password_valid) {
+      return ESP_ERR_INVALID_ARG;
+    }
+  } else {
+    // If an SSID is configured (even in routerless mode), ensure the password
+    // meets WPA2 length constraints.
+    if (config->router_ssid_len > 0 && !config->router_password_valid) {
       return ESP_ERR_INVALID_ARG;
     }
   }
@@ -341,8 +358,7 @@ PrintRoutingTable(const diag_ctx_t* ctx)
          (unsigned)total_nodes,
          to_show);
   int index = 0;
-  for (const node_info_list_t* entry = node;
-       entry != NULL && index < to_show;
+  for (const node_info_list_t* entry = node; entry != NULL && index < to_show;
        entry = entry->next, ++index) {
     char mac[20] = { 0 };
     const esp_mesh_lite_node_info_t* info = entry->node;
@@ -382,7 +398,9 @@ RunDiagMesh(const app_runtime_t* runtime,
     MeshTransportIsConnected(mesh_available ? runtime->mesh : NULL);
   bool mesh_started_by_diag = false;
   const bool wait_for_ready = (start || mesh_started_before) && full;
-  const bool perform_stop = stop || (start && !mesh_started_before);
+  // Only tear down the mesh if the user explicitly requested --stop.
+  // This allows `diag mesh full --start` to leave the mesh running.
+  const bool perform_stop = stop;
   const int total_steps = 7;
 
   diag_ctx_t ctx;
@@ -466,8 +484,15 @@ RunDiagMesh(const app_runtime_t* runtime,
 #endif
   const bool start_as_root = force_root || default_root;
 
+  bool router_disabled = false;
+#if defined(CONFIG_APP_MESH_DISABLE_ROUTER)
+  router_disabled = (CONFIG_APP_MESH_DISABLE_ROUTER != 0);
+#endif
+
+  const bool require_router_credentials = start_as_root && !router_disabled;
   mesh_diag_config_t diag_config;
   memset(&diag_config, 0, sizeof(diag_config));
+
   const esp_err_t config_result =
     (mesh_available && wifi_owner_ok)
       ? ValidateMeshConfig(start_as_root, &diag_config)
@@ -482,12 +507,13 @@ RunDiagMesh(const app_runtime_t* runtime,
                  "mesh config",
                  config_result,
                  "mesh_id=%s router_ssid_len=%u router_pwd_len=%u ap_pwd_len=%u"
-                 " root_required_ssid=%s pwd_valid=%s",
+                 " root_required_ssid=%s router_disabled=%s pwd_valid=%s",
                  diag_config.mesh_id_valid ? mesh_id_str : "<invalid>",
                  (unsigned)diag_config.router_ssid_len,
                  (unsigned)diag_config.router_password_len,
                  (unsigned)diag_config.mesh_ap_password_len,
-                 YesNo(start_as_root),
+                 YesNo(require_router_credentials),
+                 YesNo(router_disabled),
                  YesNo(diag_config.router_password_valid));
 
   heap_snapshot_t start_before = CaptureHeapSnapshot();
@@ -526,8 +552,7 @@ RunDiagMesh(const app_runtime_t* runtime,
 
   bool ready = mesh_connected;
   int waited_ms = 0;
-  int wait_layer =
-    mesh_started ? (int)esp_mesh_lite_get_level() : -1;
+  int wait_layer = mesh_started ? (int)esp_mesh_lite_get_level() : -1;
   esp_err_t wait_result = ESP_OK;
   if (wait_for_ready) {
     if (!mesh_started) {
@@ -577,10 +602,7 @@ RunDiagMesh(const app_runtime_t* runtime,
   }
   char status_mesh_id[20] = { 0 };
   if (status.mesh_id_known) {
-    snprintf(status_mesh_id,
-             sizeof(status_mesh_id),
-             "0x%02x",
-             status.mesh_id);
+    snprintf(status_mesh_id, sizeof(status_mesh_id), "0x%02x", status.mesh_id);
   }
   char root_addr_str[20] = { 0 };
   if (status.root_addr_known) {
@@ -592,7 +614,8 @@ RunDiagMesh(const app_runtime_t* runtime,
   const char* root_ip_str = "<unknown>";
   if (status.root_ip_known) {
     root_ip_lwip.addr = status.root_ip.addr;
-    root_ip_str = ip4addr_ntoa_r(&root_ip_lwip, root_ip_buf, sizeof(root_ip_buf));
+    root_ip_str =
+      ip4addr_ntoa_r(&root_ip_lwip, root_ip_buf, sizeof(root_ip_buf));
   }
 
   DiagReportStep(&ctx,
@@ -627,12 +650,21 @@ RunDiagMesh(const app_runtime_t* runtime,
     stop_result = MeshTransportStop(runtime->mesh);
   }
 
-  if (wifi_acquired) {
+  // Release the Wi-Fi service if we have fully stopped the mesh. This handles
+  // both the common "start+stop in one command" case and the "start and keep
+  // running, then stop later" case without relying on per-invocation state.
+  bool released_wifi = false;
+  const bool mesh_started_after_stop =
+    MeshTransportIsStarted(mesh_available ? runtime->mesh : NULL);
+  if (perform_stop && WifiServiceActiveMode() == WIFI_SERVICE_MODE_MESH &&
+      !mesh_started_after_stop) {
     const esp_err_t release_result = WifiServiceRelease();
+    released_wifi = (release_result == ESP_OK);
     if (stop_result == ESP_OK && release_result != ESP_OK) {
       stop_result = release_result;
     }
   }
+
   stop_after = CaptureHeapSnapshot();
   MeshDiagHeapCheck(&ctx, "post_mesh_stop");
   const wifi_service_mode_t mode_after_stop = WifiServiceActiveMode();
@@ -642,12 +674,13 @@ RunDiagMesh(const app_runtime_t* runtime,
     total_steps,
     "teardown",
     stop_result,
-    "stop_requested=%s started_before=%s started_after=%s"
+    "stop_requested=%s released_wifi=%s started_before=%s started_after=%s"
     " wifi_mode_after=%s heap8_before=%u heap8_after=%u"
     " min_free=%u",
     YesNo(perform_stop),
+    YesNo(released_wifi),
     YesNo(mesh_started_before),
-    YesNo(MeshTransportIsStarted(mesh_available ? runtime->mesh : NULL)),
+    YesNo(mesh_started_after_stop),
     WifiModeToString(mode_after_stop),
     (unsigned)stop_before.free_8bit,
     (unsigned)stop_after.free_8bit,
