@@ -49,6 +49,14 @@ extern "C" {
 
   esp_err_t EnterDiagMode(void);
 
+  void RuntimeSetDataStreamingEnabled(bool enabled);
+
+  bool RuntimeIsDataStreamingEnabled(void);
+
+  void RuntimeSetLogPolicyRun(void);
+
+  void RuntimeSetLogPolicyDiag(void);
+
 #ifdef __cplusplus
 }
 #endif

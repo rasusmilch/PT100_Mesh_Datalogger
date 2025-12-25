@@ -168,6 +168,12 @@ static struct
 {
   struct arg_str* action;
   struct arg_end* end;
+} g_data_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_end* end;
 } g_run_args;
 
 static struct
@@ -412,10 +418,26 @@ CommandMode(int argc, char** argv)
   const char* action = g_mode_args.action->sval[0];
   if (strcmp(action, "show") == 0) {
     const app_boot_mode_t stored = BootModeReadFromNvsOrDefault();
-    const app_boot_mode_t running =
-      RuntimeIsRunning() ? APP_BOOT_MODE_RUN : APP_BOOT_MODE_DIAGNOSTICS;
+    const app_boot_mode_t running = RuntimeIsDataStreamingEnabled()
+                                      ? APP_BOOT_MODE_RUN
+                                      : APP_BOOT_MODE_DIAGNOSTICS;
     printf("nvs_boot_mode: %s\n", BootModeToString(stored));
     printf("current_mode: %s\n", BootModeToString(running));
+    printf("data_streaming: %s\n",
+           RuntimeIsDataStreamingEnabled() ? "on" : "off");
+    return 0;
+  }
+
+  if (strcmp(action, "run") == 0 || strcmp(action, "diag") == 0) {
+    const bool run_mode = strcmp(action, "run") == 0;
+    if (run_mode) {
+      RuntimeSetLogPolicyRun();
+      RuntimeSetDataStreamingEnabled(true);
+    } else {
+      RuntimeSetLogPolicyDiag();
+      RuntimeSetDataStreamingEnabled(false);
+    }
+    printf("mode set to %s\n", run_mode ? "run" : "diag");
     return 0;
   }
 
@@ -439,7 +461,41 @@ CommandMode(int argc, char** argv)
     return 0;
   }
 
-  printf("unknown action. usage: mode show | mode set diag|run\n");
+  printf(
+    "unknown action. usage: mode show | mode run | mode diag | mode set "
+    "diag|run\n");
+  return 1;
+}
+
+static int
+CommandData(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_data_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_data_args.end, argv[0]);
+    return 1;
+  }
+
+  const char* action = g_data_args.action->sval[0];
+  if (strcmp(action, "show") == 0) {
+    printf("data_streaming: %s\n",
+           RuntimeIsDataStreamingEnabled() ? "on" : "off");
+    return 0;
+  }
+
+  if (strcmp(action, "on") == 0) {
+    RuntimeSetDataStreamingEnabled(true);
+    printf("data streaming enabled\n");
+    return 0;
+  }
+
+  if (strcmp(action, "off") == 0) {
+    RuntimeSetDataStreamingEnabled(false);
+    printf("data streaming disabled\n");
+    return 0;
+  }
+
+  printf("unknown action. usage: data show | data on | data off\n");
   return 1;
 }
 
@@ -921,17 +977,28 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&cal_cmd));
 
-  g_mode_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_mode_args.action = arg_str1(NULL, NULL, "<action>", "show|run|diag|set");
   g_mode_args.mode_value = arg_str0(NULL, NULL, "diag|run", "Target mode");
   g_mode_args.end = arg_end(2);
   const esp_console_cmd_t mode_cmd = {
     .command = "mode",
-    .help = "mode show | mode set diag|run",
+    .help = "mode show | mode run | mode diag | mode set diag|run",
     .hint = NULL,
     .func = &CommandMode,
     .argtable = &g_mode_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&mode_cmd));
+
+  g_data_args.action = arg_str1(NULL, NULL, "<action>", "show|on|off");
+  g_data_args.end = arg_end(1);
+  const esp_console_cmd_t data_cmd = {
+    .command = "data",
+    .help = "data show | data on | data off",
+    .hint = NULL,
+    .func = &CommandData,
+    .argtable = &g_data_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&data_cmd));
 
   g_run_args.action = arg_str1(NULL, NULL, "<action>", "status|start|stop");
   g_run_args.end = arg_end(1);
