@@ -8,6 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "data_csv.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 
@@ -17,6 +18,14 @@ static size_t
 DefaultOr(const size_t value, const size_t fallback)
 {
   return (value == 0) ? fallback : value;
+}
+
+static bool
+CsvFileWriter(const char* bytes, size_t len, void* context)
+{
+  FILE* file = (FILE*)context;
+  return SdCsvAppendBatchWithReadbackVerify(
+           file, (const uint8_t*)bytes, len) == ESP_OK;
 }
 
 void
@@ -72,11 +81,8 @@ WriteHeaderIfEmpty(sd_logger_t* logger)
     return ESP_OK;
   }
 
-  static const char* const kHeader =
-    "seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id\n";
-  const size_t header_len = strlen(kHeader);
-  return SdCsvAppendBatchWithReadbackVerify(
-    logger->file, (const uint8_t*)kHeader, header_len);
+  const bool wrote_header = CsvWriteHeader(CsvFileWriter, logger->file);
+  return wrote_header ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t
