@@ -18,6 +18,7 @@
 #include "i2c_bus.h"
 #include "max31865_reader.h"
 #include "mesh_transport.h"
+#include "data_port.h"
 #include "sd_logger.h"
 #include "time_sync.h"
 #include "wifi_service.h"
@@ -171,35 +172,6 @@ BuildIso8601LocalWithMillis(int64_t epoch_seconds,
 }
 
 static void
-BuildIso8601Local(int64_t epoch_seconds, char* out, size_t out_size)
-{
-  if (epoch_seconds <= 0) {
-    if (out_size > 0) {
-      out[0] = '\0';
-    }
-    return;
-  }
-
-  time_t time_seconds = (time_t)epoch_seconds;
-  struct tm time_info;
-  localtime_r(&time_seconds, &time_info);
-
-  char offset[8] = "";
-  FormatIso8601Offset(&time_info, offset, sizeof(offset));
-
-  snprintf(out,
-           out_size,
-           "%04d-%02d-%02dT%02d:%02d:%02d%s",
-           time_info.tm_year + 1900,
-           time_info.tm_mon + 1,
-           time_info.tm_mday,
-           time_info.tm_hour,
-           time_info.tm_min,
-           time_info.tm_sec,
-           offset);
-}
-
-static void
 BuildDateStringFromRecord(const log_record_t* record,
                           char* out,
                           size_t out_size)
@@ -252,25 +224,15 @@ FormatCsvLine(const log_record_t* record,
 }
 
 static void
-PrintJsonRecord(const char* node_id, const log_record_t* record)
+PrintCsvRecord(const char* node_id, const log_record_t* record)
 {
-  const double raw_c = record->raw_temp_milli_c / 1000.0;
-  const double temp_c = record->temp_milli_c / 1000.0;
-  const double resistance_ohm = record->resistance_milli_ohm / 1000.0;
-  char iso_local[40];
-  BuildIso8601Local(record->timestamp_epoch_sec, iso_local, sizeof(iso_local));
-
-  printf("{\"type\":\"temp\",\"node\":\"%s\",\"ts\":%" PRId64
-         ",\"iso_local\":\"%s\",\"temp_c\":%.3f,\"raw_c\":%.3f,"
-         "\"r_ohm\":%.3f,\"seq\":%u,\"flags\":%u}\n",
-         node_id,
-         record->timestamp_epoch_sec,
-         iso_local,
-         temp_c,
-         raw_c,
-         resistance_ohm,
-         (unsigned)record->sequence,
-         (unsigned)record->flags);
+  char line[196];
+  size_t line_len = 0;
+  if (!FormatCsvLine(record, node_id, line, sizeof(line), &line_len)) {
+    ESP_LOGW(kTag, "Failed to format CSV line for node %s", node_id);
+    return;
+  }
+  DataPortWrite(line, line_len);
 }
 
 static void
@@ -281,7 +243,7 @@ RootRecordRxCallback(const pt100_mesh_addr_t* from,
   (void)context;
   char node_id[32];
   FormatMacString(from->addr, node_id, sizeof(node_id));
-  PrintJsonRecord(node_id, record);
+  PrintCsvRecord(node_id, record);
 }
 
 static esp_err_t
@@ -671,7 +633,7 @@ StorageTask(void* context)
       if (state->fram_full) {
         record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
       }
-      PrintJsonRecord(state->node_id_string, &record);
+      PrintCsvRecord(state->node_id_string, &record);
 
       if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
         (void)MeshTransportSendRecord(&state->mesh, &record);
@@ -693,7 +655,7 @@ StorageTask(void* context)
             record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
             ESP_LOGW(
               kTag, "FRAM is full; new samples will be dropped until flush");
-            PrintJsonRecord(state->node_id_string, &record);
+            PrintCsvRecord(state->node_id_string, &record);
           } else if (append_result != ESP_OK) {
             ESP_LOGE(
               kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
@@ -852,6 +814,15 @@ RuntimeManagerInit(void)
 {
   InitializeRuntimeStruct();
   esp_err_t first_error = ESP_OK;
+
+  esp_err_t data_port_result = DataPortInit();
+  if (data_port_result != ESP_OK) {
+    if (first_error == ESP_OK) {
+      first_error = data_port_result;
+    }
+    ESP_LOGE(
+      kTag, "Data port init failed: %s", esp_err_to_name(data_port_result));
+  }
 
   uint8_t mac[6] = { 0 };
   esp_err_t mac_result = esp_read_mac(mac, ESP_MAC_WIFI_STA);
