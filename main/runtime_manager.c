@@ -70,6 +70,18 @@ static app_runtime_t g_runtime;
 static esp_err_t
 RuntimeFlushToSd(void* context);
 
+static void
+SetRunLogPolicy(void)
+{
+  esp_log_level_set("*", ESP_LOG_ERROR);
+}
+
+static void
+SetDiagLogPolicy(void)
+{
+  esp_log_level_set("*", ESP_LOG_INFO);
+}
+
 static esp_err_t
 FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
 {
@@ -658,11 +670,12 @@ RuntimeFlushToSd(void* context)
   }
   esp_err_t result = FlushFramToSd(state, true);
   if (result == ESP_OK || result == ESP_ERR_NOT_FOUND) {
-    printf("flush complete; remaining=%u\n",
-           (unsigned)FramLogGetBufferedRecords(&state->fram_log));
+    ESP_LOGI(kTag,
+             "flush complete; remaining=%u",
+             (unsigned)FramLogGetBufferedRecords(&state->fram_log));
     return ESP_OK;
   }
-  printf("flush failed: %s\n", esp_err_to_name(result));
+  ESP_LOGE(kTag, "flush failed: %s", esp_err_to_name(result));
   return result;
 }
 
@@ -1021,4 +1034,23 @@ bool
 RuntimeIsRunning(void)
 {
   return g_state.is_running;
+}
+
+esp_err_t
+EnterRunMode(void)
+{
+  SetRunLogPolicy();
+  esp_err_t result = RuntimeStart();
+  if (result != ESP_OK) {
+    SetDiagLogPolicy();
+  }
+  return result;
+}
+
+esp_err_t
+EnterDiagMode(void)
+{
+  esp_err_t result = RuntimeStop();
+  SetDiagLogPolicy();
+  return result;
 }

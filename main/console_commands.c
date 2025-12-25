@@ -464,7 +464,7 @@ CommandRun(int argc, char** argv)
       printf("already running\n");
       return 0;
     }
-    esp_err_t result = RuntimeStart();
+    esp_err_t result = EnterRunMode();
     if (result != ESP_OK) {
       printf("start failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -478,7 +478,7 @@ CommandRun(int argc, char** argv)
       printf("already stopped\n");
       return 0;
     }
-    esp_err_t result = RuntimeStop();
+    esp_err_t result = EnterDiagMode();
     if (result != ESP_OK) {
       printf("stop failed: %s\n", esp_err_to_name(result));
       return 1;

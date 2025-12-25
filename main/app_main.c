@@ -50,11 +50,12 @@ app_main(void)
   }
 
   if (boot_mode == APP_BOOT_MODE_RUN) {
-    esp_err_t start_result = RuntimeStart();
+    esp_err_t start_result = EnterRunMode();
     if (start_result != ESP_OK) {
       ESP_LOGE(kTag, "Failed to start runtime: %s", esp_err_to_name(start_result));
     }
   } else {
+    (void)EnterDiagMode();
     ESP_LOGI(kTag, "Diagnostics mode active (boot default)");
   }
 
