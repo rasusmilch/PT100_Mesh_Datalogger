@@ -1,6 +1,5 @@
 #include "runtime_manager.h"
 
-#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +17,7 @@
 #include "i2c_bus.h"
 #include "max31865_reader.h"
 #include "mesh_transport.h"
+#include "data_csv.h"
 #include "data_port.h"
 #include "sd_logger.h"
 #include "time_sync.h"
@@ -109,69 +109,6 @@ FormatMacString(const uint8_t mac[6], char* out, size_t out_size)
 }
 
 static void
-FormatIso8601Offset(const struct tm* time_info, char* out, size_t out_size)
-{
-  if (out_size == 0) {
-    return;
-  }
-
-  char raw_offset[8] = "";
-  strftime(raw_offset, sizeof(raw_offset), "%z", time_info);
-  if (strlen(raw_offset) == 5) {
-    snprintf(out,
-             out_size,
-             "%c%c%c:%c%c",
-             raw_offset[0],
-             raw_offset[1],
-             raw_offset[2],
-             raw_offset[3],
-             raw_offset[4]);
-  } else {
-    snprintf(out, out_size, "+00:00");
-  }
-}
-
-static void
-BuildIso8601LocalWithMillis(int64_t epoch_seconds,
-                            int32_t millis,
-                            char* out,
-                            size_t out_size)
-{
-  if (epoch_seconds <= 0) {
-    if (out_size > 0) {
-      out[0] = '\0';
-    }
-    return;
-  }
-
-  time_t time_seconds = (time_t)epoch_seconds;
-  struct tm time_info;
-  localtime_r(&time_seconds, &time_info);
-
-  if (millis < 0) {
-    millis = 0;
-  }
-  if (millis > 999) {
-    millis = 999;
-  }
-
-  char offset[8] = "";
-  FormatIso8601Offset(&time_info, offset, sizeof(offset));
-
-  snprintf(out,
-           out_size,
-           "%04d-%02d-%02dT%02d:%02d:%02d.%03d%s",
-           time_info.tm_year + 1900,
-           time_info.tm_mon + 1,
-           time_info.tm_mday,
-           time_info.tm_hour,
-           time_info.tm_min,
-           time_info.tm_sec,
-           (int)millis,
-           offset);
-}
-
-static void
 BuildDateStringFromRecord(const log_record_t* record,
                           char* out,
                           size_t out_size)
@@ -187,52 +124,19 @@ BuildDateStringFromRecord(const log_record_t* record,
 }
 
 static bool
-FormatCsvLine(const log_record_t* record,
-              const char* node_id,
-              char* out,
-              size_t out_size,
-              size_t* written_out)
+CsvDataPortWriter(const char* bytes, size_t len, void* context)
 {
-  char iso8601[40];
-  BuildIso8601LocalWithMillis(record->timestamp_epoch_sec,
-                              record->timestamp_millis,
-                              iso8601,
-                              sizeof(iso8601));
-
-  const double raw_c = record->raw_temp_milli_c / 1000.0;
-  const double temp_c = record->temp_milli_c / 1000.0;
-  const double resistance_ohm = record->resistance_milli_ohm / 1000.0;
-
-  const int length = snprintf(out,
-                              out_size,
-                              "%u,%" PRId64 ",%s,%.3f,%.3f,%.3f,0x%04x,%s\n",
-                              (unsigned)record->sequence,
-                              record->timestamp_epoch_sec,
-                              iso8601,
-                              resistance_ohm,
-                              raw_c,
-                              temp_c,
-                              (unsigned)record->flags,
-                              node_id);
-  if (length < 0 || (size_t)length >= out_size) {
-    return false;
-  }
-  if (written_out != NULL) {
-    *written_out = (size_t)length;
-  }
+  (void)context;
+  DataPortWrite(bytes, len);
   return true;
 }
 
 static void
 PrintCsvRecord(const char* node_id, const log_record_t* record)
 {
-  char line[196];
-  size_t line_len = 0;
-  if (!FormatCsvLine(record, node_id, line, sizeof(line), &line_len)) {
+  if (!CsvWriteRow(CsvDataPortWriter, NULL, record, node_id)) {
     ESP_LOGW(kTag, "Failed to format CSV line for node %s", node_id);
-    return;
   }
-  DataPortWrite(line, line_len);
 }
 
 static void
@@ -320,9 +224,9 @@ BuildBatchForDay(runtime_state_t* state,
       break; // stop at day rollover; flush current batch first
     }
 
-    char line[196];
+    char line[208];
     size_t line_len = 0;
-    if (!FormatCsvLine(
+    if (!CsvFormatRow(
           &record, state->node_id_string, line, sizeof(line), &line_len)) {
       return ESP_ERR_NO_MEM;
     }
@@ -1052,6 +956,10 @@ RuntimeStart(void)
     if (sync_result != ESP_OK) {
       MarkSdFailure(&g_state, "Initial SD sync failed", sync_result);
     }
+  }
+
+  if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
+    ESP_LOGW(kTag, "Failed to write CSV header to data port");
   }
 
   g_state.is_running = true;

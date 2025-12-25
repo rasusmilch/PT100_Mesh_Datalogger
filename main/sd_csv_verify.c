@@ -92,16 +92,31 @@ ParseSequenceFromCsvLine(const char* line, uint32_t* sequence_out)
   if (strncmp(line, "seq,", 4) == 0) {
     return false;
   }
-
-  const char* comma_position = strchr(line, ',');
-  if (comma_position == NULL) {
+  if (strncmp(line, "schema_ver,", 11) == 0) {
     return false;
   }
 
+  const char* first_comma = strchr(line, ',');
+  if (first_comma == NULL) {
+    return false;
+  }
+  const char* second_comma = strchr(first_comma + 1, ',');
+  if (second_comma == NULL) {
+    return false;
+  }
+  const char* third_comma = strchr(second_comma + 1, ',');
+
+  const bool has_iso_field =
+    (third_comma != NULL) &&
+    (memchr(second_comma + 1, 'T', (size_t)(third_comma - second_comma - 1)) !=
+     NULL);
+  const char* seq_start = has_iso_field ? line : (first_comma + 1);
+  const char* seq_end = has_iso_field ? first_comma : second_comma;
+
   char* end_pointer = NULL;
   errno = 0;
-  const unsigned long parsed = strtoul(line, &end_pointer, 10);
-  if (errno != 0 || end_pointer != comma_position) {
+  const unsigned long parsed = strtoul(seq_start, &end_pointer, 10);
+  if (errno != 0 || end_pointer != seq_end) {
     return false;
   }
   if (parsed > UINT32_MAX) {
