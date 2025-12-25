@@ -57,6 +57,8 @@ CommandStatus(int argc, char** argv)
   printf("sd_flush_period_ms: %u\n", (unsigned)settings->sd_flush_period_ms);
   printf("sd_batch_target_bytes: %u\n",
          (unsigned)settings->sd_batch_bytes_target);
+  printf("node_role: %s\n", AppSettingsRoleToString(settings->node_role));
+  printf("allow_children: %s\n", settings->allow_children ? "yes" : "no");
   printf("tz_posix: %s\n", settings->tz_posix);
   printf("dst_enabled: %s\n", settings->dst_enabled ? "yes" : "no");
   time_t now = time(NULL);
@@ -189,6 +191,20 @@ static struct
   struct arg_int* enabled;
   struct arg_end* end;
 } g_dst_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_str* role;
+  struct arg_end* end;
+} g_role_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_int* enabled;
+  struct arg_end* end;
+} g_children_args;
 
 static int
 CommandLog(int argc, char** argv)
@@ -661,6 +677,105 @@ CommandDst(int argc, char** argv)
   return 1;
 }
 
+static int
+CommandRole(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_role_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_role_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_role_args.action->sval[0];
+  if (strcmp(action, "show") == 0) {
+    printf("role: %s\n", AppSettingsRoleToString(g_runtime->settings->node_role));
+    return 0;
+  }
+
+  if (strcmp(action, "set") == 0) {
+    if (g_role_args.role->count != 1) {
+      printf("usage: role set root|sensor|relay\n");
+      return 1;
+    }
+    const char* role_value = g_role_args.role->sval[0];
+    app_node_role_t role = APP_NODE_ROLE_SENSOR;
+    if (!AppSettingsParseRole(role_value, &role)) {
+      printf("usage: role set root|sensor|relay\n");
+      return 1;
+    }
+
+    g_runtime->settings->node_role = role;
+    esp_err_t result = AppSettingsSaveNodeRole(role);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+
+    if (!g_runtime->settings->allow_children_set) {
+      const bool allow_children = AppSettingsRoleDefaultAllowsChildren(role);
+      g_runtime->settings->allow_children = allow_children;
+      result = AppSettingsSaveAllowChildren(allow_children, false);
+      if (result != ESP_OK) {
+        printf("save failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+    }
+
+    printf("role set to %s\n", AppSettingsRoleToString(role));
+    return 0;
+  }
+
+  printf("unknown action. usage: role show | role set root|sensor|relay\n");
+  return 1;
+}
+
+static int
+CommandChildren(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_children_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_children_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_children_args.action->sval[0];
+  if (strcmp(action, "show") == 0) {
+    printf("allow_children: %u\n", g_runtime->settings->allow_children ? 1 : 0);
+    return 0;
+  }
+
+  if (strcmp(action, "set") == 0) {
+    if (g_children_args.enabled->count != 1) {
+      printf("usage: children set 0|1\n");
+      return 1;
+    }
+    const int enabled = g_children_args.enabled->ival[0];
+    if (enabled != 0 && enabled != 1) {
+      printf("usage: children set 0|1\n");
+      return 1;
+    }
+    g_runtime->settings->allow_children = (enabled == 1);
+    g_runtime->settings->allow_children_set = true;
+    esp_err_t result =
+      AppSettingsSaveAllowChildren(g_runtime->settings->allow_children, true);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("allow_children set to %d\n", enabled);
+    return 0;
+  }
+
+  printf("unknown action. usage: children show | children set 0|1\n");
+  return 1;
+}
+
 static void
 PrintDiagUsage(void)
 {
@@ -1034,6 +1149,31 @@ RegisterCommands(void)
     .argtable = &g_dst_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&dst_cmd));
+
+  g_role_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_role_args.role = arg_str0(NULL, NULL, "<root|sensor|relay>", "Node role");
+  g_role_args.end = arg_end(2);
+  const esp_console_cmd_t role_cmd = {
+    .command = "role",
+    .help = "role show | role set root|sensor|relay",
+    .hint = NULL,
+    .func = &CommandRole,
+    .argtable = &g_role_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&role_cmd));
+
+  g_children_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_children_args.enabled =
+    arg_int0(NULL, NULL, "<0|1>", "Allow downstream children");
+  g_children_args.end = arg_end(2);
+  const esp_console_cmd_t children_cmd = {
+    .command = "children",
+    .help = "children show | children set 0|1",
+    .hint = NULL,
+    .func = &CommandChildren,
+    .argtable = &g_children_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&children_cmd));
 
   const esp_console_cmd_t diag_cmd = {
     .command = "diag",

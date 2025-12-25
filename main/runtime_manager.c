@@ -8,6 +8,8 @@
 
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_mesh_lite.h"
+#include "esp_mesh_lite_port.h"
 #include "esp_system.h"
 #include "fram_i2c.h"
 #include "fram_log.h"
@@ -58,6 +60,7 @@ typedef struct
   TaskHandle_t sensor_task;
   TaskHandle_t storage_task;
   TaskHandle_t time_sync_task;
+  TaskHandle_t topology_task;
 
   bool initialized;
   bool is_running;
@@ -644,7 +647,7 @@ TimeSyncTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
 
-  if (!state->mesh.is_root) {
+  if (state->settings.node_role == APP_NODE_ROLE_SENSOR) {
     while (!TimeSyncIsSystemTimeValid() && !state->stop_requested) {
       if (MeshTransportIsConnected(&state->mesh)) {
         (void)MeshTransportRequestTime(&state->mesh);
@@ -653,7 +656,7 @@ TimeSyncTask(void* context)
     }
   }
 
-  if (state->mesh.is_root) {
+  if (state->settings.node_role == APP_NODE_ROLE_ROOT) {
     while (!state->stop_requested) {
       if (TimeSyncIsSystemTimeValid() &&
           MeshTransportIsConnected(&state->mesh)) {
@@ -665,6 +668,42 @@ TimeSyncTask(void* context)
   }
 
   state->time_sync_task = NULL;
+  vTaskDelete(NULL);
+}
+
+static void
+TopologyTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+  const TickType_t interval_ticks = pdMS_TO_TICKS(30 * 1000);
+
+  while (!state->stop_requested) {
+    const char* role = AppSettingsRoleToString(state->settings.node_role);
+    const uint32_t child_count = esp_mesh_lite_get_mesh_node_number();
+    int layer = -1;
+    int rssi = 0;
+    char parent_str[20] = "unknown";
+
+    if (MeshTransportIsStarted(&state->mesh)) {
+      layer = esp_mesh_lite_get_level();
+      mesh_lite_ap_record_t ap_record = { 0 };
+      if (esp_mesh_lite_get_ap_record(&ap_record) == ESP_OK) {
+        FormatMacString(ap_record.bssid, parent_str, sizeof(parent_str));
+        rssi = ap_record.rssi;
+      }
+    }
+
+    printf("topology role=%s allow_children=%u layer=%d parent=%s children=%u rssi=%d\n",
+           role,
+           state->settings.allow_children ? 1u : 0u,
+           layer,
+           parent_str,
+           (unsigned)child_count,
+           rssi);
+    vTaskDelay(interval_ticks);
+  }
+
+  state->topology_task = NULL;
   vTaskDelete(NULL);
 }
 
@@ -890,7 +929,7 @@ RuntimeStart(void)
     return ESP_OK;
   }
   if (g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-      g_state.time_sync_task != NULL) {
+      g_state.time_sync_task != NULL || g_state.topology_task != NULL) {
     return ESP_ERR_INVALID_STATE;
   }
   if (g_state.log_queue == NULL) {
@@ -911,11 +950,13 @@ RuntimeStart(void)
 
   EnsureSdMounted();
 
-#if CONFIG_APP_NODE_IS_ROOT
-  const bool is_root = true;
-#else
-  const bool is_root = false;
-#endif
+  const app_node_role_t role = g_state.settings.node_role;
+  const bool is_root = (role == APP_NODE_ROLE_ROOT);
+  const bool allow_children = g_state.settings.allow_children;
+
+  printf("role=%s allow_children=%u\n",
+         AppSettingsRoleToString(role),
+         allow_children ? 1u : 0u);
 
   // Only the root should ever be configured with upstream router credentials.
   // Non-root nodes should focus on joining the Mesh-Lite network.
@@ -945,6 +986,7 @@ RuntimeStart(void)
     esp_err_t mesh_result =
       MeshTransportStart(&g_state.mesh,
                          is_root,
+                         allow_children,
                          router_ssid,
                          router_password,
                          is_root ? &RootRecordRxCallback : NULL,
@@ -986,20 +1028,33 @@ RuntimeStart(void)
 
   g_state.is_running = true;
 
-  BaseType_t sensor_created =
-    xTaskCreate(&SensorTask, "sensor", 4096, &g_state, 5, &g_state.sensor_task);
-  BaseType_t storage_created = xTaskCreate(
-    &StorageTask, "storage", 6144, &g_state, 6, &g_state.storage_task);
-  BaseType_t time_created = xTaskCreate(
-    &TimeSyncTask, "time_sync", 4096, &g_state, 4, &g_state.time_sync_task);
+  BaseType_t sensor_created = pdPASS;
+  BaseType_t storage_created = pdPASS;
+  BaseType_t time_created = pdPASS;
+  BaseType_t topology_created = pdPASS;
+
+  if (role == APP_NODE_ROLE_SENSOR) {
+    sensor_created = xTaskCreate(
+      &SensorTask, "sensor", 4096, &g_state, 5, &g_state.sensor_task);
+    storage_created = xTaskCreate(
+      &StorageTask, "storage", 6144, &g_state, 6, &g_state.storage_task);
+  }
+
+  if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
+    time_created = xTaskCreate(
+      &TimeSyncTask, "time_sync", 4096, &g_state, 4, &g_state.time_sync_task);
+  }
+
+  topology_created = xTaskCreate(
+    &TopologyTask, "topology", 3072, &g_state, 3, &g_state.topology_task);
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
-      time_created != pdPASS) {
+      time_created != pdPASS || topology_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.is_running = false;
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-            g_state.time_sync_task != NULL) &&
+            g_state.time_sync_task != NULL || g_state.topology_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -1007,7 +1062,8 @@ RuntimeStart(void)
   }
 
   ESP_LOGI(
-    kTag, "Runtime started (node=%s root=%d)", g_state.node_id_string, is_root);
+    kTag, "Runtime started (node=%s role=%s)", g_state.node_id_string,
+    AppSettingsRoleToString(role));
   return ESP_OK;
 }
 
@@ -1023,7 +1079,7 @@ RuntimeStop(void)
 
   const TickType_t wait_start = xTaskGetTickCount();
   while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-          g_state.time_sync_task != NULL) &&
+          g_state.time_sync_task != NULL || g_state.topology_task != NULL) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }

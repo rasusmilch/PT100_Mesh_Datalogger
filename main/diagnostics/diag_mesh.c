@@ -533,6 +533,7 @@ RunDiagMesh(const app_runtime_t* runtime,
     } else {
       start_result = MeshTransportStart(runtime->mesh,
                                         start_as_root,
+                                        runtime->settings->allow_children,
                                         CONFIG_APP_WIFI_ROUTER_SSID,
                                         CONFIG_APP_WIFI_ROUTER_PASSWORD,
                                         NULL,

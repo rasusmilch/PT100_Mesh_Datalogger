@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #include "esp_log.h"
@@ -20,6 +21,61 @@ static const char* kKeyCalDegree = "cal_deg";
 static const char* kKeyCalCoeffs = "cal_coeffs";
 static const char* kKeyTzPosix = "tz_posix";
 static const char* kKeyDstEnabled = "dst_enabled";
+static const char* kKeyNodeRole = "node_role";
+static const char* kKeyAllowChildren = "allow_child";
+static const char* kKeyAllowChildrenSet = "allow_child_set";
+
+static app_node_role_t
+DefaultNodeRole(void)
+{
+#if CONFIG_APP_NODE_IS_ROOT
+  return APP_NODE_ROLE_ROOT;
+#else
+  return APP_NODE_ROLE_SENSOR;
+#endif
+}
+
+bool
+AppSettingsRoleDefaultAllowsChildren(app_node_role_t role)
+{
+  return role != APP_NODE_ROLE_SENSOR;
+}
+
+const char*
+AppSettingsRoleToString(app_node_role_t role)
+{
+  switch (role) {
+    case APP_NODE_ROLE_ROOT:
+      return "ROOT";
+    case APP_NODE_ROLE_SENSOR:
+      return "SENSOR";
+    case APP_NODE_ROLE_RELAY:
+      return "RELAY";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+bool
+AppSettingsParseRole(const char* value, app_node_role_t* role_out)
+{
+  if (value == NULL || role_out == NULL) {
+    return false;
+  }
+  if (strcasecmp(value, "root") == 0) {
+    *role_out = APP_NODE_ROLE_ROOT;
+    return true;
+  }
+  if (strcasecmp(value, "sensor") == 0) {
+    *role_out = APP_NODE_ROLE_SENSOR;
+    return true;
+  }
+  if (strcasecmp(value, "relay") == 0) {
+    *role_out = APP_NODE_ROLE_RELAY;
+    return true;
+  }
+  return false;
+}
 
 static void
 ApplyDefaults(app_settings_t* settings)
@@ -35,6 +91,10 @@ ApplyDefaults(app_settings_t* settings)
            "%s",
            APP_SETTINGS_TZ_DEFAULT_POSIX);
   settings->dst_enabled = true;
+  settings->node_role = DefaultNodeRole();
+  settings->allow_children =
+    AppSettingsRoleDefaultAllowsChildren(settings->node_role);
+  settings->allow_children_set = false;
 }
 
 static esp_err_t
@@ -113,16 +173,58 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->dst_enabled = (dst_enabled == 1);
   }
 
+  uint8_t node_role = (uint8_t)settings_out->node_role;
+  result = nvs_get_u8(handle, kKeyNodeRole, &node_role);
+  if (result == ESP_OK && node_role <= (uint8_t)APP_NODE_ROLE_RELAY) {
+    settings_out->node_role = (app_node_role_t)node_role;
+  }
+
+  uint8_t allow_children_set = settings_out->allow_children_set ? 1 : 0;
+  esp_err_t allow_children_set_result =
+    nvs_get_u8(handle, kKeyAllowChildrenSet, &allow_children_set);
+  const bool allow_children_set_present =
+    (allow_children_set_result == ESP_OK);
+  if (allow_children_set_present && allow_children_set <= 1) {
+    settings_out->allow_children_set = (allow_children_set == 1);
+  }
+
+  if (settings_out->allow_children_set) {
+    uint8_t allow_children = settings_out->allow_children ? 1 : 0;
+    result = nvs_get_u8(handle, kKeyAllowChildren, &allow_children);
+    if (result == ESP_OK && allow_children <= 1) {
+      settings_out->allow_children = (allow_children == 1);
+    } else {
+      settings_out->allow_children_set = false;
+      settings_out->allow_children =
+        AppSettingsRoleDefaultAllowsChildren(settings_out->node_role);
+    }
+  } else if (!allow_children_set_present) {
+    uint8_t allow_children = settings_out->allow_children ? 1 : 0;
+    result = nvs_get_u8(handle, kKeyAllowChildren, &allow_children);
+    if (result == ESP_OK && allow_children <= 1) {
+      settings_out->allow_children = (allow_children == 1);
+      settings_out->allow_children_set = true;
+    } else {
+      settings_out->allow_children =
+        AppSettingsRoleDefaultAllowsChildren(settings_out->node_role);
+    }
+  } else {
+    settings_out->allow_children =
+      AppSettingsRoleDefaultAllowsChildren(settings_out->node_role);
+  }
+
   nvs_close(handle);
   ESP_LOGI(kTag,
-           "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u tz=%s dst=%u",
+           "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u tz=%s dst=%u role=%s allow_children=%u",
            (unsigned)settings_out->log_period_ms,
            (unsigned)settings_out->fram_flush_watermark_records,
            (unsigned)settings_out->sd_flush_period_ms,
            (unsigned)settings_out->sd_batch_bytes_target,
            (unsigned)settings_out->calibration.degree,
            settings_out->tz_posix,
-           settings_out->dst_enabled ? 1u : 0u);
+           settings_out->dst_enabled ? 1u : 0u,
+           AppSettingsRoleToString(settings_out->node_role),
+           settings_out->allow_children ? 1u : 0u);
   return ESP_OK;
 }
 
@@ -234,6 +336,44 @@ AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
   result = nvs_set_str(handle, kKeyTzPosix, tz_posix);
   if (result == ESP_OK) {
     result = nvs_set_u8(handle, kKeyDstEnabled, dst_enabled ? 1 : 0);
+  }
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveNodeRole(app_node_role_t node_role)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_u8(handle, kKeyNodeRole, (uint8_t)node_role);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveAllowChildren(bool allow_children, bool explicit_setting)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_u8(handle, kKeyAllowChildren, allow_children ? 1 : 0);
+  if (result == ESP_OK) {
+    result =
+      nvs_set_u8(handle, kKeyAllowChildrenSet, explicit_setting ? 1 : 0);
   }
   if (result == ESP_OK) {
     result = nvs_commit(handle);

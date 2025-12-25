@@ -41,6 +41,7 @@ extern "C"
   // elsewhere (app_main).
   esp_err_t MeshTransportStart(mesh_transport_t* mesh,
                                bool is_root,
+                               bool allow_children,
                                const char* router_ssid,
                                const char* router_password,
                                mesh_record_rx_callback_t record_rx_callback,
