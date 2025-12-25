@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "argtable3/argtable3.h"
 #include "boot_mode.h"
@@ -56,6 +57,17 @@ CommandStatus(int argc, char** argv)
   printf("sd_flush_period_ms: %u\n", (unsigned)settings->sd_flush_period_ms);
   printf("sd_batch_target_bytes: %u\n",
          (unsigned)settings->sd_batch_bytes_target);
+  printf("tz_posix: %s\n", settings->tz_posix);
+  printf("dst_enabled: %s\n", settings->dst_enabled ? "yes" : "no");
+  time_t now = time(NULL);
+  struct tm local_time;
+  char local_buffer[48] = { 0 };
+  if (localtime_r(&now, &local_time) != NULL) {
+    strftime(local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local_time);
+  }
+  printf("local_time: %s (epoch=%ld)\n",
+         (local_buffer[0] != '\0') ? local_buffer : "unknown",
+         (long)now);
   printf("fram: buffered=%u / cap=%u (flush_watermark=%u)\n",
          (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
          (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log),
@@ -157,6 +169,20 @@ static struct
   struct arg_str* action;
   struct arg_end* end;
 } g_run_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_str* posix;
+  struct arg_end* end;
+} g_tz_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_int* enabled;
+  struct arg_end* end;
+} g_dst_args;
 
 static int
 CommandLog(int argc, char** argv)
@@ -462,6 +488,120 @@ CommandRun(int argc, char** argv)
   }
 
   printf("unknown action. usage: run status | run start | run stop\n");
+  return 1;
+}
+
+static int
+CommandTz(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_tz_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_tz_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_tz_args.action->sval[0];
+  if (strcmp(action, "show") == 0) {
+    printf("tz_posix: %s\n", g_runtime->settings->tz_posix);
+    printf("dst_enabled: %s\n",
+           g_runtime->settings->dst_enabled ? "yes" : "no");
+    return 0;
+  }
+
+  if (strcmp(action, "set") == 0) {
+    if (g_tz_args.posix->count != 1) {
+      printf("usage: tz set \"<posix>\"\n");
+      return 1;
+    }
+    const char* tz_posix = g_tz_args.posix->sval[0];
+    if (tz_posix[0] == '\0' ||
+        strlen(tz_posix) >= sizeof(g_runtime->settings->tz_posix)) {
+      printf("invalid tz string\n");
+      return 1;
+    }
+    snprintf(g_runtime->settings->tz_posix,
+             sizeof(g_runtime->settings->tz_posix),
+             "%s",
+             tz_posix);
+    g_runtime->settings->dst_enabled = (strchr(tz_posix, ',') != NULL);
+    esp_err_t result = AppSettingsSaveTimeZone(
+      g_runtime->settings->tz_posix, g_runtime->settings->dst_enabled);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    AppSettingsApplyTimeZone(g_runtime->settings);
+    printf("tz_posix set to %s\n", g_runtime->settings->tz_posix);
+    return 0;
+  }
+
+  printf("unknown action. usage: tz show | tz set \"<posix>\"\n");
+  return 1;
+}
+
+static int
+CommandDst(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_dst_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_dst_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_dst_args.action->sval[0];
+  if (strcmp(action, "show") == 0) {
+    printf("dst_enabled: %s\n",
+           g_runtime->settings->dst_enabled ? "yes" : "no");
+    return 0;
+  }
+
+  if (strcmp(action, "set") == 0) {
+    if (g_dst_args.enabled->count != 1) {
+      printf("usage: dst set 0|1\n");
+      return 1;
+    }
+    const int enabled = g_dst_args.enabled->ival[0];
+    if (enabled != 0 && enabled != 1) {
+      printf("usage: dst set 0|1\n");
+      return 1;
+    }
+    g_runtime->settings->dst_enabled = (enabled == 1);
+    if (g_runtime->settings->dst_enabled) {
+      if (strcmp(g_runtime->settings->tz_posix, APP_SETTINGS_TZ_DEFAULT_STD) ==
+          0) {
+        snprintf(g_runtime->settings->tz_posix,
+                 sizeof(g_runtime->settings->tz_posix),
+                 "%s",
+                 APP_SETTINGS_TZ_DEFAULT_POSIX);
+      }
+    } else {
+      if (strcmp(g_runtime->settings->tz_posix,
+                 APP_SETTINGS_TZ_DEFAULT_POSIX) == 0) {
+        snprintf(g_runtime->settings->tz_posix,
+                 sizeof(g_runtime->settings->tz_posix),
+                 "%s",
+                 APP_SETTINGS_TZ_DEFAULT_STD);
+      }
+    }
+    esp_err_t result = AppSettingsSaveTimeZone(
+      g_runtime->settings->tz_posix, g_runtime->settings->dst_enabled);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    AppSettingsApplyTimeZone(g_runtime->settings);
+    printf("dst_enabled set to %d\n", enabled);
+    printf("tz_posix: %s\n", g_runtime->settings->tz_posix);
+    return 0;
+  }
+
+  printf("unknown action. usage: dst show | dst set 0|1\n");
   return 1;
 }
 
@@ -803,6 +943,30 @@ RegisterCommands(void)
     .argtable = &g_run_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&run_cmd));
+
+  g_tz_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_tz_args.posix = arg_str0(NULL, NULL, "<posix>", "POSIX TZ string");
+  g_tz_args.end = arg_end(2);
+  const esp_console_cmd_t tz_cmd = {
+    .command = "tz",
+    .help = "tz show | tz set \"<posix>\"",
+    .hint = NULL,
+    .func = &CommandTz,
+    .argtable = &g_tz_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&tz_cmd));
+
+  g_dst_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_dst_args.enabled = arg_int0(NULL, NULL, "<0|1>", "DST enabled");
+  g_dst_args.end = arg_end(2);
+  const esp_console_cmd_t dst_cmd = {
+    .command = "dst",
+    .help = "dst show | dst set 0|1",
+    .hint = NULL,
+    .func = &CommandDst,
+    .argtable = &g_dst_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&dst_cmd));
 
   const esp_console_cmd_t diag_cmd = {
     .command = "diag",

@@ -811,6 +811,7 @@ RuntimeManagerInit(void)
     ESP_LOGE(
       kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
+  AppSettingsApplyTimeZone(&g_state.settings);
 
   const uint32_t i2c_frequency_hz = 400000;
   esp_err_t i2c_result = I2cBusInit(&g_state.i2c_bus,

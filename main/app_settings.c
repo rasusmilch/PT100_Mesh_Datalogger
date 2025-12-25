@@ -1,6 +1,9 @@
 #include "app_settings.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_log.h"
 #include "nvs.h"
@@ -15,6 +18,8 @@ static const char* kKeySdFlushPeriodMs = "sd_flush_ms";
 static const char* kKeySdBatchBytes = "sd_batch_bytes";
 static const char* kKeyCalDegree = "cal_deg";
 static const char* kKeyCalCoeffs = "cal_coeffs";
+static const char* kKeyTzPosix = "tz_posix";
+static const char* kKeyDstEnabled = "dst_enabled";
 
 static void
 ApplyDefaults(app_settings_t* settings)
@@ -25,6 +30,11 @@ ApplyDefaults(app_settings_t* settings)
   settings->sd_flush_period_ms = (uint32_t)CONFIG_APP_SD_PERIODIC_FLUSH_MS;
   settings->sd_batch_bytes_target = (uint32_t)CONFIG_APP_SD_BATCH_BYTES_TARGET;
   CalibrationModelInitIdentity(&settings->calibration);
+  snprintf(settings->tz_posix,
+           sizeof(settings->tz_posix),
+           "%s",
+           APP_SETTINGS_TZ_DEFAULT_POSIX);
+  settings->dst_enabled = true;
 }
 
 static esp_err_t
@@ -88,14 +98,31 @@ AppSettingsLoad(app_settings_t* settings_out)
     CalibrationModelInitIdentity(&settings_out->calibration);
   }
 
+  size_t tz_len = sizeof(settings_out->tz_posix);
+  result = nvs_get_str(handle, kKeyTzPosix, settings_out->tz_posix, &tz_len);
+  if (result != ESP_OK || tz_len == 0 || tz_len > sizeof(settings_out->tz_posix)) {
+    snprintf(settings_out->tz_posix,
+             sizeof(settings_out->tz_posix),
+             "%s",
+             APP_SETTINGS_TZ_DEFAULT_POSIX);
+  }
+
+  uint8_t dst_enabled = settings_out->dst_enabled ? 1 : 0;
+  result = nvs_get_u8(handle, kKeyDstEnabled, &dst_enabled);
+  if (result == ESP_OK && dst_enabled <= 1) {
+    settings_out->dst_enabled = (dst_enabled == 1);
+  }
+
   nvs_close(handle);
   ESP_LOGI(kTag,
-           "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u",
+           "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u tz=%s dst=%u",
            (unsigned)settings_out->log_period_ms,
            (unsigned)settings_out->fram_flush_watermark_records,
            (unsigned)settings_out->sd_flush_period_ms,
            (unsigned)settings_out->sd_batch_bytes_target,
-           (unsigned)settings_out->calibration.degree);
+           (unsigned)settings_out->calibration.degree,
+           settings_out->tz_posix,
+           settings_out->dst_enabled ? 1u : 0u);
   return ESP_OK;
 }
 
@@ -188,4 +215,43 @@ AppSettingsSaveCalibration(const calibration_model_t* model)
   }
   nvs_close(handle);
   return result;
+}
+
+esp_err_t
+AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
+{
+  if (tz_posix == NULL || tz_posix[0] == '\0' ||
+      strlen(tz_posix) >= APP_SETTINGS_TZ_POSIX_MAX_LEN) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_str(handle, kKeyTzPosix, tz_posix);
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, kKeyDstEnabled, dst_enabled ? 1 : 0);
+  }
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+void
+AppSettingsApplyTimeZone(const app_settings_t* settings)
+{
+  if (settings == NULL) {
+    return;
+  }
+  if (settings->tz_posix[0] == '\0') {
+    return;
+  }
+  setenv("TZ", settings->tz_posix, 1);
+  tzset();
+  ESP_LOGI(kTag, "Applied TZ=%s", settings->tz_posix);
 }
