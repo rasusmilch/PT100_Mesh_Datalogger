@@ -108,10 +108,33 @@ FormatMacString(const uint8_t mac[6], char* out, size_t out_size)
 }
 
 static void
-BuildIso8601Utc(int64_t epoch_seconds,
-                int32_t millis,
-                char* out,
-                size_t out_size)
+FormatIso8601Offset(const struct tm* time_info, char* out, size_t out_size)
+{
+  if (out_size == 0) {
+    return;
+  }
+
+  char raw_offset[8] = "";
+  strftime(raw_offset, sizeof(raw_offset), "%z", time_info);
+  if (strlen(raw_offset) == 5) {
+    snprintf(out,
+             out_size,
+             "%c%c%c:%c%c",
+             raw_offset[0],
+             raw_offset[1],
+             raw_offset[2],
+             raw_offset[3],
+             raw_offset[4]);
+  } else {
+    snprintf(out, out_size, "+00:00");
+  }
+}
+
+static void
+BuildIso8601LocalWithMillis(int64_t epoch_seconds,
+                            int32_t millis,
+                            char* out,
+                            size_t out_size)
 {
   if (epoch_seconds <= 0) {
     if (out_size > 0) {
@@ -122,7 +145,7 @@ BuildIso8601Utc(int64_t epoch_seconds,
 
   time_t time_seconds = (time_t)epoch_seconds;
   struct tm time_info;
-  gmtime_r(&time_seconds, &time_info);
+  localtime_r(&time_seconds, &time_info);
 
   if (millis < 0) {
     millis = 0;
@@ -131,16 +154,49 @@ BuildIso8601Utc(int64_t epoch_seconds,
     millis = 999;
   }
 
+  char offset[8] = "";
+  FormatIso8601Offset(&time_info, offset, sizeof(offset));
+
   snprintf(out,
            out_size,
-           "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+           "%04d-%02d-%02dT%02d:%02d:%02d.%03d%s",
            time_info.tm_year + 1900,
            time_info.tm_mon + 1,
            time_info.tm_mday,
            time_info.tm_hour,
            time_info.tm_min,
            time_info.tm_sec,
-           (int)millis);
+           (int)millis,
+           offset);
+}
+
+static void
+BuildIso8601Local(int64_t epoch_seconds, char* out, size_t out_size)
+{
+  if (epoch_seconds <= 0) {
+    if (out_size > 0) {
+      out[0] = '\0';
+    }
+    return;
+  }
+
+  time_t time_seconds = (time_t)epoch_seconds;
+  struct tm time_info;
+  localtime_r(&time_seconds, &time_info);
+
+  char offset[8] = "";
+  FormatIso8601Offset(&time_info, offset, sizeof(offset));
+
+  snprintf(out,
+           out_size,
+           "%04d-%02d-%02dT%02d:%02d:%02d%s",
+           time_info.tm_year + 1900,
+           time_info.tm_mon + 1,
+           time_info.tm_mday,
+           time_info.tm_hour,
+           time_info.tm_min,
+           time_info.tm_sec,
+           offset);
 }
 
 static void
@@ -154,7 +210,7 @@ BuildDateStringFromRecord(const log_record_t* record,
   }
   time_t time_seconds = (time_t)epoch;
   struct tm time_info;
-  gmtime_r(&time_seconds, &time_info);
+  localtime_r(&time_seconds, &time_info);
   strftime(out, out_size, "%Y-%m-%d", &time_info);
 }
 
@@ -166,10 +222,10 @@ FormatCsvLine(const log_record_t* record,
               size_t* written_out)
 {
   char iso8601[40];
-  BuildIso8601Utc(record->timestamp_epoch_sec,
-                  record->timestamp_millis,
-                  iso8601,
-                  sizeof(iso8601));
+  BuildIso8601LocalWithMillis(record->timestamp_epoch_sec,
+                              record->timestamp_millis,
+                              iso8601,
+                              sizeof(iso8601));
 
   const double raw_c = record->raw_temp_milli_c / 1000.0;
   const double temp_c = record->temp_milli_c / 1000.0;
@@ -201,11 +257,15 @@ PrintJsonRecord(const char* node_id, const log_record_t* record)
   const double raw_c = record->raw_temp_milli_c / 1000.0;
   const double temp_c = record->temp_milli_c / 1000.0;
   const double resistance_ohm = record->resistance_milli_ohm / 1000.0;
+  char iso_local[40];
+  BuildIso8601Local(record->timestamp_epoch_sec, iso_local, sizeof(iso_local));
+
   printf("{\"type\":\"temp\",\"node\":\"%s\",\"ts\":%" PRId64
-         ",\"temp_c\":%.3f,\"raw_c\":%.3f,\"r_ohm\":%.3f,\"seq\":%u,"
-         "\"flags\":%u}\n",
+         ",\"iso_local\":\"%s\",\"temp_c\":%.3f,\"raw_c\":%.3f,"
+         "\"r_ohm\":%.3f,\"seq\":%u,\"flags\":%u}\n",
          node_id,
          record->timestamp_epoch_sec,
+         iso_local,
          temp_c,
          raw_c,
          resistance_ohm,
