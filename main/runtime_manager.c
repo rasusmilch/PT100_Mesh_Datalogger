@@ -23,6 +23,9 @@
 #include "wifi_service.h"
 
 static const char* kTag = "runtime";
+static const uint32_t kSdFlushMaxRecordsPerPass = 100;
+static const uint32_t kSdFlushMaxMsPerPass = 50;
+static const uint32_t kSdFlushFailureBackoffMs = 5000;
 
 typedef struct
 {
@@ -41,7 +44,11 @@ typedef struct
   size_t batch_buffer_size;
 
   TickType_t last_flush_ticks;
-  bool sd_error;
+  TickType_t sd_backoff_until_ticks;
+  uint32_t sd_fail_count;
+  uint32_t sd_flush_records_since;
+  bool sd_flush_pending;
+  bool sd_degraded;
   bool fram_full;
   bool fram_full_logged;
 
@@ -250,6 +257,9 @@ BuildBatchForDay(runtime_state_t* state,
                  const char* target_date,
                  uint8_t* buffer,
                  size_t buffer_size,
+                 uint32_t max_records,
+                 TickType_t start_ticks,
+                 uint32_t max_ms,
                  uint32_t* records_used_out,
                  uint32_t* last_sequence_out,
                  size_t* bytes_used_out)
@@ -260,6 +270,13 @@ BuildBatchForDay(runtime_state_t* state,
 
   const uint32_t buffered = FramLogGetBufferedRecords(&state->fram_log);
   for (uint32_t offset = 0; offset < buffered; ++offset) {
+    if (max_records > 0 && records_used >= max_records) {
+      break;
+    }
+    if (max_ms > 0 &&
+        pdTICKS_TO_MS(xTaskGetTickCount() - start_ticks) >= max_ms) {
+      break;
+    }
     log_record_t record;
     esp_err_t peek_result =
       FramLogPeekOffset(&state->fram_log, offset, &record);
@@ -349,13 +366,17 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     uint32_t records_used = 0;
     uint32_t last_seq = 0;
     size_t bytes_used = 0;
-    esp_err_t batch_result = BuildBatchForDay(state,
-                                              day_string,
-                                              state->batch_buffer,
-                                              state->batch_buffer_size,
-                                              &records_used,
-                                              &last_seq,
-                                              &bytes_used);
+    esp_err_t batch_result =
+      BuildBatchForDay(state,
+                       day_string,
+                       state->batch_buffer,
+                       state->batch_buffer_size,
+                       0,
+                       xTaskGetTickCount(),
+                       0,
+                       &records_used,
+                       &last_seq,
+                       &bytes_used);
     if (batch_result != ESP_OK) {
       return batch_result;
     }
@@ -394,6 +415,124 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
   }
 
   return (total_flushed > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+static void
+MarkSdFailure(runtime_state_t* state, const char* context, esp_err_t error)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->sd_degraded = true;
+  state->sd_fail_count++;
+  state->sd_backoff_until_ticks =
+    xTaskGetTickCount() + pdMS_TO_TICKS(kSdFlushFailureBackoffMs);
+  ESP_LOGW(kTag,
+           "%s: %s (failures=%u, backoff=%ums)",
+           context,
+           esp_err_to_name(error),
+           (unsigned)state->sd_fail_count,
+           (unsigned)kSdFlushFailureBackoffMs);
+}
+
+static esp_err_t
+SdFlushWorkerTick(runtime_state_t* state,
+                  uint32_t max_records,
+                  uint32_t max_ms,
+                  uint32_t* records_flushed_out,
+                  bool* more_pending_out)
+{
+  if (records_flushed_out != NULL) {
+    *records_flushed_out = 0;
+  }
+  if (more_pending_out != NULL) {
+    *more_pending_out = false;
+  }
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!state->sd_logger.is_mounted) {
+    return ESP_OK;
+  }
+  if (state->batch_buffer == NULL || state->batch_buffer_size == 0) {
+    return ESP_ERR_NO_MEM;
+  }
+  const TickType_t now_ticks = xTaskGetTickCount();
+  if (state->sd_backoff_until_ticks != 0 &&
+      now_ticks < state->sd_backoff_until_ticks) {
+    return ESP_OK;
+  }
+
+  if (FramLogGetBufferedRecords(&state->fram_log) == 0) {
+    return ESP_OK;
+  }
+
+  log_record_t first_record;
+  esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
+  if (peek_result == ESP_ERR_INVALID_RESPONSE) {
+    ESP_LOGE(kTag, "Corrupted FRAM record detected during SD flush");
+    (void)FramLogSkipCorruptedRecord(&state->fram_log);
+    return ESP_OK;
+  }
+  if (peek_result != ESP_OK) {
+    return peek_result;
+  }
+
+  const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
+                                   ? first_record.timestamp_epoch_sec
+                                   : (int64_t)time(NULL);
+  esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
+  if (sync_result != ESP_OK) {
+    MarkSdFailure(state, "SD sync failed", sync_result);
+    return sync_result;
+  }
+
+  char day_string[16];
+  BuildDateStringFromRecord(&first_record, day_string, sizeof(day_string));
+
+  uint32_t records_used = 0;
+  uint32_t last_seq = 0;
+  size_t bytes_used = 0;
+  esp_err_t batch_result =
+    BuildBatchForDay(state,
+                     day_string,
+                     state->batch_buffer,
+                     state->batch_buffer_size,
+                     max_records,
+                     now_ticks,
+                     max_ms,
+                     &records_used,
+                     &last_seq,
+                     &bytes_used);
+  if (batch_result != ESP_OK) {
+    return batch_result;
+  }
+  if (records_used == 0 || bytes_used == 0) {
+    return ESP_OK;
+  }
+
+  esp_err_t write_result = SdLoggerAppendVerifiedBatch(
+    &state->sd_logger, state->batch_buffer, bytes_used, last_seq);
+  if (write_result != ESP_OK) {
+    SdLoggerClose(&state->sd_logger);
+    MarkSdFailure(state, "SD append failed", write_result);
+    return write_result;
+  }
+
+  for (uint32_t index = 0; index < records_used; ++index) {
+    esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
+    if (discard_result != ESP_OK) {
+      return discard_result;
+    }
+  }
+
+  if (records_flushed_out != NULL) {
+    *records_flushed_out = records_used;
+  }
+  if (more_pending_out != NULL) {
+    *more_pending_out = (FramLogGetBufferedRecords(&state->fram_log) > 0);
+  }
+  return ESP_OK;
 }
 
 static void
@@ -440,7 +579,7 @@ SensorTask(void* context)
     if (state->settings.calibration.is_valid) {
       record.flags |= LOG_RECORD_FLAG_CAL_VALID;
     }
-    if (state->sd_error) {
+    if (state->sd_degraded) {
       record.flags |= LOG_RECORD_FLAG_SD_ERROR;
     }
     if (state->fram_full) {
@@ -498,6 +637,8 @@ StorageTask(void* context)
           } else if (append_result != ESP_OK) {
             ESP_LOGE(
               kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
+          } else {
+            state->sd_flush_records_since++;
           }
         }
       }
@@ -511,26 +652,42 @@ StorageTask(void* context)
     const bool watermark_hit =
       buffered >= state->settings.fram_flush_watermark_records;
 
-    if (state->sd_logger.is_mounted && buffered > 0 &&
-        (watermark_hit || periodic_due)) {
-      esp_err_t flush_result = FlushFramToSd(state, false);
-      if (flush_result == ESP_OK || flush_result == ESP_ERR_NOT_FOUND) {
-        state->sd_error = false;
-        state->last_flush_ticks = now_ticks;
-        if (FramLogGetBufferedRecords(&state->fram_log) <
-            FramLogGetCapacityRecords(&state->fram_log)) {
-          state->fram_full = false;
-          state->fram_full_logged = false;
+    if (periodic_due) {
+      state->sd_flush_pending = true;
+      state->last_flush_ticks = now_ticks;
+    }
+    if (watermark_hit) {
+      state->sd_flush_pending = true;
+    }
+
+    if (state->sd_flush_pending) {
+      uint32_t flushed = 0;
+      bool more_pending = false;
+      esp_err_t flush_result = SdFlushWorkerTick(state,
+                                                 kSdFlushMaxRecordsPerPass,
+                                                 kSdFlushMaxMsPerPass,
+                                                 &flushed,
+                                                 &more_pending);
+      if (flush_result == ESP_OK) {
+        if (flushed > 0) {
+          state->sd_flush_records_since = 0;
+          if (FramLogGetBufferedRecords(&state->fram_log) <
+              FramLogGetCapacityRecords(&state->fram_log)) {
+            state->fram_full = false;
+            state->fram_full_logged = false;
+          }
         }
-      } else {
-        state->sd_error = true;
-        ESP_LOGW(kTag, "SD flush failed: %s", esp_err_to_name(flush_result));
+        state->sd_flush_pending = more_pending;
       }
     }
   }
 
   if (state->sd_logger.is_mounted) {
-    (void)FlushFramToSd(state, true);
+    (void)SdFlushWorkerTick(state,
+                            kSdFlushMaxRecordsPerPass,
+                            kSdFlushMaxMsPerPass,
+                            NULL,
+                            NULL);
   }
 
   state->storage_task = NULL;
@@ -762,7 +919,7 @@ EnsureSdMounted(void)
     esp_err_t mount_result =
       SdLoggerMount(&g_state.sd_logger, GetSpiHost(), CONFIG_APP_SD_CS_GPIO);
     if (mount_result != ESP_OK) {
-      ESP_LOGW(kTag, "SD mount failed: %s", esp_err_to_name(mount_result));
+      MarkSdFailure(&g_state, "SD mount failed", mount_result);
     }
   }
 }
@@ -790,7 +947,11 @@ RuntimeStart(void)
   g_state.stop_requested = false;
   g_state.fram_full = false;
   g_state.fram_full_logged = false;
-  g_state.sd_error = false;
+  g_state.sd_degraded = false;
+  g_state.sd_fail_count = 0;
+  g_state.sd_backoff_until_ticks = 0;
+  g_state.sd_flush_records_since = 0;
+  g_state.sd_flush_pending = false;
 
   EnsureSdMounted();
 
@@ -855,8 +1016,9 @@ RuntimeStart(void)
   if (g_state.sd_logger.is_mounted) {
     const int64_t epoch_for_file =
       TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : 0;
-    if (EnsureSdSyncedForEpoch(&g_state, epoch_for_file) != ESP_OK) {
-      ESP_LOGW(kTag, "Initial SD sync failed; will retry during flush");
+    esp_err_t sync_result = EnsureSdSyncedForEpoch(&g_state, epoch_for_file);
+    if (sync_result != ESP_OK) {
+      MarkSdFailure(&g_state, "Initial SD sync failed", sync_result);
     }
   }
 
