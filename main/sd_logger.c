@@ -50,7 +50,7 @@ BuildDailyCsvPath(const sd_logger_t* logger,
 {
   time_t time_seconds = (time_t)epoch_seconds;
   struct tm time_info;
-  gmtime_r(&time_seconds, &time_info);
+  localtime_r(&time_seconds, &time_info);
 
   strftime(date_out, date_out_size, "%Y-%m-%d", &time_info);
 
@@ -73,7 +73,7 @@ WriteHeaderIfEmpty(sd_logger_t* logger)
   }
 
   static const char* const kHeader =
-    "seq,epoch_utc,iso8601_utc,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id\n";
+    "seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id\n";
   const size_t header_len = strlen(kHeader);
   return SdCsvAppendBatchWithReadbackVerify(
     logger->file, (const uint8_t*)kHeader, header_len);
