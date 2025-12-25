@@ -554,9 +554,9 @@ SensorTask(void* context)
     int64_t epoch_sec = 0;
     int32_t millis = 0;
     TimeSyncGetNow(&epoch_sec, &millis);
-    record.timestamp_epoch_sec =
-      TimeSyncIsSystemTimeValid() ? epoch_sec : (int64_t)0;
-    record.timestamp_millis = millis;
+    const bool time_valid = TimeSyncIsSystemTimeValid();
+    record.timestamp_epoch_sec = time_valid ? epoch_sec : (int64_t)0;
+    record.timestamp_millis = time_valid ? millis : 0;
 
     if (result == ESP_OK) {
       const double cal_c = CalibrationModelEvaluate(
@@ -573,7 +573,7 @@ SensorTask(void* context)
       record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
     }
 
-    if (TimeSyncIsSystemTimeValid()) {
+    if (time_valid) {
       record.flags |= LOG_RECORD_FLAG_TIME_VALID;
     }
     if (state->settings.calibration.is_valid) {
