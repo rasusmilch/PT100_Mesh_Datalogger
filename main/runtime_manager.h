@@ -45,6 +45,10 @@ extern "C" {
 
   bool RuntimeIsRunning(void);
 
+  esp_err_t EnterRunMode(void);
+
+  esp_err_t EnterDiagMode(void);
+
 #ifdef __cplusplus
 }
 #endif
