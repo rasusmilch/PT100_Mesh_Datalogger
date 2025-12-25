@@ -16,6 +16,19 @@ extern "C"
 {
 #endif
 
+  typedef enum
+  {
+    APP_NODE_ROLE_ROOT = 0,
+    APP_NODE_ROLE_SENSOR = 1,
+    APP_NODE_ROLE_RELAY = 2,
+  } app_node_role_t;
+
+  // Deployment guidance:
+  // - Dense plant/fixed power: enable children on RELAY nodes; selectively enable
+  //   on SENSOR nodes only where needed.
+  // - Sparse/unknown geometry: allow_children on SENSOR nodes can improve reach
+  //   at the cost of more chatter.
+
   typedef struct
   {
     uint32_t log_period_ms;
@@ -25,6 +38,9 @@ extern "C"
     calibration_model_t calibration;
     char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
     bool dst_enabled;
+    app_node_role_t node_role;
+    bool allow_children;
+    bool allow_children_set;
   } app_settings_t;
 
   // Loads settings from NVS. If keys are missing or invalid, applies defaults.
@@ -45,6 +61,18 @@ extern "C"
 
   // Persists updated timezone string + DST toggle.
   esp_err_t AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled);
+
+  // Persists updated node role.
+  esp_err_t AppSettingsSaveNodeRole(app_node_role_t node_role);
+
+  // Persists updated allow_children setting.
+  esp_err_t AppSettingsSaveAllowChildren(bool allow_children,
+                                         bool explicit_setting);
+
+  // Role helpers.
+  const char* AppSettingsRoleToString(app_node_role_t role);
+  bool AppSettingsParseRole(const char* value, app_node_role_t* role_out);
+  bool AppSettingsRoleDefaultAllowsChildren(app_node_role_t role);
 
   // Applies TZ to the runtime environment.
   void AppSettingsApplyTimeZone(const app_settings_t* settings);

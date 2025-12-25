@@ -395,6 +395,7 @@ MeshTransportMeshLiteIsActive(void)
 esp_err_t
 MeshTransportStart(mesh_transport_t* mesh,
                    bool is_root,
+                   bool allow_children,
                    const char* router_ssid,
                    const char* router_password,
                    mesh_record_rx_callback_t record_rx_callback,
@@ -464,7 +465,8 @@ MeshTransportStart(mesh_transport_t* mesh,
       kTag, "raw msg register failed: %s", esp_err_to_name(raw_action_result));
   }
 
-  if (is_root) {
+  const bool allow_join = is_root ? true : allow_children;
+  if (allow_join) {
     (void)esp_mesh_lite_set_allowed_level(1);
     (void)esp_mesh_lite_allow_others_to_join(true);
   } else {
