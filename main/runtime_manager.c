@@ -63,6 +63,8 @@ typedef struct
   bool is_running;
   bool stop_requested;
   bool mesh_started;
+  bool data_streaming_enabled;
+  bool log_quiet;
 } runtime_state_t;
 
 static runtime_state_t g_state;
@@ -74,12 +76,14 @@ static void
 SetRunLogPolicy(void)
 {
   esp_log_level_set("*", ESP_LOG_ERROR);
+  g_state.log_quiet = true;
 }
 
 static void
 SetDiagLogPolicy(void)
 {
   esp_log_level_set("*", ESP_LOG_INFO);
+  g_state.log_quiet = false;
 }
 
 static esp_err_t
@@ -146,6 +150,9 @@ CsvDataPortWriter(const char* bytes, size_t len, void* context)
 static void
 PrintCsvRecord(const char* node_id, const log_record_t* record)
 {
+  if (!g_state.data_streaming_enabled) {
+    return;
+  }
   if (!CsvWriteRow(CsvDataPortWriter, NULL, record, node_id)) {
     ESP_LOGW(kTag, "Failed to format CSV line for node %s", node_id);
   }
@@ -971,8 +978,10 @@ RuntimeStart(void)
     }
   }
 
-  if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
-    ESP_LOGW(kTag, "Failed to write CSV header to data port");
+  if (g_state.data_streaming_enabled) {
+    if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
+      ESP_LOGW(kTag, "Failed to write CSV header to data port");
+    }
   }
 
   g_state.is_running = true;
@@ -1039,10 +1048,11 @@ RuntimeIsRunning(void)
 esp_err_t
 EnterRunMode(void)
 {
-  SetRunLogPolicy();
+  RuntimeSetLogPolicyRun();
+  RuntimeSetDataStreamingEnabled(true);
   esp_err_t result = RuntimeStart();
   if (result != ESP_OK) {
-    SetDiagLogPolicy();
+    RuntimeSetLogPolicyDiag();
   }
   return result;
 }
@@ -1050,7 +1060,38 @@ EnterRunMode(void)
 esp_err_t
 EnterDiagMode(void)
 {
+  RuntimeSetDataStreamingEnabled(false);
   esp_err_t result = RuntimeStop();
-  SetDiagLogPolicy();
+  RuntimeSetLogPolicyDiag();
   return result;
+}
+
+void
+RuntimeSetDataStreamingEnabled(bool enabled)
+{
+  const bool was_enabled = g_state.data_streaming_enabled;
+  g_state.data_streaming_enabled = enabled;
+  if (enabled && !was_enabled && g_state.is_running) {
+    if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
+      ESP_LOGW(kTag, "Failed to write CSV header to data port");
+    }
+  }
+}
+
+bool
+RuntimeIsDataStreamingEnabled(void)
+{
+  return g_state.data_streaming_enabled;
+}
+
+void
+RuntimeSetLogPolicyRun(void)
+{
+  SetRunLogPolicy();
+}
+
+void
+RuntimeSetLogPolicyDiag(void)
+{
+  SetDiagLogPolicy();
 }
