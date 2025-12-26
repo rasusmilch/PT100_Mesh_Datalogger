@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,9 +41,6 @@ static const char* kTag = "console";
 
 static app_runtime_t* g_runtime = NULL;
 static app_boot_mode_t g_boot_mode = APP_BOOT_MODE_DIAGNOSTICS;
-
-static calibration_point_t g_pending_points[CALIBRATION_MAX_POINTS];
-static size_t g_pending_points_count = 0;
 
 static const char*
 BootModeToString(app_boot_mode_t mode)
@@ -140,7 +138,8 @@ printf("local_time: %s (utc_offset_sec=%ld dst_in_effect=%d)\n",
          (unsigned)SdLoggerLastSequenceOnSd(g_runtime->sd_logger));
   printf("mesh_connected: %s\n",
          MeshTransportIsConnected(g_runtime->mesh) ? "yes" : "no");
-  printf("pending_cal_points: %u\n", (unsigned)g_pending_points_count);
+  printf("cal_points: %u\n",
+         (unsigned)g_runtime->settings->calibration_points_count);
   return 0;
 }
 
@@ -478,17 +477,26 @@ CommandCal(int argc, char** argv)
     return 1;
   }
 
+  app_settings_t* settings = g_runtime->settings;
   const char* action = g_cal_args.action->sval[0];
 
   if (strcmp(action, "clear") == 0) {
-    CalibrationModelInitIdentity(&g_runtime->settings->calibration);
-    esp_err_t result =
-      AppSettingsSaveCalibration(&g_runtime->settings->calibration);
+    CalibrationModelInitIdentity(&settings->calibration);
+    settings->calibration_points_count = 0;
+    memset(settings->calibration_points,
+           0,
+           sizeof(settings->calibration_points));
+    esp_err_t result = AppSettingsSaveCalibration(&settings->calibration);
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
     }
-    g_pending_points_count = 0;
+    result = AppSettingsSaveCalibrationPoints(
+      settings->calibration_points, settings->calibration_points_count);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
     printf("calibration reset to identity (y=x)\n");
     return 0;
   }
@@ -498,31 +506,47 @@ CommandCal(int argc, char** argv)
       printf("usage: cal add <raw_c> <actual_c>\n");
       return 1;
     }
-    if (g_pending_points_count >= CALIBRATION_MAX_POINTS) {
+    if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
       printf("already have %u points; run 'cal apply' or 'cal clear'\n",
-             (unsigned)g_pending_points_count);
+             (unsigned)settings->calibration_points_count);
       return 1;
     }
 
-    g_pending_points[g_pending_points_count].raw_c = g_cal_args.raw_c->dval[0];
-    g_pending_points[g_pending_points_count].actual_c =
-      g_cal_args.actual_c->dval[0];
-    g_pending_points_count++;
+    calibration_point_t* point =
+      &settings->calibration_points[settings->calibration_points_count];
+    point->raw_avg_mC = (int32_t)llround(g_cal_args.raw_c->dval[0] * 1000.0);
+    point->actual_mC =
+      (int32_t)llround(g_cal_args.actual_c->dval[0] * 1000.0);
+    point->raw_stddev_mC = 0;
+    point->sample_count = 0;
+    point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
+    point->timestamp_epoch_sec = point->time_valid ? (int64_t)time(NULL) : 0;
+    settings->calibration_points_count++;
     printf("added point %u: raw=%.6f actual=%.6f\n",
-           (unsigned)g_pending_points_count,
+           (unsigned)settings->calibration_points_count,
            g_cal_args.raw_c->dval[0],
            g_cal_args.actual_c->dval[0]);
+    esp_err_t result = AppSettingsSaveCalibrationPoints(
+      settings->calibration_points, settings->calibration_points_count);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
     return 0;
   }
 
   if (strcmp(action, "list") == 0) {
-    printf("pending calibration points (%u):\n",
-           (unsigned)g_pending_points_count);
-    for (size_t index = 0; index < g_pending_points_count; ++index) {
-      printf("  %u: raw=%.6f actual=%.6f\n",
+    printf("calibration points (%u):\n",
+           (unsigned)settings->calibration_points_count);
+    for (size_t index = 0; index < settings->calibration_points_count;
+         ++index) {
+      const calibration_point_t* point = &settings->calibration_points[index];
+      printf("  %u: raw_avg=%.6f actual=%.6f stddev=%.6f samples=%u\n",
              (unsigned)(index + 1),
-             g_pending_points[index].raw_c,
-             g_pending_points[index].actual_c);
+             point->raw_avg_mC / 1000.0,
+             point->actual_mC / 1000.0,
+             point->raw_stddev_mC / 1000.0,
+             (unsigned)point->sample_count);
     }
     return 0;
   }
@@ -539,24 +563,39 @@ CommandCal(int argc, char** argv)
     printf("cal_window_samples: %u\n", (unsigned)sample_count);
     printf("cal_window_ready: %s\n",
            CalWindowIsReady() ? "yes" : "no");
+    printf("cal_points: %u (raw_avg_C uses window average)\n",
+           (unsigned)settings->calibration_points_count);
+    for (size_t index = 0; index < settings->calibration_points_count;
+         ++index) {
+      const calibration_point_t* point = &settings->calibration_points[index];
+      const double raw_avg_c = point->raw_avg_mC / 1000.0;
+      const double actual_c = point->actual_mC / 1000.0;
+      const double residual_c = actual_c - raw_avg_c;
+      printf("  %u: raw_avg_C=%.3f actual_C=%.3f residual_C=%.3f stddev_C=%.3f\n",
+             (unsigned)(index + 1),
+             raw_avg_c,
+             actual_c,
+             residual_c,
+             point->raw_stddev_mC / 1000.0);
+    }
     return 0;
   }
 
   if (strcmp(action, "apply") == 0) {
-    if (g_pending_points_count < 1) {
+    if (settings->calibration_points_count < 1) {
       printf("no points; use 'cal add <raw_c> <actual_c>' first\n");
       return 1;
     }
 
     calibration_model_t model;
     esp_err_t result = CalibrationModelFitFromPoints(
-      g_pending_points, g_pending_points_count, &model);
+      settings->calibration_points, settings->calibration_points_count, &model);
     if (result != ESP_OK) {
       printf("fit failed: %s\n", esp_err_to_name(result));
       return 1;
     }
 
-    g_runtime->settings->calibration = model;
+    settings->calibration = model;
     result = AppSettingsSaveCalibration(&model);
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
@@ -570,7 +609,6 @@ CommandCal(int argc, char** argv)
            model.coefficients[2],
            model.coefficients[3]);
 
-    g_pending_points_count = 0;
     return 0;
   }
 
@@ -607,9 +645,9 @@ CommandCal(int argc, char** argv)
              "[--timeout_seconds 120]\n");
       return 1;
     }
-    if (g_pending_points_count >= CALIBRATION_MAX_POINTS) {
+    if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
       printf("already have %u points; run 'cal apply' or 'cal clear'\n",
-             (unsigned)g_pending_points_count);
+             (unsigned)settings->calibration_points_count);
       return 1;
     }
 
@@ -646,14 +684,26 @@ CommandCal(int argc, char** argv)
         }
         if (esp_timer_get_time() - stable_start_us >=
             (int64_t)min_seconds * 1000000LL) {
-          g_pending_points[g_pending_points_count].raw_c =
-            mean_raw_mC / 1000.0;
-          g_pending_points[g_pending_points_count].actual_c = actual_temp_c;
-          g_pending_points_count++;
+          calibration_point_t* point =
+            &settings->calibration_points[settings->calibration_points_count];
+          point->raw_avg_mC = mean_raw_mC;
+          point->actual_mC = (int32_t)llround(actual_temp_c * 1000.0);
+          point->raw_stddev_mC = stddev_mC;
+          point->sample_count = (uint16_t)CalWindowGetSampleCount();
+          point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
+          point->timestamp_epoch_sec =
+            point->time_valid ? (int64_t)time(NULL) : 0;
+          settings->calibration_points_count++;
           printf("cal capture ok: raw_avg=%.3fC raw_std=%.3fC actual=%.3fC\n",
                  mean_raw_mC / 1000.0,
                  stddev_c,
                  actual_temp_c);
+          esp_err_t save_result = AppSettingsSaveCalibrationPoints(
+            settings->calibration_points, settings->calibration_points_count);
+          if (save_result != ESP_OK) {
+            printf("save failed: %s\n", esp_err_to_name(save_result));
+            return 1;
+          }
           return 0;
         }
       } else {

@@ -2,6 +2,7 @@
 #define PT100_LOGGER_APP_SETTINGS_H_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "calibration.h"
@@ -36,6 +37,8 @@ extern "C"
     uint32_t sd_flush_period_ms;
     uint32_t sd_batch_bytes_target;
     calibration_model_t calibration;
+    calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
+    uint8_t calibration_points_count;
     char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
     bool dst_enabled;
     app_node_role_t node_role;
@@ -58,6 +61,11 @@ extern "C"
 
   // Persists updated calibration model to NVS.
   esp_err_t AppSettingsSaveCalibration(const calibration_model_t* model);
+
+  // Persists updated calibration points to NVS.
+  esp_err_t AppSettingsSaveCalibrationPoints(
+    const calibration_point_t* points,
+    size_t points_count);
 
   // Persists updated timezone string + DST toggle.
   esp_err_t AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled);

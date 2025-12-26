@@ -132,7 +132,8 @@ CalibrationModelFitFromPoints(const calibration_point_t* points,
   if (num_points == 1) {
     // Deterministic behavior: treat single-point as offset-only correction with
     // slope=1.
-    const double offset = points[0].actual_c - points[0].raw_c;
+    const double offset =
+      (points[0].actual_mC - points[0].raw_avg_mC) / 1000.0;
     CalibrationModelInitIdentity(model_out);
     model_out->degree = 1;
     model_out->coefficients[0] = offset;
@@ -149,13 +150,13 @@ CalibrationModelFitFromPoints(const calibration_point_t* points,
   memset(vector_b, 0, sizeof(vector_b));
 
   for (int row = 0; row < dimension; ++row) {
-    const double x_value = points[row].raw_c;
+    const double x_value = points[row].raw_avg_mC / 1000.0;
     double x_pow = 1.0;
     for (int col = 0; col < dimension; ++col) {
       matrix_a[row][col] = x_pow;
       x_pow *= x_value;
     }
-    vector_b[row] = points[row].actual_c;
+    vector_b[row] = points[row].actual_mC / 1000.0;
   }
 
   double solution[CALIBRATION_MAX_POINTS] = { 0 };

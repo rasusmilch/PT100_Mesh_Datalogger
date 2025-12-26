@@ -19,6 +19,8 @@ static const char* kKeySdFlushPeriodMs = "sd_flush_ms";
 static const char* kKeySdBatchBytes = "sd_batch_bytes";
 static const char* kKeyCalDegree = "cal_deg";
 static const char* kKeyCalCoeffs = "cal_coeffs";
+static const char* kKeyCalPointsCount = "cal_points_count";
+static const char* kKeyCalPoints = "cal_points";
 static const char* kKeyTzPosix = "tz_posix";
 static const char* kKeyDstEnabled = "dst_enabled";
 static const char* kKeyNodeRole = "node_role";
@@ -86,6 +88,8 @@ ApplyDefaults(app_settings_t* settings)
   settings->sd_flush_period_ms = (uint32_t)CONFIG_APP_SD_PERIODIC_FLUSH_MS;
   settings->sd_batch_bytes_target = (uint32_t)CONFIG_APP_SD_BATCH_BYTES_TARGET;
   CalibrationModelInitIdentity(&settings->calibration);
+  settings->calibration_points_count = 0;
+  memset(settings->calibration_points, 0, sizeof(settings->calibration_points));
   snprintf(settings->tz_posix,
            sizeof(settings->tz_posix),
            "%s",
@@ -158,6 +162,30 @@ AppSettingsLoad(app_settings_t* settings_out)
     CalibrationModelInitIdentity(&settings_out->calibration);
   }
 
+  uint8_t cal_points_count = 0;
+  result = nvs_get_u8(handle, kKeyCalPointsCount, &cal_points_count);
+  if (result == ESP_OK && cal_points_count <= CALIBRATION_MAX_POINTS) {
+    size_t points_bytes =
+      sizeof(calibration_point_t) * (size_t)cal_points_count;
+    if (points_bytes > 0) {
+      size_t points_bytes_copy = points_bytes;
+      esp_err_t points_result = nvs_get_blob(
+        handle, kKeyCalPoints, settings_out->calibration_points, &points_bytes_copy);
+      if (points_result == ESP_OK && points_bytes_copy == points_bytes) {
+        settings_out->calibration_points_count = cal_points_count;
+      } else {
+        settings_out->calibration_points_count = 0;
+        memset(settings_out->calibration_points,
+               0,
+               sizeof(settings_out->calibration_points));
+      }
+    } else {
+      settings_out->calibration_points_count = 0;
+    }
+  } else {
+    settings_out->calibration_points_count = 0;
+  }
+
   size_t tz_len = sizeof(settings_out->tz_posix);
   result = nvs_get_str(handle, kKeyTzPosix, settings_out->tz_posix, &tz_len);
   if (result != ESP_OK || tz_len == 0 || tz_len > sizeof(settings_out->tz_posix)) {
@@ -214,17 +242,19 @@ AppSettingsLoad(app_settings_t* settings_out)
   }
 
   nvs_close(handle);
-  ESP_LOGI(kTag,
-           "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u tz=%s dst=%u role=%s allow_children=%u",
-           (unsigned)settings_out->log_period_ms,
-           (unsigned)settings_out->fram_flush_watermark_records,
-           (unsigned)settings_out->sd_flush_period_ms,
-           (unsigned)settings_out->sd_batch_bytes_target,
-           (unsigned)settings_out->calibration.degree,
-           settings_out->tz_posix,
-           settings_out->dst_enabled ? 1u : 0u,
-           AppSettingsRoleToString(settings_out->node_role),
-           settings_out->allow_children ? 1u : 0u);
+  ESP_LOGI(
+    kTag,
+    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u",
+    (unsigned)settings_out->log_period_ms,
+    (unsigned)settings_out->fram_flush_watermark_records,
+    (unsigned)settings_out->sd_flush_period_ms,
+    (unsigned)settings_out->sd_batch_bytes_target,
+    (unsigned)settings_out->calibration.degree,
+    (unsigned)settings_out->calibration_points_count,
+    settings_out->tz_posix,
+    settings_out->dst_enabled ? 1u : 0u,
+    AppSettingsRoleToString(settings_out->node_role),
+    settings_out->allow_children ? 1u : 0u);
   return ESP_OK;
 }
 
@@ -311,6 +341,44 @@ AppSettingsSaveCalibration(const calibration_model_t* model)
                           kKeyCalCoeffs,
                           model->coefficients,
                           sizeof(double) * CALIBRATION_MAX_POINTS);
+  }
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveCalibrationPoints(const calibration_point_t* points,
+                                 size_t points_count)
+{
+  if (points_count > CALIBRATION_MAX_POINTS) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  if (points_count > 0 && points == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_u8(handle, kKeyCalPointsCount, (uint8_t)points_count);
+  if (result == ESP_OK) {
+    if (points_count > 0) {
+      result = nvs_set_blob(handle,
+                            kKeyCalPoints,
+                            points,
+                            sizeof(calibration_point_t) * points_count);
+    } else {
+      esp_err_t erase_result = nvs_erase_key(handle, kKeyCalPoints);
+      if (erase_result != ESP_OK && erase_result != ESP_ERR_NVS_NOT_FOUND) {
+        result = erase_result;
+      }
+    }
   }
   if (result == ESP_OK) {
     result = nvs_commit(handle);
