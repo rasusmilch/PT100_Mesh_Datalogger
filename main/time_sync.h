@@ -47,6 +47,17 @@ extern "C"
   // Get current epoch seconds and milliseconds.
   void TimeSyncGetNow(int64_t* epoch_seconds_out, int32_t* millis_out);
 
+  // Parse an ISO-like local time string into struct tm (local).
+  // Accepts "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS".
+  esp_err_t TimeParseLocalIso(const char* iso, struct tm* out_tm_local);
+
+  // Convert a local struct tm to UTC epoch seconds using current TZ/DST.
+  // Returns ESP_ERR_INVALID_STATE for invalid (gap) times and
+  // ESP_ERR_NOT_SUPPORTED if the time is ambiguous and tm_isdst is unset.
+  esp_err_t TimeLocalTmToEpochUtc(const struct tm* tm_local,
+                                 time_t* out_epoch_utc,
+                                 bool* out_ambiguous);
+
   // Read DS3231 registers starting at the given address.
   esp_err_t TimeSyncReadRtcRegisters(const time_sync_t* time_sync,
                                      uint8_t start_reg,
