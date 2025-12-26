@@ -462,6 +462,8 @@ static struct
   struct arg_dbl* stable_stddev_c;
   struct arg_int* min_seconds;
   struct arg_int* timeout_seconds;
+  struct arg_str* mode;
+  struct arg_lit* allow_wide_slope;
   struct arg_end* end;
 } g_cal_args;
 
@@ -588,8 +590,37 @@ CommandCal(int argc, char** argv)
     }
 
     calibration_model_t model;
-    esp_err_t result = CalibrationModelFitFromPoints(
-      settings->calibration_points, settings->calibration_points_count, &model);
+    calibration_fit_options_t options;
+    CalibrationFitOptionsInitDefault(&options);
+    if (g_cal_args.mode->count > 0) {
+      const char* mode = g_cal_args.mode->sval[0];
+      if (strcmp(mode, "linear") == 0) {
+        options.mode = CAL_FIT_MODE_LINEAR;
+      } else if (strcmp(mode, "piecewise") == 0) {
+        options.mode = CAL_FIT_MODE_PIECEWISE;
+      } else if (strncmp(mode, "poly", 4) == 0) {
+        const int degree = atoi(mode + 4);
+        if (degree < 1 || degree > CALIBRATION_MAX_DEGREE) {
+          printf("invalid poly degree; use poly1..poly%u\n",
+                 CALIBRATION_MAX_DEGREE);
+          return 1;
+        }
+        options.mode = CAL_FIT_MODE_POLY;
+        options.poly_degree = (uint8_t)degree;
+      } else {
+        printf("invalid mode; use linear|piecewise|polyN\n");
+        return 1;
+      }
+    }
+    options.allow_wide_slope = (g_cal_args.allow_wide_slope->count > 0);
+
+    calibration_fit_diagnostics_t diagnostics = { 0 };
+    esp_err_t result = CalibrationModelFitFromPointsWithOptions(
+      settings->calibration_points,
+      settings->calibration_points_count,
+      &options,
+      &model,
+      &diagnostics);
     if (result != ESP_OK) {
       printf("fit failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -608,6 +639,9 @@ CommandCal(int argc, char** argv)
            model.coefficients[1],
            model.coefficients[2],
            model.coefficients[3]);
+    printf("fit diagnostics: rms_error=%.6f max_abs_residual=%.6f\n",
+           diagnostics.rms_error_c,
+           diagnostics.max_abs_residual_c);
 
     return 0;
   }
@@ -1490,15 +1524,19 @@ RegisterCommands(void)
                                         "timeout_seconds",
                                         "<timeout_seconds>",
                                         "Capture timeout");
-  g_cal_args.end = arg_end(8);
+  g_cal_args.mode =
+    arg_str0(NULL, "mode", "<mode>", "Fit mode (linear|piecewise|polyN)");
+  g_cal_args.allow_wide_slope =
+    arg_lit0(NULL, "allow_wide_slope", "Allow slope outside expected bounds");
+  g_cal_args.end = arg_end(10);
 
   const esp_console_cmd_t cal_cmd = {
     .command = "cal",
     .help =
       "Calibration: cal clear | cal add <raw_c> <actual_c> | cal list | cal "
-      "show | cal apply | cal live [--every_ms 500] [--seconds 10] | cal "
-      "capture <actual_temp_c> [--stable_stddev_c 0.05] [--min_seconds 5] "
-      "[--timeout_seconds 120]",
+      "show | cal apply [--mode linear|piecewise|polyN] [--allow_wide_slope] | "
+      "cal live [--every_ms 500] [--seconds 10] | cal capture <actual_temp_c> "
+      "[--stable_stddev_c 0.05] [--min_seconds 5] [--timeout_seconds 120]",
     .hint = NULL,
     .func = &CommandCal,
     .argtable = &g_cal_args,
