@@ -3,6 +3,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <ctype.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
@@ -180,6 +181,137 @@ TimeSyncGetNow(int64_t* epoch_seconds_out, int32_t* millis_out)
   if (millis_out != NULL) {
     *millis_out = (int32_t)(tv.tv_usec / 1000);
   }
+}
+
+static bool
+LocalTmFieldsMatch(const struct tm* left, const struct tm* right)
+{
+  return left != NULL && right != NULL && left->tm_year == right->tm_year &&
+         left->tm_mon == right->tm_mon && left->tm_mday == right->tm_mday &&
+         left->tm_hour == right->tm_hour && left->tm_min == right->tm_min &&
+         left->tm_sec == right->tm_sec;
+}
+
+esp_err_t
+TimeParseLocalIso(const char* iso, struct tm* out_tm_local)
+{
+  if (iso == NULL || out_tm_local == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  while (*iso != '\0' && isspace((unsigned char)*iso)) {
+    ++iso;
+  }
+  if (*iso == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  int consumed = 0;
+  int matched = sscanf(
+    iso, "%d-%d-%d %d:%d:%d %n", &year, &month, &day, &hour, &minute, &second, &consumed);
+  if (matched != 6) {
+    consumed = 0;
+    matched = sscanf(
+      iso, "%d-%d-%dT%d:%d:%d %n", &year, &month, &day, &hour, &minute, &second, &consumed);
+  }
+  if (matched != 6 || consumed <= 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  const char* tail = iso + consumed;
+  while (*tail != '\0' && isspace((unsigned char)*tail)) {
+    ++tail;
+  }
+  if (*tail != '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (year < 1970 || year > 2100 || month < 1 || month > 12 || day < 1 ||
+      day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
+      second < 0 || second > 59) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  memset(out_tm_local, 0, sizeof(*out_tm_local));
+  out_tm_local->tm_year = year - 1900;
+  out_tm_local->tm_mon = month - 1;
+  out_tm_local->tm_mday = day;
+  out_tm_local->tm_hour = hour;
+  out_tm_local->tm_min = minute;
+  out_tm_local->tm_sec = second;
+  out_tm_local->tm_isdst = -1;
+  return ESP_OK;
+}
+
+esp_err_t
+TimeLocalTmToEpochUtc(const struct tm* tm_local,
+                      time_t* out_epoch_utc,
+                      bool* out_ambiguous)
+{
+  if (tm_local == NULL || out_epoch_utc == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (out_ambiguous != NULL) {
+    *out_ambiguous = false;
+  }
+
+  tzset();
+
+  const struct tm input = *tm_local;
+
+  if (input.tm_isdst == 0 || input.tm_isdst == 1) {
+    struct tm normalized = input;
+    const time_t epoch = mktime(&normalized);
+    if (epoch == (time_t)-1) {
+      return ESP_ERR_INVALID_STATE;
+    }
+    struct tm round_trip;
+    localtime_r(&epoch, &round_trip);
+    if (!LocalTmFieldsMatch(&round_trip, &input)) {
+      return ESP_ERR_INVALID_STATE;
+    }
+    *out_epoch_utc = epoch;
+    return ESP_OK;
+  }
+
+  struct tm standard = input;
+  standard.tm_isdst = 0;
+  const time_t epoch_std = mktime(&standard);
+  bool match_std = false;
+  if (epoch_std != (time_t)-1) {
+    struct tm round_std;
+    localtime_r(&epoch_std, &round_std);
+    match_std = LocalTmFieldsMatch(&round_std, &input);
+  }
+
+  struct tm daylight = input;
+  daylight.tm_isdst = 1;
+  const time_t epoch_dst = mktime(&daylight);
+  bool match_dst = false;
+  if (epoch_dst != (time_t)-1) {
+    struct tm round_dst;
+    localtime_r(&epoch_dst, &round_dst);
+    match_dst = LocalTmFieldsMatch(&round_dst, &input);
+  }
+
+  if (!match_std && !match_dst) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (match_std && match_dst) {
+    if (out_ambiguous != NULL) {
+      *out_ambiguous = true;
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+
+  *out_epoch_utc = match_std ? epoch_std : epoch_dst;
+  return ESP_OK;
 }
 
 esp_err_t

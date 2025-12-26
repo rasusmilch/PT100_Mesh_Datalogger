@@ -32,6 +32,7 @@
 #include "esp_system.h"
 #include "linenoise/linenoise.h"
 #include "runtime_manager.h"
+#include "time_sync.h"
 
 static const char* kTag = "console";
 
@@ -205,6 +206,14 @@ static struct
   struct arg_str* posix;
   struct arg_end* end;
 } g_tz_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_str* local_time;
+  struct arg_int* is_dst;
+  struct arg_end* end;
+} g_time_args;
 
 static struct
 {
@@ -632,6 +641,101 @@ CommandTz(int argc, char** argv)
 
   printf("unknown action. usage: tz show | tz set \"<posix>\"\n");
   return 1;
+}
+
+static void
+PrintTimeUsage(void)
+{
+  printf("time setlocal \"YYYY-MM-DD HH:MM:SS\" [--is_dst 0|1]\n");
+  printf("  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n");
+  printf("  use --is_dst to disambiguate fall-back hour\n");
+}
+
+static int
+CommandTime(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_time_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_time_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_time_args.action->sval[0];
+  if (strcmp(action, "setlocal") != 0) {
+    PrintTimeUsage();
+    return 1;
+  }
+
+  if (g_time_args.local_time->count != 1) {
+    PrintTimeUsage();
+    return 1;
+  }
+
+  struct tm tm_local;
+  esp_err_t result =
+    TimeParseLocalIso(g_time_args.local_time->sval[0], &tm_local);
+  if (result != ESP_OK) {
+    printf("invalid time format (use YYYY-MM-DD HH:MM:SS)\n");
+    return 1;
+  }
+
+  if (g_time_args.is_dst->count == 1) {
+    const int is_dst = g_time_args.is_dst->ival[0];
+    if (is_dst != 0 && is_dst != 1) {
+      PrintTimeUsage();
+      return 1;
+    }
+    tm_local.tm_isdst = is_dst;
+  }
+
+  time_t epoch_utc = 0;
+  bool ambiguous = false;
+  result = TimeLocalTmToEpochUtc(&tm_local, &epoch_utc, &ambiguous);
+  if (result == ESP_ERR_NOT_SUPPORTED && ambiguous) {
+    printf("ambiguous local time; use --is_dst 0|1\n");
+    return 1;
+  }
+  if (result == ESP_ERR_INVALID_STATE) {
+    printf("invalid local time (DST gap)\n");
+    return 1;
+  }
+  if (result != ESP_OK) {
+    printf("time conversion failed: %s\n", esp_err_to_name(result));
+    return 1;
+  }
+
+  (void)TimeSyncSetSystemEpoch((int64_t)epoch_utc, false, g_runtime->time_sync);
+
+  bool rtc_ok = false;
+  if (g_runtime->time_sync != NULL) {
+    rtc_ok = (TimeSyncSetRtcFromSystem(g_runtime->time_sync) == ESP_OK);
+  }
+
+  if (g_runtime->mesh != NULL &&
+      g_runtime->settings->node_role == APP_NODE_ROLE_ROOT) {
+    const esp_err_t mesh_result =
+      MeshTransportBroadcastTime(g_runtime->mesh, (int64_t)epoch_utc);
+    if (mesh_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "mesh time broadcast failed: %s",
+               esp_err_to_name(mesh_result));
+    }
+  }
+
+  struct tm local_time;
+  char local_buffer[32] = { 0 };
+  if (localtime_r(&epoch_utc, &local_time) != NULL) {
+    strftime(
+      local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local_time);
+  }
+  printf("time setlocal ok: local=%s utc_epoch=%" PRId64 " rtc=%s\n",
+         (local_buffer[0] != '\0') ? local_buffer : "unknown",
+         (int64_t)epoch_utc,
+         rtc_ok ? "ok" : "fail");
+  return 0;
 }
 
 static int
@@ -1158,6 +1262,22 @@ RegisterCommands(void)
     .argtable = &g_tz_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&tz_cmd));
+
+  g_time_args.action = arg_str1(NULL, NULL, "<action>", "setlocal");
+  g_time_args.local_time = arg_str0(NULL, NULL, "<local_time>", "LOCAL time");
+  g_time_args.is_dst = arg_int0(NULL, "is_dst", "<0|1>", "DST disambiguation");
+  g_time_args.end = arg_end(3);
+  const esp_console_cmd_t time_cmd = {
+    .command = "time",
+    .help =
+      "time setlocal \"YYYY-MM-DD HH:MM:SS\" [--is_dst 0|1]\n"
+      "  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n"
+      "  use --is_dst to disambiguate fall-back hour",
+    .hint = NULL,
+    .func = &CommandTime,
+    .argtable = &g_time_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&time_cmd));
 
   g_dst_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_dst_args.enabled = arg_int0(NULL, NULL, "<0|1>", "DST enabled");
