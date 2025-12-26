@@ -32,6 +32,92 @@ static const uint32_t kSdFlushMaxMsPerPass = 50;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kExportQueueDepth = 64;
 
+static const char*
+ConversionModeToString(uint8_t mode)
+{
+  switch ((max31865_conversion_t)mode) {
+    case kMax31865ConversionTablePt100:
+      return "TABLE";
+    case kMax31865ConversionCvdIterative:
+      return "CVD";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+static bool
+DoubleNear(double a, double b)
+{
+  return fabs(a - b) <= 1e-6;
+}
+
+static bool
+CalibrationContextMatches(const app_settings_t* settings,
+                           const calibration_context_t* current,
+                           char* reason_out,
+                           size_t reason_out_len)
+{
+  if (settings == NULL || current == NULL || reason_out == NULL) {
+    return false;
+  }
+  if (!settings->calibration_context_valid) {
+    snprintf(reason_out, reason_out_len, "calibration context missing");
+    return false;
+  }
+
+  const calibration_context_t* stored = &settings->calibration_context;
+  if (stored->conversion_mode != current->conversion_mode) {
+    snprintf(reason_out,
+             reason_out_len,
+             "conversion mode changed (stored=%s current=%s)",
+             ConversionModeToString(stored->conversion_mode),
+             ConversionModeToString(current->conversion_mode));
+    return false;
+  }
+  if (stored->wires != current->wires) {
+    snprintf(reason_out,
+             reason_out_len,
+             "wire count changed (stored=%u current=%u)",
+             (unsigned)stored->wires,
+             (unsigned)current->wires);
+    return false;
+  }
+  if (stored->filter_hz != current->filter_hz) {
+    snprintf(reason_out,
+             reason_out_len,
+             "filter setting changed (stored=%uHz current=%uHz)",
+             (unsigned)stored->filter_hz,
+             (unsigned)current->filter_hz);
+    return false;
+  }
+  if (!DoubleNear(stored->rref_ohm, current->rref_ohm)) {
+    snprintf(reason_out,
+             reason_out_len,
+             "Rref changed (stored=%.6f current=%.6f)",
+             stored->rref_ohm,
+             current->rref_ohm);
+    return false;
+  }
+  if (!DoubleNear(stored->r0_ohm, current->r0_ohm)) {
+    snprintf(reason_out,
+             reason_out_len,
+             "R0 changed (stored=%.6f current=%.6f)",
+             stored->r0_ohm,
+             current->r0_ohm);
+    return false;
+  }
+  if (stored->table_version != 0 && current->table_version != 0 &&
+      stored->table_version != current->table_version) {
+    snprintf(reason_out,
+             reason_out_len,
+             "PT100 table version changed (stored=%u current=%u)",
+             (unsigned)stored->table_version,
+             (unsigned)current->table_version);
+    return false;
+  }
+  return true;
+}
+
 typedef struct
 {
   app_settings_t settings;
@@ -965,6 +1051,18 @@ RuntimeManagerInit(void)
     }
     ESP_LOGE(
       kTag, "Max31865ReaderInit failed: %s", esp_err_to_name(sensor_result));
+  }
+  if (sensor_result == ESP_OK && g_state.settings.calibration.is_valid) {
+    calibration_context_t current_context;
+    AppSettingsBuildCalibrationContextFromReader(&current_context,
+                                                 &g_state.sensor);
+    char reason[128];
+    if (!CalibrationContextMatches(
+          &g_state.settings, &current_context, reason, sizeof(reason))) {
+      CalibrationModelInitIdentity(&g_state.settings.calibration);
+      g_state.settings.calibration.is_valid = false;
+      ESP_LOGW(kTag, "Calibration invalidated: %s", reason);
+    }
   }
 
   g_state.log_queue = xQueueCreate(64, sizeof(log_record_t));

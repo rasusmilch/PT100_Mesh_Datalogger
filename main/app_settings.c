@@ -7,8 +7,10 @@
 #include <time.h>
 
 #include "esp_log.h"
+#include "max31865_reader.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "pt100_table.h"
 
 static const char* kTag = "settings";
 
@@ -22,11 +24,19 @@ static const char* kKeyCalMode = "cal_mode";
 static const char* kKeyCalCoeffs = "cal_coeffs";
 static const char* kKeyCalPointsCount = "cal_points_count";
 static const char* kKeyCalPoints = "cal_points";
+static const char* kKeyCalContextVersion = "cal_ctx_ver";
+static const char* kKeyCalContextConversion = "cal_ctx_conv";
+static const char* kKeyCalContextWires = "cal_ctx_wires";
+static const char* kKeyCalContextFilter = "cal_ctx_filter";
+static const char* kKeyCalContextRref = "cal_ctx_rref";
+static const char* kKeyCalContextR0 = "cal_ctx_r0";
+static const char* kKeyCalContextTableVer = "cal_ctx_table";
 static const char* kKeyTzPosix = "tz_posix";
 static const char* kKeyDstEnabled = "dst_enabled";
 static const char* kKeyNodeRole = "node_role";
 static const char* kKeyAllowChildren = "allow_child";
 static const char* kKeyAllowChildrenSet = "allow_child_set";
+static const uint8_t kCalibrationContextVersion = 1;
 
 static app_node_role_t
 DefaultNodeRole(void)
@@ -89,6 +99,9 @@ ApplyDefaults(app_settings_t* settings)
   settings->sd_flush_period_ms = (uint32_t)CONFIG_APP_SD_PERIODIC_FLUSH_MS;
   settings->sd_batch_bytes_target = (uint32_t)CONFIG_APP_SD_BATCH_BYTES_TARGET;
   CalibrationModelInitIdentity(&settings->calibration);
+  memset(&settings->calibration_context, 0,
+         sizeof(settings->calibration_context));
+  settings->calibration_context_valid = false;
   settings->calibration_points_count = 0;
   memset(settings->calibration_points, 0, sizeof(settings->calibration_points));
   snprintf(settings->tz_posix,
@@ -100,6 +113,59 @@ ApplyDefaults(app_settings_t* settings)
   settings->allow_children =
     AppSettingsRoleDefaultAllowsChildren(settings->node_role);
   settings->allow_children_set = false;
+}
+
+static bool
+ReadDouble(nvs_handle_t handle, const char* key, double* value_out)
+{
+  size_t data_size = sizeof(double);
+  esp_err_t result = nvs_get_blob(handle, key, value_out, &data_size);
+  return (result == ESP_OK && data_size == sizeof(double));
+}
+
+static bool
+LoadCalibrationContext(nvs_handle_t handle, calibration_context_t* context_out)
+{
+  uint8_t version = 0;
+  esp_err_t version_result =
+    nvs_get_u8(handle, kKeyCalContextVersion, &version);
+  if (version_result != ESP_OK || version != kCalibrationContextVersion) {
+    return false;
+  }
+
+  uint8_t conversion = 0;
+  uint8_t wires = 0;
+  uint8_t filter = 0;
+  uint32_t table_version = 0;
+  if (nvs_get_u8(handle, kKeyCalContextConversion, &conversion) != ESP_OK) {
+    return false;
+  }
+  if (nvs_get_u8(handle, kKeyCalContextWires, &wires) != ESP_OK) {
+    return false;
+  }
+  if (nvs_get_u8(handle, kKeyCalContextFilter, &filter) != ESP_OK) {
+    return false;
+  }
+  if (nvs_get_u32(handle, kKeyCalContextTableVer, &table_version) != ESP_OK) {
+    return false;
+  }
+
+  double rref_ohm = 0.0;
+  double r0_ohm = 0.0;
+  if (!ReadDouble(handle, kKeyCalContextRref, &rref_ohm)) {
+    return false;
+  }
+  if (!ReadDouble(handle, kKeyCalContextR0, &r0_ohm)) {
+    return false;
+  }
+
+  context_out->conversion_mode = conversion;
+  context_out->wires = wires;
+  context_out->filter_hz = filter;
+  context_out->rref_ohm = rref_ohm;
+  context_out->r0_ohm = r0_ohm;
+  context_out->table_version = table_version;
+  return true;
 }
 
 static esp_err_t
@@ -194,6 +260,16 @@ AppSettingsLoad(app_settings_t* settings_out)
     }
   } else {
     settings_out->calibration_points_count = 0;
+  }
+
+  calibration_context_t loaded_context;
+  if (LoadCalibrationContext(handle, &loaded_context)) {
+    settings_out->calibration_context = loaded_context;
+    settings_out->calibration_context_valid = true;
+  } else {
+    memset(&settings_out->calibration_context, 0,
+           sizeof(settings_out->calibration_context));
+    settings_out->calibration_context_valid = false;
   }
 
   size_t tz_len = sizeof(settings_out->tz_posix);
@@ -333,9 +409,10 @@ AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
 }
 
 esp_err_t
-AppSettingsSaveCalibration(const calibration_model_t* model)
+AppSettingsSaveCalibrationWithContext(const calibration_model_t* model,
+                                      const calibration_context_t* context)
 {
-  if (model == NULL || !model->is_valid) {
+  if (model == NULL || !model->is_valid || context == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -356,10 +433,54 @@ AppSettingsSaveCalibration(const calibration_model_t* model)
                           sizeof(double) * CALIBRATION_MAX_POINTS);
   }
   if (result == ESP_OK) {
+    result = nvs_set_u8(handle, kKeyCalContextVersion,
+                        kCalibrationContextVersion);
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, kKeyCalContextConversion,
+                        context->conversion_mode);
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, kKeyCalContextWires, context->wires);
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, kKeyCalContextFilter, context->filter_hz);
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_blob(
+      handle, kKeyCalContextRref, &context->rref_ohm, sizeof(double));
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_blob(
+      handle, kKeyCalContextR0, &context->r0_ohm, sizeof(double));
+  }
+  if (result == ESP_OK) {
+    result =
+      nvs_set_u32(handle, kKeyCalContextTableVer, context->table_version);
+  }
+  if (result == ESP_OK) {
     result = nvs_commit(handle);
   }
   nvs_close(handle);
   return result;
+}
+
+void
+AppSettingsBuildCalibrationContextFromReader(calibration_context_t* context,
+                                             const max31865_reader_t* reader)
+{
+  if (context == NULL || reader == NULL) {
+    return;
+  }
+  context->conversion_mode = (uint8_t)reader->conversion;
+  context->wires = reader->wires;
+  context->filter_hz = reader->filter_hz;
+  context->rref_ohm = reader->rref_ohm;
+  context->r0_ohm = reader->rtd_nominal_ohm;
+  context->table_version =
+    (reader->conversion == kMax31865ConversionTablePt100)
+      ? (uint32_t)PT100_TABLE_LENGTH
+      : 0u;
 }
 
 esp_err_t
