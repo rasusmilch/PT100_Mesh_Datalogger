@@ -33,6 +33,8 @@ extern "C" {
     esp_err_t (*flush_callback)(void* context);
     void* flush_context;
     bool* fram_full;
+    uint32_t* export_dropped_count;
+    uint32_t* export_write_fail_count;
   } app_runtime_t;
 
   esp_err_t RuntimeManagerInit(void);
@@ -49,7 +51,7 @@ extern "C" {
 
   esp_err_t EnterDiagMode(void);
 
-  void RuntimeSetDataStreamingEnabled(bool enabled);
+  void RuntimeEnableDataStreaming(bool enabled);
 
   bool RuntimeIsDataStreamingEnabled(void);
 

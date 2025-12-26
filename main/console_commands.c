@@ -86,6 +86,18 @@ CommandStatus(int argc, char** argv)
   const bool fram_full =
     (g_runtime->fram_full != NULL) ? *g_runtime->fram_full : false;
   printf("fram_full: %s\n", fram_full ? "yes" : "no");
+  printf("fram_count/seq: %u/%u\n",
+         (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
+         (unsigned)FramLogNextSequence(g_runtime->fram_log));
+  const uint32_t export_dropped =
+    (g_runtime->export_dropped_count != NULL) ? *g_runtime->export_dropped_count
+                                              : 0u;
+  const uint32_t export_write_fail =
+    (g_runtime->export_write_fail_count != NULL)
+      ? *g_runtime->export_write_fail_count
+      : 0u;
+  printf("export_dropped_count: %u\n", (unsigned)export_dropped);
+  printf("export_write_fail_count: %u\n", (unsigned)export_write_fail);
 
   printf("calibration: degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
          (unsigned)settings->calibration.degree,
@@ -457,10 +469,10 @@ CommandMode(int argc, char** argv)
     const bool run_mode = strcmp(action, "run") == 0;
     if (run_mode) {
       RuntimeSetLogPolicyRun();
-      RuntimeSetDataStreamingEnabled(true);
+      RuntimeEnableDataStreaming(true);
     } else {
       RuntimeSetLogPolicyDiag();
-      RuntimeSetDataStreamingEnabled(false);
+      RuntimeEnableDataStreaming(false);
     }
     printf("mode set to %s\n", run_mode ? "run" : "diag");
     return 0;
@@ -508,13 +520,13 @@ CommandData(int argc, char** argv)
   }
 
   if (strcmp(action, "on") == 0) {
-    RuntimeSetDataStreamingEnabled(true);
+    RuntimeEnableDataStreaming(true);
     printf("data streaming enabled\n");
     return 0;
   }
 
   if (strcmp(action, "off") == 0) {
-    RuntimeSetDataStreamingEnabled(false);
+    RuntimeEnableDataStreaming(false);
     printf("data streaming disabled\n");
     return 0;
   }
@@ -1209,6 +1221,12 @@ ConsoleTask(void* context)
 
   printf("\nType 'help' to list commands.\n");
   while (true) {
+#if !CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+    if (RuntimeIsDataStreamingEnabled()) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+#endif
     char* line = linenoise("pt100> ");
     if (line == NULL) {
       vTaskDelay(pdMS_TO_TICKS(10));
@@ -1245,6 +1263,7 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 
   // USB Serial/JTAG console (native USB port)
+  // Data CSV is streamed on UART0 (USB-to-UART bridge) to keep CSV parse-clean.
   usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
   usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
 
