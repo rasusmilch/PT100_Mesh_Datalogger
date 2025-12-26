@@ -63,6 +63,17 @@ CalibrationModeToString(calibration_fit_mode_t mode)
   }
 }
 
+static esp_err_t
+SaveCalibrationWithContext(const calibration_model_t* model)
+{
+  if (g_runtime == NULL || g_runtime->sensor == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  calibration_context_t context;
+  AppSettingsBuildCalibrationContextFromReader(&context, g_runtime->sensor);
+  return AppSettingsSaveCalibrationWithContext(model, &context);
+}
+
 static int
 CommandStatus(int argc, char** argv)
 {
@@ -507,7 +518,7 @@ CommandCal(int argc, char** argv)
     memset(settings->calibration_points,
            0,
            sizeof(settings->calibration_points));
-    esp_err_t result = AppSettingsSaveCalibration(&settings->calibration);
+    esp_err_t result = SaveCalibrationWithContext(&settings->calibration);
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -648,7 +659,7 @@ CommandCal(int argc, char** argv)
     }
 
     settings->calibration = model;
-    result = AppSettingsSaveCalibration(&model);
+    result = SaveCalibrationWithContext(&model);
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;

@@ -7,6 +7,7 @@
 
 #include "calibration.h"
 #include "esp_err.h"
+#include "max31865_reader.h"
 
 #define APP_SETTINGS_TZ_POSIX_MAX_LEN 64
 #define APP_SETTINGS_TZ_DEFAULT_POSIX "CST6CDT,M3.2.0/2,M11.1.0/2"
@@ -24,6 +25,16 @@ extern "C"
     APP_NODE_ROLE_RELAY = 2,
   } app_node_role_t;
 
+  typedef struct
+  {
+    uint8_t conversion_mode;
+    uint8_t wires;
+    uint8_t filter_hz;
+    double rref_ohm;
+    double r0_ohm;
+    uint32_t table_version;
+  } calibration_context_t;
+
   // Deployment guidance:
   // - Dense plant/fixed power: enable children on RELAY nodes; selectively enable
   //   on SENSOR nodes only where needed.
@@ -37,6 +48,8 @@ extern "C"
     uint32_t sd_flush_period_ms;
     uint32_t sd_batch_bytes_target;
     calibration_model_t calibration;
+    calibration_context_t calibration_context;
+    bool calibration_context_valid;
     calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
     uint8_t calibration_points_count;
     char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
@@ -60,7 +73,13 @@ extern "C"
   esp_err_t AppSettingsSaveSdBatchBytes(uint32_t batch_bytes);
 
   // Persists updated calibration model to NVS.
-  esp_err_t AppSettingsSaveCalibration(const calibration_model_t* model);
+  esp_err_t AppSettingsSaveCalibrationWithContext(
+    const calibration_model_t* model,
+    const calibration_context_t* context);
+
+  void AppSettingsBuildCalibrationContextFromReader(
+    calibration_context_t* context,
+    const max31865_reader_t* reader);
 
   // Persists updated calibration points to NVS.
   esp_err_t AppSettingsSaveCalibrationPoints(
