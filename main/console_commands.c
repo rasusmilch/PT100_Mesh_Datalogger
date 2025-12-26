@@ -89,9 +89,9 @@ CommandStatus(int argc, char** argv)
   printf("fram_count/seq: %u/%u\n",
          (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
          (unsigned)FramLogNextSequence(g_runtime->fram_log));
-  const uint32_t export_dropped =
-    (g_runtime->export_dropped_count != NULL) ? *g_runtime->export_dropped_count
-                                              : 0u;
+  const uint32_t export_dropped = (g_runtime->export_dropped_count != NULL)
+                                    ? *g_runtime->export_dropped_count
+                                    : 0u;
   const uint32_t export_write_fail =
     (g_runtime->export_write_fail_count != NULL)
       ? *g_runtime->export_write_fail_count
@@ -1271,7 +1271,7 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   fcntl(fileno(stdout), F_SETFL, 0);
   fcntl(fileno(stdin), F_SETFL, 0);
 
-  const usb_serial_jtag_driver_config_t usb_cfg = {
+  usb_serial_jtag_driver_config_t usb_cfg = {
     .tx_buffer_size = 256,
     .rx_buffer_size = 256,
   };

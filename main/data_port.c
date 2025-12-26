@@ -44,12 +44,8 @@ DataPortInit(void)
 
   // ESP-IDF requires rx_buffer_size > 0 in uart_driver_install(), even if
   // the application never reads from RX (TX-only data stream).
-  result = uart_driver_install(UART_NUM_0,
-                               kRxBufferLen,
-                               kTxBufferLen,
-                               0,
-                               NULL,
-                               0);
+  result =
+    uart_driver_install(UART_NUM_0, kRxBufferLen, kTxBufferLen, 0, NULL, 0);
   if (result != ESP_OK) {
     ESP_LOGE(kTag, "uart_driver_install failed: %s", esp_err_to_name(result));
     return result;
@@ -59,7 +55,7 @@ DataPortInit(void)
   return ESP_OK;
 }
 
-void
+esp_err_t
 DataPortWrite(const char* bytes, size_t len, size_t* bytes_written)
 {
   if (bytes_written != NULL) {
