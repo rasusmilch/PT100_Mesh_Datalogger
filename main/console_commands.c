@@ -20,6 +20,14 @@
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
 #include "esp_console.h"
+
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 #include "esp_log.h"
 #include "esp_system.h"
 #include "linenoise/linenoise.h"
@@ -65,7 +73,8 @@ CommandStatus(int argc, char** argv)
   struct tm local_time;
   char local_buffer[48] = { 0 };
   if (localtime_r(&now, &local_time) != NULL) {
-    strftime(local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local_time);
+    strftime(
+      local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local_time);
   }
   printf("local_time: %s (epoch=%ld)\n",
          (local_buffer[0] != '\0') ? local_buffer : "unknown",
@@ -477,9 +486,8 @@ CommandMode(int argc, char** argv)
     return 0;
   }
 
-  printf(
-    "unknown action. usage: mode show | mode run | mode diag | mode set "
-    "diag|run\n");
+  printf("unknown action. usage: mode show | mode run | mode diag | mode set "
+         "diag|run\n");
   return 1;
 }
 
@@ -691,7 +699,8 @@ CommandRole(int argc, char** argv)
 
   const char* action = g_role_args.action->sval[0];
   if (strcmp(action, "show") == 0) {
-    printf("role: %s\n", AppSettingsRoleToString(g_runtime->settings->node_role));
+    printf("role: %s\n",
+           AppSettingsRoleToString(g_runtime->settings->node_role));
     return 0;
   }
 
@@ -1233,6 +1242,27 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   g_runtime = runtime;
   g_boot_mode = boot_mode;
 
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+
+  // USB Serial/JTAG console (native USB port)
+  usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
+  usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
+
+  // Make stdin/stdout blocking (helps linenoise)
+  fcntl(fileno(stdout), F_SETFL, 0);
+  fcntl(fileno(stdin), F_SETFL, 0);
+
+  const usb_serial_jtag_driver_config_t usb_cfg = {
+    .tx_buffer_size = 256,
+    .rx_buffer_size = 256,
+  };
+  ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
+  usb_serial_jtag_vfs_use_driver();
+  setvbuf(stdin, NULL, _IONBF, 0);
+
+#else
+
+  // UART console (USB-to-UART bridge port)
   const int uart_num = CONFIG_ESP_CONSOLE_UART_NUM;
   uart_config_t uart_config = {
     .baud_rate = 115200,
@@ -1242,11 +1272,12 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
     .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
     .source_clk = UART_SCLK_DEFAULT,
   };
+
   ESP_ERROR_CHECK(uart_driver_install(uart_num, 256, 0, 0, NULL, 0));
   ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
-  // Use default pins for UART0; for other UARTs, set pins via uart_set_pin().
-
   uart_vfs_dev_use_driver(uart_num);
+
+#endif
 
   esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
   console_config.max_cmdline_length = 256;
