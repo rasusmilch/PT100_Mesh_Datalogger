@@ -176,6 +176,7 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
   log->io = io;
   log->fram_size_bytes = fram_size_bytes;
   log->record_region_offset = kRecordRegionOffset;
+  log->mounted = false;
 
   if (fram_size_bytes <= kRecordRegionOffset + sizeof(log_record_t)) {
     return ESP_ERR_INVALID_SIZE;
@@ -204,7 +205,11 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
     log->next_sequence = 1;
     log->records_since_header_persist = 0;
     log->saw_corruption = false;
-    return FramLogPersistHeader(log);
+    esp_err_t persist_result = FramLogPersistHeader(log);
+    if (persist_result == ESP_OK) {
+      log->mounted = true;
+    }
+    return persist_result;
   }
 
   const fram_log_header_t* chosen = NULL;
@@ -248,6 +253,7 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
            (unsigned)log->read_index,
            (unsigned)log->record_count,
            (unsigned)log->next_sequence);
+  log->mounted = true;
   return ESP_OK;
 }
 
@@ -267,6 +273,28 @@ uint32_t
 FramLogNextSequence(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : log->next_sequence;
+}
+
+esp_err_t
+FramLogGetStatus(const fram_log_t* log, fram_log_status_t* out_status)
+{
+  if (log == NULL || out_status == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!log->mounted) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  out_status->capacity_records = log->capacity_records;
+  out_status->record_size_bytes = sizeof(log_record_t);
+  out_status->flush_watermark_records = 0;
+  out_status->buffered_count = log->record_count;
+  out_status->write_index_abs = log->write_index;
+  out_status->read_index_abs = log->read_index;
+  out_status->next_sequence = log->next_sequence;
+  out_status->mounted = log->mounted;
+  out_status->full = (log->record_count >= log->capacity_records);
+  return ESP_OK;
 }
 
 esp_err_t

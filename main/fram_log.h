@@ -29,7 +29,21 @@ extern "C"
 
     uint32_t records_since_header_persist;
     bool saw_corruption;
+    bool mounted;
   } fram_log_t;
+
+  typedef struct
+  {
+    uint32_t capacity_records;
+    uint32_t record_size_bytes;
+    uint32_t flush_watermark_records;
+    uint32_t buffered_count;
+    uint32_t write_index_abs;
+    uint32_t read_index_abs;
+    uint32_t next_sequence;
+    bool mounted;
+    bool full;
+  } fram_log_status_t;
 
   esp_err_t FramLogInit(fram_log_t* log,
                         fram_io_t io,
@@ -38,6 +52,8 @@ extern "C"
   uint32_t FramLogNextSequence(const fram_log_t* log);
   uint32_t FramLogGetCapacityRecords(const fram_log_t* log);
   uint32_t FramLogGetBufferedRecords(const fram_log_t* log);
+  esp_err_t FramLogGetStatus(const fram_log_t* log,
+                             fram_log_status_t* out_status);
 
   // Append record (writes to FRAM). May drop the oldest record if buffer is
   // full. Sequence is assigned from the persistent next_sequence counter to
