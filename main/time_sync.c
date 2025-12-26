@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include <ctype.h>
 #include <string.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -39,6 +40,39 @@ YearLooksValid(int year_since_1900)
 {
   const int year = year_since_1900 + 1900;
   return year >= 2023 && year <= 2100;
+}
+
+static time_t
+UtcTmToEpochSeconds(struct tm* tm_utc)
+{
+  if (tm_utc == NULL) {
+    return (time_t)-1;
+  }
+
+  // DS3231 values are UTC in this application (see TimeSyncSetRtcFromSystem).
+  //
+  // mktime() interprets its input as local time under the currently configured TZ.
+  // When a non-UTC TZ is active (e.g. CST6CDT,...), using mktime() directly will
+  // incorrectly apply the TZ offset and skew the epoch (typically by 6 hours).
+  //
+  // Convert in a TZ-agnostic way by temporarily forcing TZ=UTC0.
+  const char* previous_tz = getenv("TZ");
+  char previous_tz_copy[80] = { 0 };
+  if (previous_tz != NULL) {
+    strncpy(previous_tz_copy, previous_tz, sizeof(previous_tz_copy) - 1);
+  }
+
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  const time_t epoch_seconds = mktime(tm_utc);
+
+  if (previous_tz == NULL) {
+    unsetenv("TZ");
+  } else {
+    setenv("TZ", previous_tz_copy, 1);
+  }
+  tzset();
+  return epoch_seconds;
 }
 
 esp_err_t
@@ -119,10 +153,12 @@ TimeSyncSetSystemFromRtc(const time_sync_t* time_sync)
     return ESP_ERR_INVALID_STATE;
   }
 
-  // ESP-IDF defaults to UTC unless TZ is configured.
-  // Use mktime() with tm_isdst=0 as a practical UTC conversion.
+  // Convert the DS3231's UTC calendar fields to epoch seconds.
   rtc_time.tm_isdst = 0;
-  time_t epoch_seconds = mktime(&rtc_time);
+  const time_t epoch_seconds = UtcTmToEpochSeconds(&rtc_time);
+  if (epoch_seconds == (time_t)-1) {
+    return ESP_ERR_INVALID_STATE;
+  }
   struct timeval tv = {
     .tv_sec = epoch_seconds,
     .tv_usec = 0,

@@ -70,16 +70,42 @@ CommandStatus(int argc, char** argv)
   printf("allow_children: %s\n", settings->allow_children ? "yes" : "no");
   printf("tz_posix: %s\n", settings->tz_posix);
   printf("dst_enabled: %s\n", settings->dst_enabled ? "yes" : "no");
-  time_t now = time(NULL);
-  struct tm local_time;
-  char local_buffer[48] = { 0 };
-  if (localtime_r(&now, &local_time) != NULL) {
-    strftime(
-      local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local_time);
-  }
-  printf("local_time: %s (epoch=%ld)\n",
-         (local_buffer[0] != '\0') ? local_buffer : "unknown",
-         (long)now);
+
+// Ensure the TZ rules are loaded before formatting local time.
+// (TZ is applied via AppSettingsApplyTimeZone() at boot and by the tz/dst commands.)
+tzset();
+
+const time_t now = time(NULL);
+
+struct tm utc_time;
+char utc_buffer[48] = { 0 };
+if (gmtime_r(&now, &utc_time) != NULL) {
+  strftime(utc_buffer, sizeof(utc_buffer), "%Y-%m-%d %H:%M:%SZ", &utc_time);
+}
+printf("utc_time: %s (epoch=%ld)\n",
+       (utc_buffer[0] != '\0') ? utc_buffer : "unknown",
+       (long)now);
+
+struct tm local_time;
+char local_buffer[48] = { 0 };
+if (localtime_r(&now, &local_time) != NULL) {
+  strftime(local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local_time);
+}
+
+// Compute UTC offset in seconds (local = UTC + offset).
+// Avoid relying on non-portable tm_gmtoff.
+struct tm utc_as_local = utc_time;
+utc_as_local.tm_isdst = -1;
+const time_t utc_epoch_as_local = mktime(&utc_as_local);
+long utc_offset_sec = 0;
+if (utc_epoch_as_local != (time_t)-1) {
+  utc_offset_sec = (long)difftime(now, utc_epoch_as_local);
+}
+
+printf("local_time: %s (utc_offset_sec=%ld dst_in_effect=%d)\n",
+       (local_buffer[0] != '\0') ? local_buffer : "unknown",
+       utc_offset_sec,
+       local_time.tm_isdst);
   printf("fram: buffered=%u / cap=%u (flush_watermark=%u)\n",
          (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
          (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log),
@@ -171,15 +197,18 @@ CommandFlush(int argc, char** argv)
   return 0;
 }
 
-static struct
-{
-  struct arg_str* action;
-  struct arg_int* interval_ms;
-  struct arg_int* watermark_records;
-  struct arg_int* flush_period_ms;
-  struct arg_int* batch_bytes;
-  struct arg_end* end;
-} g_log_args;
+// NOTE: The "log" command uses manual argv parsing.
+//
+// We intentionally do NOT use argtable for this command because argtable's
+// positional parsing cannot express "subcommand + single positional value"
+// without accidentally binding the value to the wrong field.
+//
+// Example of the problem with argtable positional arguments:
+//   "log flush_period 300000"
+// would bind "300000" to the first positional integer field, not the one
+// associated with "flush_period".
+//
+// Manual parsing keeps the CLI simple and predictable.
 
 static struct
 {
@@ -239,22 +268,33 @@ static struct
 static int
 CommandLog(int argc, char** argv)
 {
-  int errors = arg_parse(argc, argv, (void**)&g_log_args);
-  if (errors != 0) {
-    arg_print_errors(stderr, g_log_args.end, argv[0]);
-    return 1;
-  }
   if (g_runtime == NULL) {
     return 1;
   }
 
-  const char* action = g_log_args.action->sval[0];
+  if (argc < 2) {
+    printf("usage: log interval <ms> | log watermark <records> | log "
+           "flush_period <ms> | log batch <bytes> | log show\n");
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "flush_ms") == 0) {
+    // Backwards/typo-friendly alias.
+    action = "flush_period";
+  }
   if (strcmp(action, "interval") == 0) {
-    if (g_log_args.interval_ms->count != 1) {
+    if (argc != 3) {
       printf("usage: log interval <ms>\n");
       return 1;
     }
-    const int interval_ms = g_log_args.interval_ms->ival[0];
+    char* end = NULL;
+    long interval_ms_long = strtol(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0') {
+      printf("invalid interval\n");
+      return 1;
+    }
+    const int interval_ms = (int)interval_ms_long;
     if (interval_ms < 100 || interval_ms > 3600000) {
       printf("invalid interval\n");
       return 1;
@@ -270,11 +310,17 @@ CommandLog(int argc, char** argv)
   }
 
   if (strcmp(action, "watermark") == 0) {
-    if (g_log_args.watermark_records->count != 1) {
+    if (argc != 3) {
       printf("usage: log watermark <records>\n");
       return 1;
     }
-    const int watermark = g_log_args.watermark_records->ival[0];
+    char* end = NULL;
+    long watermark_long = strtol(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0') {
+      printf("invalid watermark\n");
+      return 1;
+    }
+    const int watermark = (int)watermark_long;
     if (watermark < 1) {
       printf("invalid watermark\n");
       return 1;
@@ -291,11 +337,17 @@ CommandLog(int argc, char** argv)
   }
 
   if (strcmp(action, "flush_period") == 0) {
-    if (g_log_args.flush_period_ms->count != 1) {
+    if (argc != 3) {
       printf("usage: log flush_period <ms>\n");
       return 1;
     }
-    const int period_ms = g_log_args.flush_period_ms->ival[0];
+    char* end = NULL;
+    long period_ms_long = strtol(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0') {
+      printf("invalid period\n");
+      return 1;
+    }
+    const int period_ms = (int)period_ms_long;
     if (period_ms < 1000) {
       printf("invalid period\n");
       return 1;
@@ -311,11 +363,17 @@ CommandLog(int argc, char** argv)
   }
 
   if (strcmp(action, "batch") == 0) {
-    if (g_log_args.batch_bytes->count != 1) {
+    if (argc != 3) {
       printf("usage: log batch <bytes>\n");
       return 1;
     }
-    const int batch_bytes = g_log_args.batch_bytes->ival[0];
+    char* end = NULL;
+    long batch_bytes_long = strtol(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0') {
+      printf("invalid batch size\n");
+      return 1;
+    }
+    const int batch_bytes = (int)batch_bytes_long;
     if (batch_bytes < 4096) {
       printf("invalid batch size\n");
       return 1;
@@ -1179,24 +1237,12 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&flush_cmd));
 
-  g_log_args.action = arg_str1(
-    NULL, NULL, "<action>", "interval|watermark|flush_period|batch|show");
-  g_log_args.interval_ms =
-    arg_int0(NULL, NULL, "<ms>", "Logging interval in ms (for 'interval')");
-  g_log_args.watermark_records =
-    arg_int0(NULL, NULL, "<records>", "FRAM flush watermark (for 'watermark')");
-  g_log_args.flush_period_ms =
-    arg_int0(NULL, NULL, "<ms>", "Periodic SD flush ms (for 'flush_period')");
-  g_log_args.batch_bytes =
-    arg_int0(NULL, NULL, "<bytes>", "Batch target bytes (for 'batch')");
-  g_log_args.end = arg_end(5);
   const esp_console_cmd_t log_cmd = {
     .command = "log",
     .help = "Logging config: log interval <ms> | log watermark <records> | log "
             "flush_period <ms> | log batch <bytes> | log show",
     .hint = NULL,
     .func = &CommandLog,
-    .argtable = &g_log_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&log_cmd));
 
