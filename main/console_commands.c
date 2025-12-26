@@ -21,6 +21,7 @@
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
 #include "esp_console.h"
+#include "esp_timer.h"
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"
@@ -457,6 +458,11 @@ static struct
   struct arg_str* action;
   struct arg_dbl* raw_c;
   struct arg_dbl* actual_c;
+  struct arg_int* every_ms;
+  struct arg_int* seconds;
+  struct arg_dbl* stable_stddev_c;
+  struct arg_int* min_seconds;
+  struct arg_int* timeout_seconds;
   struct arg_end* end;
 } g_cal_args;
 
@@ -568,8 +574,104 @@ CommandCal(int argc, char** argv)
     return 0;
   }
 
+  if (strcmp(action, "live") == 0) {
+    const int every_ms =
+      (g_cal_args.every_ms->count > 0) ? g_cal_args.every_ms->ival[0] : 500;
+    const int seconds =
+      (g_cal_args.seconds->count > 0) ? g_cal_args.seconds->ival[0] : 10;
+    if (every_ms <= 0 || seconds <= 0) {
+      printf("usage: cal live [--every_ms 500] [--seconds 10]\n");
+      return 1;
+    }
+
+    const int64_t duration_us = (int64_t)seconds * 1000000LL;
+    const int64_t start_us = esp_timer_get_time();
+    while (esp_timer_get_time() - start_us < duration_us) {
+      int32_t last_raw_mC = 0;
+      int32_t mean_raw_mC = 0;
+      int32_t stddev_mC = 0;
+      CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
+      printf("raw_last_C=%.3f raw_avg_C=%.3f raw_stddev_C=%.3f\n",
+             last_raw_mC / 1000.0,
+             mean_raw_mC / 1000.0,
+             stddev_mC / 1000.0);
+      vTaskDelay(pdMS_TO_TICKS((uint32_t)every_ms));
+    }
+    return 0;
+  }
+
+  if (strcmp(action, "capture") == 0) {
+    if (g_cal_args.actual_c->count != 1) {
+      printf("usage: cal capture <actual_temp_c> "
+             "[--stable_stddev_c 0.05] [--min_seconds 5] "
+             "[--timeout_seconds 120]\n");
+      return 1;
+    }
+    if (g_pending_points_count >= CALIBRATION_MAX_POINTS) {
+      printf("already have %u points; run 'cal apply' or 'cal clear'\n",
+             (unsigned)g_pending_points_count);
+      return 1;
+    }
+
+    const double actual_temp_c = g_cal_args.actual_c->dval[0];
+    const double stable_stddev_c = (g_cal_args.stable_stddev_c->count > 0)
+                                     ? g_cal_args.stable_stddev_c->dval[0]
+                                     : 0.05;
+    const int min_seconds = (g_cal_args.min_seconds->count > 0)
+                              ? g_cal_args.min_seconds->ival[0]
+                              : 5;
+    const int timeout_seconds = (g_cal_args.timeout_seconds->count > 0)
+                                  ? g_cal_args.timeout_seconds->ival[0]
+                                  : 120;
+    if (stable_stddev_c <= 0.0 || min_seconds <= 0 || timeout_seconds <= 0) {
+      printf("usage: cal capture <actual_temp_c> "
+             "[--stable_stddev_c 0.05] [--min_seconds 5] "
+             "[--timeout_seconds 120]\n");
+      return 1;
+    }
+
+    const int64_t start_us = esp_timer_get_time();
+    int64_t stable_start_us = -1;
+    while (esp_timer_get_time() - start_us <
+           (int64_t)timeout_seconds * 1000000LL) {
+      int32_t last_raw_mC = 0;
+      int32_t mean_raw_mC = 0;
+      int32_t stddev_mC = 0;
+      CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
+      const double stddev_c = stddev_mC / 1000.0;
+
+      if (CalWindowIsReady() && stddev_c <= stable_stddev_c) {
+        if (stable_start_us < 0) {
+          stable_start_us = esp_timer_get_time();
+        }
+        if (esp_timer_get_time() - stable_start_us >=
+            (int64_t)min_seconds * 1000000LL) {
+          g_pending_points[g_pending_points_count].raw_c =
+            mean_raw_mC / 1000.0;
+          g_pending_points[g_pending_points_count].actual_c = actual_temp_c;
+          g_pending_points_count++;
+          printf("cal capture ok: raw_avg=%.3fC raw_std=%.3fC actual=%.3fC\n",
+                 mean_raw_mC / 1000.0,
+                 stddev_c,
+                 actual_temp_c);
+          return 0;
+        }
+      } else {
+        stable_start_us = -1;
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    printf("cal capture failed: timed out after %d seconds\n",
+           timeout_seconds);
+    return 1;
+  }
+
   printf("unknown action. usage: cal clear | cal add <raw_c> <actual_c> | cal "
-         "list | cal show | cal apply\n");
+         "list | cal show | cal apply | cal live [--every_ms 500] [--seconds "
+         "10] | cal capture <actual_temp_c> [--stable_stddev_c 0.05] "
+         "[--min_seconds 5] [--timeout_seconds 120]\n");
   return 1;
 }
 
@@ -1318,18 +1420,35 @@ RegisterCommands(void)
   ESP_ERROR_CHECK(esp_console_cmd_register(&log_cmd));
 
   g_cal_args.action =
-    arg_str1(NULL, NULL, "<action>", "clear|add|list|show|apply");
+    arg_str1(NULL, NULL, "<action>", "clear|add|list|show|apply|live|capture");
   g_cal_args.raw_c =
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw temperature (C) from 'raw'");
   g_cal_args.actual_c =
     arg_dbl0(NULL, NULL, "<actual_c>", "Actual temperature (C)");
-  g_cal_args.end = arg_end(3);
+  g_cal_args.every_ms =
+    arg_int0(NULL, "every_ms", "<every_ms>", "Live interval (ms)");
+  g_cal_args.seconds =
+    arg_int0(NULL, "seconds", "<seconds>", "Live duration (s)");
+  g_cal_args.stable_stddev_c =
+    arg_dbl0(NULL,
+             "stable_stddev_c",
+             "<stable_stddev_c>",
+             "Capture stable stddev threshold (C)");
+  g_cal_args.min_seconds =
+    arg_int0(NULL, "min_seconds", "<min_seconds>", "Capture min stable time");
+  g_cal_args.timeout_seconds = arg_int0(NULL,
+                                        "timeout_seconds",
+                                        "<timeout_seconds>",
+                                        "Capture timeout");
+  g_cal_args.end = arg_end(8);
 
   const esp_console_cmd_t cal_cmd = {
     .command = "cal",
     .help =
       "Calibration: cal clear | cal add <raw_c> <actual_c> | cal list | cal "
-      "show | cal apply",
+      "show | cal apply | cal live [--every_ms 500] [--seconds 10] | cal "
+      "capture <actual_temp_c> [--stable_stddev_c 0.05] [--min_seconds 5] "
+      "[--timeout_seconds 120]",
     .hint = NULL,
     .func = &CommandCal,
     .argtable = &g_cal_args,
