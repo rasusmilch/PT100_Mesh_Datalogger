@@ -14,6 +14,7 @@ extern "C"
 
 #define CALIBRATION_MAX_POINTS 4
 #define CALIBRATION_MAX_DEGREE 3
+#define CAL_WINDOW_SIZE 16
 
   typedef struct
   {
@@ -43,6 +44,13 @@ extern "C"
   esp_err_t CalibrationModelFitFromPoints(const calibration_point_t* points,
                                           size_t num_points,
                                           calibration_model_t* model_out);
+
+  void CalWindowPushRawSample(int32_t raw_milli_c);
+  bool CalWindowIsReady(void);
+  size_t CalWindowGetSampleCount(void);
+  void CalWindowGetStats(int32_t* out_last_raw_mC,
+                         int32_t* out_mean_raw_mC,
+                         int32_t* out_stddev_mC);
 
 #ifdef __cplusplus
 }

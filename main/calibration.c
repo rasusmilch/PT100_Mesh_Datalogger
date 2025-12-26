@@ -7,6 +7,18 @@
 
 static const char* kTag = "calibration";
 
+typedef struct
+{
+  int32_t samples_milli_c[CAL_WINDOW_SIZE];
+  size_t count;
+  size_t index;
+  int32_t last_raw_milli_c;
+  int32_t mean_raw_milli_c;
+  int32_t stddev_raw_milli_c;
+} cal_window_state_t;
+
+static cal_window_state_t g_cal_window;
+
 static esp_err_t
 SolveLinearSystemGauss(
   int dimension,
@@ -160,4 +172,63 @@ CalibrationModelFitFromPoints(const calibration_point_t* points,
   }
   model_out->is_valid = true;
   return ESP_OK;
+}
+
+void
+CalWindowPushRawSample(int32_t raw_milli_c)
+{
+  g_cal_window.samples_milli_c[g_cal_window.index] = raw_milli_c;
+  g_cal_window.index = (g_cal_window.index + 1) % CAL_WINDOW_SIZE;
+  if (g_cal_window.count < CAL_WINDOW_SIZE) {
+    g_cal_window.count++;
+  }
+
+  g_cal_window.last_raw_milli_c = raw_milli_c;
+
+  double sum = 0.0;
+  for (size_t i = 0; i < g_cal_window.count; ++i) {
+    sum += g_cal_window.samples_milli_c[i];
+  }
+  const double mean = sum / (double)g_cal_window.count;
+
+  double variance_sum = 0.0;
+  for (size_t i = 0; i < g_cal_window.count; ++i) {
+    const double delta =
+      (double)g_cal_window.samples_milli_c[i] - mean;
+    variance_sum += delta * delta;
+  }
+  const double variance =
+    (g_cal_window.count > 0) ? (variance_sum / g_cal_window.count) : 0.0;
+  const double stddev = sqrt(variance);
+
+  g_cal_window.mean_raw_milli_c = (int32_t)llround(mean);
+  g_cal_window.stddev_raw_milli_c = (int32_t)llround(stddev);
+}
+
+bool
+CalWindowIsReady(void)
+{
+  return g_cal_window.count >= CAL_WINDOW_SIZE;
+}
+
+size_t
+CalWindowGetSampleCount(void)
+{
+  return g_cal_window.count;
+}
+
+void
+CalWindowGetStats(int32_t* out_last_raw_mC,
+                  int32_t* out_mean_raw_mC,
+                  int32_t* out_stddev_mC)
+{
+  if (out_last_raw_mC != NULL) {
+    *out_last_raw_mC = g_cal_window.last_raw_milli_c;
+  }
+  if (out_mean_raw_mC != NULL) {
+    *out_mean_raw_mC = g_cal_window.mean_raw_milli_c;
+  }
+  if (out_stddev_mC != NULL) {
+    *out_stddev_mC = g_cal_window.stddev_raw_milli_c;
+  }
 }

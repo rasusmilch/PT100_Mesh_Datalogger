@@ -11,6 +11,7 @@
 
 #include "argtable3/argtable3.h"
 #include "boot_mode.h"
+#include "calibration.h"
 #include "diagnostics/diag_fram.h"
 #include "diagnostics/diag_mesh.h"
 #include "diagnostics/diag_rtc.h"
@@ -520,6 +521,21 @@ CommandCal(int argc, char** argv)
     return 0;
   }
 
+  if (strcmp(action, "show") == 0) {
+    int32_t last_raw_mC = 0;
+    int32_t mean_raw_mC = 0;
+    int32_t stddev_mC = 0;
+    CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
+    const size_t sample_count = CalWindowGetSampleCount();
+    printf("cal_window_raw_last_c: %.3f\n", last_raw_mC / 1000.0);
+    printf("cal_window_raw_avg_c: %.3f\n", mean_raw_mC / 1000.0);
+    printf("cal_window_raw_stddev_c: %.3f\n", stddev_mC / 1000.0);
+    printf("cal_window_samples: %u\n", (unsigned)sample_count);
+    printf("cal_window_ready: %s\n",
+           CalWindowIsReady() ? "yes" : "no");
+    return 0;
+  }
+
   if (strcmp(action, "apply") == 0) {
     if (g_pending_points_count < 1) {
       printf("no points; use 'cal add <raw_c> <actual_c>' first\n");
@@ -553,7 +569,7 @@ CommandCal(int argc, char** argv)
   }
 
   printf("unknown action. usage: cal clear | cal add <raw_c> <actual_c> | cal "
-         "list | cal apply\n");
+         "list | cal show | cal apply\n");
   return 1;
 }
 
@@ -1301,7 +1317,8 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&log_cmd));
 
-  g_cal_args.action = arg_str1(NULL, NULL, "<action>", "clear|add|list|apply");
+  g_cal_args.action =
+    arg_str1(NULL, NULL, "<action>", "clear|add|list|show|apply");
   g_cal_args.raw_c =
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw temperature (C) from 'raw'");
   g_cal_args.actual_c =
@@ -1310,8 +1327,9 @@ RegisterCommands(void)
 
   const esp_console_cmd_t cal_cmd = {
     .command = "cal",
-    .help = "Calibration: cal clear | cal add <raw_c> <actual_c> | cal list | "
-            "cal apply",
+    .help =
+      "Calibration: cal clear | cal add <raw_c> <actual_c> | cal list | cal "
+      "show | cal apply",
     .hint = NULL,
     .func = &CommandCal,
     .argtable = &g_cal_args,
