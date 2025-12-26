@@ -18,8 +18,12 @@ extern "C"
 
   typedef struct
   {
-    double raw_c;
-    double actual_c;
+    int32_t raw_avg_mC;
+    int32_t actual_mC;
+    int32_t raw_stddev_mC;
+    uint16_t sample_count;
+    uint8_t time_valid;
+    int64_t timestamp_epoch_sec;
   } calibration_point_t;
 
   typedef struct
