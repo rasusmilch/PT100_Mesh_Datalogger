@@ -22,7 +22,9 @@ static const char* kKeySdBatchBytes = "sd_batch_bytes";
 static const char* kKeyCalDegree = "cal_deg";
 static const char* kKeyCalMode = "cal_mode";
 static const char* kKeyCalCoeffs = "cal_coeffs";
-static const char* kKeyCalPointsCount = "cal_points_count";
+// NVS key names are limited to 15 characters (not including the NUL).
+// Keep this <= 15 to avoid ESP_ERR_NVS_KEY_TOO_LONG.
+static const char* kKeyCalPointsCount = "cal_pt_count";
 static const char* kKeyCalPoints = "cal_points";
 static const char* kKeyCalContextVersion = "cal_ctx_ver";
 static const char* kKeyCalContextConversion = "cal_ctx_conv";

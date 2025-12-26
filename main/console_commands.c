@@ -38,6 +38,31 @@
 #include "time_sync.h"
 
 static const char* kTag = "console";
+static void
+MaybePushCalRawSampleFromSensor(void)
+{
+  if (RuntimeIsRunning()) {
+    return;
+  }
+
+  app_runtime_t* runtime = RuntimeGetRuntime();
+  if (runtime == NULL || runtime->sensor == NULL) {
+    return;
+  }
+
+  max31865_sample_t sample = { 0 };
+  esp_err_t read_result = Max31865ReadOnce(runtime->sensor, &sample);
+  if (read_result != ESP_OK) {
+    return;
+  }
+
+  if (sample.fault_present) {
+    return;
+  }
+
+  int32_t raw_milli_c = (int32_t)llround(sample.temperature_c * 1000.0);
+  CalWindowPushRawSample(raw_milli_c);
+}
 
 static app_runtime_t* g_runtime = NULL;
 static app_boot_mode_t g_boot_mode = APP_BOOT_MODE_DIAGNOSTICS;
@@ -97,41 +122,43 @@ CommandStatus(int argc, char** argv)
   printf("tz_posix: %s\n", settings->tz_posix);
   printf("dst_enabled: %s\n", settings->dst_enabled ? "yes" : "no");
 
-// Ensure the TZ rules are loaded before formatting local time.
-// (TZ is applied via AppSettingsApplyTimeZone() at boot and by the tz/dst commands.)
-tzset();
+  // Ensure the TZ rules are loaded before formatting local time.
+  // (TZ is applied via AppSettingsApplyTimeZone() at boot and by the tz/dst
+  // commands.)
+  tzset();
 
-const time_t now = time(NULL);
+  const time_t now = time(NULL);
 
-struct tm utc_time;
-char utc_buffer[48] = { 0 };
-if (gmtime_r(&now, &utc_time) != NULL) {
-  strftime(utc_buffer, sizeof(utc_buffer), "%Y-%m-%d %H:%M:%SZ", &utc_time);
-}
-printf("utc_time: %s (epoch=%ld)\n",
-       (utc_buffer[0] != '\0') ? utc_buffer : "unknown",
-       (long)now);
+  struct tm utc_time;
+  char utc_buffer[48] = { 0 };
+  if (gmtime_r(&now, &utc_time) != NULL) {
+    strftime(utc_buffer, sizeof(utc_buffer), "%Y-%m-%d %H:%M:%SZ", &utc_time);
+  }
+  printf("utc_time: %s (epoch=%ld)\n",
+         (utc_buffer[0] != '\0') ? utc_buffer : "unknown",
+         (long)now);
 
-struct tm local_time;
-char local_buffer[48] = { 0 };
-if (localtime_r(&now, &local_time) != NULL) {
-  strftime(local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local_time);
-}
+  struct tm local_time;
+  char local_buffer[48] = { 0 };
+  if (localtime_r(&now, &local_time) != NULL) {
+    strftime(
+      local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local_time);
+  }
 
-// Compute UTC offset in seconds (local = UTC + offset).
-// Avoid relying on non-portable tm_gmtoff.
-struct tm utc_as_local = utc_time;
-utc_as_local.tm_isdst = -1;
-const time_t utc_epoch_as_local = mktime(&utc_as_local);
-long utc_offset_sec = 0;
-if (utc_epoch_as_local != (time_t)-1) {
-  utc_offset_sec = (long)difftime(now, utc_epoch_as_local);
-}
+  // Compute UTC offset in seconds (local = UTC + offset).
+  // Avoid relying on non-portable tm_gmtoff.
+  struct tm utc_as_local = utc_time;
+  utc_as_local.tm_isdst = -1;
+  const time_t utc_epoch_as_local = mktime(&utc_as_local);
+  long utc_offset_sec = 0;
+  if (utc_epoch_as_local != (time_t)-1) {
+    utc_offset_sec = (long)difftime(now, utc_epoch_as_local);
+  }
 
-printf("local_time: %s (utc_offset_sec=%ld dst_in_effect=%d)\n",
-       (local_buffer[0] != '\0') ? local_buffer : "unknown",
-       utc_offset_sec,
-       local_time.tm_isdst);
+  printf("local_time: %s (utc_offset_sec=%ld dst_in_effect=%d)\n",
+         (local_buffer[0] != '\0') ? local_buffer : "unknown",
+         utc_offset_sec,
+         local_time.tm_isdst);
   printf("fram: buffered=%u / cap=%u (flush_watermark=%u)\n",
          (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
          (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log),
@@ -515,9 +542,8 @@ CommandCal(int argc, char** argv)
   if (strcmp(action, "clear") == 0) {
     CalibrationModelInitIdentity(&settings->calibration);
     settings->calibration_points_count = 0;
-    memset(settings->calibration_points,
-           0,
-           sizeof(settings->calibration_points));
+    memset(
+      settings->calibration_points, 0, sizeof(settings->calibration_points));
     esp_err_t result = SaveCalibrationWithContext(&settings->calibration);
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
@@ -547,8 +573,7 @@ CommandCal(int argc, char** argv)
     calibration_point_t* point =
       &settings->calibration_points[settings->calibration_points_count];
     point->raw_avg_mC = (int32_t)llround(g_cal_args.raw_c->dval[0] * 1000.0);
-    point->actual_mC =
-      (int32_t)llround(g_cal_args.actual_c->dval[0] * 1000.0);
+    point->actual_mC = (int32_t)llround(g_cal_args.actual_c->dval[0] * 1000.0);
     point->raw_stddev_mC = 0;
     point->sample_count = 0;
     point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
@@ -587,14 +612,15 @@ CommandCal(int argc, char** argv)
     int32_t last_raw_mC = 0;
     int32_t mean_raw_mC = 0;
     int32_t stddev_mC = 0;
+    MaybePushCalRawSampleFromSensor();
+
     CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
     const size_t sample_count = CalWindowGetSampleCount();
     printf("cal_window_raw_last_c: %.3f\n", last_raw_mC / 1000.0);
     printf("cal_window_raw_avg_c: %.3f\n", mean_raw_mC / 1000.0);
     printf("cal_window_raw_stddev_c: %.3f\n", stddev_mC / 1000.0);
     printf("cal_window_samples: %u\n", (unsigned)sample_count);
-    printf("cal_window_ready: %s\n",
-           CalWindowIsReady() ? "yes" : "no");
+    printf("cal_window_ready: %s\n", CalWindowIsReady() ? "yes" : "no");
     printf("calibration_mode: %s\n",
            CalibrationModeToString(settings->calibration.mode));
     printf("cal_points: %u (raw_avg_C uses window average)\n",
@@ -605,12 +631,13 @@ CommandCal(int argc, char** argv)
       const double raw_avg_c = point->raw_avg_mC / 1000.0;
       const double actual_c = point->actual_mC / 1000.0;
       const double residual_c = actual_c - raw_avg_c;
-      printf("  %u: raw_avg_C=%.3f actual_C=%.3f residual_C=%.3f stddev_C=%.3f\n",
-             (unsigned)(index + 1),
-             raw_avg_c,
-             actual_c,
-             residual_c,
-             point->raw_stddev_mC / 1000.0);
+      printf(
+        "  %u: raw_avg_C=%.3f actual_C=%.3f residual_C=%.3f stddev_C=%.3f\n",
+        (unsigned)(index + 1),
+        raw_avg_c,
+        actual_c,
+        residual_c,
+        point->raw_stddev_mC / 1000.0);
     }
     return 0;
   }
@@ -665,10 +692,10 @@ CommandCal(int argc, char** argv)
       return 1;
     }
 
-    printf(
-      "calibration applied: mode=%s degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
-      CalibrationModeToString(model.mode),
-      (unsigned)model.degree,
+    printf("calibration applied: mode=%s degree=%u coeffs=[%.9g, %.9g, %.9g, "
+           "%.9g]\n",
+           CalibrationModeToString(model.mode),
+           (unsigned)model.degree,
            model.coefficients[0],
            model.coefficients[1],
            model.coefficients[2],
@@ -696,6 +723,8 @@ CommandCal(int argc, char** argv)
       int32_t last_raw_mC = 0;
       int32_t mean_raw_mC = 0;
       int32_t stddev_mC = 0;
+      MaybePushCalRawSampleFromSensor();
+
       CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
       printf("raw_last_C=%.3f raw_avg_C=%.3f raw_stddev_C=%.3f\n",
              last_raw_mC / 1000.0,
@@ -723,9 +752,8 @@ CommandCal(int argc, char** argv)
     const double stable_stddev_c = (g_cal_args.stable_stddev_c->count > 0)
                                      ? g_cal_args.stable_stddev_c->dval[0]
                                      : 0.05;
-    const int min_seconds = (g_cal_args.min_seconds->count > 0)
-                              ? g_cal_args.min_seconds->ival[0]
-                              : 5;
+    const int min_seconds =
+      (g_cal_args.min_seconds->count > 0) ? g_cal_args.min_seconds->ival[0] : 5;
     const int timeout_seconds = (g_cal_args.timeout_seconds->count > 0)
                                   ? g_cal_args.timeout_seconds->ival[0]
                                   : 120;
@@ -743,6 +771,8 @@ CommandCal(int argc, char** argv)
       int32_t last_raw_mC = 0;
       int32_t mean_raw_mC = 0;
       int32_t stddev_mC = 0;
+      MaybePushCalRawSampleFromSensor();
+
       CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
       const double stddev_c = stddev_mC / 1000.0;
 
@@ -783,8 +813,7 @@ CommandCal(int argc, char** argv)
       vTaskDelay(pdMS_TO_TICKS(200));
     }
 
-    printf("cal capture failed: timed out after %d seconds\n",
-           timeout_seconds);
+    printf("cal capture failed: timed out after %d seconds\n", timeout_seconds);
     return 1;
   }
 
@@ -990,7 +1019,8 @@ static void
 PrintTimeUsage(void)
 {
   printf("time setlocal \"YYYY-MM-DD HH:MM:SS\" [--is_dst 0|1]\n");
-  printf("  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n");
+  printf(
+    "  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n");
   printf("  use --is_dst to disambiguate fall-back hour\n");
 }
 
@@ -1062,9 +1092,8 @@ CommandTime(int argc, char** argv)
     const esp_err_t mesh_result =
       MeshTransportBroadcastTime(g_runtime->mesh, (int64_t)epoch_utc);
     if (mesh_result != ESP_OK) {
-      ESP_LOGW(kTag,
-               "mesh time broadcast failed: %s",
-               esp_err_to_name(mesh_result));
+      ESP_LOGW(
+        kTag, "mesh time broadcast failed: %s", esp_err_to_name(mesh_result));
     }
   }
 
@@ -1078,6 +1107,111 @@ CommandTime(int argc, char** argv)
          (local_buffer[0] != '\0') ? local_buffer : "unknown",
          (int64_t)epoch_utc,
          rtc_ok ? "ok" : "fail");
+  return 0;
+}
+
+// --- Boiling point calculator (from MeshTemps-LeafNode.ino) ------------------
+//
+// Usage:
+//   boilpt <inHg> [elev_ft]
+//
+// If elev_ft is provided, <inHg> is treated as sea-level pressure / altimeter
+// setting and is converted to station pressure via a simple ISA troposphere
+// approximation. If elev_ft is omitted, <inHg> is treated as station pressure.
+//
+static float
+StationPressureFromSlpInHg(float slp_inHg, float elev_ft)
+{
+  if (slp_inHg <= 0.0f) {
+    return NAN;
+  }
+  const float height_m = (elev_ft <= 0.0f) ? 0.0f : (elev_ft * 0.3048f);
+  const float base = 1.0f - 2.25577e-5f * height_m;
+  if (base <= 0.0f) {
+    return NAN; // Out of model range.
+  }
+  return slp_inHg * powf(base, 5.25588f);
+}
+
+// Antoine equation (water), pressure in mmHg -> boiling point in °C.
+// Validity is approximate; this is intended for quick calibration reference.
+static float
+BoilingPointCFromStationInHg(float station_inHg)
+{
+  if (station_inHg <= 0.0f) {
+    return NAN;
+  }
+  const float pressure_mmHg = station_inHg * 25.4f; // 1 inHg = 25.4 mmHg
+  if (pressure_mmHg <= 0.0f) {
+    return NAN;
+  }
+
+  const float A = 8.07131f;
+  const float B = 1730.63f;
+  const float C = 233.426f;
+
+  const float log_p = log10f(pressure_mmHg);
+  const float denom = A - log_p;
+  if (denom == 0.0f) {
+    return NAN;
+  }
+  return B / denom - C;
+}
+
+static int
+CommandBoilPt(int argc, char** argv)
+{
+  if (argc < 2) {
+    printf("usage: boilpt <inHg> [elev_ft]\n");
+    printf("  Example (altimeter + elevation): boilpt 29.81 1300\n");
+    printf("  Example (station pressure):       boilpt 28.90\n");
+    return 1;
+  }
+
+  char* endptr = NULL;
+  const float in_hg = strtof(argv[1], &endptr);
+  if (endptr == argv[1] || isnan(in_hg) || in_hg <= 0.0f) {
+    printf("ERR invalid inHg\n");
+    return 1;
+  }
+
+  if (argc >= 3) {
+    endptr = NULL;
+    const float elev_ft = strtof(argv[2], &endptr);
+    if (endptr == argv[2] || isnan(elev_ft)) {
+      printf("ERR invalid elev_ft\n");
+      return 1;
+    }
+
+    const float station_in_hg = StationPressureFromSlpInHg(in_hg, elev_ft);
+    const float boil_c = BoilingPointCFromStationInHg(station_in_hg);
+    if (isnan(boil_c)) {
+      printf("ERR invalid inputs\n");
+      return 1;
+    }
+    const float boil_f = boil_c * 9.0f / 5.0f + 32.0f;
+
+    printf("Boiling point at station %.3f inHg (AS=%.3f, elev=%.0f ft): "
+           "%.3f C (%.3f F)\n",
+           (double)station_in_hg,
+           (double)in_hg,
+           (double)elev_ft,
+           (double)boil_c,
+           (double)boil_f);
+    return 0;
+  }
+
+  // Back-compat: single arg -> treat as station pressure directly.
+  const float boil_c = BoilingPointCFromStationInHg(in_hg);
+  if (isnan(boil_c)) {
+    printf("ERR invalid pressure\n");
+    return 1;
+  }
+  const float boil_f = boil_c * 9.0f / 5.0f + 32.0f;
+  printf("Boiling point at %.3f inHg (station): %.3f C (%.3f F)\n",
+         (double)in_hg,
+         (double)boil_c,
+         (double)boil_f);
   return 0;
 }
 
@@ -1549,17 +1683,14 @@ RegisterCommands(void)
     arg_int0(NULL, "every_ms", "<every_ms>", "Live interval (ms)");
   g_cal_args.seconds =
     arg_int0(NULL, "seconds", "<seconds>", "Live duration (s)");
-  g_cal_args.stable_stddev_c =
-    arg_dbl0(NULL,
-             "stable_stddev_c",
-             "<stable_stddev_c>",
-             "Capture stable stddev threshold (C)");
+  g_cal_args.stable_stddev_c = arg_dbl0(NULL,
+                                        "stable_stddev_c",
+                                        "<stable_stddev_c>",
+                                        "Capture stable stddev threshold (C)");
   g_cal_args.min_seconds =
     arg_int0(NULL, "min_seconds", "<min_seconds>", "Capture min stable time");
-  g_cal_args.timeout_seconds = arg_int0(NULL,
-                                        "timeout_seconds",
-                                        "<timeout_seconds>",
-                                        "Capture timeout");
+  g_cal_args.timeout_seconds =
+    arg_int0(NULL, "timeout_seconds", "<timeout_seconds>", "Capture timeout");
   g_cal_args.mode =
     arg_str0(NULL, "mode", "<mode>", "Fit mode (linear|piecewise|polyN)");
   g_cal_args.allow_wide_slope =
@@ -1573,14 +1704,20 @@ RegisterCommands(void)
       "show | cal apply [--mode linear|piecewise|polyN] [--allow_wide_slope] | "
       "cal live [--every_ms 500] [--seconds 10] | cal capture <actual_temp_c> "
       "[--stable_stddev_c 0.05] [--min_seconds 5] [--timeout_seconds 120]\n"
-      "Workflow: cal clear; let node settle at reference temp; cal live "
-      "--seconds 10; cal capture 0.00 --stable_stddev_c 0.05 "
-      "--min_seconds 10; move to another reference; cal capture 100.00 ...; "
-      "cal apply; cal show.\n"
-      "Notes: capture uses windowed average after stability; live/capture show "
-      "raw vs average; apply uses least-squares and reports residuals; "
-      "calibration invalidates when conversion mode, wire count, filter Hz, "
-      "Rref, R0, or PT100 table changes.",
+      "Workflow:\n"
+      "        - cal clear\n"
+      "        - let node settle at reference temp\n"
+      "        - cal live --seconds 10\n"
+      "        - cal capture 0.00 --stable_stddev_c 0.05 --min_seconds 10\n"
+      "        - move to another reference\n"
+      "        - cal capture 100.00 ...\n"
+      "        - cal apply\n"
+      "        - cal show.\n"
+      "Notes: *may want to use boilpt command*; capture uses windowed"
+      "average after stability; live/capture show raw vs average; apply uses"
+      "least-squares and reports residuals; calibration invalidates when "
+      "conversion mode, wire count, filter Hz, Rref, R0, or PT100 table "
+      "changes.\n\n",
     .hint = NULL,
     .func = &CommandCal,
     .argtable = &g_cal_args,
@@ -1648,6 +1785,15 @@ RegisterCommands(void)
     .argtable = &g_time_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&time_cmd));
+
+  const esp_console_cmd_t boilpt_cmd = {
+    .command = "boilpt",
+    .help =
+      "Compute boiling point of water from pressure: boilpt <inHg> [elev_ft]",
+    .hint = NULL,
+    .func = &CommandBoilPt,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&boilpt_cmd));
 
   g_dst_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_dst_args.enabled = arg_int0(NULL, NULL, "<0|1>", "DST enabled");
