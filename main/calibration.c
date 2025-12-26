@@ -19,6 +19,65 @@ typedef struct
 
 static cal_window_state_t g_cal_window;
 
+static double
+InterpolateResidual(const calibration_point_t* points,
+                    size_t num_points,
+                    double raw_c)
+{
+  if (points == NULL || num_points == 0) {
+    return 0.0;
+  }
+
+  int lower_index = -1;
+  int upper_index = -1;
+  double lower_x = 0.0;
+  double upper_x = 0.0;
+
+  for (size_t index = 0; index < num_points; ++index) {
+    const double x_value = points[index].raw_avg_mC / 1000.0;
+    if (x_value <= raw_c) {
+      if (lower_index < 0 || x_value > lower_x) {
+        lower_index = (int)index;
+        lower_x = x_value;
+      }
+    }
+    if (x_value >= raw_c) {
+      if (upper_index < 0 || x_value < upper_x) {
+        upper_index = (int)index;
+        upper_x = x_value;
+      }
+    }
+  }
+
+  if (lower_index < 0 && upper_index < 0) {
+    return 0.0;
+  }
+
+  if (lower_index < 0) {
+    const calibration_point_t* upper = &points[upper_index];
+    return (upper->actual_mC - upper->raw_avg_mC) / 1000.0;
+  }
+
+  if (upper_index < 0) {
+    const calibration_point_t* lower = &points[lower_index];
+    return (lower->actual_mC - lower->raw_avg_mC) / 1000.0;
+  }
+
+  if (lower_index == upper_index || fabs(upper_x - lower_x) < 1e-12) {
+    const calibration_point_t* point = &points[lower_index];
+    return (point->actual_mC - point->raw_avg_mC) / 1000.0;
+  }
+
+  const calibration_point_t* lower = &points[lower_index];
+  const calibration_point_t* upper = &points[upper_index];
+  const double lower_residual =
+    (lower->actual_mC - lower->raw_avg_mC) / 1000.0;
+  const double upper_residual =
+    (upper->actual_mC - upper->raw_avg_mC) / 1000.0;
+  const double t = (raw_c - lower_x) / (upper_x - lower_x);
+  return lower_residual + t * (upper_residual - lower_residual);
+}
+
 static esp_err_t
 SolveLinearSystemGauss(
   int dimension,
@@ -157,7 +216,8 @@ ComputeDiagnostics(const calibration_point_t* points,
   for (size_t index = 0; index < num_points; ++index) {
     const double raw_c = points[index].raw_avg_mC / 1000.0;
     const double actual_c = points[index].actual_mC / 1000.0;
-    const double predicted_c = CalibrationModelEvaluate(model, raw_c);
+    const double predicted_c =
+      CalibrationModelEvaluateWithPoints(model, raw_c, points, num_points);
     const double residual = actual_c - predicted_c;
     const double abs_residual = fabs(residual);
     sum_sq += residual * residual;
@@ -176,6 +236,9 @@ static bool
 IsSlopeReasonable(const calibration_fit_options_t* options,
                   const calibration_model_t* model)
 {
+  if (model->mode == CAL_FIT_MODE_PIECEWISE) {
+    return true;
+  }
   if (options->allow_wide_slope || model->degree < 1) {
     return true;
   }
@@ -186,6 +249,8 @@ IsSlopeReasonable(const calibration_fit_options_t* options,
 static bool
 IsCorrectionReasonable(const calibration_fit_options_t* options,
                        const calibration_model_t* model,
+                       const calibration_point_t* points,
+                       size_t num_points,
                        calibration_fit_diagnostics_t* diagnostics_out)
 {
   if (options->guard_min_c >= options->guard_max_c) {
@@ -193,8 +258,10 @@ IsCorrectionReasonable(const calibration_fit_options_t* options,
   }
   const double raw_min = options->guard_min_c;
   const double raw_max = options->guard_max_c;
-  const double predicted_min = CalibrationModelEvaluate(model, raw_min);
-  const double predicted_max = CalibrationModelEvaluate(model, raw_max);
+  const double predicted_min =
+    CalibrationModelEvaluateWithPoints(model, raw_min, points, num_points);
+  const double predicted_max =
+    CalibrationModelEvaluateWithPoints(model, raw_max, points, num_points);
   const double correction_min = predicted_min - raw_min;
   const double correction_max = predicted_max - raw_max;
   const double max_abs_correction =
@@ -211,6 +278,7 @@ CalibrationModelInitIdentity(calibration_model_t* model)
   if (model == NULL) {
     return;
   }
+  model->mode = CAL_FIT_MODE_LINEAR;
   model->degree = 1;
   model->coefficients[0] = 0.0;
   model->coefficients[1] = 1.0;
@@ -225,6 +293,9 @@ CalibrationModelEvaluate(const calibration_model_t* model, double raw_c)
   if (model == NULL || !model->is_valid) {
     return raw_c;
   }
+  if (model->mode == CAL_FIT_MODE_PIECEWISE) {
+    return raw_c;
+  }
   double sum = 0.0;
   double x_pow = 1.0;
   for (uint8_t index = 0;
@@ -234,6 +305,22 @@ CalibrationModelEvaluate(const calibration_model_t* model, double raw_c)
     x_pow *= raw_c;
   }
   return sum;
+}
+
+double
+CalibrationModelEvaluateWithPoints(const calibration_model_t* model,
+                                   double raw_c,
+                                   const calibration_point_t* points,
+                                   size_t num_points)
+{
+  if (model == NULL || !model->is_valid) {
+    return raw_c;
+  }
+  if (model->mode != CAL_FIT_MODE_PIECEWISE) {
+    return CalibrationModelEvaluate(model, raw_c);
+  }
+  const double residual = InterpolateResidual(points, num_points, raw_c);
+  return raw_c + residual;
 }
 
 esp_err_t
@@ -286,6 +373,7 @@ CalibrationModelFitFromPointsWithOptions(
     const double offset =
       (points[0].actual_mC - points[0].raw_avg_mC) / 1000.0;
     CalibrationModelInitIdentity(model_out);
+    model_out->mode = options->mode;
     model_out->degree = 1;
     model_out->coefficients[0] = offset;
     model_out->coefficients[1] = 1.0;
@@ -304,8 +392,21 @@ CalibrationModelFitFromPointsWithOptions(
       degree = 1;
       break;
     case CAL_FIT_MODE_PIECEWISE:
-      ESP_LOGW(kTag, "piecewise fit mode not implemented");
-      return ESP_ERR_NOT_SUPPORTED;
+      CalibrationModelInitIdentity(model_out);
+      model_out->mode = CAL_FIT_MODE_PIECEWISE;
+      model_out->degree = 1;
+      model_out->is_valid = true;
+      ComputeDiagnostics(points, num_points, model_out, diagnostics_out);
+      if (!IsCorrectionReasonable(
+            options, model_out, points, num_points, diagnostics_out)) {
+        ESP_LOGW(kTag,
+                 "correction exceeds max abs %.2fC within [%.1f, %.1f]",
+                 options->max_abs_correction_c,
+                 options->guard_min_c,
+                 options->guard_max_c);
+        return ESP_ERR_INVALID_STATE;
+      }
+      return ESP_OK;
     case CAL_FIT_MODE_POLY:
       degree = options->poly_degree;
       if (degree < 1 || degree > CALIBRATION_MAX_DEGREE) {
@@ -331,6 +432,7 @@ CalibrationModelFitFromPointsWithOptions(
   if (result != ESP_OK) {
     return result;
   }
+  model_out->mode = options->mode;
 
   ComputeDiagnostics(points, num_points, model_out, diagnostics_out);
 
@@ -343,7 +445,8 @@ CalibrationModelFitFromPointsWithOptions(
     return ESP_ERR_INVALID_STATE;
   }
 
-  if (!IsCorrectionReasonable(options, model_out, diagnostics_out)) {
+  if (!IsCorrectionReasonable(
+        options, model_out, points, num_points, diagnostics_out)) {
     ESP_LOGW(kTag,
              "correction exceeds max abs %.2fC within [%.1f, %.1f]",
              options->max_abs_correction_c,

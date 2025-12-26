@@ -18,6 +18,7 @@ static const char* kKeyFlushWatermark = "flush_wm_rec";
 static const char* kKeySdFlushPeriodMs = "sd_flush_ms";
 static const char* kKeySdBatchBytes = "sd_batch_bytes";
 static const char* kKeyCalDegree = "cal_deg";
+static const char* kKeyCalMode = "cal_mode";
 static const char* kKeyCalCoeffs = "cal_coeffs";
 static const char* kKeyCalPointsCount = "cal_points_count";
 static const char* kKeyCalPoints = "cal_points";
@@ -148,6 +149,8 @@ AppSettingsLoad(app_settings_t* settings_out)
 
   uint8_t cal_degree = 0;
   result = nvs_get_u8(handle, kKeyCalDegree, &cal_degree);
+  uint8_t cal_mode = (uint8_t)CAL_FIT_MODE_LINEAR;
+  esp_err_t mode_result = nvs_get_u8(handle, kKeyCalMode, &cal_mode);
   size_t coeff_bytes = sizeof(double) * CALIBRATION_MAX_POINTS;
   double coeffs[CALIBRATION_MAX_POINTS] = { 0 };
 
@@ -160,6 +163,13 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->calibration.is_valid = true;
   } else {
     CalibrationModelInitIdentity(&settings_out->calibration);
+  }
+  if (mode_result == ESP_OK && cal_mode <= (uint8_t)CAL_FIT_MODE_POLY) {
+    settings_out->calibration.mode = (calibration_fit_mode_t)cal_mode;
+  } else if (settings_out->calibration.is_valid) {
+    settings_out->calibration.mode = (settings_out->calibration.degree > 1)
+                                       ? CAL_FIT_MODE_POLY
+                                       : CAL_FIT_MODE_LINEAR;
   }
 
   uint8_t cal_points_count = 0;
@@ -336,6 +346,9 @@ AppSettingsSaveCalibration(const calibration_model_t* model)
   }
 
   result = nvs_set_u8(handle, kKeyCalDegree, model->degree);
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, kKeyCalMode, (uint8_t)model->mode);
+  }
   if (result == ESP_OK) {
     result = nvs_set_blob(handle,
                           kKeyCalCoeffs,

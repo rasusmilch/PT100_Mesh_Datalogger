@@ -48,6 +48,21 @@ BootModeToString(app_boot_mode_t mode)
   return (mode == APP_BOOT_MODE_RUN) ? "run" : "diagnostics";
 }
 
+static const char*
+CalibrationModeToString(calibration_fit_mode_t mode)
+{
+  switch (mode) {
+    case CAL_FIT_MODE_LINEAR:
+      return "linear";
+    case CAL_FIT_MODE_PIECEWISE:
+      return "piecewise";
+    case CAL_FIT_MODE_POLY:
+      return "poly";
+    default:
+      return "unknown";
+  }
+}
+
 static int
 CommandStatus(int argc, char** argv)
 {
@@ -126,7 +141,8 @@ printf("local_time: %s (utc_offset_sec=%ld dst_in_effect=%d)\n",
   printf("export_dropped_count: %u\n", (unsigned)export_dropped);
   printf("export_write_fail_count: %u\n", (unsigned)export_write_fail);
 
-  printf("calibration: degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
+  printf("calibration: mode=%s degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
+         CalibrationModeToString(settings->calibration.mode),
          (unsigned)settings->calibration.degree,
          settings->calibration.coefficients[0],
          settings->calibration.coefficients[1],
@@ -159,8 +175,11 @@ CommandRaw(int argc, char** argv)
     return 1;
   }
 
-  const double calibrated = CalibrationModelEvaluate(
-    &g_runtime->settings->calibration, sample.temperature_c);
+  const double calibrated = CalibrationModelEvaluateWithPoints(
+    &g_runtime->settings->calibration,
+    sample.temperature_c,
+    g_runtime->settings->calibration_points,
+    g_runtime->settings->calibration_points_count);
   char fault[64] = { 0 };
   Max31865FormatFault(sample.fault_status, fault, sizeof(fault));
 
@@ -565,6 +584,8 @@ CommandCal(int argc, char** argv)
     printf("cal_window_samples: %u\n", (unsigned)sample_count);
     printf("cal_window_ready: %s\n",
            CalWindowIsReady() ? "yes" : "no");
+    printf("calibration_mode: %s\n",
+           CalibrationModeToString(settings->calibration.mode));
     printf("cal_points: %u (raw_avg_C uses window average)\n",
            (unsigned)settings->calibration_points_count);
     for (size_t index = 0; index < settings->calibration_points_count;
@@ -633,8 +654,10 @@ CommandCal(int argc, char** argv)
       return 1;
     }
 
-    printf("calibration applied: degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
-           (unsigned)model.degree,
+    printf(
+      "calibration applied: mode=%s degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
+      CalibrationModeToString(model.mode),
+      (unsigned)model.degree,
            model.coefficients[0],
            model.coefficients[1],
            model.coefficients[2],
