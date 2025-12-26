@@ -197,6 +197,53 @@ CommandFlush(int argc, char** argv)
   return 0;
 }
 
+static int
+CommandFram(int argc, char** argv)
+{
+  if (g_runtime == NULL) {
+    return 1;
+  }
+  if (argc < 2) {
+    printf("usage: fram status\n");
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "status") != 0 && strcmp(action, "show") != 0) {
+    printf("unknown fram command. try 'fram status'\n");
+    return 1;
+  }
+
+  fram_log_status_t status;
+  esp_err_t result = FramLogGetStatus(g_runtime->fram_log, &status);
+  if (result != ESP_OK) {
+    printf("fram: not initialized\n");
+    return 1;
+  }
+  status.flush_watermark_records =
+    g_runtime->settings->fram_flush_watermark_records;
+
+  printf("fram: mounted=%s full=%s\n",
+         status.mounted ? "yes" : "no",
+         status.full ? "yes" : "no");
+  printf("fram: cap=%u rec_size=%u watermark=%u\n",
+         (unsigned)status.capacity_records,
+         (unsigned)status.record_size_bytes,
+         (unsigned)status.flush_watermark_records);
+  printf("fram: write=%u read=%u count=%u seq=%u\n",
+         (unsigned)status.write_index_abs,
+         (unsigned)status.read_index_abs,
+         (unsigned)status.buffered_count,
+         (unsigned)status.next_sequence);
+  printf("FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u\n",
+         (unsigned)status.capacity_records,
+         (unsigned)status.write_index_abs,
+         (unsigned)status.read_index_abs,
+         (unsigned)status.buffered_count,
+         (unsigned)status.next_sequence);
+  return 0;
+}
+
 // NOTE: The "log" command uses manual argv parsing.
 //
 // We intentionally do NOT use argtable for this command because argtable's
@@ -1236,6 +1283,14 @@ RegisterCommands(void)
     .func = &CommandFlush,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&flush_cmd));
+
+  const esp_console_cmd_t fram_cmd = {
+    .command = "fram",
+    .help = "FRAM log commands: fram status | fram show",
+    .hint = NULL,
+    .func = &CommandFram,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&fram_cmd));
 
   const esp_console_cmd_t log_cmd = {
     .command = "log",
