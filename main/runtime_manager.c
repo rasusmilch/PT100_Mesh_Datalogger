@@ -29,6 +29,7 @@ static const char* kTag = "runtime";
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
 static const uint32_t kSdFlushMaxMsPerPass = 50;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
+static const uint32_t kExportQueueDepth = 64;
 
 typedef struct
 {
@@ -43,6 +44,7 @@ typedef struct
   i2c_bus_t i2c_bus;
 
   QueueHandle_t log_queue;
+  QueueHandle_t export_queue;
   uint8_t* batch_buffer;
   size_t batch_buffer_size;
 
@@ -59,6 +61,7 @@ typedef struct
 
   TaskHandle_t sensor_task;
   TaskHandle_t storage_task;
+  TaskHandle_t export_task;
   TaskHandle_t time_sync_task;
   TaskHandle_t topology_task;
 
@@ -68,7 +71,17 @@ typedef struct
   bool mesh_started;
   bool data_streaming_enabled;
   bool log_quiet;
+
+  uint32_t export_dropped_count;
+  uint32_t export_write_fail_count;
+  bool csv_header_emitted;
 } runtime_state_t;
+
+typedef struct
+{
+  log_record_t record;
+  char node_id[32];
+} export_item_t;
 
 static runtime_state_t g_state;
 static app_runtime_t g_runtime;
@@ -78,7 +91,7 @@ RuntimeFlushToSd(void* context);
 static void
 SetRunLogPolicy(void)
 {
-  esp_log_level_set("*", ESP_LOG_ERROR);
+  esp_log_level_set("*", ESP_LOG_NONE);
   g_state.log_quiet = true;
 }
 
@@ -146,18 +159,46 @@ static bool
 CsvDataPortWriter(const char* bytes, size_t len, void* context)
 {
   (void)context;
-  DataPortWrite(bytes, len);
+  size_t written = 0;
+  return DataPortWrite(bytes, len, &written) == ESP_OK && written == len;
+}
+
+static bool
+TryEmitCsvHeader(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return false;
+  }
+  if (state->csv_header_emitted) {
+    return true;
+  }
+  state->csv_header_emitted = true;
+  if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
+    state->csv_header_emitted = false;
+    state->export_write_fail_count++;
+    return false;
+  }
   return true;
 }
 
 static void
-PrintCsvRecord(const char* node_id, const log_record_t* record)
+EnqueueExportRecord(runtime_state_t* state,
+                    const char* node_id,
+                    const log_record_t* record)
 {
-  if (!g_state.data_streaming_enabled) {
+  if (state == NULL || record == NULL || state->export_queue == NULL) {
     return;
   }
-  if (!CsvWriteRow(CsvDataPortWriter, NULL, record, node_id)) {
-    ESP_LOGW(kTag, "Failed to format CSV line for node %s", node_id);
+
+  export_item_t item;
+  memset(&item, 0, sizeof(item));
+  item.record = *record;
+  if (node_id != NULL) {
+    snprintf(item.node_id, sizeof(item.node_id), "%s", node_id);
+  }
+
+  if (xQueueSend(state->export_queue, &item, 0) != pdTRUE) {
+    state->export_dropped_count++;
   }
 }
 
@@ -169,7 +210,7 @@ RootRecordRxCallback(const pt100_mesh_addr_t* from,
   (void)context;
   char node_id[32];
   FormatMacString(from->addr, node_id, sizeof(node_id));
-  PrintCsvRecord(node_id, record);
+  EnqueueExportRecord(&g_state, node_id, record);
 }
 
 static esp_err_t
@@ -546,6 +587,36 @@ SensorTask(void* context)
 }
 
 static void
+ExportTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+
+  while (!state->stop_requested ||
+         (state->export_queue != NULL &&
+          uxQueueMessagesWaiting(state->export_queue) > 0)) {
+    export_item_t item;
+    if (state->export_queue != NULL &&
+        xQueueReceive(state->export_queue, &item, pdMS_TO_TICKS(500)) ==
+          pdTRUE) {
+      if (!state->data_streaming_enabled) {
+        continue;
+      }
+      if (!TryEmitCsvHeader(state)) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        continue;
+      }
+      if (!CsvWriteRow(CsvDataPortWriter, NULL, &item.record, item.node_id)) {
+        state->export_write_fail_count++;
+        vTaskDelay(pdMS_TO_TICKS(50));
+      }
+    }
+  }
+
+  state->export_task = NULL;
+  vTaskDelete(NULL);
+}
+
+static void
 StorageTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
@@ -558,11 +629,6 @@ StorageTask(void* context)
         pdTRUE) {
       if (state->fram_full) {
         record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
-      }
-      PrintCsvRecord(state->node_id_string, &record);
-
-      if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
-        (void)MeshTransportSendRecord(&state->mesh, &record);
       }
 
       if (state->fram_i2c.initialized) {
@@ -581,7 +647,6 @@ StorageTask(void* context)
             record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
             ESP_LOGW(
               kTag, "FRAM is full; new samples will be dropped until flush");
-            PrintCsvRecord(state->node_id_string, &record);
           } else if (append_result != ESP_OK) {
             ESP_LOGE(
               kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
@@ -590,6 +655,12 @@ StorageTask(void* context)
           }
         }
       }
+
+      if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
+        (void)MeshTransportSendRecord(&state->mesh, &record);
+      }
+
+      EnqueueExportRecord(state, state->node_id_string, &record);
     }
 
     const TickType_t now_ticks = xTaskGetTickCount();
@@ -693,13 +764,16 @@ TopologyTask(void* context)
       }
     }
 
-    printf("topology role=%s allow_children=%u layer=%d parent=%s children=%u rssi=%d\n",
-           role,
-           state->settings.allow_children ? 1u : 0u,
-           layer,
-           parent_str,
-           (unsigned)child_count,
-           rssi);
+    if (!state->log_quiet) {
+      printf(
+        "topology role=%s allow_children=%u layer=%d parent=%s children=%u rssi=%d\n",
+        role,
+        state->settings.allow_children ? 1u : 0u,
+        layer,
+        parent_str,
+        (unsigned)child_count,
+        rssi);
+    }
     vTaskDelay(interval_ticks);
   }
 
@@ -764,6 +838,8 @@ InitializeRuntimeStruct(void)
   g_runtime.flush_callback = &RuntimeFlushToSd;
   g_runtime.flush_context = &g_state;
   g_runtime.fram_full = &g_state.fram_full;
+  g_runtime.export_dropped_count = &g_state.export_dropped_count;
+  g_runtime.export_write_fail_count = &g_state.export_write_fail_count;
 }
 
 const app_runtime_t*
@@ -777,15 +853,6 @@ RuntimeManagerInit(void)
 {
   InitializeRuntimeStruct();
   esp_err_t first_error = ESP_OK;
-
-  esp_err_t data_port_result = DataPortInit();
-  if (data_port_result != ESP_OK) {
-    if (first_error == ESP_OK) {
-      first_error = data_port_result;
-    }
-    ESP_LOGE(
-      kTag, "Data port init failed: %s", esp_err_to_name(data_port_result));
-  }
 
   uint8_t mac[6] = { 0 };
   esp_err_t mac_result = esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -903,6 +970,14 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create log queue");
   }
 
+  g_state.export_queue = xQueueCreate(kExportQueueDepth, sizeof(export_item_t));
+  if (g_state.export_queue == NULL) {
+    if (first_error == ESP_OK) {
+      first_error = ESP_ERR_NO_MEM;
+    }
+    ESP_LOGE(kTag, "Failed to create export queue");
+  }
+
   g_state.initialized = true;
   return first_error;
 }
@@ -935,6 +1010,9 @@ RuntimeStart(void)
   if (g_state.log_queue == NULL) {
     return ESP_ERR_NO_MEM;
   }
+  if (g_state.export_queue == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
   if (g_state.batch_buffer == NULL || g_state.batch_buffer_size == 0) {
     return ESP_ERR_NO_MEM;
   }
@@ -954,9 +1032,11 @@ RuntimeStart(void)
   const bool is_root = (role == APP_NODE_ROLE_ROOT);
   const bool allow_children = g_state.settings.allow_children;
 
-  printf("role=%s allow_children=%u\n",
-         AppSettingsRoleToString(role),
-         allow_children ? 1u : 0u);
+  if (!g_state.log_quiet) {
+    printf("role=%s allow_children=%u\n",
+           AppSettingsRoleToString(role),
+           allow_children ? 1u : 0u);
+  }
 
   // Only the root should ever be configured with upstream router credentials.
   // Non-root nodes should focus on joining the Mesh-Lite network.
@@ -1020,16 +1100,11 @@ RuntimeStart(void)
     }
   }
 
-  if (g_state.data_streaming_enabled) {
-    if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
-      ESP_LOGW(kTag, "Failed to write CSV header to data port");
-    }
-  }
-
   g_state.is_running = true;
 
   BaseType_t sensor_created = pdPASS;
   BaseType_t storage_created = pdPASS;
+  BaseType_t export_created = pdPASS;
   BaseType_t time_created = pdPASS;
   BaseType_t topology_created = pdPASS;
 
@@ -1041,6 +1116,11 @@ RuntimeStart(void)
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
+    export_created = xTaskCreate(
+      &ExportTask, "export", 4096, &g_state, 4, &g_state.export_task);
+  }
+
+  if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     time_created = xTaskCreate(
       &TimeSyncTask, "time_sync", 4096, &g_state, 4, &g_state.time_sync_task);
   }
@@ -1049,12 +1129,14 @@ RuntimeStart(void)
     &TopologyTask, "topology", 3072, &g_state, 3, &g_state.topology_task);
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
-      time_created != pdPASS || topology_created != pdPASS) {
+      export_created != pdPASS || time_created != pdPASS ||
+      topology_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.is_running = false;
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-            g_state.time_sync_task != NULL || g_state.topology_task != NULL) &&
+            g_state.export_task != NULL || g_state.time_sync_task != NULL ||
+            g_state.topology_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -1079,7 +1161,8 @@ RuntimeStop(void)
 
   const TickType_t wait_start = xTaskGetTickCount();
   while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-          g_state.time_sync_task != NULL || g_state.topology_task != NULL) &&
+          g_state.export_task != NULL || g_state.time_sync_task != NULL ||
+          g_state.topology_task != NULL) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
@@ -1092,6 +1175,7 @@ RuntimeStop(void)
 
   SdLoggerClose(&g_state.sd_logger);
   (void)xQueueReset(g_state.log_queue);
+  (void)xQueueReset(g_state.export_queue);
   return ESP_OK;
 }
 
@@ -1105,7 +1189,7 @@ esp_err_t
 EnterRunMode(void)
 {
   RuntimeSetLogPolicyRun();
-  RuntimeSetDataStreamingEnabled(true);
+  RuntimeEnableDataStreaming(true);
   esp_err_t result = RuntimeStart();
   if (result != ESP_OK) {
     RuntimeSetLogPolicyDiag();
@@ -1116,22 +1200,26 @@ EnterRunMode(void)
 esp_err_t
 EnterDiagMode(void)
 {
-  RuntimeSetDataStreamingEnabled(false);
+  RuntimeEnableDataStreaming(false);
   esp_err_t result = RuntimeStop();
   RuntimeSetLogPolicyDiag();
   return result;
 }
 
 void
-RuntimeSetDataStreamingEnabled(bool enabled)
+RuntimeEnableDataStreaming(bool enabled)
 {
   const bool was_enabled = g_state.data_streaming_enabled;
-  g_state.data_streaming_enabled = enabled;
-  if (enabled && !was_enabled && g_state.is_running) {
-    if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
-      ESP_LOGW(kTag, "Failed to write CSV header to data port");
+  if (enabled && !was_enabled) {
+    g_state.data_streaming_enabled = true;
+    if (DataPortInit() != ESP_OK) {
+      g_state.data_streaming_enabled = false;
+      return;
     }
+    (void)TryEmitCsvHeader(&g_state);
+    return;
   }
+  g_state.data_streaming_enabled = enabled;
 }
 
 bool
