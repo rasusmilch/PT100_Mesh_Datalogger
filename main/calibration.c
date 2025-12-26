@@ -86,6 +86,125 @@ SolveLinearSystemGauss(
   return ESP_OK;
 }
 
+static bool
+HasDuplicateRawValues(const calibration_point_t* points, size_t num_points)
+{
+  for (size_t i = 0; i < num_points; ++i) {
+    for (size_t j = i + 1; j < num_points; ++j) {
+      if (points[i].raw_avg_mC == points[j].raw_avg_mC) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static esp_err_t
+FitLeastSquaresPolynomial(const calibration_point_t* points,
+                          size_t num_points,
+                          uint8_t degree,
+                          calibration_model_t* model_out)
+{
+  const int dimension = (int)degree + 1;
+  double matrix_a[CALIBRATION_MAX_POINTS][CALIBRATION_MAX_POINTS] = { 0 };
+  double vector_b[CALIBRATION_MAX_POINTS] = { 0 };
+
+  for (size_t index = 0; index < num_points; ++index) {
+    const double x_value = points[index].raw_avg_mC / 1000.0;
+    const double y_value = points[index].actual_mC / 1000.0;
+    double x_powers[2 * CALIBRATION_MAX_DEGREE + 1] = { 0 };
+    x_powers[0] = 1.0;
+    for (int power = 1; power <= 2 * degree; ++power) {
+      x_powers[power] = x_powers[power - 1] * x_value;
+    }
+
+    for (int row = 0; row < dimension; ++row) {
+      for (int col = 0; col < dimension; ++col) {
+        matrix_a[row][col] += x_powers[row + col];
+      }
+      vector_b[row] += y_value * x_powers[row];
+    }
+  }
+
+  double solution[CALIBRATION_MAX_POINTS] = { 0 };
+  esp_err_t result =
+    SolveLinearSystemGauss(dimension, matrix_a, vector_b, solution);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  memset(model_out, 0, sizeof(*model_out));
+  model_out->degree = degree;
+  for (int index = 0; index < dimension; ++index) {
+    model_out->coefficients[index] = solution[index];
+  }
+  model_out->is_valid = true;
+  return ESP_OK;
+}
+
+static esp_err_t
+ComputeDiagnostics(const calibration_point_t* points,
+                   size_t num_points,
+                   const calibration_model_t* model,
+                   calibration_fit_diagnostics_t* diagnostics_out)
+{
+  if (diagnostics_out == NULL) {
+    return ESP_OK;
+  }
+
+  double sum_sq = 0.0;
+  double max_abs_residual = 0.0;
+  for (size_t index = 0; index < num_points; ++index) {
+    const double raw_c = points[index].raw_avg_mC / 1000.0;
+    const double actual_c = points[index].actual_mC / 1000.0;
+    const double predicted_c = CalibrationModelEvaluate(model, raw_c);
+    const double residual = actual_c - predicted_c;
+    const double abs_residual = fabs(residual);
+    sum_sq += residual * residual;
+    if (abs_residual > max_abs_residual) {
+      max_abs_residual = abs_residual;
+    }
+  }
+
+  diagnostics_out->rms_error_c =
+    (num_points > 0) ? sqrt(sum_sq / (double)num_points) : 0.0;
+  diagnostics_out->max_abs_residual_c = max_abs_residual;
+  return ESP_OK;
+}
+
+static bool
+IsSlopeReasonable(const calibration_fit_options_t* options,
+                  const calibration_model_t* model)
+{
+  if (options->allow_wide_slope || model->degree < 1) {
+    return true;
+  }
+  const double slope = model->coefficients[1];
+  return slope >= options->min_slope && slope <= options->max_slope;
+}
+
+static bool
+IsCorrectionReasonable(const calibration_fit_options_t* options,
+                       const calibration_model_t* model,
+                       calibration_fit_diagnostics_t* diagnostics_out)
+{
+  if (options->guard_min_c >= options->guard_max_c) {
+    return true;
+  }
+  const double raw_min = options->guard_min_c;
+  const double raw_max = options->guard_max_c;
+  const double predicted_min = CalibrationModelEvaluate(model, raw_min);
+  const double predicted_max = CalibrationModelEvaluate(model, raw_max);
+  const double correction_min = predicted_min - raw_min;
+  const double correction_max = predicted_max - raw_max;
+  const double max_abs_correction =
+    fmax(fabs(correction_min), fabs(correction_max));
+  if (diagnostics_out != NULL) {
+    diagnostics_out->max_abs_correction_c = max_abs_correction;
+  }
+  return max_abs_correction <= options->max_abs_correction_c;
+}
+
 void
 CalibrationModelInitIdentity(calibration_model_t* model)
 {
@@ -122,16 +241,48 @@ CalibrationModelFitFromPoints(const calibration_point_t* points,
                               size_t num_points,
                               calibration_model_t* model_out)
 {
-  if (points == NULL || model_out == NULL) {
+  calibration_fit_options_t options;
+  CalibrationFitOptionsInitDefault(&options);
+  return CalibrationModelFitFromPointsWithOptions(
+    points, num_points, &options, model_out, NULL);
+}
+
+void
+CalibrationFitOptionsInitDefault(calibration_fit_options_t* options)
+{
+  if (options == NULL) {
+    return;
+  }
+  options->mode = CAL_FIT_MODE_LINEAR;
+  options->poly_degree = 1;
+  options->allow_wide_slope = false;
+  options->min_slope = CALIBRATION_MIN_SLOPE;
+  options->max_slope = CALIBRATION_MAX_SLOPE;
+  options->guard_min_c = CALIBRATION_GUARD_MIN_C;
+  options->guard_max_c = CALIBRATION_GUARD_MAX_C;
+  options->max_abs_correction_c = CALIBRATION_MAX_CORRECTION_C;
+}
+
+esp_err_t
+CalibrationModelFitFromPointsWithOptions(
+  const calibration_point_t* points,
+  size_t num_points,
+  const calibration_fit_options_t* options,
+  calibration_model_t* model_out,
+  calibration_fit_diagnostics_t* diagnostics_out)
+{
+  if (points == NULL || model_out == NULL || options == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
   if (num_points < 1 || num_points > CALIBRATION_MAX_POINTS) {
     return ESP_ERR_INVALID_SIZE;
   }
+  if (HasDuplicateRawValues(points, num_points)) {
+    ESP_LOGW(kTag, "duplicate raw values in calibration points");
+    return ESP_ERR_INVALID_ARG;
+  }
 
   if (num_points == 1) {
-    // Deterministic behavior: treat single-point as offset-only correction with
-    // slope=1.
     const double offset =
       (points[0].actual_mC - points[0].raw_avg_mC) / 1000.0;
     CalibrationModelInitIdentity(model_out);
@@ -139,39 +290,68 @@ CalibrationModelFitFromPoints(const calibration_point_t* points,
     model_out->coefficients[0] = offset;
     model_out->coefficients[1] = 1.0;
     model_out->is_valid = true;
+    if (diagnostics_out != NULL) {
+      diagnostics_out->rms_error_c = 0.0;
+      diagnostics_out->max_abs_residual_c = 0.0;
+      diagnostics_out->max_abs_correction_c = fabs(offset);
+    }
     return ESP_OK;
   }
 
-  // Build Vandermonde matrix for polynomial degree (N-1).
-  const int dimension = (int)num_points;
-  double matrix_a[CALIBRATION_MAX_POINTS][CALIBRATION_MAX_POINTS];
-  double vector_b[CALIBRATION_MAX_POINTS];
-  memset(matrix_a, 0, sizeof(matrix_a));
-  memset(vector_b, 0, sizeof(vector_b));
-
-  for (int row = 0; row < dimension; ++row) {
-    const double x_value = points[row].raw_avg_mC / 1000.0;
-    double x_pow = 1.0;
-    for (int col = 0; col < dimension; ++col) {
-      matrix_a[row][col] = x_pow;
-      x_pow *= x_value;
-    }
-    vector_b[row] = points[row].actual_mC / 1000.0;
+  uint8_t degree = 1;
+  switch (options->mode) {
+    case CAL_FIT_MODE_LINEAR:
+      degree = 1;
+      break;
+    case CAL_FIT_MODE_PIECEWISE:
+      ESP_LOGW(kTag, "piecewise fit mode not implemented");
+      return ESP_ERR_NOT_SUPPORTED;
+    case CAL_FIT_MODE_POLY:
+      degree = options->poly_degree;
+      if (degree < 1 || degree > CALIBRATION_MAX_DEGREE) {
+        ESP_LOGW(kTag, "invalid polynomial degree %u", degree);
+        return ESP_ERR_INVALID_ARG;
+      }
+      break;
+    default:
+      ESP_LOGW(kTag, "unknown fit mode");
+      return ESP_ERR_INVALID_ARG;
   }
 
-  double solution[CALIBRATION_MAX_POINTS] = { 0 };
+  if (degree + 1 > num_points) {
+    ESP_LOGW(kTag,
+             "not enough points for degree %u (need >=%u)",
+             degree,
+             (unsigned)(degree + 1));
+    return ESP_ERR_INVALID_SIZE;
+  }
+
   esp_err_t result =
-    SolveLinearSystemGauss(dimension, matrix_a, vector_b, solution);
+    FitLeastSquaresPolynomial(points, num_points, degree, model_out);
   if (result != ESP_OK) {
     return result;
   }
 
-  memset(model_out, 0, sizeof(*model_out));
-  model_out->degree = (uint8_t)(dimension - 1);
-  for (int index = 0; index < dimension; ++index) {
-    model_out->coefficients[index] = solution[index];
+  ComputeDiagnostics(points, num_points, model_out, diagnostics_out);
+
+  if (!IsSlopeReasonable(options, model_out)) {
+    ESP_LOGW(kTag,
+             "slope out of bounds (%.6f not in [%.3f, %.3f])",
+             model_out->coefficients[1],
+             options->min_slope,
+             options->max_slope);
+    return ESP_ERR_INVALID_STATE;
   }
-  model_out->is_valid = true;
+
+  if (!IsCorrectionReasonable(options, model_out, diagnostics_out)) {
+    ESP_LOGW(kTag,
+             "correction exceeds max abs %.2fC within [%.1f, %.1f]",
+             options->max_abs_correction_c,
+             options->guard_min_c,
+             options->guard_max_c);
+    return ESP_ERR_INVALID_STATE;
+  }
+
   return ESP_OK;
 }
 

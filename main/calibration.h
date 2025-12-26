@@ -15,6 +15,11 @@ extern "C"
 #define CALIBRATION_MAX_POINTS 4
 #define CALIBRATION_MAX_DEGREE 3
 #define CAL_WINDOW_SIZE 16
+#define CALIBRATION_MIN_SLOPE 0.8
+#define CALIBRATION_MAX_SLOPE 1.2
+#define CALIBRATION_GUARD_MIN_C -50.0
+#define CALIBRATION_GUARD_MAX_C 200.0
+#define CALIBRATION_MAX_CORRECTION_C 20.0
 
   typedef struct
   {
@@ -33,6 +38,32 @@ extern "C"
     bool is_valid;
   } calibration_model_t;
 
+  typedef enum
+  {
+    CAL_FIT_MODE_LINEAR = 0,
+    CAL_FIT_MODE_PIECEWISE,
+    CAL_FIT_MODE_POLY
+  } calibration_fit_mode_t;
+
+  typedef struct
+  {
+    calibration_fit_mode_t mode;
+    uint8_t poly_degree;
+    bool allow_wide_slope;
+    double min_slope;
+    double max_slope;
+    double guard_min_c;
+    double guard_max_c;
+    double max_abs_correction_c;
+  } calibration_fit_options_t;
+
+  typedef struct
+  {
+    double rms_error_c;
+    double max_abs_residual_c;
+    double max_abs_correction_c;
+  } calibration_fit_diagnostics_t;
+
   // Identity mapping (y = x).
   void CalibrationModelInitIdentity(calibration_model_t* model);
 
@@ -40,14 +71,21 @@ extern "C"
   double CalibrationModelEvaluate(const calibration_model_t* model,
                                   double raw_c);
 
-  // Fit a polynomial through N points.
-  // - N=1 => degree 0 (offset-only), y=c0
-  // - N=2 => degree 1 (linear)
-  // - N=3 => degree 2 (quadratic)
-  // - N=4 => degree 3 (cubic)
+  // Fit a calibration model using default options.
+  // - N=1 => offset-only correction with slope=1 (y=x+offset)
+  // - N>=2 => linear least-squares fit (y=a+b*x)
   esp_err_t CalibrationModelFitFromPoints(const calibration_point_t* points,
                                           size_t num_points,
                                           calibration_model_t* model_out);
+
+  void CalibrationFitOptionsInitDefault(calibration_fit_options_t* options);
+
+  esp_err_t CalibrationModelFitFromPointsWithOptions(
+    const calibration_point_t* points,
+    size_t num_points,
+    const calibration_fit_options_t* options,
+    calibration_model_t* model_out,
+    calibration_fit_diagnostics_t* diagnostics_out);
 
   void CalWindowPushRawSample(int32_t raw_milli_c);
   bool CalWindowIsReady(void);
