@@ -31,19 +31,20 @@ extern "C"
     int64_t timestamp_epoch_sec;
   } calibration_point_t;
 
-  typedef struct
-  {
-    uint8_t degree;                              // 0..3
-    double coefficients[CALIBRATION_MAX_POINTS]; // c0..c3
-    bool is_valid;
-  } calibration_model_t;
-
   typedef enum
   {
     CAL_FIT_MODE_LINEAR = 0,
     CAL_FIT_MODE_PIECEWISE,
     CAL_FIT_MODE_POLY
   } calibration_fit_mode_t;
+
+  typedef struct
+  {
+    calibration_fit_mode_t mode;
+    uint8_t degree;                              // 0..3
+    double coefficients[CALIBRATION_MAX_POINTS]; // c0..c3
+    bool is_valid;
+  } calibration_model_t;
 
   typedef struct
   {
@@ -70,6 +71,10 @@ extern "C"
   // y = sum_{i=0..degree} c[i] * x^i
   double CalibrationModelEvaluate(const calibration_model_t* model,
                                   double raw_c);
+  double CalibrationModelEvaluateWithPoints(const calibration_model_t* model,
+                                            double raw_c,
+                                            const calibration_point_t* points,
+                                            size_t num_points);
 
   // Fit a calibration model using default options.
   // - N=1 => offset-only correction with slope=1 (y=x+offset)

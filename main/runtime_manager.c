@@ -549,8 +549,11 @@ SensorTask(void* context)
     record.timestamp_millis = time_valid ? millis : 0;
 
     if (result == ESP_OK) {
-      const double cal_c = CalibrationModelEvaluate(
-        &state->settings.calibration, sample.temperature_c);
+      const double cal_c = CalibrationModelEvaluateWithPoints(
+        &state->settings.calibration,
+        sample.temperature_c,
+        state->settings.calibration_points,
+        state->settings.calibration_points_count);
       record.raw_temp_milli_c = (int32_t)llround(sample.temperature_c * 1000.0);
       CalWindowPushRawSample(record.raw_temp_milli_c);
       record.temp_milli_c = (int32_t)llround(cal_c * 1000.0);
