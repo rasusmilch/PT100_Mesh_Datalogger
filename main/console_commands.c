@@ -762,7 +762,9 @@ CommandCal(int argc, char** argv)
           point->timestamp_epoch_sec =
             point->time_valid ? (int64_t)time(NULL) : 0;
           settings->calibration_points_count++;
-          printf("cal capture ok: raw_avg=%.3fC raw_std=%.3fC actual=%.3fC\n",
+          printf("cal capture ok: raw_last=%.3fC raw_avg=%.3fC "
+                 "raw_std=%.3fC actual=%.3fC\n",
+                 last_raw_mC / 1000.0,
                  mean_raw_mC / 1000.0,
                  stddev_c,
                  actual_temp_c);
@@ -1570,7 +1572,15 @@ RegisterCommands(void)
       "Calibration: cal clear | cal add <raw_c> <actual_c> | cal list | cal "
       "show | cal apply [--mode linear|piecewise|polyN] [--allow_wide_slope] | "
       "cal live [--every_ms 500] [--seconds 10] | cal capture <actual_temp_c> "
-      "[--stable_stddev_c 0.05] [--min_seconds 5] [--timeout_seconds 120]",
+      "[--stable_stddev_c 0.05] [--min_seconds 5] [--timeout_seconds 120]\n"
+      "Workflow: cal clear; let node settle at reference temp; cal live "
+      "--seconds 10; cal capture 0.00 --stable_stddev_c 0.05 "
+      "--min_seconds 10; move to another reference; cal capture 100.00 ...; "
+      "cal apply; cal show.\n"
+      "Notes: capture uses windowed average after stability; live/capture show "
+      "raw vs average; apply uses least-squares and reports residuals; "
+      "calibration invalidates when conversion mode, wire count, filter Hz, "
+      "Rref, R0, or PT100 table changes.",
     .hint = NULL,
     .func = &CommandCal,
     .argtable = &g_cal_args,
