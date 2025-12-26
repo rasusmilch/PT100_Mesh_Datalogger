@@ -11,6 +11,7 @@
 #include "esp_mesh_lite.h"
 #include "esp_mesh_lite_port.h"
 #include "esp_system.h"
+#include "calibration.h"
 #include "fram_i2c.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
@@ -551,6 +552,7 @@ SensorTask(void* context)
       const double cal_c = CalibrationModelEvaluate(
         &state->settings.calibration, sample.temperature_c);
       record.raw_temp_milli_c = (int32_t)llround(sample.temperature_c * 1000.0);
+      CalWindowPushRawSample(record.raw_temp_milli_c);
       record.temp_milli_c = (int32_t)llround(cal_c * 1000.0);
       record.resistance_milli_ohm =
         (int32_t)llround(sample.resistance_ohm * 1000.0);
