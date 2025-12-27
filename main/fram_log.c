@@ -10,7 +10,7 @@
 static const char* kTag = "fram_log";
 
 #define FRAM_LOG_MAGIC 0x46524C47u // 'FRLG'
-#define FRAM_LOG_VERSION 2u
+#define FRAM_LOG_VERSION 3u
 
 // Reserve some bytes for two header copies.
 static const uint32_t kHeaderCopy0Address = 0;
@@ -43,7 +43,7 @@ typedef struct
 {
   uint32_t magic;
   uint32_t version;
-  uint32_t header_sequence;
+  uint32_t generation_counter;
   uint32_t write_index;
   uint32_t read_index;
   uint32_t record_count;
@@ -95,7 +95,7 @@ WriteHeaderAt(const fram_log_t* log,
 static void
 ApplyHeaderToState(const fram_log_header_t* header, fram_log_t* log)
 {
-  log->header_sequence = header->header_sequence;
+  log->header_generation = header->generation_counter;
   log->write_index = header->write_index;
   log->read_index = header->read_index;
   log->record_count = header->record_count;
@@ -104,12 +104,14 @@ ApplyHeaderToState(const fram_log_header_t* header, fram_log_t* log)
 }
 
 static void
-BuildHeaderFromState(const fram_log_t* log, fram_log_header_t* header_out)
+BuildHeaderFromState(const fram_log_t* log,
+                     uint32_t generation_counter,
+                     fram_log_header_t* header_out)
 {
   memset(header_out, 0, sizeof(*header_out));
   header_out->magic = FRAM_LOG_MAGIC;
   header_out->version = FRAM_LOG_VERSION;
-  header_out->header_sequence = log->header_sequence;
+  header_out->generation_counter = generation_counter;
   header_out->write_index = log->write_index;
   header_out->read_index = log->read_index;
   header_out->record_count = log->record_count;
@@ -207,7 +209,8 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
 
   if (!header0_valid && !header1_valid) {
     ESP_LOGW(kTag, "No valid FRAM header; scanning for latest record_id");
-    log->header_sequence = 1;
+    log->header_generation = 0;
+    log->header_copy_index = 1;
     log->write_index = 0;
     log->read_index = 0;
     log->record_count = 0;
@@ -252,16 +255,25 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
   }
 
   const fram_log_header_t* chosen = NULL;
+  uint8_t chosen_index = 0;
   if (header0_valid && header1_valid) {
-    chosen = (header1.header_sequence >= header0.header_sequence) ? &header1
-                                                                  : &header0;
+    if (header1.generation_counter >= header0.generation_counter) {
+      chosen = &header1;
+      chosen_index = 1;
+    } else {
+      chosen = &header0;
+      chosen_index = 0;
+    }
   } else if (header0_valid) {
     chosen = &header0;
+    chosen_index = 0;
   } else {
     chosen = &header1;
+    chosen_index = 1;
   }
 
   ApplyHeaderToState(chosen, log);
+  log->header_copy_index = chosen_index;
   log->saw_corruption = false;
   log->records_since_header_persist = 0;
 
@@ -368,7 +380,6 @@ FramLogAssignRecordIds(fram_log_t* log, log_record_t* record)
 
   if (log->records_since_header_persist >=
       (uint32_t)CONFIG_APP_FRAM_HEADER_UPDATE_EVERY_N_RECORDS) {
-    log->header_sequence++;
     return FramLogPersistHeader(log);
   }
   return ESP_OK;
@@ -380,20 +391,35 @@ FramLogPersistHeader(fram_log_t* log)
   if (log == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+  const uint32_t next_generation = log->header_generation + 1u;
   fram_log_header_t header;
-  BuildHeaderFromState(log, &header);
+  BuildHeaderFromState(log, next_generation, &header);
 
   // Alternate header copies to reduce single-address pounding (even though FRAM
   // tolerates it well).
-  const uint32_t address = (log->header_sequence % 2u == 0u)
-                             ? kHeaderCopy0Address
-                             : kHeaderCopy1Address;
+  const uint8_t next_copy_index = (uint8_t)((log->header_copy_index + 1u) % 2u);
+  const uint32_t address = (next_copy_index == 0u) ? kHeaderCopy0Address
+                                                   : kHeaderCopy1Address;
 
   esp_err_t result = WriteHeaderAt(log, address, &header);
-  if (result == ESP_OK) {
-    log->records_since_header_persist = 0;
+  if (result != ESP_OK) {
+    return result;
   }
-  return result;
+
+  fram_log_header_t verify;
+  result = ReadHeaderAt(log, address, &verify);
+  if (result != ESP_OK) {
+    return result;
+  }
+  if (!HeaderLooksValid(&verify) ||
+      verify.generation_counter != next_generation) {
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+
+  log->header_generation = next_generation;
+  log->header_copy_index = next_copy_index;
+  log->records_since_header_persist = 0;
+  return ESP_OK;
 }
 
 esp_err_t
@@ -504,7 +530,6 @@ FramLogDiscardOldest(fram_log_t* log)
   log->records_since_header_persist++;
 
   // During SD flush we want best durability; persist header eagerly.
-  log->header_sequence++;
   return FramLogPersistHeader(log);
 }
 
@@ -534,7 +559,6 @@ FramLogPopOldest(fram_log_t* log, log_record_t* record_out)
 
   if (log->records_since_header_persist >=
       (uint32_t)CONFIG_APP_FRAM_HEADER_UPDATE_EVERY_N_RECORDS) {
-    log->header_sequence++;
     return FramLogPersistHeader(log);
   }
   return ESP_OK;
@@ -556,7 +580,6 @@ FramLogSkipCorruptedRecord(fram_log_t* log)
   log->read_index++;
   log->record_count--;
   log->records_since_header_persist++;
-  log->header_sequence++;
   return FramLogPersistHeader(log);
 }
 

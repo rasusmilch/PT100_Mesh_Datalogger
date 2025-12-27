@@ -21,7 +21,8 @@ extern "C"
     uint32_t record_region_offset;
     uint32_t capacity_records;
 
-    uint32_t header_sequence;
+    uint32_t header_generation;
+    uint8_t header_copy_index;
     uint32_t write_index;
     uint32_t read_index;
     uint32_t record_count;
