@@ -527,20 +527,33 @@ SdFlushWorkerTick(runtime_state_t* state,
   if (state == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  if (!state->sd_logger.is_mounted) {
-    return ESP_OK;
-  }
   if (state->batch_buffer == NULL || state->batch_buffer_size == 0) {
     return ESP_ERR_NO_MEM;
   }
-  const TickType_t now_ticks = xTaskGetTickCount();
-  if (state->sd_backoff_until_ticks != 0 &&
-      now_ticks < state->sd_backoff_until_ticks) {
+
+  const uint32_t buffered_records = FramLogGetBufferedRecords(&state->fram_log);
+  if (buffered_records == 0) {
     return ESP_OK;
   }
 
-  if (FramLogGetBufferedRecords(&state->fram_log) == 0) {
+  const TickType_t now_ticks = xTaskGetTickCount();
+  if (state->sd_backoff_until_ticks != 0 &&
+      now_ticks < state->sd_backoff_until_ticks) {
+    if (more_pending_out != NULL) {
+      *more_pending_out = true;
+    }
     return ESP_OK;
+  }
+
+  if (!state->sd_logger.is_mounted) {
+    esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
+    if (mount_result != ESP_OK) {
+      MarkSdFailure(state, "SD mount failed", mount_result);
+      if (more_pending_out != NULL) {
+        *more_pending_out = true;
+      }
+      return ESP_OK;
+    }
   }
 
   log_record_t first_record;
@@ -559,6 +572,7 @@ SdFlushWorkerTick(runtime_state_t* state,
                                    : (int64_t)time(NULL);
   esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
   if (sync_result != ESP_OK) {
+    (void)SdLoggerUnmount(&state->sd_logger);
     MarkSdFailure(state, "SD sync failed", sync_result);
     return sync_result;
   }
@@ -590,7 +604,7 @@ SdFlushWorkerTick(runtime_state_t* state,
   esp_err_t write_result = SdLoggerAppendVerifiedBatch(
     &state->sd_logger, state->batch_buffer, bytes_used, last_seq);
   if (write_result != ESP_OK) {
-    SdLoggerClose(&state->sd_logger);
+    (void)SdLoggerUnmount(&state->sd_logger);
     MarkSdFailure(state, "SD append failed", write_result);
     return write_result;
   }

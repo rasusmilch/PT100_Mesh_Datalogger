@@ -34,6 +34,11 @@ typedef struct
   uint8_t* file_buffer;
 
   sd_logger_config_t config;
+
+  // Saved slot configuration so we can retry mounting on hot-insert.
+  spi_host_device_t host_id;
+  int cs_gpio;
+  bool slot_config_valid;
 } sd_logger_t;
 
 void SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config);
@@ -43,6 +48,13 @@ void SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config);
 esp_err_t SdLoggerMount(sd_logger_t* logger,
                         spi_host_device_t host,
                         int cs_gpio);
+
+// Retry mount using the last host/cs passed to SdLoggerMount().
+// If format_if_mount_failed is true, the card may be formatted (destructive).
+esp_err_t SdLoggerTryRemount(sd_logger_t* logger, bool format_if_mount_failed);
+
+// Close any open file and unmount the SD card.
+esp_err_t SdLoggerUnmount(sd_logger_t* logger);
 
 // Open/create the UTC daily CSV for the provided epoch. Repairs tail and
 // updates last_sequence_on_sd.

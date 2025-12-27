@@ -16,8 +16,6 @@ RunDiagSd(const app_runtime_t* runtime,
           bool mount,
           diag_verbosity_t verbosity)
 {
-  (void)format_if_needed;
-  (void)mount;
 
   diag_ctx_t ctx;
   DiagInitCtx(&ctx, "SD", verbosity);
@@ -31,7 +29,34 @@ RunDiagSd(const app_runtime_t* runtime,
     return 1;
   }
 
-  DiagReportStep(&ctx, 1, total_steps, "logger mounted", runtime->sd_logger->is_mounted ? ESP_OK : ESP_FAIL, "mounted=%s", runtime->sd_logger->is_mounted ? "yes" : "no");
+  const bool should_mount = mount || format_if_needed;
+  esp_err_t mount_result = ESP_OK;
+  if (should_mount && !runtime->sd_logger->is_mounted) {
+    mount_result = SdLoggerTryRemount(runtime->sd_logger, format_if_needed);
+  }
+  const char* mount_err_string =
+    should_mount ? esp_err_to_name(mount_result) : "n/a";
+
+  DiagReportStep(&ctx,
+                 1,
+                 total_steps,
+                 "logger mounted",
+                 runtime->sd_logger->is_mounted ? ESP_OK : ESP_FAIL,
+                 "mounted=%s attempted=%s format=%s err=%s",
+                 runtime->sd_logger->is_mounted ? "yes" : "no",
+                 should_mount ? "yes" : "no",
+                 format_if_needed ? "yes" : "no",
+                 mount_err_string);
+
+  if (!full) {
+    DiagReportStep(&ctx,
+                   2,
+                   total_steps,
+                   "last seq",
+                   ESP_OK,
+                   "last_sequence=%u",
+                   (unsigned)SdLoggerLastSequenceOnSd(runtime->sd_logger));
+  }
 
   if (full) {
     const sdmmc_card_t* card = runtime->sd_logger->card;
@@ -52,10 +77,14 @@ RunDiagSd(const app_runtime_t* runtime,
         fflush(f);
         fclose(f);
         FILE* r = fopen(test_path, "rb");
-        char buffer[8] = {0};
-        size_t n = fread(buffer, 1, sizeof(buffer), r);
-        fclose(r);
-        const bool match = (n >= sizeof(payload) && memcmp(payload, buffer, sizeof(payload)) == 0);
+        bool match = false;
+        if (r != NULL) {
+          char buffer[8] = { 0 };
+          size_t n = fread(buffer, 1, sizeof(buffer), r);
+          fclose(r);
+          match =
+            (n >= sizeof(payload) && memcmp(payload, buffer, sizeof(payload)) == 0);
+        }
         remove(test_path);
         DiagReportStep(&ctx,
                        3,

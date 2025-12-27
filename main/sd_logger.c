@@ -47,6 +47,10 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
     DefaultOr(config ? config->tail_scan_bytes : 0, default_tail_scan);
   logger->config.file_buffer_bytes =
     DefaultOr(config ? config->file_buffer_bytes : 0, default_buffer);
+
+  logger->host_id = (spi_host_device_t)0;
+  logger->cs_gpio = -1;
+  logger->slot_config_valid = false;
 }
 
 static void
@@ -85,13 +89,12 @@ WriteHeaderIfEmpty(sd_logger_t* logger)
   return wrote_header ? ESP_OK : ESP_FAIL;
 }
 
-esp_err_t
-SdLoggerMount(sd_logger_t* logger, spi_host_device_t host, int cs_gpio)
+static esp_err_t
+SdLoggerMountInternal(sd_logger_t* logger,
+                      spi_host_device_t host,
+                      int cs_gpio,
+                      bool format_if_mount_failed)
 {
-  if (logger == NULL) {
-    return ESP_ERR_INVALID_ARG;
-  }
-
   sdmmc_host_t sd_host = SDSPI_HOST_DEFAULT();
   sd_host.slot = host;
 
@@ -100,7 +103,7 @@ SdLoggerMount(sd_logger_t* logger, spi_host_device_t host, int cs_gpio)
   slot_config.host_id = host;
 
   esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-    .format_if_mount_failed = false,
+    .format_if_mount_failed = format_if_mount_failed,
     .max_files = 5,
     .allocation_unit_size = 16 * 1024,
   };
@@ -119,6 +122,65 @@ SdLoggerMount(sd_logger_t* logger, spi_host_device_t host, int cs_gpio)
   ESP_LOGI(kTag, "SD mounted at %s", logger->mount_point);
   return ESP_OK;
 }
+
+esp_err_t
+SdLoggerMount(sd_logger_t* logger, spi_host_device_t host, int cs_gpio)
+{
+  if (logger == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  logger->host_id = host;
+  logger->cs_gpio = cs_gpio;
+  logger->slot_config_valid = true;
+
+  return SdLoggerMountInternal(logger, host, cs_gpio, false);
+}
+
+esp_err_t
+SdLoggerTryRemount(sd_logger_t* logger, bool format_if_mount_failed)
+{
+  if (logger == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (logger->is_mounted) {
+    return ESP_OK;
+  }
+  if (!logger->slot_config_valid) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  return SdLoggerMountInternal(logger,
+                               logger->host_id,
+                               logger->cs_gpio,
+                               format_if_mount_failed);
+}
+
+esp_err_t
+SdLoggerUnmount(sd_logger_t* logger)
+{
+  if (logger == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  SdLoggerClose(logger);
+
+  if (logger->is_mounted && logger->card != NULL) {
+    esp_err_t unmount_result =
+      esp_vfs_fat_sdcard_unmount(logger->mount_point, logger->card);
+    if (unmount_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "SD unmount failed (%s): %s",
+               logger->mount_point,
+               esp_err_to_name(unmount_result));
+      // Continue clearing state regardless.
+    }
+  }
+
+  logger->is_mounted = false;
+  logger->card = NULL;
+  return ESP_OK;
+}
+
 
 static esp_err_t
 ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
