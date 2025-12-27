@@ -11,6 +11,7 @@ idf_component_register(
     "diagnostics/diag_rtc.c"
     "diagnostics/diag_rtd.c"
     "diagnostics/diag_sd.c"
+    "diagnostics/diag_storage.c"
     "diagnostics/diag_wifi.c"
     "data_csv.c"
     "data_port.c"

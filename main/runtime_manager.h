@@ -59,6 +59,14 @@ extern "C" {
 
   void RuntimeSetLogPolicyDiag(void);
 
+  void RuntimeSetSdAppendFailureOnce(bool enabled);
+
+  bool RuntimeSdIsDegraded(void);
+
+  uint32_t RuntimeSdFailCount(void);
+
+  uint32_t RuntimeSdBackoffUntilTicks(void);
+
 #ifdef __cplusplus
 }
 #endif
