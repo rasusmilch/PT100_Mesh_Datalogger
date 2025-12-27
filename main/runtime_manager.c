@@ -10,6 +10,7 @@
 #include "calibration.h"
 #include "data_csv.h"
 #include "data_port.h"
+#include "display_attention.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_mesh_lite.h"
@@ -58,6 +59,9 @@ typedef struct
   bool sd_flush_pending;
   bool sd_degraded;
   bool sd_force_unmount_on_append;
+  bool sd_last_io_error_active;
+  esp_err_t sd_last_io_err;
+  int sd_last_errno;
   bool fram_full;
   bool sd_was_mounted;
   TickType_t last_overrun_log_ticks;
@@ -134,6 +138,27 @@ static bool
 DoubleNear(double a, double b)
 {
   return fabs(a - b) <= 1e-6;
+}
+
+static bool
+IsSdIoOperation(const char* operation)
+{
+  if (operation == NULL) {
+    return false;
+  }
+  return strcmp(operation, "append") == 0 || strcmp(operation, "fflush") == 0 ||
+         strcmp(operation, "fsync") == 0 || strcmp(operation, "verify") == 0;
+}
+
+static void
+ClearSdIoError(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->sd_last_io_error_active = false;
+  state->sd_last_io_err = ESP_OK;
+  state->sd_last_errno = 0;
 }
 
 static void
@@ -270,26 +295,56 @@ CopyLastSample(runtime_state_t* state,
                uint32_t* flags,
                TickType_t* update_ticks);
 
-static bool
-RuntimeNeedsOperatorAttention(runtime_state_t* state)
+static display_attention_mask_t
+ComputeActiveAttentionMask(const runtime_state_t* state)
 {
   if (state == NULL) {
-    return false;
+    return 0;
   }
 
-  uint32_t flags = 0;
-  CopyLastSample(state, NULL, NULL, &flags, NULL);
-  if ((flags & LOG_RECORD_FLAG_SENSOR_FAULT) != 0u) {
-    return true;
+  display_attention_mask_t active = 0;
+
+  if (!state->sd_logger.is_mounted) {
+    active |= kDispAttnSdOut;
   }
-  if (state->sd_degraded || !state->sd_logger.is_mounted) {
-    return true;
+  if (state->sd_last_io_error_active) {
+    active |= kDispAttnSdIo;
   }
   if (FramLogGetOverrunRecordsTotal(&state->fram_log) > 0) {
-    return true;
+    active |= kDispAttnFramOvr;
+  }
+  if (state->last_sensor_fault_present) {
+    active |= kDispAttnRtdFault;
+  }
+  if (!TimeSyncIsSystemTimeValid()) {
+    active |= kDispAttnTimeBad;
+  }
+  if (!MeshTransportIsConnected(&state->mesh)) {
+    active |= kDispAttnMeshDown;
   }
 
-  return false;
+  return active;
+}
+
+static const char*
+AttentionBitToCode(display_attention_bit_t bit)
+{
+  switch (bit) {
+    case kDispAttnSdOut:
+      return "SDOUT";
+    case kDispAttnSdIo:
+      return "SDIO!";
+    case kDispAttnFramOvr:
+      return "FRMOV";
+    case kDispAttnRtdFault:
+      return "RTD!";
+    case kDispAttnTimeBad:
+      return "TIME!";
+    case kDispAttnMeshDown:
+      return "MESH?";
+    default:
+      return "ERR  ";
+  }
 }
 
 static void
@@ -363,6 +418,9 @@ DisplayTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
   char last_text[12] = { 0 };
+  display_attention_mask_t last_active_mask = 0;
+  size_t code_index = 0;
+  uint32_t last_code_tick = 0;
 
   while (state != NULL) {
     if (!state->display_initialized) {
@@ -380,14 +438,55 @@ DisplayTask(void* context)
     }
 
     const TickType_t now_ticks = xTaskGetTickCount();
-    const bool flash_on =
-      (((uint32_t)pdTICKS_TO_MS(now_ticks) / 500u) % 2u) == 0u;
+    const uint32_t now_ms = (uint32_t)pdTICKS_TO_MS(now_ticks);
+    const bool flash_on = ((now_ms / 500u) % 2u) == 0u;
 
-    if (RuntimeNeedsOperatorAttention(state)) {
-      const char* text = flash_on ? "ERROR" : "";
-      if (strncmp(last_text, text, sizeof(last_text)) != 0) {
-        Max7219DisplaySetText(&state->display, text);
-        snprintf(last_text, sizeof(last_text), "%s", text);
+    const display_attention_mask_t enabled =
+      AppSettingsGetDisplayAttentionMask();
+    const display_attention_mask_t active_all =
+      ComputeActiveAttentionMask(state);
+    const display_attention_mask_t active = active_all & enabled;
+
+    display_attention_bit_t bits[8];
+    size_t bit_count = 0;
+    const display_attention_bit_t known_bits[] = {
+      kDispAttnSdOut,
+      kDispAttnSdIo,
+      kDispAttnFramOvr,
+      kDispAttnRtdFault,
+      kDispAttnTimeBad,
+      kDispAttnMeshDown,
+    };
+    for (size_t idx = 0; idx < sizeof(known_bits) / sizeof(known_bits[0]);
+         ++idx) {
+      const display_attention_bit_t bit = known_bits[idx];
+      if ((active & bit) != 0u) {
+        bits[bit_count++] = bit;
+      }
+    }
+
+    if (bit_count > 0) {
+      if (active != last_active_mask) {
+        code_index = 0;
+        last_code_tick = now_ms / 1000u;
+        last_active_mask = active;
+      }
+
+      const uint32_t now_code_tick = now_ms / 1000u;
+      if (now_code_tick != last_code_tick) {
+        code_index = (code_index + 1u) % bit_count;
+        last_code_tick = now_code_tick;
+      }
+
+      if (flash_on) {
+        const char* text = AttentionBitToCode(bits[code_index]);
+        if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+          Max7219DisplaySetText(&state->display, text);
+          snprintf(last_text, sizeof(last_text), "%s", text);
+        }
+      } else if (last_text[0] != '\0') {
+        Max7219DisplayClear(&state->display);
+        last_text[0] = '\0';
       }
       vTaskDelay(pdMS_TO_TICKS(250));
       continue;
@@ -769,6 +868,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
                     true);
       return write_result;
     }
+    ClearSdIoError(state);
 
     for (uint32_t index = 0; index < records_used; ++index) {
       esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
@@ -808,6 +908,11 @@ MarkSdFailure(runtime_state_t* state,
   state->sd_fail_count++;
   state->sd_backoff_until_ticks =
     xTaskGetTickCount() + pdMS_TO_TICKS(kSdFlushFailureBackoffMs);
+  if (IsSdIoOperation(operation)) {
+    state->sd_last_io_error_active = true;
+    state->sd_last_io_err = error;
+    state->sd_last_errno = errno_value;
+  }
   const char* op_label = (operation != NULL) ? operation : "unknown";
   const char* errno_str = (errno_value != 0) ? strerror(errno_value) : "n/a";
   const char* action_label = did_unmount ? "unmount+backoff" : "backoff";
@@ -874,6 +979,7 @@ SdFlushWorkerTick(runtime_state_t* state,
     // stop triggering operator attention once the SD path is healthy again.
     state->sd_backoff_until_ticks = 0;
     state->sd_degraded = false;
+    ClearSdIoError(state);
 
     if (was_degraded || prev_fail_count != 0u) {
       ESP_LOGW(kTag,
@@ -944,6 +1050,7 @@ SdFlushWorkerTick(runtime_state_t* state,
                   true);
     return write_result;
   }
+  ClearSdIoError(state);
 
   for (uint32_t index = 0; index < records_used; ++index) {
     esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
@@ -1535,6 +1642,8 @@ EnsureSdMounted(void)
     if (mount_result != ESP_OK) {
       MarkSdFailure(
         &g_state, "SD mount failed", "mount", mount_result, 0, false);
+    } else {
+      ClearSdIoError(&g_state);
     }
   }
 }
@@ -1569,6 +1678,9 @@ RuntimeStart(void)
   g_state.sd_backoff_until_ticks = 0;
   g_state.sd_flush_records_since = 0;
   g_state.sd_flush_pending = false;
+  g_state.sd_last_io_error_active = false;
+  g_state.sd_last_io_err = ESP_OK;
+  g_state.sd_last_errno = 0;
   g_state.last_overrun_log_ticks = 0;
   g_state.last_overrun_records_total = 0;
   g_state.last_overrun_logged_total = 0;
