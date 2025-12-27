@@ -160,9 +160,17 @@ CommandStatus(int argc, char** argv)
          (local_buffer[0] != '\0') ? local_buffer : "unknown",
          utc_offset_sec,
          local_time.tm_isdst);
-  printf("fram: buffered=%u / cap=%u (flush_watermark=%u)\n",
-         (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
-         (unsigned)FramLogGetCapacityRecords(g_runtime->fram_log),
+  const size_t fram_count = FramLogGetCountRecords(g_runtime->fram_log);
+  const size_t fram_capacity = FramLogGetCapacityRecords(g_runtime->fram_log);
+  const uint32_t fram_fill_pct =
+    (fram_capacity > 0) ? (uint32_t)((fram_count * 100u) / fram_capacity) : 0u;
+  const uint64_t fram_overrun_total =
+    FramLogGetOverrunRecordsTotal(g_runtime->fram_log);
+  printf("fram_count: %zu\n", fram_count);
+  printf("fram_capacity: %zu\n", fram_capacity);
+  printf("fram_fill_pct: %u\n", (unsigned)fram_fill_pct);
+  printf("fram_overrun_records_total: %" PRIu64 "\n", fram_overrun_total);
+  printf("fram_flush_watermark_records: %u\n",
          (unsigned)settings->fram_flush_watermark_records);
   const bool fram_full =
     (g_runtime->fram_full != NULL) ? *g_runtime->fram_full : false;
@@ -188,7 +196,22 @@ CommandStatus(int argc, char** argv)
          settings->calibration.coefficients[2],
          settings->calibration.coefficients[3]);
 
-  printf("sd_mounted: %s\n", (g_runtime->sd_logger->is_mounted ? "yes" : "no"));
+  const bool sd_mounted = g_runtime->sd_logger->is_mounted;
+  const bool sd_degraded = RuntimeSdIsDegraded();
+  const uint32_t sd_fail_count = RuntimeSdFailCount();
+  const TickType_t now_ticks = xTaskGetTickCount();
+  const uint32_t sd_backoff_until = RuntimeSdBackoffUntilTicks();
+  uint32_t sd_backoff_remaining_ms = 0;
+  if (sd_backoff_until != 0 &&
+      now_ticks < (TickType_t)sd_backoff_until) {
+    sd_backoff_remaining_ms =
+      (uint32_t)pdTICKS_TO_MS((TickType_t)sd_backoff_until - now_ticks);
+  }
+  printf("sd_mounted: %s\n", sd_mounted ? "yes" : "no");
+  printf("sd_degraded: %s\n", sd_degraded ? "yes" : "no");
+  printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
+  printf("sd_backoff_remaining_ms: %u\n",
+         (unsigned)sd_backoff_remaining_ms);
   printf("sd_last_record_id: %" PRIu64 "\n",
          SdLoggerLastRecordIdOnSd(g_runtime->sd_logger));
   printf("mesh_connected: %s\n",

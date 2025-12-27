@@ -1,5 +1,6 @@
 #include "runtime_manager.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,66 @@ static bool
 DoubleNear(double a, double b)
 {
   return fabs(a - b) <= 1e-6;
+}
+
+static void
+UpdateFramFillState(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  if (!state->fram_i2c.initialized) {
+    state->fram_full = false;
+    return;
+  }
+  const size_t count = FramLogGetCountRecords(&state->fram_log);
+  const size_t capacity = FramLogGetCapacityRecords(&state->fram_log);
+  state->fram_full = (capacity > 0 && count >= capacity);
+}
+
+static void
+LogFramOverrunWarning(runtime_state_t* state,
+                      uint64_t overrun_total,
+                      size_t fram_count,
+                      size_t fram_capacity,
+                      TickType_t now_ticks)
+{
+  if (state == NULL || overrun_total == 0) {
+    return;
+  }
+  if (state->last_overrun_records_total == 0 && overrun_total > 0) {
+    ESP_LOGW(
+      kTag,
+      "FRAM buffer full: overwriting oldest records (data loss possible until "
+      "SD flush recovers).");
+    state->last_overrun_log_ticks = now_ticks;
+    state->last_overrun_logged_total = overrun_total;
+    return;
+  }
+
+  const bool sd_down = (!state->sd_logger.is_mounted || state->sd_degraded);
+  const bool overrun_advanced =
+    (overrun_total > state->last_overrun_logged_total);
+  if (!sd_down || !overrun_advanced) {
+    return;
+  }
+
+  const uint32_t elapsed_ms =
+    (uint32_t)pdTICKS_TO_MS(now_ticks - state->last_overrun_log_ticks);
+  if (elapsed_ms < 30000u) {
+    return;
+  }
+
+  ESP_LOGW(kTag,
+           "FRAM overruns ongoing: total=%" PRIu64
+           " buffered=%zu/%zu sd_mounted=%s sd_degraded=%s",
+           overrun_total,
+           fram_count,
+           fram_capacity,
+           state->sd_logger.is_mounted ? "yes" : "no",
+           state->sd_degraded ? "yes" : "no");
+  state->last_overrun_log_ticks = now_ticks;
+  state->last_overrun_logged_total = overrun_total;
 }
 
 static bool
@@ -143,7 +204,10 @@ typedef struct
   bool sd_degraded;
   bool sd_force_unmount_on_append;
   bool fram_full;
-  bool fram_full_logged;
+  bool sd_was_mounted;
+  TickType_t last_overrun_log_ticks;
+  uint64_t last_overrun_records_total;
+  uint64_t last_overrun_logged_total;
 
   char node_id_string[32];
 
@@ -806,10 +870,6 @@ StorageTask(void* context)
     log_record_t record;
     if (xQueueReceive(state->log_queue, &record, pdMS_TO_TICKS(500)) ==
         pdTRUE) {
-      if (state->fram_full) {
-        record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
-      }
-
       esp_err_t id_result = FramLogAssignRecordIds(&state->fram_log, &record);
       if (id_result != ESP_OK) {
         ESP_LOGE(kTag,
@@ -818,27 +878,25 @@ StorageTask(void* context)
       }
 
       if (state->fram_i2c.initialized) {
-        if (state->fram_full) {
-          if (!state->fram_full_logged) {
-            ESP_LOGW(
-              kTag,
-              "FRAM is full; skipping new appends until flush succeeds");
-            state->fram_full_logged = true;
-          }
+        esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
+        if (append_result != ESP_OK) {
+          ESP_LOGE(
+            kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
         } else {
-          esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
-          if (append_result == ESP_ERR_NO_MEM) {
-            state->fram_full = true;
-            state->fram_full_logged = false;
-            record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
-            ESP_LOGW(
-              kTag, "FRAM is full; new samples will be dropped until flush");
-          } else if (append_result != ESP_OK) {
-            ESP_LOGE(
-              kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
-          } else {
-            state->sd_flush_records_since++;
-          }
+          state->sd_flush_records_since++;
+        }
+        const uint64_t overrun_after =
+          FramLogGetOverrunRecordsTotal(&state->fram_log);
+        const size_t fram_count = FramLogGetCountRecords(&state->fram_log);
+        const size_t fram_capacity =
+          FramLogGetCapacityRecords(&state->fram_log);
+        const TickType_t now_ticks = xTaskGetTickCount();
+        LogFramOverrunWarning(
+          state, overrun_after, fram_count, fram_capacity, now_ticks);
+        state->last_overrun_records_total = overrun_after;
+        UpdateFramFillState(state);
+        if (state->fram_full) {
+          record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
         }
       }
 
@@ -876,14 +934,22 @@ StorageTask(void* context)
       if (flush_result == ESP_OK) {
         if (flushed > 0) {
           state->sd_flush_records_since = 0;
-          if (FramLogGetBufferedRecords(&state->fram_log) <
-              FramLogGetCapacityRecords(&state->fram_log)) {
-            state->fram_full = false;
-            state->fram_full_logged = false;
+          UpdateFramFillState(state);
+          if (!state->sd_was_mounted && state->sd_logger.is_mounted) {
+            ESP_LOGI(kTag,
+                     "SD recovered; resuming flush. FRAM overruns since boot: "
+                     "%" PRIu64,
+                     FramLogGetOverrunRecordsTotal(&state->fram_log));
           }
         }
         state->sd_flush_pending = more_pending;
       }
+    }
+
+    if (!state->sd_logger.is_mounted) {
+      state->sd_was_mounted = false;
+    } else if (!state->sd_was_mounted) {
+      state->sd_was_mounted = true;
     }
   }
 
@@ -1217,14 +1283,17 @@ RuntimeStart(void)
 
   g_state.stop_requested = false;
   g_state.fram_full = false;
-  g_state.fram_full_logged = false;
   g_state.sd_degraded = false;
   g_state.sd_fail_count = 0;
   g_state.sd_backoff_until_ticks = 0;
   g_state.sd_flush_records_since = 0;
   g_state.sd_flush_pending = false;
+  g_state.last_overrun_log_ticks = 0;
+  g_state.last_overrun_records_total = 0;
+  g_state.last_overrun_logged_total = 0;
 
   EnsureSdMounted();
+  g_state.sd_was_mounted = g_state.sd_logger.is_mounted;
 
   const app_node_role_t role = g_state.settings.node_role;
   const bool is_root = (role == APP_NODE_ROLE_ROOT);
