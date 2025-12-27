@@ -46,7 +46,7 @@ MaybePushCalRawSampleFromSensor(void)
     return;
   }
 
-  app_runtime_t* runtime = RuntimeGetRuntime();
+  const app_runtime_t* runtime = RuntimeGetRuntime();
   if (runtime == NULL || runtime->sensor == NULL) {
     return;
   }
@@ -202,16 +202,14 @@ CommandStatus(int argc, char** argv)
   const TickType_t now_ticks = xTaskGetTickCount();
   const uint32_t sd_backoff_until = RuntimeSdBackoffUntilTicks();
   uint32_t sd_backoff_remaining_ms = 0;
-  if (sd_backoff_until != 0 &&
-      now_ticks < (TickType_t)sd_backoff_until) {
+  if (sd_backoff_until != 0 && now_ticks < (TickType_t)sd_backoff_until) {
     sd_backoff_remaining_ms =
       (uint32_t)pdTICKS_TO_MS((TickType_t)sd_backoff_until - now_ticks);
   }
   printf("sd_mounted: %s\n", sd_mounted ? "yes" : "no");
   printf("sd_degraded: %s\n", sd_degraded ? "yes" : "no");
   printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
-  printf("sd_backoff_remaining_ms: %u\n",
-         (unsigned)sd_backoff_remaining_ms);
+  printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
   printf("sd_last_record_id: %" PRIu64 "\n",
          SdLoggerLastRecordIdOnSd(g_runtime->sd_logger));
   printf("mesh_connected: %s\n",
@@ -235,10 +233,8 @@ CommandDisplay(int argc, char** argv)
   const char* action = argv[1];
   if (strcmp(action, "show") == 0) {
     printf("display_units: %s\n",
-           AppSettingsDisplayUnitsToString(
-             g_runtime->settings->display_units));
-    printf("max7219_enabled: %s\n",
-           CONFIG_APP_MAX7219_ENABLE ? "yes" : "no");
+           AppSettingsDisplayUnitsToString(g_runtime->settings->display_units));
+    printf("max7219_enabled: %s\n", CONFIG_APP_MAX7219_ENABLE ? "yes" : "no");
     printf("max7219_spi_host: %d\n", CONFIG_APP_MAX7219_SPI_HOST);
     printf("max7219_chain_len: %d\n", CONFIG_APP_MAX7219_CHAIN_LEN);
     printf("max7219_intensity: %d\n", CONFIG_APP_MAX7219_INTENSITY);
@@ -265,8 +261,7 @@ CommandDisplay(int argc, char** argv)
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
     }
-    printf("display_units set to %s\n",
-           AppSettingsDisplayUnitsToString(units));
+    printf("display_units set to %s\n", AppSettingsDisplayUnitsToString(units));
     return 0;
   }
 
@@ -371,7 +366,8 @@ CommandFram(int argc, char** argv)
          (unsigned)status.buffered_count,
          (unsigned)status.next_sequence,
          status.next_record_id);
-  printf("FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u id=%" PRIu64 "\n",
+  printf("FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u id=%" PRIu64
+         "\n",
          (unsigned)status.capacity_records,
          (unsigned)status.write_index_abs,
          (unsigned)status.read_index_abs,

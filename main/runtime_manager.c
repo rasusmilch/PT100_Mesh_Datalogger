@@ -34,7 +34,7 @@ static const uint32_t kSdFlushMaxMsPerPass = 50;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kExportQueueDepth = 64;
 
-typedef struct runtime_state
+typedef struct
 {
   app_settings_t settings;
   fram_i2c_t fram_i2c;
@@ -71,6 +71,7 @@ typedef struct runtime_state
   TaskHandle_t export_task;
   TaskHandle_t time_sync_task;
   TaskHandle_t topology_task;
+  TaskHandle_t display_task;
 
   bool initialized;
   bool is_running;
@@ -82,6 +83,14 @@ typedef struct runtime_state
   uint32_t export_dropped_count;
   uint32_t export_write_fail_count;
   bool csv_header_emitted;
+
+  max7219_display_t display;
+  bool display_initialized;
+  int32_t last_temp_milli_c;
+  bool last_temp_valid;
+  uint32_t last_flags;
+  TickType_t last_update_ticks;
+  portMUX_TYPE last_temp_lock;
 } runtime_state_t;
 
 typedef struct
@@ -249,75 +258,6 @@ CalibrationContextMatches(const app_settings_t* settings,
   return true;
 }
 
-typedef struct
-{
-  app_settings_t settings;
-  fram_i2c_t fram_i2c;
-  fram_io_t fram_io;
-  fram_log_t fram_log;
-  sd_logger_t sd_logger;
-  max31865_reader_t sensor;
-  mesh_transport_t mesh;
-  time_sync_t time_sync;
-  i2c_bus_t i2c_bus;
-
-  QueueHandle_t log_queue;
-  QueueHandle_t export_queue;
-  uint8_t* batch_buffer;
-  size_t batch_buffer_size;
-
-  TickType_t last_flush_ticks;
-  TickType_t sd_backoff_until_ticks;
-  uint32_t sd_fail_count;
-  uint32_t sd_flush_records_since;
-  bool sd_flush_pending;
-  bool sd_degraded;
-  bool sd_force_unmount_on_append;
-  bool fram_full;
-  bool sd_was_mounted;
-  TickType_t last_overrun_log_ticks;
-  uint64_t last_overrun_records_total;
-  uint64_t last_overrun_logged_total;
-
-  char node_id_string[32];
-
-  TaskHandle_t sensor_task;
-  TaskHandle_t storage_task;
-  TaskHandle_t export_task;
-  TaskHandle_t time_sync_task;
-  TaskHandle_t topology_task;
-  TaskHandle_t display_task;
-
-  bool initialized;
-  bool is_running;
-  bool stop_requested;
-  bool mesh_started;
-  bool data_streaming_enabled;
-  bool log_quiet;
-
-  uint32_t export_dropped_count;
-  uint32_t export_write_fail_count;
-  bool csv_header_emitted;
-
-  max7219_display_t display;
-  bool display_initialized;
-  int32_t last_temp_milli_c;
-  bool last_temp_valid;
-  uint32_t last_flags;
-  TickType_t last_update_ticks;
-  portMUX_TYPE last_temp_lock;
-} runtime_state_t;
-
-typedef struct
-{
-  log_record_t record;
-  char node_id[32];
-} export_item_t;
-
-static runtime_state_t g_state;
-static app_runtime_t g_runtime;
-static esp_err_t
-RuntimeFlushToSd(void* context);
 static void
 CopyLastSample(runtime_state_t* state,
                int32_t* temp_milli_c,
