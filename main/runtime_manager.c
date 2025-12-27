@@ -329,7 +329,7 @@ FormatTemperatureText(char* out,
     return;
   }
   if (!valid) {
-    s snprintf(out, out_len, "----");
+    snprintf(out, out_len, "----");
     return;
   }
 
