@@ -84,6 +84,8 @@ ReadExactly(int file_descriptor,
 static bool
 ParseRecordIdFromCsvLine(const char* line, uint64_t* record_id_out)
 {
+  static bool logged_legacy_schema = false;
+
   if (line == NULL || record_id_out == NULL) {
     return false;
   }
@@ -106,6 +108,14 @@ ParseRecordIdFromCsvLine(const char* line, uint64_t* record_id_out)
     return false;
   }
   if (parsed_schema < CSV_SCHEMA_VERSION) {
+    if (!logged_legacy_schema) {
+      ESP_LOGW(kTag,
+               "Unsupported CSV schema_ver=%lu (expected >=%u). "
+               "record_id resume disabled for legacy files.",
+               parsed_schema,
+               CSV_SCHEMA_VERSION);
+      logged_legacy_schema = true;
+    }
     return false;
   }
 
