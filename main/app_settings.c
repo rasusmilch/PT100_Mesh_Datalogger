@@ -38,6 +38,7 @@ static const char* kKeyDstEnabled = "dst_enabled";
 static const char* kKeyNodeRole = "node_role";
 static const char* kKeyAllowChildren = "allow_child";
 static const char* kKeyAllowChildrenSet = "allow_child_set";
+static const char* kKeyDisplayUnits = "disp_units";
 static const uint8_t kCalibrationContextVersion = 1;
 
 static app_node_role_t
@@ -92,6 +93,37 @@ AppSettingsParseRole(const char* value, app_node_role_t* role_out)
   return false;
 }
 
+const char*
+AppSettingsDisplayUnitsToString(app_display_units_t units)
+{
+  switch (units) {
+    case APP_DISPLAY_UNITS_C:
+      return "C";
+    case APP_DISPLAY_UNITS_F:
+      return "F";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+bool
+AppSettingsParseDisplayUnits(const char* value,
+                             app_display_units_t* units_out)
+{
+  if (value == NULL || units_out == NULL) {
+    return false;
+  }
+  if (strcasecmp(value, "c") == 0) {
+    *units_out = APP_DISPLAY_UNITS_C;
+    return true;
+  }
+  if (strcasecmp(value, "f") == 0) {
+    *units_out = APP_DISPLAY_UNITS_F;
+    return true;
+  }
+  return false;
+}
+
 static void
 ApplyDefaults(app_settings_t* settings)
 {
@@ -115,6 +147,7 @@ ApplyDefaults(app_settings_t* settings)
   settings->allow_children =
     AppSettingsRoleDefaultAllowsChildren(settings->node_role);
   settings->allow_children_set = false;
+  settings->display_units = APP_DISPLAY_UNITS_F;
 }
 
 static bool
@@ -329,10 +362,16 @@ AppSettingsLoad(app_settings_t* settings_out)
       AppSettingsRoleDefaultAllowsChildren(settings_out->node_role);
   }
 
+  uint8_t display_units = (uint8_t)settings_out->display_units;
+  result = nvs_get_u8(handle, kKeyDisplayUnits, &display_units);
+  if (result == ESP_OK && display_units <= (uint8_t)APP_DISPLAY_UNITS_F) {
+    settings_out->display_units = (app_display_units_t)display_units;
+  }
+
   nvs_close(handle);
   ESP_LOGI(
     kTag,
-    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u",
+    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s",
     (unsigned)settings_out->log_period_ms,
     (unsigned)settings_out->fram_flush_watermark_records,
     (unsigned)settings_out->sd_flush_period_ms,
@@ -342,7 +381,8 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->tz_posix,
     settings_out->dst_enabled ? 1u : 0u,
     AppSettingsRoleToString(settings_out->node_role),
-    settings_out->allow_children ? 1u : 0u);
+    settings_out->allow_children ? 1u : 0u,
+    AppSettingsDisplayUnitsToString(settings_out->display_units));
   return ESP_OK;
 }
 
@@ -579,6 +619,26 @@ AppSettingsSaveAllowChildren(bool allow_children, bool explicit_setting)
     result =
       nvs_set_u8(handle, kKeyAllowChildrenSet, explicit_setting ? 1 : 0);
   }
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveDisplayUnits(app_display_units_t units)
+{
+  if (units != APP_DISPLAY_UNITS_C && units != APP_DISPLAY_UNITS_F) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_u8(handle, kKeyDisplayUnits, (uint8_t)units);
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }

@@ -25,6 +25,12 @@ extern "C"
     APP_NODE_ROLE_RELAY = 2,
   } app_node_role_t;
 
+  typedef enum
+  {
+    APP_DISPLAY_UNITS_C = 0,
+    APP_DISPLAY_UNITS_F = 1,
+  } app_display_units_t;
+
   typedef struct
   {
     uint8_t conversion_mode;
@@ -57,6 +63,7 @@ extern "C"
     app_node_role_t node_role;
     bool allow_children;
     bool allow_children_set;
+    app_display_units_t display_units;
   } app_settings_t;
 
   // Loads settings from NVS. If keys are missing or invalid, applies defaults.
@@ -100,6 +107,14 @@ extern "C"
   const char* AppSettingsRoleToString(app_node_role_t role);
   bool AppSettingsParseRole(const char* value, app_node_role_t* role_out);
   bool AppSettingsRoleDefaultAllowsChildren(app_node_role_t role);
+
+  // Display units helpers.
+  const char* AppSettingsDisplayUnitsToString(app_display_units_t units);
+  bool AppSettingsParseDisplayUnits(const char* value,
+                                    app_display_units_t* units_out);
+
+  // Persists updated display units.
+  esp_err_t AppSettingsSaveDisplayUnits(app_display_units_t units);
 
   // Applies TZ to the runtime environment.
   void AppSettingsApplyTimeZone(const app_settings_t* settings);
