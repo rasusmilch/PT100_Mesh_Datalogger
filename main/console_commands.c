@@ -18,6 +18,7 @@
 #include "diagnostics/diag_rtc.h"
 #include "diagnostics/diag_rtd.h"
 #include "diagnostics/diag_sd.h"
+#include "diagnostics/diag_storage.h"
 #include "diagnostics/diag_wifi.h"
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
@@ -1386,6 +1387,7 @@ PrintDiagUsage(void)
   printf("diag help\n");
   printf("diag all quick|full [--verbose N]\n");
   printf("diag sd quick|full [--format-if-needed] [--mount] [--verbose N]\n");
+  printf("diag storage quick|full [--verbose N]\n");
   printf("diag fram quick|full [--bytes N] [--verbose N]\n");
   printf("diag rtd quick|full [--samples N] [--delay_ms M] [--verbose N]\n");
   printf("diag rtc quick|full [--set-known] [--verbose N]\n");
@@ -1462,9 +1464,9 @@ CommandDiagnostics(int argc, char** argv)
 
   const bool target_requires_mode =
     strcmp(target, "all") == 0 || strcmp(target, "sd") == 0 ||
-    strcmp(target, "fram") == 0 || strcmp(target, "rtc") == 0 ||
-    strcmp(target, "rtd") == 0 || strcmp(target, "wifi") == 0 ||
-    strcmp(target, "mesh") == 0;
+    strcmp(target, "storage") == 0 || strcmp(target, "fram") == 0 ||
+    strcmp(target, "rtc") == 0 || strcmp(target, "rtd") == 0 ||
+    strcmp(target, "wifi") == 0 || strcmp(target, "mesh") == 0;
   const char* mode = (argc > 2) ? argv[2] : NULL;
   if (strcmp(target, "check") == 0) {
     target = "all";
@@ -1548,6 +1550,18 @@ CommandDiagnostics(int argc, char** argv)
         RunDiagSd(runtime, full, format_if_needed, mount, diag_verbosity);
     }
     if (strcmp(target, "sd") == 0) {
+      return overall;
+    }
+  }
+
+  if (strcmp(target, "storage") == 0 || strcmp(target, "all") == 0) {
+    if (RuntimeIsRunning()) {
+      printf("Stop run mode first: run stop\n");
+      overall = 1;
+    } else {
+      overall |= RunDiagStorage(runtime, full, diag_verbosity);
+    }
+    if (strcmp(target, "storage") == 0) {
       return overall;
     }
   }

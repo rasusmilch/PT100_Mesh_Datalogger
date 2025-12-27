@@ -141,6 +141,7 @@ typedef struct
   uint32_t sd_flush_records_since;
   bool sd_flush_pending;
   bool sd_degraded;
+  bool sd_force_unmount_on_append;
   bool fram_full;
   bool fram_full_logged;
 
@@ -489,11 +490,20 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     }
 
     SdCsvAppendDiagnostics append_diag = { 0 };
-    esp_err_t write_result = SdLoggerAppendVerifiedBatch(&state->sd_logger,
-                                                         state->batch_buffer,
-                                                         bytes_used,
-                                                         last_record_id,
-                                                         &append_diag);
+    esp_err_t write_result = ESP_OK;
+    if (state->sd_force_unmount_on_append) {
+      state->sd_force_unmount_on_append = false;
+      (void)SdLoggerUnmount(&state->sd_logger);
+      append_diag.operation = "inject-unmount";
+      append_diag.errno_value = 0;
+      write_result = ESP_ERR_INVALID_STATE;
+    } else {
+      write_result = SdLoggerAppendVerifiedBatch(&state->sd_logger,
+                                                 state->batch_buffer,
+                                                 bytes_used,
+                                                 last_record_id,
+                                                 &append_diag);
+    }
     if (write_result != ESP_OK) {
       ESP_LOGE(kTag,
                "SD append failed after %u records: %s",
@@ -1428,4 +1438,28 @@ void
 RuntimeSetLogPolicyDiag(void)
 {
   SetDiagLogPolicy();
+}
+
+void
+RuntimeSetSdAppendFailureOnce(bool enabled)
+{
+  g_state.sd_force_unmount_on_append = enabled;
+}
+
+bool
+RuntimeSdIsDegraded(void)
+{
+  return g_state.sd_degraded;
+}
+
+uint32_t
+RuntimeSdFailCount(void)
+{
+  return g_state.sd_fail_count;
+}
+
+uint32_t
+RuntimeSdBackoffUntilTicks(void)
+{
+  return (uint32_t)g_state.sd_backoff_until_ticks;
 }
