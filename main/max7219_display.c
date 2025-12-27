@@ -143,7 +143,11 @@ FlushFramebuffer(max7219_display_t* disp)
     int tx_index = 0;
     for (int dev = chain_len - 1; dev >= 0; --dev) {
       uint8_t value = 0;
+#if CONFIG_APP_MAX7219_REVERSE_MODULE_ORDER
+      const int x_base = (chain_len - 1 - dev) * 8;
+#else
       const int x_base = dev * 8;
+#endif
       for (int bit = 0; bit < 8; ++bit) {
         const int x = x_base + bit;
         const bool on =

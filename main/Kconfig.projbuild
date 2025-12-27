@@ -111,6 +111,14 @@ config APP_MAX7219_CHAIN_LEN
   range 1 8
   default 4
 
+config APP_MAX7219_REVERSE_MODULE_ORDER
+  bool "Reverse MAX7219 module order (4,3,2,1)"
+  default y
+  help
+    Enable this if the daisy-chained MAX7219 modules are physically arranged
+    left-to-right as 4,3,2,1. This swaps 8-column blocks so text reads
+    left-to-right.
+
 config APP_MAX7219_INTENSITY
   int "MAX7219 intensity (0-15)"
   range 0 15

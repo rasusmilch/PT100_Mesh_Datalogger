@@ -416,7 +416,15 @@ DisplayTask(void* context)
 static void
 SetRunLogPolicy(void)
 {
+  // Keep run-time logging quiet by default to avoid drowning the operator,
+  // but always allow warning/error logs from critical subsystems.
   esp_log_level_set("*", ESP_LOG_NONE);
+  esp_log_level_set("runtime", ESP_LOG_WARN);
+  esp_log_level_set("sd_logger", ESP_LOG_WARN);
+  esp_log_level_set("sd_csv_verify", ESP_LOG_WARN);
+  esp_log_level_set("fram_log", ESP_LOG_WARN);
+  esp_log_level_set("max7219", ESP_LOG_WARN);
+  esp_log_level_set("mesh", ESP_LOG_WARN);
   g_state.log_quiet = true;
 }
 
@@ -844,15 +852,29 @@ SdFlushWorkerTick(runtime_state_t* state,
   }
 
   if (!state->sd_logger.is_mounted) {
-    esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
-    if (mount_result != ESP_OK) {
-      MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
-      if (more_pending_out != NULL) {
-        *more_pending_out = true;
-      }
-      return ESP_OK;
+  const bool was_degraded = state->sd_degraded;
+  const uint32_t prev_fail_count = state->sd_fail_count;
+
+  esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
+  if (mount_result != ESP_OK) {
+    MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
+    if (more_pending_out != NULL) {
+      *more_pending_out = true;
     }
+    return ESP_OK;
   }
+
+  // Mount succeeded. Clear any backoff/degraded latch so recoverable failures
+  // stop triggering operator attention once the SD path is healthy again.
+  state->sd_backoff_until_ticks = 0;
+  state->sd_degraded = false;
+
+  if (was_degraded || prev_fail_count != 0u) {
+    ESP_LOGW(kTag,
+             "SD recovered (mounted). fail_count=%u backoff cleared",
+             (unsigned)state->sd_fail_count);
+  }
+}
 
   log_record_t first_record;
   esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
