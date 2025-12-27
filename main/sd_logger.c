@@ -196,9 +196,7 @@ ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
     ESP_LOGW(kTag, "%s tail repaired after power loss", path);
   }
   if (resume_info.found_last_record_id) {
-    if (resume_info.last_record_id > logger->last_record_id_on_sd) {
-      logger->last_record_id_on_sd = resume_info.last_record_id;
-    }
+    logger->last_record_id_on_sd = resume_info.last_record_id;
     ESP_LOGI(kTag,
              "Resume: last record id on %s = %" PRIu64,
              path,
@@ -226,6 +224,7 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
   }
 
   SdLoggerClose(logger);
+  logger->last_record_id_on_sd = 0;
 
   logger->file = fopen(path, "a+b");
   if (logger->file == NULL) {
@@ -298,4 +297,5 @@ SdLoggerClose(sd_logger_t* logger)
     logger->file_buffer = NULL;
   }
   logger->current_date[0] = '\0';
+  logger->last_record_id_on_sd = 0;
 }
