@@ -93,3 +93,4 @@ dependencies.lock
 build/CMakeFiles/git-data/grabRef.cmake
 *.patch
 *.tar.gz
+*.zip
