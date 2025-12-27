@@ -7,23 +7,23 @@
 #include <string.h>
 #include <time.h>
 
+#include "calibration.h"
+#include "data_csv.h"
+#include "data_port.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_mesh_lite.h"
 #include "esp_mesh_lite_port.h"
 #include "esp_system.h"
-#include "calibration.h"
 #include "fram_i2c.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "i2c_bus.h"
-#include "max7219_display.h"
 #include "max31865_reader.h"
+#include "max7219_display.h"
 #include "mesh_transport.h"
-#include "data_csv.h"
-#include "data_port.h"
 #include "sd_logger.h"
 #include "time_sync.h"
 #include "wifi_service.h"
@@ -33,6 +33,75 @@ static const uint32_t kSdFlushMaxRecordsPerPass = 100;
 static const uint32_t kSdFlushMaxMsPerPass = 50;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kExportQueueDepth = 64;
+
+typedef struct runtime_state
+{
+  app_settings_t settings;
+  fram_i2c_t fram_i2c;
+  fram_io_t fram_io;
+  fram_log_t fram_log;
+  sd_logger_t sd_logger;
+  max31865_reader_t sensor;
+  mesh_transport_t mesh;
+  time_sync_t time_sync;
+  i2c_bus_t i2c_bus;
+
+  QueueHandle_t log_queue;
+  QueueHandle_t export_queue;
+  uint8_t* batch_buffer;
+  size_t batch_buffer_size;
+
+  TickType_t last_flush_ticks;
+  TickType_t sd_backoff_until_ticks;
+  uint32_t sd_fail_count;
+  uint32_t sd_flush_records_since;
+  bool sd_flush_pending;
+  bool sd_degraded;
+  bool sd_force_unmount_on_append;
+  bool fram_full;
+  bool sd_was_mounted;
+  TickType_t last_overrun_log_ticks;
+  uint64_t last_overrun_records_total;
+  uint64_t last_overrun_logged_total;
+
+  char node_id_string[32];
+
+  TaskHandle_t sensor_task;
+  TaskHandle_t storage_task;
+  TaskHandle_t export_task;
+  TaskHandle_t time_sync_task;
+  TaskHandle_t topology_task;
+
+  bool initialized;
+  bool is_running;
+  bool stop_requested;
+  bool mesh_started;
+  bool data_streaming_enabled;
+  bool log_quiet;
+
+  uint32_t export_dropped_count;
+  uint32_t export_write_fail_count;
+  bool csv_header_emitted;
+} runtime_state_t;
+
+typedef struct
+{
+  log_record_t record;
+  char node_id[32];
+} export_item_t;
+
+static runtime_state_t g_state;
+static app_runtime_t g_runtime;
+static esp_err_t
+RuntimeFlushToSd(void* context);
+
+static void
+MarkSdFailure(runtime_state_t* state,
+              const char* context,
+              const char* operation,
+              esp_err_t error,
+              int errno_value,
+              bool did_unmount);
 
 static const char*
 ConversionModeToString(uint8_t mode)
@@ -115,9 +184,9 @@ LogFramOverrunWarning(runtime_state_t* state,
 
 static bool
 CalibrationContextMatches(const app_settings_t* settings,
-                           const calibration_context_t* current,
-                           char* reason_out,
-                           size_t reason_out_len)
+                          const calibration_context_t* current,
+                          char* reason_out,
+                          size_t reason_out_len)
 {
   if (settings == NULL || current == NULL || reason_out == NULL) {
     return false;
@@ -556,9 +625,8 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   }
 
   char oldest_record_day[16];
-  BuildDateStringFromRecord(&oldest_record,
-                            oldest_record_day,
-                            sizeof(oldest_record_day));
+  BuildDateStringFromRecord(
+    &oldest_record, oldest_record_day, sizeof(oldest_record_day));
   if (strcmp(oldest_record_day, state->sd_logger.current_date) != 0) {
     ESP_LOGW(kTag,
              "Skipping FRAM sync: oldest record day %s != SD file day %s",
@@ -699,17 +767,16 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     uint32_t records_used = 0;
     uint64_t last_record_id = 0;
     size_t bytes_used = 0;
-    esp_err_t batch_result =
-      BuildBatchForDay(state,
-                       day_string,
-                       state->batch_buffer,
-                       state->batch_buffer_size,
-                       0,
-                       xTaskGetTickCount(),
-                       0,
-                       &records_used,
-                       &last_record_id,
-                       &bytes_used);
+    esp_err_t batch_result = BuildBatchForDay(state,
+                                              day_string,
+                                              state->batch_buffer,
+                                              state->batch_buffer_size,
+                                              0,
+                                              xTaskGetTickCount(),
+                                              0,
+                                              &records_used,
+                                              &last_record_id,
+                                              &bytes_used);
     if (batch_result != ESP_OK) {
       return batch_result;
     }
@@ -738,8 +805,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
                total_flushed + records_used,
                esp_err_to_name(write_result));
       (void)SdLoggerUnmount(&state->sd_logger);
-      const char* op = (append_diag.operation != NULL) ? append_diag.operation
-                                                       : "append";
+      const char* op =
+        (append_diag.operation != NULL) ? append_diag.operation : "append";
       MarkSdFailure(state,
                     "SD append failed",
                     op,
@@ -788,20 +855,18 @@ MarkSdFailure(runtime_state_t* state,
   state->sd_backoff_until_ticks =
     xTaskGetTickCount() + pdMS_TO_TICKS(kSdFlushFailureBackoffMs);
   const char* op_label = (operation != NULL) ? operation : "unknown";
-  const char* errno_str =
-    (errno_value != 0) ? strerror(errno_value) : "n/a";
+  const char* errno_str = (errno_value != 0) ? strerror(errno_value) : "n/a";
   const char* action_label = did_unmount ? "unmount+backoff" : "backoff";
-  ESP_LOGW(
-    kTag,
-    "%s: op=%s err=%s (%d) errno=%d (%s) action=%s backoff_until=%u",
-    context,
-    op_label,
-    esp_err_to_name(error),
-    (int)error,
-    errno_value,
-    errno_str,
-    action_label,
-    (unsigned)state->sd_backoff_until_ticks);
+  ESP_LOGW(kTag,
+           "%s: op=%s err=%s (%d) errno=%d (%s) action=%s backoff_until=%u",
+           context,
+           op_label,
+           esp_err_to_name(error),
+           (int)error,
+           errno_value,
+           errno_str,
+           action_label,
+           (unsigned)state->sd_backoff_until_ticks);
 }
 
 static esp_err_t
@@ -876,17 +941,16 @@ SdFlushWorkerTick(runtime_state_t* state,
   uint32_t records_used = 0;
   uint64_t last_record_id = 0;
   size_t bytes_used = 0;
-  esp_err_t batch_result =
-    BuildBatchForDay(state,
-                     day_string,
-                     state->batch_buffer,
-                     state->batch_buffer_size,
-                     max_records,
-                     now_ticks,
-                     max_ms,
-                     &records_used,
-                     &last_record_id,
-                     &bytes_used);
+  esp_err_t batch_result = BuildBatchForDay(state,
+                                            day_string,
+                                            state->batch_buffer,
+                                            state->batch_buffer_size,
+                                            max_records,
+                                            now_ticks,
+                                            max_ms,
+                                            &records_used,
+                                            &last_record_id,
+                                            &bytes_used);
   if (batch_result != ESP_OK) {
     return batch_result;
   }
@@ -902,8 +966,8 @@ SdFlushWorkerTick(runtime_state_t* state,
                                                        &append_diag);
   if (write_result != ESP_OK) {
     (void)SdLoggerUnmount(&state->sd_logger);
-    const char* op = (append_diag.operation != NULL) ? append_diag.operation
-                                                     : "append";
+    const char* op =
+      (append_diag.operation != NULL) ? append_diag.operation : "append";
     MarkSdFailure(state,
                   "SD append failed",
                   op,
@@ -989,8 +1053,7 @@ SensorTask(void* context)
     if (!state->settings.calibration.is_valid) {
       temp_milli_c = record.raw_temp_milli_c;
     }
-    const bool temp_valid =
-      (result == ESP_OK && !sample.fault_present);
+    const bool temp_valid = (result == ESP_OK && !sample.fault_present);
 
     taskENTER_CRITICAL(&state->last_temp_lock);
     state->last_temp_milli_c = temp_milli_c;
@@ -1050,9 +1113,8 @@ StorageTask(void* context)
         pdTRUE) {
       esp_err_t id_result = FramLogAssignRecordIds(&state->fram_log, &record);
       if (id_result != ESP_OK) {
-        ESP_LOGE(kTag,
-                 "Failed to assign record id: %s",
-                 esp_err_to_name(id_result));
+        ESP_LOGE(
+          kTag, "Failed to assign record id: %s", esp_err_to_name(id_result));
       }
 
       if (state->fram_i2c.initialized) {
@@ -1132,11 +1194,8 @@ StorageTask(void* context)
   }
 
   if (state->sd_logger.is_mounted) {
-    (void)SdFlushWorkerTick(state,
-                            kSdFlushMaxRecordsPerPass,
-                            kSdFlushMaxMsPerPass,
-                            NULL,
-                            NULL);
+    (void)SdFlushWorkerTick(
+      state, kSdFlushMaxRecordsPerPass, kSdFlushMaxMsPerPass, NULL, NULL);
   }
 
   state->storage_task = NULL;
@@ -1195,14 +1254,14 @@ TopologyTask(void* context)
     }
 
     if (!state->log_quiet) {
-      printf(
-        "topology role=%s allow_children=%u layer=%d parent=%s children=%u rssi=%d\n",
-        role,
-        state->settings.allow_children ? 1u : 0u,
-        layer,
-        parent_str,
-        (unsigned)child_count,
-        rssi);
+      printf("topology role=%s allow_children=%u layer=%d parent=%s "
+             "children=%u rssi=%d\n",
+             role,
+             state->settings.allow_children ? 1u : 0u,
+             layer,
+             parent_str,
+             (unsigned)child_count,
+             rssi);
     }
     vTaskDelay(interval_ticks);
   }
@@ -1465,7 +1524,8 @@ EnsureSdMounted(void)
     esp_err_t mount_result =
       SdLoggerMount(&g_state.sd_logger, GetSpiHost(), CONFIG_APP_SD_CS_GPIO);
     if (mount_result != ESP_OK) {
-      MarkSdFailure(&g_state, "SD mount failed", "mount", mount_result, 0, false);
+      MarkSdFailure(
+        &g_state, "SD mount failed", "mount", mount_result, 0, false);
     }
   }
 }
@@ -1624,9 +1684,10 @@ RuntimeStart(void)
     return ESP_ERR_NO_MEM;
   }
 
-  ESP_LOGI(
-    kTag, "Runtime started (node=%s role=%s)", g_state.node_id_string,
-    AppSettingsRoleToString(role));
+  ESP_LOGI(kTag,
+           "Runtime started (node=%s role=%s)",
+           g_state.node_id_string,
+           AppSettingsRoleToString(role));
   return ESP_OK;
 }
 
