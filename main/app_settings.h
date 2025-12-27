@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "calibration.h"
+#include "display_attention.h"
 #include "esp_err.h"
 #include "max31865_reader.h"
 
@@ -64,6 +65,7 @@ extern "C"
     bool allow_children;
     bool allow_children_set;
     app_display_units_t display_units;
+    display_attention_mask_t display_attention_mask;
   } app_settings_t;
 
   // Loads settings from NVS. If keys are missing or invalid, applies defaults.
@@ -115,6 +117,14 @@ extern "C"
 
   // Persists updated display units.
   esp_err_t AppSettingsSaveDisplayUnits(app_display_units_t units);
+
+  // Persists updated display attention mask.
+  esp_err_t AppSettingsSaveDisplayAttentionMask(
+    display_attention_mask_t mask);
+
+  display_attention_mask_t AppSettingsGetDisplayAttentionMask(void);
+
+  display_attention_mask_t AppSettingsDefaultDisplayAttentionMask(void);
 
   // Applies TZ to the runtime environment.
   void AppSettingsApplyTimeZone(const app_settings_t* settings);

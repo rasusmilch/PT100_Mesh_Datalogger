@@ -20,6 +20,7 @@
 #include "diagnostics/diag_sd.h"
 #include "diagnostics/diag_storage.h"
 #include "diagnostics/diag_wifi.h"
+#include "display_attention.h"
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
 #include "esp_console.h"
@@ -72,6 +73,118 @@ static const char*
 BootModeToString(app_boot_mode_t mode)
 {
   return (mode == APP_BOOT_MODE_RUN) ? "run" : "diagnostics";
+}
+
+static const char*
+DisplayAttentionBitToName(display_attention_bit_t bit)
+{
+  switch (bit) {
+    case kDispAttnSdOut:
+      return "sdout";
+    case kDispAttnSdIo:
+      return "sdio";
+    case kDispAttnFramOvr:
+      return "framovr";
+    case kDispAttnRtdFault:
+      return "rtd";
+    case kDispAttnTimeBad:
+      return "time";
+    case kDispAttnMeshDown:
+      return "mesh";
+    default:
+      return "unknown";
+  }
+}
+
+static bool
+ParseDisplayAttentionName(const char* value, display_attention_bit_t* bit_out)
+{
+  if (value == NULL || bit_out == NULL) {
+    return false;
+  }
+  if (strcasecmp(value, "sdout") == 0) {
+    *bit_out = kDispAttnSdOut;
+    return true;
+  }
+  if (strcasecmp(value, "sdio") == 0) {
+    *bit_out = kDispAttnSdIo;
+    return true;
+  }
+  if (strcasecmp(value, "framovr") == 0) {
+    *bit_out = kDispAttnFramOvr;
+    return true;
+  }
+  if (strcasecmp(value, "rtd") == 0) {
+    *bit_out = kDispAttnRtdFault;
+    return true;
+  }
+  if (strcasecmp(value, "time") == 0) {
+    *bit_out = kDispAttnTimeBad;
+    return true;
+  }
+  if (strcasecmp(value, "mesh") == 0) {
+    *bit_out = kDispAttnMeshDown;
+    return true;
+  }
+  return false;
+}
+
+static void
+PrintDisplayAttentionMask(display_attention_mask_t mask)
+{
+  const display_attention_bit_t bits[] = {
+    kDispAttnSdOut,
+    kDispAttnSdIo,
+    kDispAttnFramOvr,
+    kDispAttnRtdFault,
+    kDispAttnTimeBad,
+    kDispAttnMeshDown,
+  };
+  printf("display_attention_mask: 0x%08" PRIX32 "\n", (uint32_t)mask);
+  for (size_t idx = 0; idx < sizeof(bits) / sizeof(bits[0]); ++idx) {
+    const display_attention_bit_t bit = bits[idx];
+    printf("  %s: %s\n",
+           DisplayAttentionBitToName(bit),
+           ((mask & bit) != 0u) ? "enabled" : "disabled");
+  }
+}
+
+static int
+SaveDisplayAttentionMask(display_attention_mask_t mask)
+{
+  if (g_runtime == NULL) {
+    return 1;
+  }
+  g_runtime->settings->display_attention_mask = mask;
+  const esp_err_t result = AppSettingsSaveDisplayAttentionMask(mask);
+  if (result != ESP_OK) {
+    printf("save failed: %s\n", esp_err_to_name(result));
+    return 1;
+  }
+  printf("OK\n");
+  PrintDisplayAttentionMask(mask);
+  return 0;
+}
+
+static void
+TrimWhitespace(char* value)
+{
+  if (value == NULL) {
+    return;
+  }
+  char* start = value;
+  while (*start == ' ' || *start == '\t') {
+    ++start;
+  }
+  if (start != value) {
+    memmove(value, start, strlen(start) + 1);
+  }
+  size_t len = strlen(value);
+  while (len > 0 &&
+         (value[len - 1] == ' ' || value[len - 1] == '\t')) {
+    value[len - 1] = '\0';
+    --len;
+  }
 }
 
 static const char*
@@ -226,7 +339,7 @@ CommandDisplay(int argc, char** argv)
     return 1;
   }
   if (argc < 2) {
-    printf("usage: disp show | disp units C|F\n");
+    printf("usage: disp show | disp units C|F | disp attn ...\n");
     return 1;
   }
 
@@ -242,6 +355,8 @@ CommandDisplay(int argc, char** argv)
            CONFIG_APP_MAX7219_MOSI_GPIO,
            CONFIG_APP_MAX7219_SCLK_GPIO,
            CONFIG_APP_MAX7219_CS_GPIO);
+    PrintDisplayAttentionMask(
+      AppSettingsGetDisplayAttentionMask());
     return 0;
   }
 
@@ -265,7 +380,77 @@ CommandDisplay(int argc, char** argv)
     return 0;
   }
 
-  printf("unknown action. usage: disp show | disp units C|F\n");
+  if (strcmp(action, "attn") == 0) {
+    if (argc < 3) {
+      printf("usage: disp attn show|enable|disable|set|default ...\n");
+      return 1;
+    }
+    const char* attn_action = argv[2];
+    if (strcmp(attn_action, "show") == 0) {
+      PrintDisplayAttentionMask(AppSettingsGetDisplayAttentionMask());
+      return 0;
+    }
+    if (strcmp(attn_action, "enable") == 0 ||
+        strcmp(attn_action, "disable") == 0) {
+      if (argc < 4) {
+        printf("usage: disp attn %s <name>\n", attn_action);
+        return 1;
+      }
+      display_attention_bit_t bit = kDispAttnNone;
+      if (!ParseDisplayAttentionName(argv[3], &bit)) {
+        printf("unknown name. valid: sdout, sdio, framovr, rtd, time, mesh\n");
+        return 1;
+      }
+      display_attention_mask_t mask = AppSettingsGetDisplayAttentionMask();
+      if (strcmp(attn_action, "enable") == 0) {
+        mask |= bit;
+      } else {
+        mask &= ~bit;
+      }
+      return SaveDisplayAttentionMask(mask);
+    }
+    if (strcmp(attn_action, "set") == 0) {
+      if (argc < 4) {
+        printf("usage: disp attn set <comma-separated-list>\n");
+        return 1;
+      }
+      char list_buffer[128];
+      snprintf(list_buffer, sizeof(list_buffer), "%s", argv[3]);
+      display_attention_mask_t mask = 0;
+      size_t tokens = 0;
+      char* token = strtok(list_buffer, ",");
+      while (token != NULL) {
+        TrimWhitespace(token);
+        if (token[0] == '\0') {
+          token = strtok(NULL, ",");
+          continue;
+        }
+        display_attention_bit_t bit = kDispAttnNone;
+        if (!ParseDisplayAttentionName(token, &bit)) {
+          printf("unknown name '%s'. valid: sdout, sdio, framovr, rtd, time, mesh\n",
+                 token);
+          return 1;
+        }
+        mask |= bit;
+        ++tokens;
+        token = strtok(NULL, ",");
+      }
+      if (tokens == 0) {
+        printf("usage: disp attn set <comma-separated-list>\n");
+        return 1;
+      }
+      return SaveDisplayAttentionMask(mask);
+    }
+    if (strcmp(attn_action, "default") == 0) {
+      const display_attention_mask_t mask =
+        AppSettingsDefaultDisplayAttentionMask();
+      return SaveDisplayAttentionMask(mask);
+    }
+    printf("unknown action. usage: disp attn show|enable|disable|set|default\n");
+    return 1;
+  }
+
+  printf("unknown action. usage: disp show | disp units C|F | disp attn ...\n");
   return 1;
 }
 
@@ -1730,7 +1915,7 @@ RegisterCommands(void)
 
   const esp_console_cmd_t disp_cmd = {
     .command = "disp",
-    .help = "Display settings: disp show | disp units C|F",
+    .help = "Display settings: disp show | disp units C|F | disp attn ...",
     .hint = NULL,
     .func = &CommandDisplay,
   };

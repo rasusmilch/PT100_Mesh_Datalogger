@@ -1,5 +1,6 @@
 #include "app_settings.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,7 +40,9 @@ static const char* kKeyNodeRole = "node_role";
 static const char* kKeyAllowChildren = "allow_child";
 static const char* kKeyAllowChildrenSet = "allow_child_set";
 static const char* kKeyDisplayUnits = "disp_units";
+static const char* kKeyDisplayAttentionMask = "disp_attn";
 static const uint8_t kCalibrationContextVersion = 1;
+static display_attention_mask_t g_display_attention_mask = 0;
 
 static app_node_role_t
 DefaultNodeRole(void)
@@ -148,6 +151,8 @@ ApplyDefaults(app_settings_t* settings)
     AppSettingsRoleDefaultAllowsChildren(settings->node_role);
   settings->allow_children_set = false;
   settings->display_units = APP_DISPLAY_UNITS_F;
+  settings->display_attention_mask = AppSettingsDefaultDisplayAttentionMask();
+  g_display_attention_mask = settings->display_attention_mask;
 }
 
 static bool
@@ -368,10 +373,22 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->display_units = (app_display_units_t)display_units;
   }
 
+  uint32_t display_attention = (uint32_t)settings_out->display_attention_mask;
+  result = nvs_get_u32(handle, kKeyDisplayAttentionMask, &display_attention);
+  if (result == ESP_OK) {
+    settings_out->display_attention_mask =
+      (display_attention_mask_t)display_attention;
+  } else {
+    ESP_LOGW(kTag,
+             "display attention mask load failed (using default): %s",
+             esp_err_to_name(result));
+  }
+  g_display_attention_mask = settings_out->display_attention_mask;
+
   nvs_close(handle);
   ESP_LOGI(
     kTag,
-    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s",
+    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s disp_attn=0x%08" PRIX32,
     (unsigned)settings_out->log_period_ms,
     (unsigned)settings_out->fram_flush_watermark_records,
     (unsigned)settings_out->sd_flush_period_ms,
@@ -382,7 +399,8 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->dst_enabled ? 1u : 0u,
     AppSettingsRoleToString(settings_out->node_role),
     settings_out->allow_children ? 1u : 0u,
-    AppSettingsDisplayUnitsToString(settings_out->display_units));
+    AppSettingsDisplayUnitsToString(settings_out->display_units),
+    (uint32_t)settings_out->display_attention_mask);
   return ESP_OK;
 }
 
@@ -644,6 +662,38 @@ AppSettingsSaveDisplayUnits(app_display_units_t units)
   }
   nvs_close(handle);
   return result;
+}
+
+display_attention_mask_t
+AppSettingsDefaultDisplayAttentionMask(void)
+{
+  return kDispAttnSdOut | kDispAttnSdIo | kDispAttnFramOvr |
+         kDispAttnRtdFault | kDispAttnTimeBad;
+}
+
+esp_err_t
+AppSettingsSaveDisplayAttentionMask(display_attention_mask_t mask)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u32(handle, kKeyDisplayAttentionMask, (uint32_t)mask);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  if (result == ESP_OK) {
+    g_display_attention_mask = mask;
+  }
+  return result;
+}
+
+display_attention_mask_t
+AppSettingsGetDisplayAttentionMask(void)
+{
+  return g_display_attention_mask;
 }
 
 void
