@@ -64,6 +64,11 @@ typedef struct
   uint64_t last_overrun_records_total;
   uint64_t last_overrun_logged_total;
 
+  // Sensor fault logging state (rate-limited).
+  bool last_sensor_fault_present;
+  uint8_t last_sensor_fault_status;
+  TickType_t last_sensor_fault_log_ticks;
+
   char node_id_string[32];
 
   TaskHandle_t sensor_task;
@@ -324,7 +329,7 @@ FormatTemperatureText(char* out,
     return;
   }
   if (!valid) {
-    snprintf(out, out_len, "----");
+    s snprintf(out, out_len, "----");
     return;
   }
 
@@ -424,6 +429,7 @@ SetRunLogPolicy(void)
   esp_log_level_set("sd_csv_verify", ESP_LOG_WARN);
   esp_log_level_set("fram_log", ESP_LOG_WARN);
   esp_log_level_set("max7219", ESP_LOG_WARN);
+  esp_log_level_set("max31865", ESP_LOG_WARN);
   esp_log_level_set("mesh", ESP_LOG_WARN);
   g_state.log_quiet = true;
 }
@@ -484,8 +490,8 @@ BuildDateStringFromRecord(const log_record_t* record,
   }
   time_t time_seconds = (time_t)epoch;
   struct tm time_info;
-  localtime_r(&time_seconds, &time_info);
-  strftime(out, out_size, "%Y-%m-%d", &time_info);
+  gmtime_r(&time_seconds, &time_info);
+  strftime(out, out_size, "%Y-%m-%dZ", &time_info);
 }
 
 static bool
@@ -852,29 +858,29 @@ SdFlushWorkerTick(runtime_state_t* state,
   }
 
   if (!state->sd_logger.is_mounted) {
-  const bool was_degraded = state->sd_degraded;
-  const uint32_t prev_fail_count = state->sd_fail_count;
+    const bool was_degraded = state->sd_degraded;
+    const uint32_t prev_fail_count = state->sd_fail_count;
 
-  esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
-  if (mount_result != ESP_OK) {
-    MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
-    if (more_pending_out != NULL) {
-      *more_pending_out = true;
+    esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
+    if (mount_result != ESP_OK) {
+      MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
+      if (more_pending_out != NULL) {
+        *more_pending_out = true;
+      }
+      return ESP_OK;
     }
-    return ESP_OK;
-  }
 
-  // Mount succeeded. Clear any backoff/degraded latch so recoverable failures
-  // stop triggering operator attention once the SD path is healthy again.
-  state->sd_backoff_until_ticks = 0;
-  state->sd_degraded = false;
+    // Mount succeeded. Clear any backoff/degraded latch so recoverable failures
+    // stop triggering operator attention once the SD path is healthy again.
+    state->sd_backoff_until_ticks = 0;
+    state->sd_degraded = false;
 
-  if (was_degraded || prev_fail_count != 0u) {
-    ESP_LOGW(kTag,
-             "SD recovered (mounted). fail_count=%u backoff cleared",
-             (unsigned)state->sd_fail_count);
+    if (was_degraded || prev_fail_count != 0u) {
+      ESP_LOGW(kTag,
+               "SD recovered (mounted). fail_count=%u backoff cleared",
+               (unsigned)state->sd_fail_count);
+    }
   }
-}
 
   log_record_t first_record;
   esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
@@ -991,8 +997,49 @@ SensorTask(void* context)
         record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
       }
     } else {
-      ESP_LOGW(kTag, "sensor read failed: %s", esp_err_to_name(result));
       record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
+    }
+
+    // Log sensor faults in a rate-limited way so operators see
+    // wiring/open/short issues without flooding the console.
+    const TickType_t now_ticks = xTaskGetTickCount();
+    if (result == ESP_OK && sample.fault_present) {
+      const bool changed =
+        !state->last_sensor_fault_present ||
+        state->last_sensor_fault_status != sample.fault_status;
+      const bool rate_ok =
+        (state->last_sensor_fault_log_ticks == 0) ||
+        (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
+         5000u);
+      if (changed || rate_ok) {
+        ESP_LOGW(kTag,
+                 "MAX31865 fault: status=0x%02X res=%.3f ohm temp_c=%.2f",
+                 sample.fault_status,
+                 sample.resistance_ohm,
+                 sample.temperature_c);
+        state->last_sensor_fault_log_ticks = now_ticks;
+      }
+      state->last_sensor_fault_present = true;
+      state->last_sensor_fault_status = sample.fault_status;
+    } else if (result != ESP_OK) {
+      const bool changed = !state->last_sensor_fault_present ||
+                           state->last_sensor_fault_status != 0xFFu;
+      const bool rate_ok =
+        (state->last_sensor_fault_log_ticks == 0) ||
+        (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
+         5000u);
+      if (changed || rate_ok) {
+        ESP_LOGW(kTag, "MAX31865 read failed: %s", esp_err_to_name(result));
+        state->last_sensor_fault_log_ticks = now_ticks;
+      }
+      state->last_sensor_fault_present = true;
+      state->last_sensor_fault_status = 0xFFu;
+    } else {
+      if (state->last_sensor_fault_present) {
+        ESP_LOGW(kTag, "MAX31865 fault cleared");
+      }
+      state->last_sensor_fault_present = false;
+      state->last_sensor_fault_status = 0;
     }
 
     if (time_valid) {
