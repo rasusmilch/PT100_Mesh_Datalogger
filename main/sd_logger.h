@@ -64,7 +64,8 @@ esp_err_t SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc);
 esp_err_t SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
                                       const uint8_t* batch_bytes,
                                       size_t batch_length_bytes,
-                                      uint64_t last_record_id_in_batch);
+                                      uint64_t last_record_id_in_batch,
+                                      SdCsvAppendDiagnostics* diag_out);
 
 void SdLoggerClose(sd_logger_t* logger);
 

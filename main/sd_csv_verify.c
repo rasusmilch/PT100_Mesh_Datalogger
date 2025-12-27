@@ -19,6 +19,18 @@ typedef struct
   uint8_t bytes[32];
 } sha256_digest_t;
 
+static void
+SetAppendDiagnostics(SdCsvAppendDiagnostics* diag_out,
+                     const char* operation,
+                     int errno_value)
+{
+  if (diag_out == NULL) {
+    return;
+  }
+  diag_out->operation = operation;
+  diag_out->errno_value = errno_value;
+}
+
 static sha256_digest_t
 ComputeSha256(const uint8_t* data, size_t length_bytes)
 {
@@ -336,24 +348,29 @@ SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
 esp_err_t
 SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
                                    const uint8_t* batch_bytes,
-                                   size_t batch_length_bytes)
+                                   size_t batch_length_bytes,
+                                   SdCsvAppendDiagnostics* diag_out)
 {
   if (file_handle == NULL || batch_bytes == NULL || batch_length_bytes == 0) {
+    SetAppendDiagnostics(diag_out, "append", 0);
     return ESP_ERR_INVALID_ARG;
   }
 
   const int file_descriptor = fileno(file_handle);
   if (file_descriptor < 0) {
     ESP_LOGE(kTag, "fileno() failed");
+    SetAppendDiagnostics(diag_out, "append", errno);
     return ESP_FAIL;
   }
 
   off_t original_size = 0;
   if (GetFileSizeBytes(file_descriptor, &original_size) != ESP_OK) {
+    SetAppendDiagnostics(diag_out, "append", errno);
     return ESP_FAIL;
   }
   const off_t append_offset = original_size;
 
+  SetAppendDiagnostics(diag_out, NULL, 0);
   const sha256_digest_t digest_before =
     ComputeSha256(batch_bytes, batch_length_bytes);
 
@@ -364,6 +381,7 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
              "fwrite() short write: wrote=%u expected=%u",
              (unsigned)written,
              (unsigned)batch_length_bytes);
+    SetAppendDiagnostics(diag_out, "append", errno);
     ftruncate(file_descriptor, original_size);
     fsync(file_descriptor);
     return ESP_FAIL;
@@ -371,6 +389,7 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
 
   if (fflush(file_handle) != 0) {
     ESP_LOGE(kTag, "fflush() failed: errno=%d (%s)", errno, strerror(errno));
+    SetAppendDiagnostics(diag_out, "fflush", errno);
     ftruncate(file_descriptor, original_size);
     fsync(file_descriptor);
     return ESP_FAIL;
@@ -378,6 +397,7 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
 
   if (fsync(file_descriptor) != 0) {
     ESP_LOGE(kTag, "fsync() failed: errno=%d (%s)", errno, strerror(errno));
+    SetAppendDiagnostics(diag_out, "fsync", errno);
     ftruncate(file_descriptor, original_size);
     fsync(file_descriptor);
     return ESP_FAIL;
@@ -391,6 +411,7 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
         file_descriptor, append_offset, readback_bytes, batch_length_bytes) !=
       ESP_OK) {
     ESP_LOGE(kTag, "Read-back failed; truncating to original size.");
+    SetAppendDiagnostics(diag_out, "verify", errno);
     free(readback_bytes);
     ftruncate(file_descriptor, original_size);
     fsync(file_descriptor);
@@ -403,6 +424,7 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
 
   if (!DigestsEqual(&digest_before, &digest_after)) {
     ESP_LOGE(kTag, "SD verify failed (SHA mismatch). Truncating append.");
+    SetAppendDiagnostics(diag_out, "verify", 0);
     if (ftruncate(file_descriptor, original_size) != 0) {
       ESP_LOGE(kTag,
                "ftruncate() rollback failed: errno=%d (%s)",

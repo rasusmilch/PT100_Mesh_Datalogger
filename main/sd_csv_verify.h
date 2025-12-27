@@ -19,6 +19,12 @@ typedef struct
   uint64_t last_record_id;
 } SdCsvResumeInfo;
 
+typedef struct
+{
+  const char* operation;
+  int errno_value;
+} SdCsvAppendDiagnostics;
+
 // Repairs a power-loss tail (truncates to the last '\n' if needed) and returns
 // the last successfully written record_id found in the file.
 //
@@ -38,7 +44,8 @@ esp_err_t SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
 // size and returns an error. FRAM must NOT be consumed unless this returns OK.
 esp_err_t SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
                                              const uint8_t* batch_bytes,
-                                             size_t batch_length_bytes);
+                                             size_t batch_length_bytes,
+                                             SdCsvAppendDiagnostics* diag_out);
 
 #ifdef __cplusplus
 }

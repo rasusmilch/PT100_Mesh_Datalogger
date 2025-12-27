@@ -25,7 +25,7 @@ CsvFileWriter(const char* bytes, size_t len, void* context)
 {
   FILE* file = (FILE*)context;
   return SdCsvAppendBatchWithReadbackVerify(
-           file, (const uint8_t*)bytes, len) == ESP_OK;
+           file, (const uint8_t*)bytes, len, NULL) == ESP_OK;
 }
 
 void
@@ -264,7 +264,8 @@ esp_err_t
 SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
                             const uint8_t* batch_bytes,
                             size_t batch_length_bytes,
-                            uint64_t last_record_id_in_batch)
+                            uint64_t last_record_id_in_batch,
+                            SdCsvAppendDiagnostics* diag_out)
 {
   if (logger == NULL || logger->file == NULL) {
     return ESP_ERR_INVALID_STATE;
@@ -274,8 +275,8 @@ SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
   }
 
   fseek(logger->file, 0, SEEK_END);
-  esp_err_t result =
-    SdCsvAppendBatchWithReadbackVerify(logger->file, batch_bytes, batch_length_bytes);
+  esp_err_t result = SdCsvAppendBatchWithReadbackVerify(
+    logger->file, batch_bytes, batch_length_bytes, diag_out);
   if (result == ESP_OK) {
     logger->last_record_id_on_sd = last_record_id_in_batch;
   }

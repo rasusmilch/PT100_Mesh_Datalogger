@@ -462,6 +462,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
 
     esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
     if (sync_result != ESP_OK) {
+      (void)SdLoggerUnmount(&state->sd_logger);
+      MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
       return sync_result;
     }
 
@@ -486,13 +488,26 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t write_result = SdLoggerAppendVerifiedBatch(
-      &state->sd_logger, state->batch_buffer, bytes_used, last_record_id);
+    SdCsvAppendDiagnostics append_diag = { 0 };
+    esp_err_t write_result = SdLoggerAppendVerifiedBatch(&state->sd_logger,
+                                                         state->batch_buffer,
+                                                         bytes_used,
+                                                         last_record_id,
+                                                         &append_diag);
     if (write_result != ESP_OK) {
       ESP_LOGE(kTag,
                "SD append failed after %u records: %s",
                total_flushed + records_used,
                esp_err_to_name(write_result));
+      (void)SdLoggerUnmount(&state->sd_logger);
+      const char* op = (append_diag.operation != NULL) ? append_diag.operation
+                                                       : "append";
+      MarkSdFailure(state,
+                    "SD append failed",
+                    op,
+                    write_result,
+                    append_diag.errno_value,
+                    true);
       return write_result;
     }
 
@@ -520,7 +535,12 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
 }
 
 static void
-MarkSdFailure(runtime_state_t* state, const char* context, esp_err_t error)
+MarkSdFailure(runtime_state_t* state,
+              const char* context,
+              const char* operation,
+              esp_err_t error,
+              int errno_value,
+              bool did_unmount)
 {
   if (state == NULL) {
     return;
@@ -529,12 +549,21 @@ MarkSdFailure(runtime_state_t* state, const char* context, esp_err_t error)
   state->sd_fail_count++;
   state->sd_backoff_until_ticks =
     xTaskGetTickCount() + pdMS_TO_TICKS(kSdFlushFailureBackoffMs);
-  ESP_LOGW(kTag,
-           "%s: %s (failures=%u, backoff=%ums)",
-           context,
-           esp_err_to_name(error),
-           (unsigned)state->sd_fail_count,
-           (unsigned)kSdFlushFailureBackoffMs);
+  const char* op_label = (operation != NULL) ? operation : "unknown";
+  const char* errno_str =
+    (errno_value != 0) ? strerror(errno_value) : "n/a";
+  const char* action_label = did_unmount ? "unmount+backoff" : "backoff";
+  ESP_LOGW(
+    kTag,
+    "%s: op=%s err=%s (%d) errno=%d (%s) action=%s backoff_until=%u",
+    context,
+    op_label,
+    esp_err_to_name(error),
+    (int)error,
+    errno_value,
+    errno_str,
+    action_label,
+    (unsigned)state->sd_backoff_until_ticks);
 }
 
 static esp_err_t
@@ -574,7 +603,7 @@ SdFlushWorkerTick(runtime_state_t* state,
   if (!state->sd_logger.is_mounted) {
     esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
     if (mount_result != ESP_OK) {
-      MarkSdFailure(state, "SD mount failed", mount_result);
+      MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
       if (more_pending_out != NULL) {
         *more_pending_out = true;
       }
@@ -599,7 +628,7 @@ SdFlushWorkerTick(runtime_state_t* state,
   esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
   if (sync_result != ESP_OK) {
     (void)SdLoggerUnmount(&state->sd_logger);
-    MarkSdFailure(state, "SD sync failed", sync_result);
+    MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
     return sync_result;
   }
 
@@ -607,8 +636,8 @@ SdFlushWorkerTick(runtime_state_t* state,
   BuildDateStringFromRecord(&first_record, day_string, sizeof(day_string));
 
   uint32_t records_used = 0;
-    uint64_t last_record_id = 0;
-    size_t bytes_used = 0;
+  uint64_t last_record_id = 0;
+  size_t bytes_used = 0;
   esp_err_t batch_result =
     BuildBatchForDay(state,
                      day_string,
@@ -627,11 +656,22 @@ SdFlushWorkerTick(runtime_state_t* state,
     return ESP_OK;
   }
 
-  esp_err_t write_result = SdLoggerAppendVerifiedBatch(
-    &state->sd_logger, state->batch_buffer, bytes_used, last_record_id);
+  SdCsvAppendDiagnostics append_diag = { 0 };
+  esp_err_t write_result = SdLoggerAppendVerifiedBatch(&state->sd_logger,
+                                                       state->batch_buffer,
+                                                       bytes_used,
+                                                       last_record_id,
+                                                       &append_diag);
   if (write_result != ESP_OK) {
     (void)SdLoggerUnmount(&state->sd_logger);
-    MarkSdFailure(state, "SD append failed", write_result);
+    const char* op = (append_diag.operation != NULL) ? append_diag.operation
+                                                     : "append";
+    MarkSdFailure(state,
+                  "SD append failed",
+                  op,
+                  write_result,
+                  append_diag.errno_value,
+                  true);
     return write_result;
   }
 
@@ -1137,7 +1177,7 @@ EnsureSdMounted(void)
     esp_err_t mount_result =
       SdLoggerMount(&g_state.sd_logger, GetSpiHost(), CONFIG_APP_SD_CS_GPIO);
     if (mount_result != ESP_OK) {
-      MarkSdFailure(&g_state, "SD mount failed", mount_result);
+      MarkSdFailure(&g_state, "SD mount failed", "mount", mount_result, 0, false);
     }
   }
 }
@@ -1244,7 +1284,9 @@ RuntimeStart(void)
       TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : 0;
     esp_err_t sync_result = EnsureSdSyncedForEpoch(&g_state, epoch_for_file);
     if (sync_result != ESP_OK) {
-      MarkSdFailure(&g_state, "Initial SD sync failed", sync_result);
+      (void)SdLoggerUnmount(&g_state.sd_logger);
+      MarkSdFailure(
+        &g_state, "Initial SD sync failed", "sync", sync_result, 0, true);
     }
   }
 
