@@ -188,8 +188,8 @@ CommandStatus(int argc, char** argv)
          settings->calibration.coefficients[3]);
 
   printf("sd_mounted: %s\n", (g_runtime->sd_logger->is_mounted ? "yes" : "no"));
-  printf("sd_last_seq: %u\n",
-         (unsigned)SdLoggerLastSequenceOnSd(g_runtime->sd_logger));
+  printf("sd_last_record_id: %" PRIu64 "\n",
+         SdLoggerLastRecordIdOnSd(g_runtime->sd_logger));
   printf("mesh_connected: %s\n",
          MeshTransportIsConnected(g_runtime->mesh) ? "yes" : "no");
   printf("cal_points: %u\n",
@@ -288,17 +288,19 @@ CommandFram(int argc, char** argv)
          (unsigned)status.capacity_records,
          (unsigned)status.record_size_bytes,
          (unsigned)status.flush_watermark_records);
-  printf("fram: write=%u read=%u count=%u seq=%u\n",
+  printf("fram: write=%u read=%u count=%u seq=%u id=%" PRIu64 "\n",
          (unsigned)status.write_index_abs,
          (unsigned)status.read_index_abs,
          (unsigned)status.buffered_count,
-         (unsigned)status.next_sequence);
-  printf("FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u\n",
+         (unsigned)status.next_sequence,
+         status.next_record_id);
+  printf("FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u id=%" PRIu64 "\n",
          (unsigned)status.capacity_records,
          (unsigned)status.write_index_abs,
          (unsigned)status.read_index_abs,
          (unsigned)status.buffered_count,
-         (unsigned)status.next_sequence);
+         (unsigned)status.next_sequence,
+         status.next_record_id);
   return 0;
 }
 

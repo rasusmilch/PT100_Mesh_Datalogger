@@ -186,7 +186,7 @@ static esp_err_t
 ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
 {
   SdCsvResumeInfo resume_info = { 0 };
-  esp_err_t resume_result = SdCsvFindLastSequenceAndRepairTail(
+  esp_err_t resume_result = SdCsvFindLastRecordIdAndRepairTail(
     file, logger->config.tail_scan_bytes, &resume_info);
   if (resume_result != ESP_OK) {
     ESP_LOGE(kTag, "Failed to scan/repair %s: %s", path, esp_err_to_name(resume_result));
@@ -195,11 +195,14 @@ ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
   if (resume_info.file_was_truncated) {
     ESP_LOGW(kTag, "%s tail repaired after power loss", path);
   }
-  if (resume_info.found_last_sequence) {
-    if (resume_info.last_sequence > logger->last_sequence_on_sd) {
-      logger->last_sequence_on_sd = resume_info.last_sequence;
+  if (resume_info.found_last_record_id) {
+    if (resume_info.last_record_id > logger->last_record_id_on_sd) {
+      logger->last_record_id_on_sd = resume_info.last_record_id;
     }
-    ESP_LOGI(kTag, "Resume: last seq on %s = %u", path, resume_info.last_sequence);
+    ESP_LOGI(kTag,
+             "Resume: last record id on %s = %" PRIu64,
+             path,
+             resume_info.last_record_id);
   }
   return ESP_OK;
 }
@@ -262,7 +265,7 @@ esp_err_t
 SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
                             const uint8_t* batch_bytes,
                             size_t batch_length_bytes,
-                            uint32_t last_sequence_in_batch)
+                            uint64_t last_record_id_in_batch)
 {
   if (logger == NULL || logger->file == NULL) {
     return ESP_ERR_INVALID_STATE;
@@ -275,7 +278,7 @@ SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
   esp_err_t result =
     SdCsvAppendBatchWithReadbackVerify(logger->file, batch_bytes, batch_length_bytes);
   if (result == ESP_OK) {
-    logger->last_sequence_on_sd = last_sequence_in_batch;
+    logger->last_record_id_on_sd = last_record_id_in_batch;
   }
   return result;
 }

@@ -9,8 +9,9 @@ extern "C"
 #endif
 
 // Fixed on-media record format. Keep this stable once you start generating log
-// files.
+// files, and bump LOG_RECORD_SCHEMA_VER when changing on-media layout.
 #define LOG_RECORD_MAGIC 0x544C4F47u // 'TLOG'
+#define LOG_RECORD_SCHEMA_VER 2u
 
   // Record flags.
   typedef enum
@@ -27,7 +28,9 @@ extern "C"
   typedef struct
   {
     uint32_t magic;               // LOG_RECORD_MAGIC
+    uint32_t schema_version;      // LOG_RECORD_SCHEMA_VER
     uint32_t sequence;            // Monotonic counter (wrap ok).
+    uint64_t record_id;           // Monotonic record id (never wraps).
     int64_t timestamp_epoch_sec;  // UNIX epoch seconds (UTC). 0 if unknown.
     int32_t timestamp_millis;     // 0..999
     int32_t raw_temp_milli_c;     // Uncalibrated temperature (milli-°C)

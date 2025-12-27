@@ -1,6 +1,7 @@
 #include "diagnostics/diag_sd.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -52,10 +53,10 @@ RunDiagSd(const app_runtime_t* runtime,
     DiagReportStep(&ctx,
                    2,
                    total_steps,
-                   "last seq",
+                   "last id",
                    ESP_OK,
-                   "last_sequence=%u",
-                   (unsigned)SdLoggerLastSequenceOnSd(runtime->sd_logger));
+                   "last_record_id=%" PRIu64,
+                   SdLoggerLastRecordIdOnSd(runtime->sd_logger));
   }
 
   if (full) {
@@ -111,7 +112,13 @@ RunDiagSd(const app_runtime_t* runtime,
       DiagReportStep(&ctx, 3, total_steps, "file r/w", ESP_FAIL, "not mounted");
     }
 
-    DiagReportStep(&ctx, 4, total_steps, "last seq", ESP_OK, "last_sequence=%u", (unsigned)SdLoggerLastSequenceOnSd(runtime->sd_logger));
+    DiagReportStep(&ctx,
+                   4,
+                   total_steps,
+                   "last id",
+                   ESP_OK,
+                   "last_record_id=%" PRIu64,
+                   SdLoggerLastRecordIdOnSd(runtime->sd_logger));
   }
 
   DiagHeapCheck(&ctx, "post_sd_diag");
