@@ -63,9 +63,9 @@ BuildDailyCsvPath(const sd_logger_t* logger,
 {
   time_t time_seconds = (time_t)epoch_seconds;
   struct tm time_info;
-  localtime_r(&time_seconds, &time_info);
+  gmtime_r(&time_seconds, &time_info);
 
-  strftime(date_out, date_out_size, "%Y-%m-%d", &time_info);
+  strftime(date_out, date_out_size, "%Y-%m-%dZ", &time_info);
 
   snprintf(path_out,
            path_out_size,
