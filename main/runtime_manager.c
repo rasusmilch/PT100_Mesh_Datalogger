@@ -312,6 +312,32 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
     return sd_result;
   }
 
+  if (FramLogGetBufferedRecords(&state->fram_log) == 0) {
+    return ESP_OK;
+  }
+
+  log_record_t oldest_record;
+  esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &oldest_record);
+  if (peek_result == ESP_ERR_INVALID_RESPONSE) {
+    ESP_LOGE(kTag, "Cannot sync: corrupted FRAM record at head");
+    return peek_result;
+  }
+  if (peek_result != ESP_OK) {
+    return peek_result;
+  }
+
+  char oldest_record_day[16];
+  BuildDateStringFromRecord(&oldest_record,
+                            oldest_record_day,
+                            sizeof(oldest_record_day));
+  if (strcmp(oldest_record_day, state->sd_logger.current_date) != 0) {
+    ESP_LOGW(kTag,
+             "Skipping FRAM sync: oldest record day %s != SD file day %s",
+             oldest_record_day,
+             state->sd_logger.current_date);
+    return ESP_OK;
+  }
+
   uint32_t consumed = 0;
   esp_err_t consume_result = FramLogConsumeUpToRecordId(
     &state->fram_log, SdLoggerLastRecordIdOnSd(&state->sd_logger), &consumed);
