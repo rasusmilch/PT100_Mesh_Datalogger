@@ -28,6 +28,8 @@ extern "C"
     uint32_t record_count;
     uint32_t next_sequence;
     uint64_t next_record_id;
+    uint64_t overrun_records_total;
+    uint32_t overrun_events_total;
 
     uint32_t records_since_header_persist;
     bool saw_corruption;
@@ -54,8 +56,11 @@ extern "C"
 
   uint32_t FramLogNextSequence(const fram_log_t* log);
   uint64_t FramLogNextRecordId(const fram_log_t* log);
-  uint32_t FramLogGetCapacityRecords(const fram_log_t* log);
+  size_t FramLogGetCapacityRecords(const fram_log_t* log);
   uint32_t FramLogGetBufferedRecords(const fram_log_t* log);
+  size_t FramLogGetCountRecords(const fram_log_t* log);
+  uint64_t FramLogGetOverrunRecordsTotal(const fram_log_t* log);
+  bool FramLogIsOverwriting(const fram_log_t* log);
   esp_err_t FramLogGetStatus(const fram_log_t* log,
                              fram_log_status_t* out_status);
 
@@ -63,7 +68,7 @@ extern "C"
   // persistent counters, guaranteeing monotonicity across reboots.
   esp_err_t FramLogAssignRecordIds(fram_log_t* log, log_record_t* record);
 
-  // Append record (writes to FRAM). Returns ESP_ERR_NO_MEM if buffer is full.
+  // Append record (writes to FRAM). Overwrites oldest when buffer is full.
   esp_err_t FramLogAppend(fram_log_t* log, const log_record_t* record);
 
   // Peek the oldest record into `record_out` without removing it.

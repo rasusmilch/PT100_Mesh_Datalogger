@@ -317,16 +317,34 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
   return ESP_OK;
 }
 
-uint32_t
+size_t
 FramLogGetCapacityRecords(const fram_log_t* log)
 {
-  return (log == NULL) ? 0 : log->capacity_records;
+  return (log == NULL) ? 0 : (size_t)log->capacity_records;
 }
 
 uint32_t
 FramLogGetBufferedRecords(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : log->record_count;
+}
+
+size_t
+FramLogGetCountRecords(const fram_log_t* log)
+{
+  return (log == NULL) ? 0 : (size_t)log->record_count;
+}
+
+uint64_t
+FramLogGetOverrunRecordsTotal(const fram_log_t* log)
+{
+  return (log == NULL) ? 0 : log->overrun_records_total;
+}
+
+bool
+FramLogIsOverwriting(const fram_log_t* log)
+{
+  return (log != NULL) && (log->overrun_records_total > 0);
 }
 
 uint32_t
@@ -429,9 +447,15 @@ FramLogAppend(fram_log_t* log, const log_record_t* record)
     return ESP_ERR_INVALID_ARG;
   }
 
-  // If full, refuse to overwrite existing data. Caller should flush to SD first.
   if (log->record_count >= log->capacity_records) {
-    return ESP_ERR_NO_MEM;
+    log->read_index++;
+    if (log->record_count > 0) {
+      log->record_count--;
+    }
+    log->overrun_records_total++;
+    if (log->overrun_records_total == 1u) {
+      log->overrun_events_total++;
+    }
   }
 
   log_record_t record_copy;
@@ -442,7 +466,11 @@ FramLogAppend(fram_log_t* log, const log_record_t* record)
   }
 
   log->write_index++;
-  log->record_count++;
+  if (log->record_count < log->capacity_records) {
+    log->record_count++;
+  } else {
+    log->record_count = log->capacity_records;
+  }
 
   return ESP_OK;
 }
