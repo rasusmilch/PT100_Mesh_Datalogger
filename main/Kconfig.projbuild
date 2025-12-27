@@ -82,6 +82,52 @@ config APP_MAX31865_CS_GPIO
   range -1 48
   default 10
 
+config APP_MAX7219_ENABLE
+  bool "Enable MAX7219 32x8 display"
+  default y
+
+config APP_MAX7219_SPI_HOST
+  int "MAX7219 SPI host (2=SPI2_HOST, 3=SPI3_HOST)"
+  range 2 3
+  default 3
+
+config APP_MAX7219_MOSI_GPIO
+  int "MAX7219 MOSI GPIO"
+  range -1 48
+  default 17
+
+config APP_MAX7219_SCLK_GPIO
+  int "MAX7219 SCLK GPIO"
+  range -1 48
+  default 18
+
+config APP_MAX7219_CS_GPIO
+  int "MAX7219 CS GPIO"
+  range -1 48
+  default 16
+
+config APP_MAX7219_CHAIN_LEN
+  int "MAX7219 chain length"
+  range 1 8
+  default 4
+
+config APP_MAX7219_INTENSITY
+  int "MAX7219 intensity (0-15)"
+  range 0 15
+  default 6
+
+config APP_MAX7219_ROTATE_180
+  bool "Rotate MAX7219 output 180 degrees"
+  default n
+
+config APP_MAX7219_MIRROR_X
+  bool "Mirror MAX7219 output horizontally"
+  default n
+
+config APP_MAX7219_MIRROR_Y
+  bool "Mirror MAX7219 output vertically"
+  default n
+
 config APP_MAX31865_RREF_OHMS
   int "MAX31865 reference resistor (ohms)"
   range 10 100000

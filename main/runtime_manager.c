@@ -19,6 +19,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "i2c_bus.h"
+#include "max7219_display.h"
 #include "max31865_reader.h"
 #include "mesh_transport.h"
 #include "data_csv.h"
@@ -216,6 +217,7 @@ typedef struct
   TaskHandle_t export_task;
   TaskHandle_t time_sync_task;
   TaskHandle_t topology_task;
+  TaskHandle_t display_task;
 
   bool initialized;
   bool is_running;
@@ -227,6 +229,14 @@ typedef struct
   uint32_t export_dropped_count;
   uint32_t export_write_fail_count;
   bool csv_header_emitted;
+
+  max7219_display_t display;
+  bool display_initialized;
+  int32_t last_temp_milli_c;
+  bool last_temp_valid;
+  uint32_t last_flags;
+  TickType_t last_update_ticks;
+  portMUX_TYPE last_temp_lock;
 } runtime_state_t;
 
 typedef struct
@@ -239,6 +249,160 @@ static runtime_state_t g_state;
 static app_runtime_t g_runtime;
 static esp_err_t
 RuntimeFlushToSd(void* context);
+static void
+CopyLastSample(runtime_state_t* state,
+               int32_t* temp_milli_c,
+               bool* valid,
+               uint32_t* flags,
+               TickType_t* update_ticks);
+
+static bool
+RuntimeNeedsOperatorAttention(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return false;
+  }
+
+  uint32_t flags = 0;
+  CopyLastSample(state, NULL, NULL, &flags, NULL);
+  if ((flags & LOG_RECORD_FLAG_SENSOR_FAULT) != 0u) {
+    return true;
+  }
+  if (state->sd_degraded || !state->sd_logger.is_mounted) {
+    return true;
+  }
+  if (FramLogGetOverrunRecordsTotal(&state->fram_log) > 0) {
+    return true;
+  }
+
+  return false;
+}
+
+static void
+CopyLastSample(runtime_state_t* state,
+               int32_t* temp_milli_c,
+               bool* valid,
+               uint32_t* flags,
+               TickType_t* update_ticks)
+{
+  if (state == NULL) {
+    return;
+  }
+  taskENTER_CRITICAL(&state->last_temp_lock);
+  if (temp_milli_c != NULL) {
+    *temp_milli_c = state->last_temp_milli_c;
+  }
+  if (valid != NULL) {
+    *valid = state->last_temp_valid;
+  }
+  if (flags != NULL) {
+    *flags = state->last_flags;
+  }
+  if (update_ticks != NULL) {
+    *update_ticks = state->last_update_ticks;
+  }
+  taskEXIT_CRITICAL(&state->last_temp_lock);
+}
+
+static void
+FormatTemperatureText(char* out,
+                      size_t out_len,
+                      int32_t temp_milli_c,
+                      app_display_units_t units,
+                      bool valid)
+{
+  if (out == NULL || out_len == 0) {
+    return;
+  }
+  if (!valid) {
+    snprintf(out, out_len, "----");
+    return;
+  }
+
+  double temp_c = (double)temp_milli_c / 1000.0;
+  double temp = temp_c;
+  char unit_char = 'C';
+  if (units == APP_DISPLAY_UNITS_F) {
+    temp = temp_c * 9.0 / 5.0 + 32.0;
+    unit_char = 'F';
+  }
+
+  const double abs_temp = fabs(temp);
+  if (abs_temp >= 1000.0) {
+    snprintf(out, out_len, (temp >= 0.0) ? "HI" : "LO");
+    return;
+  }
+
+  if (abs_temp >= 100.0) {
+    snprintf(out, out_len, "%.0f%c", temp, unit_char);
+    return;
+  }
+
+  snprintf(out, out_len, "%.1f%c", temp, unit_char);
+  if (strlen(out) > 5) {
+    snprintf(out, out_len, "%.0f%c", temp, unit_char);
+  }
+}
+
+static void
+DisplayTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+  char last_text[12] = { 0 };
+
+  while (state != NULL) {
+    if (!state->display_initialized) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+
+    if (!state->is_running) {
+      if (last_text[0] != '\0') {
+        Max7219DisplayClear(&state->display);
+        last_text[0] = '\0';
+      }
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    const TickType_t now_ticks = xTaskGetTickCount();
+    const bool flash_on =
+      (((uint32_t)pdTICKS_TO_MS(now_ticks) / 500u) % 2u) == 0u;
+
+    if (RuntimeNeedsOperatorAttention(state)) {
+      const char* text = flash_on ? "ERROR" : "";
+      if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+        Max7219DisplaySetText(&state->display, text);
+        snprintf(last_text, sizeof(last_text), "%s", text);
+      }
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
+    int32_t temp_milli_c = 0;
+    bool temp_valid = false;
+    uint32_t flags = 0;
+    CopyLastSample(state, &temp_milli_c, &temp_valid, &flags, NULL);
+    (void)flags;
+
+    char text[12];
+    FormatTemperatureText(text,
+                          sizeof(text),
+                          temp_milli_c,
+                          state->settings.display_units,
+                          temp_valid);
+    if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+      Max7219DisplaySetText(&state->display, text);
+      snprintf(last_text, sizeof(last_text), "%s", text);
+    }
+    vTaskDelay(pdMS_TO_TICKS(250));
+  }
+
+  if (state != NULL) {
+    state->display_task = NULL;
+  }
+  vTaskDelete(NULL);
+}
 
 static void
 SetRunLogPolicy(void)
@@ -821,6 +985,20 @@ SensorTask(void* context)
       record.flags |= LOG_RECORD_FLAG_MESH_CONNECTED;
     }
 
+    int32_t temp_milli_c = record.temp_milli_c;
+    if (!state->settings.calibration.is_valid) {
+      temp_milli_c = record.raw_temp_milli_c;
+    }
+    const bool temp_valid =
+      (result == ESP_OK && !sample.fault_present);
+
+    taskENTER_CRITICAL(&state->last_temp_lock);
+    state->last_temp_milli_c = temp_milli_c;
+    state->last_temp_valid = temp_valid;
+    state->last_flags = record.flags;
+    state->last_update_ticks = xTaskGetTickCount();
+    taskEXIT_CRITICAL(&state->last_temp_lock);
+
     (void)xQueueSend(state->log_queue, &record, 0);
     vTaskDelay(pdMS_TO_TICKS(period_ms));
   }
@@ -1071,11 +1249,18 @@ GetSpiHost(void)
   return (CONFIG_APP_SPI_HOST == 3) ? SPI3_HOST : SPI2_HOST;
 }
 
+static spi_host_device_t
+GetDisplaySpiHost(void)
+{
+  return (CONFIG_APP_MAX7219_SPI_HOST == 3) ? SPI3_HOST : SPI2_HOST;
+}
+
 static void
 InitializeRuntimeStruct(void)
 {
   memset(&g_state, 0, sizeof(g_state));
   memset(&g_runtime, 0, sizeof(g_runtime));
+  g_state.last_temp_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
 
   g_runtime.settings = &g_state.settings;
   g_runtime.fram_i2c = &g_state.fram_i2c;
@@ -1125,6 +1310,33 @@ RuntimeManagerInit(void)
       kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
   AppSettingsApplyTimeZone(&g_state.settings);
+
+#if CONFIG_APP_MAX7219_ENABLE
+  max7219_display_config_t display_config = {
+    .host = GetDisplaySpiHost(),
+    .mosi_gpio = CONFIG_APP_MAX7219_MOSI_GPIO,
+    .sclk_gpio = CONFIG_APP_MAX7219_SCLK_GPIO,
+    .cs_gpio = CONFIG_APP_MAX7219_CS_GPIO,
+    .chain_len = CONFIG_APP_MAX7219_CHAIN_LEN,
+    .clock_hz = 2000000,
+    .intensity = CONFIG_APP_MAX7219_INTENSITY,
+  };
+  esp_err_t display_result =
+    Max7219DisplayInit(&g_state.display, &display_config);
+  if (display_result == ESP_OK) {
+    g_state.display_initialized = true;
+    BaseType_t display_created = xTaskCreate(
+      &DisplayTask, "display", 3072, &g_state, 2, &g_state.display_task);
+    if (display_created != pdPASS) {
+      g_state.display_initialized = false;
+      g_state.display_task = NULL;
+      ESP_LOGW(kTag, "Display task create failed");
+    }
+  } else {
+    ESP_LOGW(
+      kTag, "Max7219 display init failed: %s", esp_err_to_name(display_result));
+  }
+#endif
 
   const uint32_t i2c_frequency_hz = 400000;
   esp_err_t i2c_result = I2cBusInit(&g_state.i2c_bus,

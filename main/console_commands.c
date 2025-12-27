@@ -222,6 +222,59 @@ CommandStatus(int argc, char** argv)
 }
 
 static int
+CommandDisplay(int argc, char** argv)
+{
+  if (g_runtime == NULL) {
+    return 1;
+  }
+  if (argc < 2) {
+    printf("usage: disp show | disp units C|F\n");
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "show") == 0) {
+    printf("display_units: %s\n",
+           AppSettingsDisplayUnitsToString(
+             g_runtime->settings->display_units));
+    printf("max7219_enabled: %s\n",
+           CONFIG_APP_MAX7219_ENABLE ? "yes" : "no");
+    printf("max7219_spi_host: %d\n", CONFIG_APP_MAX7219_SPI_HOST);
+    printf("max7219_chain_len: %d\n", CONFIG_APP_MAX7219_CHAIN_LEN);
+    printf("max7219_intensity: %d\n", CONFIG_APP_MAX7219_INTENSITY);
+    printf("max7219_pins: mosi=%d sclk=%d cs=%d\n",
+           CONFIG_APP_MAX7219_MOSI_GPIO,
+           CONFIG_APP_MAX7219_SCLK_GPIO,
+           CONFIG_APP_MAX7219_CS_GPIO);
+    return 0;
+  }
+
+  if (strcmp(action, "units") == 0) {
+    if (argc < 3) {
+      printf("usage: disp units C|F\n");
+      return 1;
+    }
+    app_display_units_t units = APP_DISPLAY_UNITS_F;
+    if (!AppSettingsParseDisplayUnits(argv[2], &units)) {
+      printf("usage: disp units C|F\n");
+      return 1;
+    }
+    g_runtime->settings->display_units = units;
+    esp_err_t result = AppSettingsSaveDisplayUnits(units);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("display_units set to %s\n",
+           AppSettingsDisplayUnitsToString(units));
+    return 0;
+  }
+
+  printf("unknown action. usage: disp show | disp units C|F\n");
+  return 1;
+}
+
+static int
 CommandRaw(int argc, char** argv)
 {
   (void)argc;
@@ -1678,6 +1731,14 @@ RegisterCommands(void)
     .func = &CommandStatus,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&status_cmd));
+
+  const esp_console_cmd_t disp_cmd = {
+    .command = "disp",
+    .help = "Display settings: disp show | disp units C|F",
+    .hint = NULL,
+    .func = &CommandDisplay,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&disp_cmd));
 
   const esp_console_cmd_t raw_cmd = {
     .command = "raw",
