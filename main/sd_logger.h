@@ -30,7 +30,7 @@ typedef struct
 
   FILE* file;
   char current_date[16]; // YYYY-MM-DD
-  uint32_t last_sequence_on_sd;
+  uint64_t last_record_id_on_sd;
   uint8_t* file_buffer;
 
   sd_logger_config_t config;
@@ -57,21 +57,21 @@ esp_err_t SdLoggerTryRemount(sd_logger_t* logger, bool format_if_mount_failed);
 esp_err_t SdLoggerUnmount(sd_logger_t* logger);
 
 // Open/create the UTC daily CSV for the provided epoch. Repairs tail and
-// updates last_sequence_on_sd.
+// updates last_record_id_on_sd.
 esp_err_t SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc);
 
-// Append a verified batch (already formatted CSV) and update last_sequence_on_sd.
+// Append a verified batch (already formatted CSV) and update last_record_id_on_sd.
 esp_err_t SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
                                       const uint8_t* batch_bytes,
                                       size_t batch_length_bytes,
-                                      uint32_t last_sequence_in_batch);
+                                      uint64_t last_record_id_in_batch);
 
 void SdLoggerClose(sd_logger_t* logger);
 
-static inline uint32_t
-SdLoggerLastSequenceOnSd(const sd_logger_t* logger)
+static inline uint64_t
+SdLoggerLastRecordIdOnSd(const sd_logger_t* logger)
 {
-  return (logger == NULL) ? 0 : logger->last_sequence_on_sd;
+  return (logger == NULL) ? 0 : logger->last_record_id_on_sd;
 }
 
 #ifdef __cplusplus

@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "data_csv.h"
 #include "esp_log.h"
 #include "mbedtls/sha256.h"
 
@@ -81,15 +82,12 @@ ReadExactly(int file_descriptor,
 }
 
 static bool
-ParseSequenceFromCsvLine(const char* line, uint32_t* sequence_out)
+ParseRecordIdFromCsvLine(const char* line, uint64_t* record_id_out)
 {
-  if (line == NULL || sequence_out == NULL) {
+  if (line == NULL || record_id_out == NULL) {
     return false;
   }
   if (line[0] == '\0' || line[0] == '#') {
-    return false;
-  }
-  if (strncmp(line, "seq,", 4) == 0) {
     return false;
   }
   if (strncmp(line, "schema_ver,", 11) == 0) {
@@ -100,30 +98,31 @@ ParseSequenceFromCsvLine(const char* line, uint32_t* sequence_out)
   if (first_comma == NULL) {
     return false;
   }
+
+  char* end_pointer = NULL;
+  errno = 0;
+  const unsigned long parsed_schema = strtoul(line, &end_pointer, 10);
+  if (errno != 0 || end_pointer != first_comma || parsed_schema == 0) {
+    return false;
+  }
+  if (parsed_schema < CSV_SCHEMA_VERSION) {
+    return false;
+  }
+
   const char* second_comma = strchr(first_comma + 1, ',');
   if (second_comma == NULL) {
     return false;
   }
-  const char* third_comma = strchr(second_comma + 1, ',');
 
-  const bool has_iso_field =
-    (third_comma != NULL) &&
-    (memchr(second_comma + 1, 'T', (size_t)(third_comma - second_comma - 1)) !=
-     NULL);
-  const char* seq_start = has_iso_field ? line : (first_comma + 1);
-  const char* seq_end = has_iso_field ? first_comma : second_comma;
-
-  char* end_pointer = NULL;
   errno = 0;
-  const unsigned long parsed = strtoul(seq_start, &end_pointer, 10);
-  if (errno != 0 || end_pointer != seq_end) {
-    return false;
-  }
-  if (parsed > UINT32_MAX) {
+  end_pointer = NULL;
+  const unsigned long long parsed_record_id =
+    strtoull(first_comma + 1, &end_pointer, 10);
+  if (errno != 0 || end_pointer != second_comma) {
     return false;
   }
 
-  *sequence_out = (uint32_t)parsed;
+  *record_id_out = (uint64_t)parsed_record_id;
   return true;
 }
 
@@ -206,14 +205,14 @@ RepairTailToLastNewline(int file_descriptor,
 }
 
 static esp_err_t
-FindLastSequenceInFile(int file_descriptor,
+FindLastRecordIdInFile(int file_descriptor,
                        off_t file_size,
                        size_t tail_scan_max_bytes,
                        bool* found_out,
-                       uint32_t* last_sequence_out)
+                       uint64_t* last_record_id_out)
 {
   *found_out = false;
-  *last_sequence_out = 0;
+  *last_record_id_out = 0;
 
   if (file_size <= 0) {
     return ESP_OK;
@@ -258,14 +257,14 @@ FindLastSequenceInFile(int file_descriptor,
     memcpy(line_copy, &tail_bytes[line_offset], line_length);
     line_copy[line_length] = '\0';
 
-    uint32_t parsed_sequence = 0;
+    uint64_t parsed_record_id = 0;
     const bool parsed_ok =
-      ParseSequenceFromCsvLine(line_copy, &parsed_sequence);
+      ParseRecordIdFromCsvLine(line_copy, &parsed_record_id);
     free(line_copy);
 
     if (parsed_ok) {
       *found_out = true;
-      *last_sequence_out = parsed_sequence;
+      *last_record_id_out = parsed_record_id;
       free(tail_bytes);
       return ESP_OK;
     }
@@ -278,7 +277,7 @@ FindLastSequenceInFile(int file_descriptor,
 }
 
 esp_err_t
-SdCsvFindLastSequenceAndRepairTail(FILE* file_handle,
+SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
                                    size_t tail_scan_max_bytes,
                                    SdCsvResumeInfo* resume_info_out)
 {
@@ -309,18 +308,18 @@ SdCsvFindLastSequenceAndRepairTail(FILE* file_handle,
     return ESP_FAIL;
   }
 
-  bool found_last_sequence = false;
-  uint32_t last_sequence = 0;
-  if (FindLastSequenceInFile(file_descriptor,
+  bool found_last_record_id = false;
+  uint64_t last_record_id = 0;
+  if (FindLastRecordIdInFile(file_descriptor,
                              file_size,
                              tail_scan_max_bytes,
-                             &found_last_sequence,
-                             &last_sequence) != ESP_OK) {
+                             &found_last_record_id,
+                             &last_record_id) != ESP_OK) {
     return ESP_FAIL;
   }
 
-  resume_info_out->found_last_sequence = found_last_sequence;
-  resume_info_out->last_sequence = last_sequence;
+  resume_info_out->found_last_record_id = found_last_record_id;
+  resume_info_out->last_record_id = last_record_id;
   return ESP_OK;
 }
 

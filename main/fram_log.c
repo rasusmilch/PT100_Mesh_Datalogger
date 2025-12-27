@@ -1,5 +1,6 @@
 #include "fram_log.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 #include "crc16.h"
@@ -9,7 +10,7 @@
 static const char* kTag = "fram_log";
 
 #define FRAM_LOG_MAGIC 0x46524C47u // 'FRLG'
-#define FRAM_LOG_VERSION 1u
+#define FRAM_LOG_VERSION 2u
 
 // Reserve some bytes for two header copies.
 static const uint32_t kHeaderCopy0Address = 0;
@@ -47,6 +48,7 @@ typedef struct
   uint32_t read_index;
   uint32_t record_count;
   uint32_t next_sequence;
+  uint64_t next_record_id;
   uint32_t crc32_le;
 } fram_log_header_t;
 #pragma pack(pop)
@@ -98,6 +100,7 @@ ApplyHeaderToState(const fram_log_header_t* header, fram_log_t* log)
   log->read_index = header->read_index;
   log->record_count = header->record_count;
   log->next_sequence = header->next_sequence;
+  log->next_record_id = header->next_record_id;
 }
 
 static void
@@ -111,6 +114,7 @@ BuildHeaderFromState(const fram_log_t* log, fram_log_header_t* header_out)
   header_out->read_index = log->read_index;
   header_out->record_count = log->record_count;
   header_out->next_sequence = log->next_sequence;
+  header_out->next_record_id = log->next_record_id;
   header_out->crc32_le = ComputeHeaderCrc32(header_out);
 }
 
@@ -125,6 +129,7 @@ static esp_err_t
 WriteRecord(const fram_log_t* log, uint32_t record_index, log_record_t record)
 {
   record.magic = LOG_RECORD_MAGIC;
+  record.schema_version = LOG_RECORD_SCHEMA_VER;
   record.crc16_ccitt = 0;
   record.crc16_ccitt =
     Crc16CcittFalse(&record, sizeof(record) - sizeof(record.crc16_ccitt));
@@ -145,6 +150,10 @@ ReadRecord(const fram_log_t* log,
     return result;
   }
   if (record_out->magic != LOG_RECORD_MAGIC) {
+    ((fram_log_t*)log)->saw_corruption = true;
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+  if (record_out->schema_version != LOG_RECORD_SCHEMA_VER) {
     ((fram_log_t*)log)->saw_corruption = true;
     return ESP_ERR_INVALID_RESPONSE;
   }
@@ -197,14 +206,44 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
   const bool header1_valid = (result1 == ESP_OK) && HeaderLooksValid(&header1);
 
   if (!header0_valid && !header1_valid) {
-    ESP_LOGW(kTag, "No valid FRAM header; initializing new log");
+    ESP_LOGW(kTag, "No valid FRAM header; scanning for latest record_id");
     log->header_sequence = 1;
     log->write_index = 0;
     log->read_index = 0;
     log->record_count = 0;
     log->next_sequence = 1;
+    log->next_record_id = 1;
     log->records_since_header_persist = 0;
     log->saw_corruption = false;
+    uint64_t max_record_id = 0;
+    for (uint32_t idx = 0; idx < log->capacity_records; ++idx) {
+      log_record_t record;
+      const uint32_t address = RecordAddressForIndex(log, idx);
+      if (IoRead(log, address, &record, sizeof(record)) != ESP_OK) {
+        continue;
+      }
+      if (record.magic != LOG_RECORD_MAGIC ||
+          record.schema_version != LOG_RECORD_SCHEMA_VER) {
+        continue;
+      }
+      const uint16_t expected_crc = record.crc16_ccitt;
+      record.crc16_ccitt = 0;
+      const uint16_t actual_crc =
+        Crc16CcittFalse(&record, sizeof(record) - sizeof(uint16_t));
+      record.crc16_ccitt = expected_crc;
+      if (expected_crc != actual_crc) {
+        continue;
+      }
+      if (record.record_id > max_record_id) {
+        max_record_id = record.record_id;
+      }
+    }
+    if (max_record_id > 0) {
+      log->next_record_id = max_record_id + 1;
+      ESP_LOGW(kTag,
+               "Recovered next_record_id=%" PRIu64 " from FRAM scan",
+               log->next_record_id);
+    }
     esp_err_t persist_result = FramLogPersistHeader(log);
     if (persist_result == ESP_OK) {
       log->mounted = true;
@@ -232,6 +271,7 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
   }
 
   uint32_t max_sequence = log->next_sequence;
+  uint64_t max_record_id = log->next_record_id;
   for (uint32_t idx = 0; idx < log->record_count; ++idx) {
     log_record_t record;
     if (FramLogPeekOffset(log, idx, &record) != ESP_OK) {
@@ -240,19 +280,27 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
     if (record.sequence >= max_sequence) {
       max_sequence = record.sequence + 1u;
     }
+    if (record.record_id >= max_record_id) {
+      max_record_id = record.record_id + 1u;
+    }
   }
   if (max_sequence == 0) {
     max_sequence = 1;
   }
+  if (max_record_id == 0) {
+    max_record_id = 1;
+  }
   log->next_sequence = max_sequence;
+  log->next_record_id = max_record_id;
 
   ESP_LOGI(kTag,
-           "FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u",
+           "FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u id=%" PRIu64,
            (unsigned)log->capacity_records,
            (unsigned)log->write_index,
            (unsigned)log->read_index,
            (unsigned)log->record_count,
-           (unsigned)log->next_sequence);
+           (unsigned)log->next_sequence,
+           log->next_record_id);
   log->mounted = true;
   return ESP_OK;
 }
@@ -275,6 +323,12 @@ FramLogNextSequence(const fram_log_t* log)
   return (log == NULL) ? 0 : log->next_sequence;
 }
 
+uint64_t
+FramLogNextRecordId(const fram_log_t* log)
+{
+  return (log == NULL) ? 0 : log->next_record_id;
+}
+
 esp_err_t
 FramLogGetStatus(const fram_log_t* log, fram_log_status_t* out_status)
 {
@@ -292,8 +346,31 @@ FramLogGetStatus(const fram_log_t* log, fram_log_status_t* out_status)
   out_status->write_index_abs = log->write_index;
   out_status->read_index_abs = log->read_index;
   out_status->next_sequence = log->next_sequence;
+  out_status->next_record_id = log->next_record_id;
   out_status->mounted = log->mounted;
   out_status->full = (log->record_count >= log->capacity_records);
+  return ESP_OK;
+}
+
+esp_err_t
+FramLogAssignRecordIds(fram_log_t* log, log_record_t* record)
+{
+  if (log == NULL || record == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  record->sequence = log->next_sequence;
+  record->record_id = log->next_record_id;
+  record->schema_version = LOG_RECORD_SCHEMA_VER;
+
+  log->next_sequence++;
+  log->next_record_id++;
+  log->records_since_header_persist++;
+
+  if (log->records_since_header_persist >=
+      (uint32_t)CONFIG_APP_FRAM_HEADER_UPDATE_EVERY_N_RECORDS) {
+    log->header_sequence++;
+    return FramLogPersistHeader(log);
+  }
   return ESP_OK;
 }
 
@@ -333,22 +410,14 @@ FramLogAppend(fram_log_t* log, const log_record_t* record)
 
   log_record_t record_copy;
   memcpy(&record_copy, record, sizeof(record_copy));
-  record_copy.sequence = log->next_sequence;
   esp_err_t result = WriteRecord(log, log->write_index, record_copy);
   if (result != ESP_OK) {
     return result;
   }
 
-  log->next_sequence++;
   log->write_index++;
   log->record_count++;
-  log->records_since_header_persist++;
 
-  if (log->records_since_header_persist >=
-      (uint32_t)CONFIG_APP_FRAM_HEADER_UPDATE_EVERY_N_RECORDS) {
-    log->header_sequence++;
-    return FramLogPersistHeader(log);
-  }
   return ESP_OK;
 }
 
@@ -368,6 +437,9 @@ FramLogPeekOldest(const fram_log_t* log, log_record_t* record_out)
     return result;
   }
   if (record_out->magic != LOG_RECORD_MAGIC) {
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+  if (record_out->schema_version != LOG_RECORD_SCHEMA_VER) {
     return ESP_ERR_INVALID_RESPONSE;
   }
   const uint16_t expected_crc = record_out->crc16_ccitt;
@@ -399,6 +471,10 @@ FramLogPeekOffset(const fram_log_t* log,
     return result;
   }
   if (record_out->magic != LOG_RECORD_MAGIC) {
+    ((fram_log_t*)log)->saw_corruption = true;
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+  if (record_out->schema_version != LOG_RECORD_SCHEMA_VER) {
     ((fram_log_t*)log)->saw_corruption = true;
     return ESP_ERR_INVALID_RESPONSE;
   }
@@ -485,8 +561,8 @@ FramLogSkipCorruptedRecord(fram_log_t* log)
 }
 
 esp_err_t
-FramLogConsumeUpToSequence(fram_log_t* log,
-                           uint32_t max_sequence_inclusive,
+FramLogConsumeUpToRecordId(fram_log_t* log,
+                           uint64_t max_record_id_inclusive,
                            uint32_t* consumed_out)
 {
   if (log == NULL || consumed_out == NULL) {
@@ -501,8 +577,8 @@ FramLogConsumeUpToSequence(fram_log_t* log,
     esp_err_t peek_result = FramLogPeekOldest(log, &peeked);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       ESP_LOGE(kTag,
-               "Encountered corrupted record while consuming up to seq=%u",
-               (unsigned)max_sequence_inclusive);
+               "Encountered corrupted record while consuming up to id=%" PRIu64,
+               max_record_id_inclusive);
       status = ESP_ERR_INVALID_RESPONSE;
       break;
     }
@@ -510,7 +586,7 @@ FramLogConsumeUpToSequence(fram_log_t* log,
       status = peek_result;
       break;
     }
-    if (peeked.sequence > max_sequence_inclusive) {
+    if (peeked.record_id > max_record_id_inclusive) {
       break;
     }
     esp_err_t pop_result = FramLogPopOldest(log, &peeked);

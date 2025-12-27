@@ -15,18 +15,19 @@ extern "C" {
 typedef struct
 {
   bool file_was_truncated;
-  bool found_last_sequence;
-  uint32_t last_sequence;
+  bool found_last_record_id;
+  uint64_t last_record_id;
 } SdCsvResumeInfo;
 
 // Repairs a power-loss tail (truncates to the last '\n' if needed) and returns
-// the last successfully written sequence number found in the file.
+// the last successfully written record_id found in the file.
 //
 // Requirements:
-// - Data lines must begin with an unsigned integer "seq" followed by a comma.
-// - Header line should be "seq,..." and will be ignored.
+// - Data lines must begin with an unsigned integer schema_ver followed by a
+//   comma, and include record_id as the second field.
+// - Header line should be "schema_ver,record_id,..." and will be ignored.
 // - Comment lines beginning with '#' are ignored.
-esp_err_t SdCsvFindLastSequenceAndRepairTail(FILE* file_handle,
+esp_err_t SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
                                              size_t tail_scan_max_bytes,
                                              SdCsvResumeInfo* resume_info_out);
 

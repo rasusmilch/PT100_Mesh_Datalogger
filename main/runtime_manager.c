@@ -313,8 +313,8 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   }
 
   uint32_t consumed = 0;
-  esp_err_t consume_result = FramLogConsumeUpToSequence(
-    &state->fram_log, SdLoggerLastSequenceOnSd(&state->sd_logger), &consumed);
+  esp_err_t consume_result = FramLogConsumeUpToRecordId(
+    &state->fram_log, SdLoggerLastRecordIdOnSd(&state->sd_logger), &consumed);
   if (consume_result == ESP_ERR_INVALID_RESPONSE) {
     ESP_LOGE(kTag, "FRAM corruption while aligning with SD contents");
     return consume_result;
@@ -337,12 +337,12 @@ BuildBatchForDay(runtime_state_t* state,
                  TickType_t start_ticks,
                  uint32_t max_ms,
                  uint32_t* records_used_out,
-                 uint32_t* last_sequence_out,
+                 uint64_t* last_record_id_out,
                  size_t* bytes_used_out)
 {
   size_t used = 0;
   uint32_t records_used = 0;
-  uint32_t last_seq = 0;
+  uint64_t last_record_id = 0;
 
   const uint32_t buffered = FramLogGetBufferedRecords(&state->fram_log);
   for (uint32_t offset = 0; offset < buffered; ++offset) {
@@ -374,7 +374,7 @@ BuildBatchForDay(runtime_state_t* state,
       break; // stop at day rollover; flush current batch first
     }
 
-    char line[208];
+    char line[256];
     size_t line_len = 0;
     if (!CsvFormatRow(
           &record, state->node_id_string, line, sizeof(line), &line_len)) {
@@ -388,7 +388,7 @@ BuildBatchForDay(runtime_state_t* state,
     memcpy(buffer + used, line, line_len);
     used += line_len;
     records_used++;
-    last_seq = record.sequence;
+    last_record_id = record.record_id;
 
     if (used >= buffer_size - sizeof(line)) {
       break;
@@ -396,7 +396,7 @@ BuildBatchForDay(runtime_state_t* state,
   }
 
   *records_used_out = records_used;
-  *last_sequence_out = last_seq;
+  *last_record_id_out = last_record_id;
   *bytes_used_out = used;
   return ESP_OK;
 }
@@ -440,7 +440,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     }
 
     uint32_t records_used = 0;
-    uint32_t last_seq = 0;
+    uint64_t last_record_id = 0;
     size_t bytes_used = 0;
     esp_err_t batch_result =
       BuildBatchForDay(state,
@@ -451,7 +451,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
                        xTaskGetTickCount(),
                        0,
                        &records_used,
-                       &last_seq,
+                       &last_record_id,
                        &bytes_used);
     if (batch_result != ESP_OK) {
       return batch_result;
@@ -461,7 +461,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     }
 
     esp_err_t write_result = SdLoggerAppendVerifiedBatch(
-      &state->sd_logger, state->batch_buffer, bytes_used, last_seq);
+      &state->sd_logger, state->batch_buffer, bytes_used, last_record_id);
     if (write_result != ESP_OK) {
       ESP_LOGE(kTag,
                "SD append failed after %u records: %s",
@@ -581,8 +581,8 @@ SdFlushWorkerTick(runtime_state_t* state,
   BuildDateStringFromRecord(&first_record, day_string, sizeof(day_string));
 
   uint32_t records_used = 0;
-  uint32_t last_seq = 0;
-  size_t bytes_used = 0;
+    uint64_t last_record_id = 0;
+    size_t bytes_used = 0;
   esp_err_t batch_result =
     BuildBatchForDay(state,
                      day_string,
@@ -592,7 +592,7 @@ SdFlushWorkerTick(runtime_state_t* state,
                      now_ticks,
                      max_ms,
                      &records_used,
-                     &last_seq,
+                     &last_record_id,
                      &bytes_used);
   if (batch_result != ESP_OK) {
     return batch_result;
@@ -602,7 +602,7 @@ SdFlushWorkerTick(runtime_state_t* state,
   }
 
   esp_err_t write_result = SdLoggerAppendVerifiedBatch(
-    &state->sd_logger, state->batch_buffer, bytes_used, last_seq);
+    &state->sd_logger, state->batch_buffer, bytes_used, last_record_id);
   if (write_result != ESP_OK) {
     (void)SdLoggerUnmount(&state->sd_logger);
     MarkSdFailure(state, "SD append failed", write_result);
@@ -639,8 +639,6 @@ SensorTask(void* context)
 
     log_record_t record;
     memset(&record, 0, sizeof(record));
-    record.sequence = FramLogNextSequence(&state->fram_log);
-
     int64_t epoch_sec = 0;
     int32_t millis = 0;
     TimeSyncGetNow(&epoch_sec, &millis);
@@ -734,6 +732,13 @@ StorageTask(void* context)
         pdTRUE) {
       if (state->fram_full) {
         record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
+      }
+
+      esp_err_t id_result = FramLogAssignRecordIds(&state->fram_log, &record);
+      if (id_result != ESP_OK) {
+        ESP_LOGE(kTag,
+                 "Failed to assign record id: %s",
+                 esp_err_to_name(id_result));
       }
 
       if (state->fram_i2c.initialized) {

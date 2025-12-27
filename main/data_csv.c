@@ -6,7 +6,7 @@
 #include <time.h>
 
 static const char* kCsvHeader =
-  "schema_ver,seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id\n";
+  "schema_ver,record_id,seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id\n";
 
 static void
 FormatIso8601Offset(const struct tm* time_info, char* out, size_t out_size)
@@ -110,18 +110,20 @@ CsvFormatRow(const log_record_t* record,
   const double temp_c = record->temp_milli_c / 1000.0;
   const double resistance_ohm = record->resistance_milli_ohm / 1000.0;
 
-  const int length = snprintf(out,
-                              out_size,
-                              "%u,%u,%" PRId64 ",%s,%.3f,%.3f,%.3f,0x%04x,%s\n",
-                              CSV_SCHEMA_VERSION,
-                              (unsigned)record->sequence,
-                              record->timestamp_epoch_sec,
-                              iso8601,
-                              resistance_ohm,
-                              raw_c,
-                              temp_c,
-                              (unsigned)record->flags,
-                              node);
+  const int length =
+    snprintf(out,
+             out_size,
+             "%u,%" PRIu64 ",%u,%" PRId64 ",%s,%.3f,%.3f,%.3f,0x%04x,%s\n",
+             CSV_SCHEMA_VERSION,
+             record->record_id,
+             (unsigned)record->sequence,
+             record->timestamp_epoch_sec,
+             iso8601,
+             resistance_ohm,
+             raw_c,
+             temp_c,
+             (unsigned)record->flags,
+             node);
   if (length < 0 || (size_t)length >= out_size) {
     return false;
   }
@@ -149,7 +151,7 @@ CsvWriteRow(csv_write_fn_t writer,
   if (writer == NULL || record == NULL) {
     return false;
   }
-  char line[208];
+  char line[256];
   size_t line_len = 0;
   if (!CsvFormatRow(record, node_id, line, sizeof(line), &line_len)) {
     return false;
