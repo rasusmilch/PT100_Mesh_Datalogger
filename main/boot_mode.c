@@ -80,6 +80,27 @@ DiagnosticsOverrideRequested(void)
 #endif
 }
 
+static bool
+RunOverrideRequested(void)
+{
+#if CONFIG_APP_RUN_OVERRIDE_GPIO >= 0
+  const gpio_num_t gpio = (gpio_num_t)CONFIG_APP_RUN_OVERRIDE_GPIO;
+
+  gpio_config_t config = {
+    .pin_bit_mask = 1ULL << gpio,
+    .mode = GPIO_MODE_INPUT,
+    .pull_up_en = GPIO_PULLUP_ENABLE,
+    .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE,
+  };
+  (void)gpio_config(&config);
+
+  return gpio_get_level(gpio) == 0;
+#else
+  return false;
+#endif
+}
+
 app_boot_mode_t
 BootModeDetermineAtStartup(void)
 {
@@ -89,6 +110,12 @@ BootModeDetermineAtStartup(void)
     ESP_LOGW(kTag, "BOOT override: diagnostics forced");
     printf("BOOT override: diagnostics forced\n");
     return APP_BOOT_MODE_DIAGNOSTICS;
+  }
+
+  if (RunOverrideRequested()) {
+    ESP_LOGW(kTag, "BOOT override: run mode forced");
+    printf("BOOT override: run mode forced\n");
+    return APP_BOOT_MODE_RUN;
   }
 
   return mode;
