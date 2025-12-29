@@ -32,6 +32,8 @@
 static const char* kTag = "runtime";
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
 static const uint32_t kSdFlushMaxMsPerPass = 50;
+static const uint32_t kSdFlushTimeSliceMs = 50;
+static const uint32_t kSdFlushWarnIntervalMs = 10000;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kExportQueueDepth = 64;
 
@@ -54,6 +56,7 @@ typedef struct
 
   TickType_t last_flush_ticks;
   TickType_t sd_backoff_until_ticks;
+  TickType_t last_sd_flush_warn_ticks;
   uint32_t sd_fail_count;
   uint32_t sd_flush_records_since;
   bool sd_flush_pending;
@@ -847,6 +850,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     return ESP_ERR_NO_MEM;
   }
 
+  const bool allow_full_flush = flush_all && state->stop_requested;
+  TickType_t flush_start = xTaskGetTickCount();
   uint32_t total_flushed = 0;
   while (FramLogGetBufferedRecords(&state->fram_log) > 0) {
     log_record_t first_record;
@@ -932,6 +937,19 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       if (discard_result != ESP_OK) {
         return discard_result;
       }
+      if ((index % 16u) == 0u &&
+          (xTaskGetTickCount() - flush_start) >
+            pdMS_TO_TICKS(kSdFlushTimeSliceMs)) {
+        const TickType_t now_ticks = xTaskGetTickCount();
+        if (state->last_sd_flush_warn_ticks == 0 ||
+            (now_ticks - state->last_sd_flush_warn_ticks) >
+              pdMS_TO_TICKS(kSdFlushWarnIntervalMs)) {
+          ESP_LOGW(kTag, "SD flush time slice exceeded; yielding");
+          state->last_sd_flush_warn_ticks = now_ticks;
+        }
+        vTaskDelay(1);
+        flush_start = xTaskGetTickCount();
+      }
     }
 
     total_flushed += records_used;
@@ -942,8 +960,21 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
              day_string,
              total_flushed);
 
-    if (!flush_all) {
+    if (!allow_full_flush) {
       break;
+    }
+
+    if ((xTaskGetTickCount() - flush_start) >
+        pdMS_TO_TICKS(kSdFlushTimeSliceMs)) {
+      const TickType_t now_ticks = xTaskGetTickCount();
+      if (state->last_sd_flush_warn_ticks == 0 ||
+          (now_ticks - state->last_sd_flush_warn_ticks) >
+            pdMS_TO_TICKS(kSdFlushWarnIntervalMs)) {
+        ESP_LOGW(kTag, "SD flush time slice exceeded; yielding");
+        state->last_sd_flush_warn_ticks = now_ticks;
+      }
+      vTaskDelay(1);
+      flush_start = xTaskGetTickCount();
     }
   }
 
@@ -1733,6 +1764,7 @@ RuntimeStart(void)
   g_state.sd_degraded = false;
   g_state.sd_fail_count = 0;
   g_state.sd_backoff_until_ticks = 0;
+  g_state.last_sd_flush_warn_ticks = 0;
   g_state.sd_flush_records_since = 0;
   g_state.sd_flush_pending = false;
   g_state.sd_last_io_error_active = false;
