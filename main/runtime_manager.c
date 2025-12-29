@@ -127,12 +127,11 @@ SdMaintenanceTick(runtime_state_t* state)
   ClearSdIoError(state);
   UpdateCachedBool(
     state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
-  UpdateCachedBool(state, &state->cached_status.sd_degraded, state->sd_degraded);
+  UpdateCachedBool(
+    state, &state->cached_status.sd_degraded, state->sd_degraded);
   UpdateCachedUint32(
     state, &state->cached_status.sd_fail_count, state->sd_fail_count);
-  UpdateCachedUint32(state,
-                     &state->cached_status.sd_backoff_remaining_ms,
-                     0u);
+  UpdateCachedUint32(state, &state->cached_status.sd_backoff_remaining_ms, 0u);
 
   if (was_degraded || prev_fail_count != 0u) {
     ESP_LOGW(kTag,
@@ -202,9 +201,8 @@ UpdateFramFillState(runtime_state_t* state)
   const size_t count = FramLogGetCountRecords(&state->fram_log);
   const size_t capacity = FramLogGetCapacityRecords(&state->fram_log);
   UpdateCachedUint32(state, &state->cached_status.fram_count, (uint32_t)count);
-  UpdateCachedUint32(state,
-                     &state->cached_status.fram_capacity,
-                     (uint32_t)capacity);
+  UpdateCachedUint32(
+    state, &state->cached_status.fram_capacity, (uint32_t)capacity);
   const bool fram_full = (capacity > 0 && count >= capacity);
   state->fram_full = fram_full;
   UpdateCachedBool(state, &state->cached_status.fram_full, fram_full);
@@ -468,12 +466,10 @@ UpdateTimeHealthState(runtime_state_t* state, bool time_valid)
   localtime_r(&now, &local_time);
   const time_t utc_epoch_as_local = mktime(&utc_as_local);
   const long utc_offset_sec = (long)difftime(now, utc_epoch_as_local);
-  UpdateCachedInt32(state,
-                    &state->cached_status.utc_offset_sec,
-                    (int32_t)utc_offset_sec);
-  UpdateCachedBool(state,
-                   &state->cached_status.dst_in_effect,
-                   (local_time.tm_isdst > 0));
+  UpdateCachedInt32(
+    state, &state->cached_status.utc_offset_sec, (int32_t)utc_offset_sec);
+  UpdateCachedBool(
+    state, &state->cached_status.dst_in_effect, (local_time.tm_isdst > 0));
 }
 
 static uint32_t
@@ -489,8 +485,10 @@ ComputeSdBackoffRemainingMs(const runtime_state_t* state, TickType_t now_ticks)
 static void
 DisplayTask(void* context)
 {
-  // DisplayTask must only read RuntimeHealth snapshot; do not call subsystem APIs here.
-  // Guardrail: grep -R "MeshTransportIsConnected|esp_mesh_lite_get_level|TimeSyncIsSystemTimeValid|SdLogger|FramLog" main/*display*
+  // DisplayTask must only read RuntimeHealth snapshot; do not call subsystem
+  // APIs here. Guardrail: grep -R
+  // "MeshTransportIsConnected|esp_mesh_lite_get_level|TimeSyncIsSystemTimeValid|SdLogger|FramLog"
+  // main/*display*
   runtime_state_t* state = (runtime_state_t*)context;
   char last_text[12] = { 0 };
   display_attention_mask_t last_active_mask = 0;
@@ -1330,7 +1328,8 @@ SensorTask(void* context)
     if (state->fram_full) {
       record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
     }
-    const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
+    const bool mesh_connected =
+      false; // MeshTransportIsConnected(&state->mesh);
     UpdateCachedBool(
       state, &state->cached_status.mesh_connected, mesh_connected);
     UpdateCachedInt32(
@@ -1429,31 +1428,31 @@ StorageTask(void* context)
         LogFramOverrunWarning(
           state, overrun_after, fram_count, fram_capacity, now_ticks);
         state->last_overrun_records_total = overrun_after;
-        UpdateCachedBool(
-          state,
-          &state->cached_status.fram_overrun_active,
-          state->last_overrun_records_total > state->fram_overrun_ack_total);
+        UpdateCachedBool(state,
+                         &state->cached_status.fram_overrun_active,
+                         state->last_overrun_records_total >
+                           state->fram_overrun_ack_total);
         UpdateFramFillState(state);
         if (state->fram_full) {
           record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
         }
       }
 
-      if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
-        (void)MeshTransportSendRecord(&state->mesh, &record);
-      }
+      // if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
+      //   (void)MeshTransportSendRecord(&state->mesh, &record);
+      // }
 
       EnqueueExportRecord(state, state->node_id_string, &record);
     }
 
     const TickType_t now_ticks = xTaskGetTickCount();
-    UpdateCachedUint32(
-      state,
-      &state->cached_status.sd_backoff_remaining_ms,
-      ComputeSdBackoffRemainingMs(state, now_ticks));
+    UpdateCachedUint32(state,
+                       &state->cached_status.sd_backoff_remaining_ms,
+                       ComputeSdBackoffRemainingMs(state, now_ticks));
     UpdateCachedBool(
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
-    UpdateCachedBool(state, &state->cached_status.sd_degraded, state->sd_degraded);
+    UpdateCachedBool(
+      state, &state->cached_status.sd_degraded, state->sd_degraded);
     UpdateCachedUint32(
       state, &state->cached_status.sd_fail_count, state->sd_fail_count);
     const bool periodic_due =
@@ -1510,7 +1509,6 @@ StorageTask(void* context)
     } else if (!state->sd_was_mounted) {
       state->sd_was_mounted = true;
     }
-
   }
 
   if (state->sd_logger.is_mounted) {
@@ -1531,7 +1529,8 @@ TimeSyncTask(void* context)
     while (!TimeSyncIsSystemTimeValid() && !state->stop_requested) {
       const bool time_valid = TimeSyncIsSystemTimeValid();
       UpdateTimeHealthState(state, time_valid);
-      const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
+      const bool mesh_connected =
+        false; // MeshTransportIsConnected(&state->mesh);
       UpdateCachedBool(
         state, &state->cached_status.mesh_connected, mesh_connected);
       UpdateCachedInt32(
@@ -1547,7 +1546,8 @@ TimeSyncTask(void* context)
     while (!state->stop_requested) {
       const bool time_valid = TimeSyncIsSystemTimeValid();
       UpdateTimeHealthState(state, time_valid);
-      const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
+      const bool mesh_connected =
+        false; // MeshTransportIsConnected(&state->mesh);
       UpdateCachedBool(
         state, &state->cached_status.mesh_connected, mesh_connected);
       UpdateCachedInt32(
@@ -1587,8 +1587,7 @@ TopologyTask(void* context)
     }
     UpdateCachedInt32(state, &state->cached_status.mesh_level, layer);
     UpdateCachedInt32(state, &state->cached_status.mesh_rssi, rssi);
-    UpdateCachedBool(
-      state, &state->cached_status.mesh_connected, (layer > 0));
+    UpdateCachedBool(state, &state->cached_status.mesh_connected, (layer > 0));
 
     if (!state->log_quiet) {
       printf("topology role=%s allow_children=%u layer=%d parent=%s "
@@ -1715,10 +1714,9 @@ RuntimeManagerInit(void)
   UpdateCachedUint32(&g_state,
                      &g_state.cached_status.disp_attn_pol,
                      g_state.settings.display_attention_policy);
-  UpdateCachedUint32(
-    &g_state,
-    &g_state.cached_status.fram_flush_watermark_records,
-    g_state.settings.fram_flush_watermark_records);
+  UpdateCachedUint32(&g_state,
+                     &g_state.cached_status.fram_flush_watermark_records,
+                     g_state.settings.fram_flush_watermark_records);
   RuntimeHealthPublisherTick(&g_state);
 
 #if CONFIG_APP_MAX7219_ENABLE
@@ -1826,9 +1824,8 @@ RuntimeManagerInit(void)
   }
 
   (void)SdLoggerMount(&g_state.sd_logger, spi_host, CONFIG_APP_SD_CS_GPIO);
-  UpdateCachedBool(&g_state,
-                   &g_state.cached_status.sd_mounted,
-                   g_state.sd_logger.is_mounted);
+  UpdateCachedBool(
+    &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
 
   esp_err_t sensor_result =
     Max31865ReaderInit(&g_state.sensor, spi_host, CONFIG_APP_MAX31865_CS_GPIO);
@@ -1933,16 +1930,13 @@ RuntimeStart(void)
   UpdateCachedUint32(&g_state, &g_state.cached_status.sd_fail_count, 0);
   UpdateCachedUint32(
     &g_state, &g_state.cached_status.sd_backoff_remaining_ms, 0);
-  UpdateCachedBool(
-    &g_state, &g_state.cached_status.sd_io_error_active, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.sd_io_error_active, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.fram_full, false);
-  UpdateCachedBool(
-    &g_state, &g_state.cached_status.fram_overrun_active, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.fram_overrun_active, false);
 
   EnsureSdMounted();
-  UpdateCachedBool(&g_state,
-                   &g_state.cached_status.sd_mounted,
-                   g_state.sd_logger.is_mounted);
+  UpdateCachedBool(
+    &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
   g_state.sd_was_mounted = g_state.sd_logger.is_mounted;
 
   const app_node_role_t role = g_state.settings.node_role;
