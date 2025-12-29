@@ -348,7 +348,7 @@ CommandDisplay(int argc, char** argv)
     return 1;
   }
   if (argc < 2) {
-    printf("usage: disp show | disp units C|F | disp attn ...\n");
+    printf("usage: disp show | disp units C|F | disp attn ... | disp test [ms]\n");
     return 1;
   }
 
@@ -433,7 +433,29 @@ CommandDisplay(int argc, char** argv)
     return 1;
   }
 
-  printf("unknown action. usage: disp show | disp units C|F | disp attn ...\n");
+  if (strcmp(action, "test") == 0) {
+    uint32_t duration_ms = 2000u;
+    if (argc >= 3) {
+      char* end = NULL;
+      unsigned long parsed = strtoul(argv[2], &end, 10);
+      if (end == argv[2] || *end != '\0') {
+        printf("usage: disp test [ms]\n");
+        return 1;
+      }
+      duration_ms = (uint32_t)parsed;
+    }
+    esp_err_t result = RuntimeShowDisplayTestPattern(duration_ms);
+    if (result != ESP_OK) {
+      printf("display test failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("display test pattern for %u ms\n", (unsigned)duration_ms);
+    return 0;
+  }
+
+  printf(
+    "unknown action. usage: disp show | disp units C|F | disp attn ... | disp "
+    "test [ms]\n");
   return 1;
 }
 

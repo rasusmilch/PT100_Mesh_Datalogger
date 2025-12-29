@@ -69,6 +69,8 @@ extern "C" {
 
   bool RuntimeAcknowledgeDisplayAttention(display_attention_item_t item);
 
+  esp_err_t RuntimeShowDisplayTestPattern(uint32_t duration_ms);
+
 #ifdef __cplusplus
 }
 #endif
