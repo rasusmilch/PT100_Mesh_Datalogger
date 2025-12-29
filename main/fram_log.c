@@ -383,6 +383,29 @@ FramLogGetStatus(const fram_log_t* log, fram_log_status_t* out_status)
 }
 
 esp_err_t
+FramLogReset(fram_log_t* log)
+{
+  if (log == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!log->mounted) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  log->write_index = 0;
+  log->read_index = 0;
+  log->record_count = 0;
+  log->next_sequence = 1;
+  log->next_record_id = 1;
+  log->overrun_records_total = 0;
+  log->overrun_events_total = 0;
+  log->records_since_header_persist = 0;
+  log->saw_corruption = false;
+
+  return FramLogPersistHeader(log);
+}
+
+esp_err_t
 FramLogAssignRecordIds(fram_log_t* log, log_record_t* record)
 {
   if (log == NULL || record == NULL) {

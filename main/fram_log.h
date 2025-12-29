@@ -64,6 +64,9 @@ extern "C"
   esp_err_t FramLogGetStatus(const fram_log_t* log,
                              fram_log_status_t* out_status);
 
+  // Clear all records and reset log counters to a fresh state.
+  esp_err_t FramLogReset(fram_log_t* log);
+
   // Assign the next record_id/sequence values to the record and advance the
   // persistent counters, guaranteeing monotonicity across reboots.
   esp_err_t FramLogAssignRecordIds(fram_log_t* log, log_record_t* record);
