@@ -172,8 +172,7 @@ FlushFramebuffer(max7219_display_t* disp)
 #endif
       for (int bit = 0; bit < 8; ++bit) {
         const int x = x_base + bit;
-        const bool on =
-          (disp->framebuffer[row] & (1u << (uint32_t)x)) != 0;
+        const bool on = (disp->framebuffer[row] & (1u << (uint32_t)x)) != 0;
         if (on) {
           value |= (uint8_t)(1u << (7 - bit));
         }
@@ -220,8 +219,8 @@ Max7219DisplayInit(max7219_display_t* disp,
   esp_err_t bus_result =
     spi_bus_initialize(config->host, &bus_config, SPI_DMA_CH_AUTO);
   if (bus_result != ESP_OK && bus_result != ESP_ERR_INVALID_STATE) {
-    ESP_LOGE(kTag, "spi_bus_initialize failed: %s",
-             esp_err_to_name(bus_result));
+    ESP_LOGE(
+      kTag, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
     return bus_result;
   }
 
@@ -235,8 +234,8 @@ Max7219DisplayInit(max7219_display_t* disp,
   esp_err_t dev_result =
     spi_bus_add_device(config->host, &dev_config, &disp->device);
   if (dev_result != ESP_OK) {
-    ESP_LOGE(kTag, "spi_bus_add_device failed: %s",
-             esp_err_to_name(dev_result));
+    ESP_LOGE(
+      kTag, "spi_bus_add_device failed: %s", esp_err_to_name(dev_result));
     return dev_result;
   }
 
@@ -297,7 +296,7 @@ Max7219DisplaySetText(max7219_display_t* disp, const char* text)
 void
 Max7219DisplayShowTestPattern(max7219_display_t* disp)
 {
-  Max7219DisplaySetText(disp, "ABCDEFGH");
+  Max7219DisplaySetText(disp, "ABCDE");
 }
 
 void
