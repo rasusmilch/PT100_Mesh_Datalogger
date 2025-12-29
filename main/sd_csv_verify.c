@@ -10,9 +10,12 @@
 
 #include "data_csv.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "mbedtls/sha256.h"
 
 static const char* kTag = "sd_csv_verify";
+static const uint32_t kVerifyYieldMaxMs = 30;
 
 typedef struct
 {
@@ -40,7 +43,23 @@ ComputeSha256(const uint8_t* data, size_t length_bytes)
 
   const int use_sha256 = 0; // 0 => SHA-256, 1 => SHA-224
   mbedtls_sha256_starts(&sha_context, use_sha256);
-  mbedtls_sha256_update(&sha_context, data, length_bytes);
+  const size_t chunk_size = 1024;
+  TickType_t slice_start = xTaskGetTickCount();
+  size_t offset = 0;
+  while (offset < length_bytes) {
+    size_t chunk = length_bytes - offset;
+    if (chunk > chunk_size) {
+      chunk = chunk_size;
+    }
+    mbedtls_sha256_update(&sha_context, data + offset, chunk);
+    offset += chunk;
+
+    if (pdTICKS_TO_MS(xTaskGetTickCount() - slice_start) >=
+        kVerifyYieldMaxMs) {
+      vTaskDelay(1);
+      slice_start = xTaskGetTickCount();
+    }
+  }
   mbedtls_sha256_finish(&sha_context, digest.bytes);
 
   mbedtls_sha256_free(&sha_context);
@@ -77,6 +96,7 @@ ReadExactly(int file_descriptor,
   }
 
   size_t total_read = 0;
+  TickType_t slice_start = xTaskGetTickCount();
   while (total_read < length_bytes) {
     const ssize_t read_result =
       read(file_descriptor, buffer + total_read, length_bytes - total_read);
@@ -89,6 +109,11 @@ ReadExactly(int file_descriptor,
       return ESP_FAIL;
     }
     total_read += (size_t)read_result;
+    if (pdTICKS_TO_MS(xTaskGetTickCount() - slice_start) >=
+        kVerifyYieldMaxMs) {
+      vTaskDelay(1);
+      slice_start = xTaskGetTickCount();
+    }
   }
   return ESP_OK;
 }
