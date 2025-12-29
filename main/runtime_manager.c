@@ -96,6 +96,8 @@ typedef struct
 
   max7219_display_t display;
   bool display_initialized;
+  bool display_test_active;
+  TickType_t display_test_until_ticks;
   int32_t last_temp_milli_c;
   bool last_temp_valid;
   uint32_t last_flags;
@@ -433,6 +435,20 @@ DisplayTask(void* context)
     if (!state->display_initialized) {
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
+    }
+
+    if (state->display_test_active) {
+      const TickType_t now_ticks = xTaskGetTickCount();
+      if (now_ticks < state->display_test_until_ticks) {
+        Max7219DisplayShowTestPattern(&state->display);
+        vTaskDelay(pdMS_TO_TICKS(250));
+        continue;
+      }
+      state->display_test_active = false;
+      Max7219DisplayClear(&state->display);
+      last_text[0] = '\0';
+      last_active_mask = 0;
+      last_warn_mask = 0;
     }
 
     if (!state->is_running) {
@@ -1980,4 +1996,19 @@ RuntimeAcknowledgeDisplayAttention(display_attention_item_t item)
   g_state.fram_overrun_ack_total =
     FramLogGetOverrunRecordsTotal(&g_state.fram_log);
   return true;
+}
+
+esp_err_t
+RuntimeShowDisplayTestPattern(uint32_t duration_ms)
+{
+  if (!g_state.initialized || !g_state.display_initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (duration_ms == 0) {
+    duration_ms = 2000u;
+  }
+  g_state.display_test_until_ticks =
+    xTaskGetTickCount() + pdMS_TO_TICKS(duration_ms);
+  g_state.display_test_active = true;
+  return ESP_OK;
 }
