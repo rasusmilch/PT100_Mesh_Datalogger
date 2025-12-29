@@ -342,9 +342,9 @@ AttentionBitToCode(display_attention_bit_t bit)
     case kDispAttnSdIo:
       return "SDIO ";
     case kDispAttnFramOvr:
-      return "FROVR";
+      return "FRAM ";
     case kDispAttnRtdFault:
-      return "RTDFA";
+      return "PROBE";
     case kDispAttnTimeBad:
       return "TIME ";
     case kDispAttnMeshDown:
@@ -477,12 +477,8 @@ DisplayTask(void* context)
     display_attention_mask_t error_mask = 0;
     display_attention_mask_t warn_mask = 0;
     const display_attention_item_t items[] = {
-      kDispAttnItemSdOut,
-      kDispAttnItemSdIo,
-      kDispAttnItemFramOvr,
-      kDispAttnItemRtdFault,
-      kDispAttnItemTimeBad,
-      kDispAttnItemMeshDown,
+      kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
+      kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemMeshDown,
     };
     for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
       const display_attention_item_t item = items[idx];
@@ -937,9 +933,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       if (discard_result != ESP_OK) {
         return discard_result;
       }
-      if ((index % 16u) == 0u &&
-          (xTaskGetTickCount() - flush_start) >
-            pdMS_TO_TICKS(kSdFlushTimeSliceMs)) {
+      if ((index % 16u) == 0u && (xTaskGetTickCount() - flush_start) >
+                                   pdMS_TO_TICKS(kSdFlushTimeSliceMs)) {
         const TickType_t now_ticks = xTaskGetTickCount();
         if (state->last_sd_flush_warn_ticks == 0 ||
             (now_ticks - state->last_sd_flush_warn_ticks) >
