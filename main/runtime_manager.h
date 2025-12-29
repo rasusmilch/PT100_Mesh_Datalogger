@@ -67,6 +67,8 @@ extern "C" {
 
   uint32_t RuntimeSdBackoffUntilTicks(void);
 
+  bool RuntimeAcknowledgeDisplayAttention(display_attention_item_t item);
+
 #ifdef __cplusplus
 }
 #endif

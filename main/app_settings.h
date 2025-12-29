@@ -65,6 +65,7 @@ extern "C"
     bool allow_children;
     bool allow_children_set;
     app_display_units_t display_units;
+    uint32_t display_attention_policy;
     display_attention_mask_t display_attention_mask;
   } app_settings_t;
 
@@ -125,6 +126,13 @@ extern "C"
   display_attention_mask_t AppSettingsGetDisplayAttentionMask(void);
 
   display_attention_mask_t AppSettingsDefaultDisplayAttentionMask(void);
+
+  // Persists updated display attention policy.
+  esp_err_t AppSettingsSaveDisplayAttentionPolicy(uint32_t policy);
+
+  uint32_t AppSettingsGetDisplayAttentionPolicy(void);
+
+  uint32_t AppSettingsDefaultDisplayAttentionPolicy(void);
 
   // Applies TZ to the runtime environment.
   void AppSettingsApplyTimeZone(const app_settings_t* settings);

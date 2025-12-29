@@ -42,6 +42,8 @@ extern "C" {
   void Max7219DisplaySetIntensity(max7219_display_t* disp,
                                   uint8_t level_0_to_15);
 
+  void Max7219DisplayShowTestPattern(max7219_display_t* disp);
+
 #ifdef __cplusplus
 }
 #endif

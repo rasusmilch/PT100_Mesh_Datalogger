@@ -76,20 +76,20 @@ BootModeToString(app_boot_mode_t mode)
 }
 
 static const char*
-DisplayAttentionBitToName(display_attention_bit_t bit)
+DisplayAttentionItemToName(display_attention_item_t item)
 {
-  switch (bit) {
-    case kDispAttnSdOut:
+  switch (item) {
+    case kDispAttnItemSdOut:
       return "sdout";
-    case kDispAttnSdIo:
+    case kDispAttnItemSdIo:
       return "sdio";
-    case kDispAttnFramOvr:
+    case kDispAttnItemFramOvr:
       return "framovr";
-    case kDispAttnRtdFault:
+    case kDispAttnItemRtdFault:
       return "rtd";
-    case kDispAttnTimeBad:
+    case kDispAttnItemTimeBad:
       return "time";
-    case kDispAttnMeshDown:
+    case kDispAttnItemMeshDown:
       return "mesh";
     default:
       return "unknown";
@@ -97,94 +97,103 @@ DisplayAttentionBitToName(display_attention_bit_t bit)
 }
 
 static bool
-ParseDisplayAttentionName(const char* value, display_attention_bit_t* bit_out)
+ParseDisplayAttentionName(const char* value, display_attention_item_t* item_out)
 {
-  if (value == NULL || bit_out == NULL) {
+  if (value == NULL || item_out == NULL) {
     return false;
   }
   if (strcasecmp(value, "sdout") == 0) {
-    *bit_out = kDispAttnSdOut;
+    *item_out = kDispAttnItemSdOut;
     return true;
   }
   if (strcasecmp(value, "sdio") == 0) {
-    *bit_out = kDispAttnSdIo;
+    *item_out = kDispAttnItemSdIo;
     return true;
   }
   if (strcasecmp(value, "framovr") == 0) {
-    *bit_out = kDispAttnFramOvr;
+    *item_out = kDispAttnItemFramOvr;
     return true;
   }
   if (strcasecmp(value, "rtd") == 0) {
-    *bit_out = kDispAttnRtdFault;
+    *item_out = kDispAttnItemRtdFault;
     return true;
   }
   if (strcasecmp(value, "time") == 0) {
-    *bit_out = kDispAttnTimeBad;
+    *item_out = kDispAttnItemTimeBad;
     return true;
   }
   if (strcasecmp(value, "mesh") == 0) {
-    *bit_out = kDispAttnMeshDown;
+    *item_out = kDispAttnItemMeshDown;
     return true;
   }
   return false;
 }
 
 static void
-PrintDisplayAttentionMask(display_attention_mask_t mask)
+PrintDisplayAttentionPolicy(uint32_t policy)
 {
-  const display_attention_bit_t bits[] = {
-    kDispAttnSdOut,
-    kDispAttnSdIo,
-    kDispAttnFramOvr,
-    kDispAttnRtdFault,
-    kDispAttnTimeBad,
-    kDispAttnMeshDown,
+  const display_attention_item_t items[] = {
+    kDispAttnItemSdOut,
+    kDispAttnItemSdIo,
+    kDispAttnItemFramOvr,
+    kDispAttnItemRtdFault,
+    kDispAttnItemTimeBad,
+    kDispAttnItemMeshDown,
   };
-  printf("display_attention_mask: 0x%08" PRIX32 "\n", (uint32_t)mask);
-  for (size_t idx = 0; idx < sizeof(bits) / sizeof(bits[0]); ++idx) {
-    const display_attention_bit_t bit = bits[idx];
-    printf("  %s: %s\n",
-           DisplayAttentionBitToName(bit),
-           ((mask & bit) != 0u) ? "enabled" : "disabled");
+  printf("display_attention_policy: 0x%08" PRIX32 "\n", policy);
+  for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
+    const display_attention_item_t item = items[idx];
+    const display_attention_severity_t severity =
+      DisplayAttentionPolicyGet(policy, item);
+    const char* label = "off";
+    if (severity == DISP_SEV_WARN) {
+      label = "warn";
+    } else if (severity == DISP_SEV_ERROR) {
+      label = "error";
+    }
+    printf("  %s: %s\n", DisplayAttentionItemToName(item), label);
   }
 }
 
 static int
-SaveDisplayAttentionMask(display_attention_mask_t mask)
+SaveDisplayAttentionPolicy(uint32_t policy)
 {
   if (g_runtime == NULL) {
     return 1;
   }
-  g_runtime->settings->display_attention_mask = mask;
-  const esp_err_t result = AppSettingsSaveDisplayAttentionMask(mask);
+  const esp_err_t result = AppSettingsSaveDisplayAttentionPolicy(policy);
   if (result != ESP_OK) {
     printf("save failed: %s\n", esp_err_to_name(result));
     return 1;
   }
+  g_runtime->settings->display_attention_policy = policy;
+  g_runtime->settings->display_attention_mask =
+    AppSettingsGetDisplayAttentionMask();
   printf("OK\n");
-  PrintDisplayAttentionMask(mask);
+  PrintDisplayAttentionPolicy(policy);
   return 0;
 }
 
-static void
-TrimWhitespace(char* value)
+static bool
+ParseDisplayAttentionSeverity(const char* value,
+                              display_attention_severity_t* severity_out)
 {
-  if (value == NULL) {
-    return;
+  if (value == NULL || severity_out == NULL) {
+    return false;
   }
-  char* start = value;
-  while (*start == ' ' || *start == '\t') {
-    ++start;
+  if (strcasecmp(value, "off") == 0) {
+    *severity_out = DISP_SEV_OFF;
+    return true;
   }
-  if (start != value) {
-    memmove(value, start, strlen(start) + 1);
+  if (strcasecmp(value, "warn") == 0) {
+    *severity_out = DISP_SEV_WARN;
+    return true;
   }
-  size_t len = strlen(value);
-  while (len > 0 &&
-         (value[len - 1] == ' ' || value[len - 1] == '\t')) {
-    value[len - 1] = '\0';
-    --len;
+  if (strcasecmp(value, "error") == 0) {
+    *severity_out = DISP_SEV_ERROR;
+    return true;
   }
+  return false;
 }
 
 static const char*
@@ -355,8 +364,7 @@ CommandDisplay(int argc, char** argv)
            CONFIG_APP_MAX7219_MOSI_GPIO,
            CONFIG_APP_MAX7219_SCLK_GPIO,
            CONFIG_APP_MAX7219_CS_GPIO);
-    PrintDisplayAttentionMask(
-      AppSettingsGetDisplayAttentionMask());
+    PrintDisplayAttentionPolicy(AppSettingsGetDisplayAttentionPolicy());
     return 0;
   }
 
@@ -382,71 +390,46 @@ CommandDisplay(int argc, char** argv)
 
   if (strcmp(action, "attn") == 0) {
     if (argc < 3) {
-      printf("usage: disp attn show|enable|disable|set|default ...\n");
+      printf("usage: disp attn show|set|defaults|ack\n");
       return 1;
     }
     const char* attn_action = argv[2];
     if (strcmp(attn_action, "show") == 0) {
-      PrintDisplayAttentionMask(AppSettingsGetDisplayAttentionMask());
+      PrintDisplayAttentionPolicy(AppSettingsGetDisplayAttentionPolicy());
       return 0;
     }
-    if (strcmp(attn_action, "enable") == 0 ||
-        strcmp(attn_action, "disable") == 0) {
-      if (argc < 4) {
-        printf("usage: disp attn %s <name>\n", attn_action);
+    if (strcmp(attn_action, "set") == 0) {
+      if (argc < 5) {
+        printf("usage: disp attn set <name> <off|warn|error>\n");
         return 1;
       }
-      display_attention_bit_t bit = kDispAttnNone;
-      if (!ParseDisplayAttentionName(argv[3], &bit)) {
+      display_attention_item_t item = kDispAttnItemSdOut;
+      if (!ParseDisplayAttentionName(argv[3], &item)) {
         printf("unknown name. valid: sdout, sdio, framovr, rtd, time, mesh\n");
         return 1;
       }
-      display_attention_mask_t mask = AppSettingsGetDisplayAttentionMask();
-      if (strcmp(attn_action, "enable") == 0) {
-        mask |= bit;
-      } else {
-        mask &= ~bit;
-      }
-      return SaveDisplayAttentionMask(mask);
-    }
-    if (strcmp(attn_action, "set") == 0) {
-      if (argc < 4) {
-        printf("usage: disp attn set <comma-separated-list>\n");
+      display_attention_severity_t severity = DISP_SEV_OFF;
+      if (!ParseDisplayAttentionSeverity(argv[4], &severity)) {
+        printf("unknown severity. valid: off, warn, error\n");
         return 1;
       }
-      char list_buffer[128];
-      snprintf(list_buffer, sizeof(list_buffer), "%s", argv[3]);
-      display_attention_mask_t mask = 0;
-      size_t tokens = 0;
-      char* token = strtok(list_buffer, ",");
-      while (token != NULL) {
-        TrimWhitespace(token);
-        if (token[0] == '\0') {
-          token = strtok(NULL, ",");
-          continue;
-        }
-        display_attention_bit_t bit = kDispAttnNone;
-        if (!ParseDisplayAttentionName(token, &bit)) {
-          printf("unknown name '%s'. valid: sdout, sdio, framovr, rtd, time, mesh\n",
-                 token);
-          return 1;
-        }
-        mask |= bit;
-        ++tokens;
-        token = strtok(NULL, ",");
-      }
-      if (tokens == 0) {
-        printf("usage: disp attn set <comma-separated-list>\n");
-        return 1;
-      }
-      return SaveDisplayAttentionMask(mask);
+      uint32_t policy = AppSettingsGetDisplayAttentionPolicy();
+      policy = DisplayAttentionPolicySet(policy, item, severity);
+      return SaveDisplayAttentionPolicy(policy);
     }
-    if (strcmp(attn_action, "default") == 0) {
-      const display_attention_mask_t mask =
-        AppSettingsDefaultDisplayAttentionMask();
-      return SaveDisplayAttentionMask(mask);
+    if (strcmp(attn_action, "defaults") == 0) {
+      const uint32_t policy = AppSettingsDefaultDisplayAttentionPolicy();
+      return SaveDisplayAttentionPolicy(policy);
     }
-    printf("unknown action. usage: disp attn show|enable|disable|set|default\n");
+    if (strcmp(attn_action, "ack") == 0) {
+      if (RuntimeAcknowledgeDisplayAttention(kDispAttnItemFramOvr)) {
+        printf("OK\n");
+        return 0;
+      }
+      printf("ack failed\n");
+      return 1;
+    }
+    printf("unknown action. usage: disp attn show|set|defaults|ack\n");
     return 1;
   }
 
@@ -1915,7 +1898,8 @@ RegisterCommands(void)
 
   const esp_console_cmd_t disp_cmd = {
     .command = "disp",
-    .help = "Display settings: disp show | disp units C|F | disp attn ...",
+    .help =
+      "Display settings: disp show | disp units C|F | disp attn show|set|defaults|ack",
     .hint = NULL,
     .func = &CommandDisplay,
   };

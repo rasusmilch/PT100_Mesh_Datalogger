@@ -41,7 +41,9 @@ static const char* kKeyAllowChildren = "allow_child";
 static const char* kKeyAllowChildrenSet = "allow_child_set";
 static const char* kKeyDisplayUnits = "disp_units";
 static const char* kKeyDisplayAttentionMask = "disp_attn";
+static const char* kKeyDisplayAttentionPolicy = "disp_attn_pol";
 static const uint8_t kCalibrationContextVersion = 1;
+static uint32_t g_display_attention_policy = 0;
 static display_attention_mask_t g_display_attention_mask = 0;
 
 static app_node_role_t
@@ -151,8 +153,41 @@ ApplyDefaults(app_settings_t* settings)
     AppSettingsRoleDefaultAllowsChildren(settings->node_role);
   settings->allow_children_set = false;
   settings->display_units = APP_DISPLAY_UNITS_F;
-  settings->display_attention_mask = AppSettingsDefaultDisplayAttentionMask();
+  settings->display_attention_policy = AppSettingsDefaultDisplayAttentionPolicy();
+  settings->display_attention_mask =
+    AppSettingsDefaultDisplayAttentionMask();
+  g_display_attention_policy = settings->display_attention_policy;
   g_display_attention_mask = settings->display_attention_mask;
+}
+
+static display_attention_mask_t
+DisplayAttentionMaskFromPolicy(uint32_t policy)
+{
+  display_attention_mask_t mask = 0;
+  for (display_attention_item_t item = kDispAttnItemSdOut;
+       item < kDispAttnItemCount;
+       item = (display_attention_item_t)(item + 1)) {
+    if (DisplayAttentionPolicyGet(policy, item) != DISP_SEV_OFF) {
+      mask |= (display_attention_mask_t)(1u << (uint32_t)item);
+    }
+  }
+  return mask;
+}
+
+static uint32_t
+DisplayAttentionPolicyFromMask(display_attention_mask_t mask)
+{
+  uint32_t policy = 0;
+  for (display_attention_item_t item = kDispAttnItemSdOut;
+       item < kDispAttnItemCount;
+       item = (display_attention_item_t)(item + 1)) {
+    const display_attention_mask_t bit =
+      (display_attention_mask_t)(1u << (uint32_t)item);
+    const display_attention_severity_t severity =
+      ((mask & bit) != 0u) ? DISP_SEV_ERROR : DISP_SEV_OFF;
+    policy = DisplayAttentionPolicySet(policy, item, severity);
+  }
+  return policy;
 }
 
 static bool
@@ -373,22 +408,57 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->display_units = (app_display_units_t)display_units;
   }
 
-  uint32_t display_attention = (uint32_t)settings_out->display_attention_mask;
-  result = nvs_get_u32(handle, kKeyDisplayAttentionMask, &display_attention);
-  if (result == ESP_OK) {
-    settings_out->display_attention_mask =
-      (display_attention_mask_t)display_attention;
-  } else {
-    ESP_LOGW(kTag,
-             "display attention mask load failed (using default): %s",
-             esp_err_to_name(result));
+  uint32_t display_attention_policy =
+    (uint32_t)settings_out->display_attention_policy;
+  esp_err_t policy_result =
+    nvs_get_u32(handle, kKeyDisplayAttentionPolicy, &display_attention_policy);
+  const bool policy_present = (policy_result == ESP_OK);
+  if (policy_present) {
+    settings_out->display_attention_policy = display_attention_policy;
   }
+
+  uint32_t display_attention_mask =
+    (uint32_t)settings_out->display_attention_mask;
+  esp_err_t mask_result =
+    nvs_get_u32(handle, kKeyDisplayAttentionMask, &display_attention_mask);
+  if (!policy_present && mask_result == ESP_OK) {
+    settings_out->display_attention_policy =
+      DisplayAttentionPolicyFromMask(
+        (display_attention_mask_t)display_attention_mask);
+    esp_err_t migrate_result =
+      nvs_set_u32(handle,
+                  kKeyDisplayAttentionPolicy,
+                  settings_out->display_attention_policy);
+    if (migrate_result == ESP_OK) {
+      migrate_result = nvs_commit(handle);
+    }
+    if (migrate_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "display attention policy migration failed: %s",
+               esp_err_to_name(migrate_result));
+    } else {
+      ESP_LOGI(kTag, "display attention policy migrated from legacy mask");
+    }
+  } else if (!policy_present && mask_result != ESP_OK &&
+             mask_result != ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGW(kTag,
+             "display attention mask load failed: %s",
+             esp_err_to_name(mask_result));
+  } else if (!policy_present && mask_result == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGW(kTag,
+             "display attention policy missing; using default: %s",
+             esp_err_to_name(policy_result));
+  }
+
+  settings_out->display_attention_mask =
+    DisplayAttentionMaskFromPolicy(settings_out->display_attention_policy);
+  g_display_attention_policy = settings_out->display_attention_policy;
   g_display_attention_mask = settings_out->display_attention_mask;
 
   nvs_close(handle);
   ESP_LOGI(
     kTag,
-    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s disp_attn=0x%08" PRIX32,
+    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
     (unsigned)settings_out->log_period_ms,
     (unsigned)settings_out->fram_flush_watermark_records,
     (unsigned)settings_out->sd_flush_period_ms,
@@ -400,6 +470,7 @@ AppSettingsLoad(app_settings_t* settings_out)
     AppSettingsRoleToString(settings_out->node_role),
     settings_out->allow_children ? 1u : 0u,
     AppSettingsDisplayUnitsToString(settings_out->display_units),
+    (uint32_t)settings_out->display_attention_policy,
     (uint32_t)settings_out->display_attention_mask);
   return ESP_OK;
 }
@@ -667,33 +738,64 @@ AppSettingsSaveDisplayUnits(app_display_units_t units)
 display_attention_mask_t
 AppSettingsDefaultDisplayAttentionMask(void)
 {
-  return kDispAttnSdOut | kDispAttnSdIo | kDispAttnFramOvr |
-         kDispAttnRtdFault | kDispAttnTimeBad;
+  return DisplayAttentionMaskFromPolicy(
+    AppSettingsDefaultDisplayAttentionPolicy());
 }
 
 esp_err_t
 AppSettingsSaveDisplayAttentionMask(display_attention_mask_t mask)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeyDisplayAttentionMask, (uint32_t)mask);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  if (result == ESP_OK) {
-    g_display_attention_mask = mask;
-  }
-  return result;
+  const uint32_t policy = DisplayAttentionPolicyFromMask(mask);
+  return AppSettingsSaveDisplayAttentionPolicy(policy);
 }
 
 display_attention_mask_t
 AppSettingsGetDisplayAttentionMask(void)
 {
   return g_display_attention_mask;
+}
+
+uint32_t
+AppSettingsDefaultDisplayAttentionPolicy(void)
+{
+  uint32_t policy = 0;
+  policy = DisplayAttentionPolicySet(policy, kDispAttnItemSdOut, DISP_SEV_ERROR);
+  policy = DisplayAttentionPolicySet(policy, kDispAttnItemSdIo, DISP_SEV_ERROR);
+  policy =
+    DisplayAttentionPolicySet(policy, kDispAttnItemFramOvr, DISP_SEV_ERROR);
+  policy =
+    DisplayAttentionPolicySet(policy, kDispAttnItemRtdFault, DISP_SEV_ERROR);
+  policy =
+    DisplayAttentionPolicySet(policy, kDispAttnItemTimeBad, DISP_SEV_ERROR);
+  policy =
+    DisplayAttentionPolicySet(policy, kDispAttnItemMeshDown, DISP_SEV_WARN);
+  return policy;
+}
+
+esp_err_t
+AppSettingsSaveDisplayAttentionPolicy(uint32_t policy)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u32(handle, kKeyDisplayAttentionPolicy, policy);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  if (result == ESP_OK) {
+    g_display_attention_policy = policy;
+    g_display_attention_mask = DisplayAttentionMaskFromPolicy(policy);
+  }
+  return result;
+}
+
+uint32_t
+AppSettingsGetDisplayAttentionPolicy(void)
+{
+  return g_display_attention_policy;
 }
 
 void

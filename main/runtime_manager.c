@@ -67,6 +67,7 @@ typedef struct
   TickType_t last_overrun_log_ticks;
   uint64_t last_overrun_records_total;
   uint64_t last_overrun_logged_total;
+  uint64_t fram_overrun_ack_total;
 
   // Sensor fault logging state (rate-limited).
   bool last_sensor_fault_present;
@@ -310,7 +311,8 @@ ComputeActiveAttentionMask(const runtime_state_t* state)
   if (state->sd_last_io_error_active) {
     active |= kDispAttnSdIo;
   }
-  if (FramLogGetOverrunRecordsTotal(&state->fram_log) > 0) {
+  if (FramLogGetOverrunRecordsTotal(&state->fram_log) >
+      state->fram_overrun_ack_total) {
     active |= kDispAttnFramOvr;
   }
   if (state->last_sensor_fault_present) {
@@ -333,15 +335,15 @@ AttentionBitToCode(display_attention_bit_t bit)
     case kDispAttnSdOut:
       return "SDOUT";
     case kDispAttnSdIo:
-      return "SDIO!";
+      return "SDIO ";
     case kDispAttnFramOvr:
-      return "FRMOV";
+      return "FROVR";
     case kDispAttnRtdFault:
-      return "RTD!";
+      return "RTDFA";
     case kDispAttnTimeBad:
-      return "TIME!";
+      return "TIME ";
     case kDispAttnMeshDown:
-      return "MESH?";
+      return "MESH ";
     default:
       return "ERR  ";
   }
@@ -419,8 +421,13 @@ DisplayTask(void* context)
   runtime_state_t* state = (runtime_state_t*)context;
   char last_text[12] = { 0 };
   display_attention_mask_t last_active_mask = 0;
+  display_attention_mask_t last_warn_mask = 0;
   size_t code_index = 0;
+  size_t warn_code_index = 0;
   uint32_t last_code_tick = 0;
+  uint32_t last_warn_tick = 0;
+  const uint32_t warn_overlay_period_ms = 10000u;
+  const uint32_t warn_overlay_duration_ms = 2000u;
 
   while (state != NULL) {
     if (!state->display_initialized) {
@@ -441,45 +448,56 @@ DisplayTask(void* context)
     const uint32_t now_ms = (uint32_t)pdTICKS_TO_MS(now_ticks);
     const bool flash_on = ((now_ms / 500u) % 2u) == 0u;
 
-    const display_attention_mask_t enabled =
-      AppSettingsGetDisplayAttentionMask();
+    const uint32_t policy = AppSettingsGetDisplayAttentionPolicy();
     const display_attention_mask_t active_all =
       ComputeActiveAttentionMask(state);
-    const display_attention_mask_t active = active_all & enabled;
-
-    display_attention_bit_t bits[8];
-    size_t bit_count = 0;
-    const display_attention_bit_t known_bits[] = {
-      kDispAttnSdOut,
-      kDispAttnSdIo,
-      kDispAttnFramOvr,
-      kDispAttnRtdFault,
-      kDispAttnTimeBad,
-      kDispAttnMeshDown,
+    display_attention_bit_t error_bits[8];
+    display_attention_bit_t warn_bits[8];
+    size_t error_count = 0;
+    size_t warn_count = 0;
+    display_attention_mask_t error_mask = 0;
+    display_attention_mask_t warn_mask = 0;
+    const display_attention_item_t items[] = {
+      kDispAttnItemSdOut,
+      kDispAttnItemSdIo,
+      kDispAttnItemFramOvr,
+      kDispAttnItemRtdFault,
+      kDispAttnItemTimeBad,
+      kDispAttnItemMeshDown,
     };
-    for (size_t idx = 0; idx < sizeof(known_bits) / sizeof(known_bits[0]);
-         ++idx) {
-      const display_attention_bit_t bit = known_bits[idx];
-      if ((active & bit) != 0u) {
-        bits[bit_count++] = bit;
+    for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
+      const display_attention_item_t item = items[idx];
+      const display_attention_bit_t bit =
+        (display_attention_bit_t)(1u << (uint32_t)item);
+      if ((active_all & bit) == 0u) {
+        continue;
+      }
+      const display_attention_severity_t severity =
+        DisplayAttentionPolicyGet(policy, item);
+      if (severity == DISP_SEV_ERROR) {
+        error_bits[error_count++] = bit;
+        error_mask |= bit;
+      } else if (severity == DISP_SEV_WARN) {
+        warn_bits[warn_count++] = bit;
+        warn_mask |= bit;
       }
     }
 
-    if (bit_count > 0) {
-      if (active != last_active_mask) {
+    if (error_count > 0) {
+      if (error_mask != last_active_mask) {
         code_index = 0;
         last_code_tick = now_ms / 1000u;
-        last_active_mask = active;
+        last_active_mask = error_mask;
       }
 
       const uint32_t now_code_tick = now_ms / 1000u;
       if (now_code_tick != last_code_tick) {
-        code_index = (code_index + 1u) % bit_count;
+        code_index = (code_index + 1u) % error_count;
         last_code_tick = now_code_tick;
       }
 
       if (flash_on) {
-        const char* text = AttentionBitToCode(bits[code_index]);
+        const char* text = AttentionBitToCode(error_bits[code_index]);
         if (strncmp(last_text, text, sizeof(last_text)) != 0) {
           Max7219DisplaySetText(&state->display, text);
           snprintf(last_text, sizeof(last_text), "%s", text);
@@ -487,6 +505,36 @@ DisplayTask(void* context)
       } else if (last_text[0] != '\0') {
         Max7219DisplayClear(&state->display);
         last_text[0] = '\0';
+      }
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
+    last_active_mask = 0;
+    if (warn_count == 0) {
+      last_warn_mask = 0;
+    }
+
+    const bool warn_overlay_active =
+      warn_count > 0 &&
+      ((now_ms % warn_overlay_period_ms) < warn_overlay_duration_ms);
+    if (warn_overlay_active) {
+      if (warn_mask != last_warn_mask) {
+        warn_code_index = 0;
+        last_warn_tick = now_ms / 1000u;
+        last_warn_mask = warn_mask;
+      }
+
+      const uint32_t now_warn_tick = now_ms / 1000u;
+      if (now_warn_tick != last_warn_tick) {
+        warn_code_index = (warn_code_index + 1u) % warn_count;
+        last_warn_tick = now_warn_tick;
+      }
+
+      const char* text = AttentionBitToCode(warn_bits[warn_code_index]);
+      if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+        Max7219DisplaySetText(&state->display, text);
+        snprintf(last_text, sizeof(last_text), "%s", text);
       }
       vTaskDelay(pdMS_TO_TICKS(250));
       continue;
@@ -657,12 +705,6 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   if (state == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  esp_err_t sd_result =
-    SdLoggerEnsureDailyFile(&state->sd_logger, epoch_for_file);
-  if (sd_result != ESP_OK) {
-    return sd_result;
-  }
-
   if (FramLogGetBufferedRecords(&state->fram_log) == 0) {
     return ESP_OK;
   }
@@ -677,15 +719,14 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
     return peek_result;
   }
 
-  char oldest_record_day[16];
-  BuildDateStringFromRecord(
-    &oldest_record, oldest_record_day, sizeof(oldest_record_day));
-  if (strcmp(oldest_record_day, state->sd_logger.current_date) != 0) {
-    ESP_LOGW(kTag,
-             "Skipping FRAM sync: oldest record day %s != SD file day %s",
-             oldest_record_day,
-             state->sd_logger.current_date);
-    return ESP_OK;
+  int64_t target_epoch = epoch_for_file;
+  if (oldest_record.timestamp_epoch_sec > 0) {
+    target_epoch = oldest_record.timestamp_epoch_sec;
+  }
+  esp_err_t sd_result =
+    SdLoggerEnsureDailyFile(&state->sd_logger, target_epoch);
+  if (sd_result != ESP_OK) {
+    return sd_result;
   }
 
   uint32_t consumed = 0;
@@ -1925,4 +1966,18 @@ uint32_t
 RuntimeSdBackoffUntilTicks(void)
 {
   return (uint32_t)g_state.sd_backoff_until_ticks;
+}
+
+bool
+RuntimeAcknowledgeDisplayAttention(display_attention_item_t item)
+{
+  if (!g_state.initialized) {
+    return false;
+  }
+  if (item != kDispAttnItemFramOvr) {
+    return false;
+  }
+  g_state.fram_overrun_ack_total =
+    FramLogGetOverrunRecordsTotal(&g_state.fram_log);
+  return true;
 }
