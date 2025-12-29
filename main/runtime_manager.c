@@ -416,33 +416,47 @@ FormatTemperatureText(char* out,
   if (out == NULL || out_len == 0) {
     return;
   }
+  out[0] = '\0';
   if (!valid) {
     snprintf(out, out_len, "----");
     return;
   }
 
-  double temp_c = (double)temp_milli_c / 1000.0;
-  double temp = temp_c;
   char unit_char = 'C';
+  int64_t temp_milli = temp_milli_c;
+  // Avoid float formatting in DisplayTask to prevent newlib heap use.
   if (units == APP_DISPLAY_UNITS_F) {
-    temp = temp_c * 9.0 / 5.0 + 32.0;
+    const int64_t scaled = (int64_t)temp_milli_c * 9;
+    const int64_t rounded = (scaled >= 0) ? (scaled + 2) / 5 : (scaled - 2) / 5;
+    temp_milli = rounded + 32000;
     unit_char = 'F';
   }
 
-  const double abs_temp = fabs(temp);
-  if (abs_temp >= 1000.0) {
-    snprintf(out, out_len, (temp >= 0.0) ? "HI" : "LO");
+  const int32_t tenths =
+    (int32_t)((temp_milli >= 0) ? (temp_milli + 50) / 100
+                                : (temp_milli - 50) / 100);
+  const int32_t abs_tenths = (tenths < 0) ? -tenths : tenths;
+  if (abs_tenths >= 10000) {
+    snprintf(out, out_len, (tenths >= 0) ? "HI" : "LO");
     return;
   }
 
-  if (abs_temp >= 100.0) {
-    snprintf(out, out_len, "%.0f%c", temp, unit_char);
+  if (abs_tenths >= 1000) {
+    const int32_t whole = tenths / 10;
+    snprintf(out, out_len, "%ld%c", (long)whole, unit_char);
     return;
   }
 
-  snprintf(out, out_len, "%.1f%c", temp, unit_char);
+  const int32_t whole = abs_tenths / 10;
+  const int32_t frac = abs_tenths % 10;
+  if (tenths < 0) {
+    snprintf(out, out_len, "-%ld.%ld%c", (long)whole, (long)frac, unit_char);
+  } else {
+    snprintf(out, out_len, "%ld.%ld%c", (long)whole, (long)frac, unit_char);
+  }
   if (strlen(out) > 5) {
-    snprintf(out, out_len, "%.0f%c", temp, unit_char);
+    const int32_t whole_no_decimal = tenths / 10;
+    snprintf(out, out_len, "%ld%c", (long)whole_no_decimal, unit_char);
   }
 }
 
@@ -1734,7 +1748,7 @@ RuntimeManagerInit(void)
   if (display_result == ESP_OK) {
     g_state.display_initialized = true;
     BaseType_t display_created = xTaskCreate(
-      &DisplayTask, "display", 3072, &g_state, 2, &g_state.display_task);
+      &DisplayTask, "display", 4096, &g_state, 2, &g_state.display_task);
     if (display_created != pdPASS) {
       g_state.display_initialized = false;
       g_state.display_task = NULL;
