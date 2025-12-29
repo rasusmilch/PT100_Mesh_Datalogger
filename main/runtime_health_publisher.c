@@ -1,0 +1,65 @@
+#include "runtime_health_publisher.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "runtime_health.h"
+
+void
+RuntimeHealthPublisherInit(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->health_publisher.publish_period_ms = 200;
+  state->health_publisher.last_publish_ticks = 0;
+  state->health_publisher.dirty = true;
+}
+
+void
+RuntimeHealthPublisherTick(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  const TickType_t now_ticks = xTaskGetTickCount();
+  const uint32_t elapsed_ms =
+    (state->health_publisher.last_publish_ticks == 0)
+      ? state->health_publisher.publish_period_ms
+      : (uint32_t)pdTICKS_TO_MS(now_ticks -
+                                state->health_publisher.last_publish_ticks);
+  if (!state->health_publisher.dirty &&
+      elapsed_ms < state->health_publisher.publish_period_ms) {
+    return;
+  }
+
+  runtime_health_snapshot_t snapshot = { 0 };
+  snapshot.time_valid = state->cached_status.time_valid;
+  snapshot.utc_offset_sec = state->cached_status.utc_offset_sec;
+  snapshot.dst_in_effect = state->cached_status.dst_in_effect;
+  snapshot.mesh_connected = state->cached_status.mesh_connected;
+  snapshot.mesh_level = state->cached_status.mesh_level;
+  snapshot.mesh_rssi = state->cached_status.mesh_rssi;
+  snapshot.sd_mounted = state->cached_status.sd_mounted;
+  snapshot.sd_degraded = state->cached_status.sd_degraded;
+  snapshot.sd_fail_count = state->cached_status.sd_fail_count;
+  snapshot.sd_backoff_remaining_ms =
+    state->cached_status.sd_backoff_remaining_ms;
+  snapshot.sd_io_error_active = state->cached_status.sd_io_error_active;
+  snapshot.fram_count = state->cached_status.fram_count;
+  snapshot.fram_capacity = state->cached_status.fram_capacity;
+  snapshot.fram_full = state->cached_status.fram_full;
+  snapshot.fram_flush_watermark_records =
+    state->cached_status.fram_flush_watermark_records;
+  snapshot.fram_overrun_active = state->cached_status.fram_overrun_active;
+  snapshot.sensor_fault_present = state->cached_status.sensor_fault_present;
+  snapshot.export_dropped_count = state->cached_status.export_dropped_count;
+  snapshot.export_write_fail_count =
+    state->cached_status.export_write_fail_count;
+  snapshot.disp_attn_mask = state->cached_status.disp_attn_mask;
+  snapshot.disp_attn_pol = state->cached_status.disp_attn_pol;
+
+  RuntimeHealthPublish(&state->health_cache, &snapshot);
+  state->health_publisher.last_publish_ticks = now_ticks;
+  state->health_publisher.dirty = false;
+}

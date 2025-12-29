@@ -26,6 +26,8 @@
 #include "max7219_display.h"
 #include "mesh_transport.h"
 #include "runtime_health.h"
+#include "runtime_health_publisher.h"
+#include "runtime_state.h"
 #include "sd_logger.h"
 #include "time_sync.h"
 #include "wifi_service.h"
@@ -39,89 +41,44 @@ static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kSdFlushMinIntervalMs = 200;
 static const uint32_t kExportQueueDepth = 64;
 
-typedef struct
+static void
+UpdateCachedBool(runtime_state_t* state, bool* field, bool value)
 {
-  app_settings_t settings;
-  fram_i2c_t fram_i2c;
-  fram_io_t fram_io;
-  fram_log_t fram_log;
-  sd_logger_t sd_logger;
-  max31865_reader_t sensor;
-  mesh_transport_t mesh;
-  time_sync_t time_sync;
-  i2c_bus_t i2c_bus;
+  if (state == NULL || field == NULL) {
+    return;
+  }
+  if (*field == value) {
+    return;
+  }
+  *field = value;
+  RuntimeHealthMarkDirty(state);
+}
 
-  QueueHandle_t log_queue;
-  QueueHandle_t export_queue;
-  uint8_t* batch_buffer;
-  size_t batch_buffer_size;
+static void
+UpdateCachedUint32(runtime_state_t* state, uint32_t* field, uint32_t value)
+{
+  if (state == NULL || field == NULL) {
+    return;
+  }
+  if (*field == value) {
+    return;
+  }
+  *field = value;
+  RuntimeHealthMarkDirty(state);
+}
 
-  TickType_t last_flush_ticks;
-  TickType_t sd_next_flush_allowed_ticks;
-  TickType_t sd_backoff_until_ticks;
-  TickType_t last_sd_flush_warn_ticks;
-  uint32_t sd_fail_count;
-  uint32_t sd_flush_records_since;
-  bool sd_flush_pending;
-  bool sd_degraded;
-  bool sd_force_unmount_on_append;
-  bool sd_last_io_error_active;
-  esp_err_t sd_last_io_err;
-  int sd_last_errno;
-  bool fram_full;
-  bool sd_was_mounted;
-  TickType_t last_overrun_log_ticks;
-  uint64_t last_overrun_records_total;
-  uint64_t last_overrun_logged_total;
-  uint64_t fram_overrun_ack_total;
-
-  // Sensor fault logging state (rate-limited).
-  bool last_sensor_fault_present;
-  uint8_t last_sensor_fault_status;
-  TickType_t last_sensor_fault_log_ticks;
-
-  char node_id_string[32];
-
-  TaskHandle_t sensor_task;
-  TaskHandle_t storage_task;
-  TaskHandle_t export_task;
-  TaskHandle_t time_sync_task;
-  TaskHandle_t topology_task;
-  TaskHandle_t display_task;
-
-  bool initialized;
-  bool is_running;
-  bool stop_requested;
-  bool mesh_started;
-  bool data_streaming_enabled;
-  bool log_quiet;
-
-  uint32_t export_dropped_count;
-  uint32_t export_write_fail_count;
-  bool csv_header_emitted;
-
-  max7219_display_t display;
-  bool display_initialized;
-  bool display_test_active;
-  TickType_t display_test_until_ticks;
-  int32_t last_temp_milli_c;
-  bool last_temp_valid;
-  uint32_t last_flags;
-  TickType_t last_update_ticks;
-  portMUX_TYPE last_temp_lock;
-
-  runtime_health_cache_t health_cache;
-  runtime_health_snapshot_t health_snapshot;
-  portMUX_TYPE health_lock;
-  bool health_time_valid;
-  int32_t health_utc_offset_sec;
-  bool health_dst_in_effect;
-  bool health_mesh_connected;
-  int32_t health_mesh_level;
-  int32_t health_mesh_rssi;
-  uint32_t health_fram_count;
-  uint32_t health_fram_capacity;
-} runtime_state_t;
+static void
+UpdateCachedInt32(runtime_state_t* state, int32_t* field, int32_t value)
+{
+  if (state == NULL || field == NULL) {
+    return;
+  }
+  if (*field == value) {
+    return;
+  }
+  *field = value;
+  RuntimeHealthMarkDirty(state);
+}
 
 typedef struct
 {
@@ -168,6 +125,14 @@ SdMaintenanceTick(runtime_state_t* state)
   state->sd_backoff_until_ticks = 0;
   state->sd_degraded = false;
   ClearSdIoError(state);
+  UpdateCachedBool(
+    state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+  UpdateCachedBool(state, &state->cached_status.sd_degraded, state->sd_degraded);
+  UpdateCachedUint32(
+    state, &state->cached_status.sd_fail_count, state->sd_fail_count);
+  UpdateCachedUint32(state,
+                     &state->cached_status.sd_backoff_remaining_ms,
+                     0u);
 
   if (was_degraded || prev_fail_count != 0u) {
     ESP_LOGW(kTag,
@@ -218,6 +183,7 @@ ClearSdIoError(runtime_state_t* state)
   state->sd_last_io_error_active = false;
   state->sd_last_io_err = ESP_OK;
   state->sd_last_errno = 0;
+  UpdateCachedBool(state, &state->cached_status.sd_io_error_active, false);
 }
 
 static void
@@ -228,15 +194,20 @@ UpdateFramFillState(runtime_state_t* state)
   }
   if (!state->fram_i2c.initialized) {
     state->fram_full = false;
-    state->health_fram_count = 0;
-    state->health_fram_capacity = 0;
+    UpdateCachedUint32(state, &state->cached_status.fram_count, 0);
+    UpdateCachedUint32(state, &state->cached_status.fram_capacity, 0);
+    UpdateCachedBool(state, &state->cached_status.fram_full, false);
     return;
   }
   const size_t count = FramLogGetCountRecords(&state->fram_log);
   const size_t capacity = FramLogGetCapacityRecords(&state->fram_log);
-  state->health_fram_count = (uint32_t)count;
-  state->health_fram_capacity = (uint32_t)capacity;
-  state->fram_full = (capacity > 0 && count >= capacity);
+  UpdateCachedUint32(state, &state->cached_status.fram_count, (uint32_t)count);
+  UpdateCachedUint32(state,
+                     &state->cached_status.fram_capacity,
+                     (uint32_t)capacity);
+  const bool fram_full = (capacity > 0 && count >= capacity);
+  state->fram_full = fram_full;
+  UpdateCachedBool(state, &state->cached_status.fram_full, fram_full);
 }
 
 static void
@@ -483,10 +454,10 @@ UpdateTimeHealthState(runtime_state_t* state, bool time_valid)
   if (state == NULL) {
     return;
   }
-  state->health_time_valid = time_valid;
+  UpdateCachedBool(state, &state->cached_status.time_valid, time_valid);
   if (!time_valid) {
-    state->health_utc_offset_sec = 0;
-    state->health_dst_in_effect = false;
+    UpdateCachedInt32(state, &state->cached_status.utc_offset_sec, 0);
+    UpdateCachedBool(state, &state->cached_status.dst_in_effect, false);
     return;
   }
 
@@ -497,8 +468,12 @@ UpdateTimeHealthState(runtime_state_t* state, bool time_valid)
   localtime_r(&now, &local_time);
   const time_t utc_epoch_as_local = mktime(&utc_as_local);
   const long utc_offset_sec = (long)difftime(now, utc_epoch_as_local);
-  state->health_utc_offset_sec = (int32_t)utc_offset_sec;
-  state->health_dst_in_effect = (local_time.tm_isdst > 0);
+  UpdateCachedInt32(state,
+                    &state->cached_status.utc_offset_sec,
+                    (int32_t)utc_offset_sec);
+  UpdateCachedBool(state,
+                   &state->cached_status.dst_in_effect,
+                   (local_time.tm_isdst > 0));
 }
 
 static uint32_t
@@ -509,44 +484,6 @@ ComputeSdBackoffRemainingMs(const runtime_state_t* state, TickType_t now_ticks)
     return 0;
   }
   return (uint32_t)pdTICKS_TO_MS(state->sd_backoff_until_ticks - now_ticks);
-}
-
-static void
-PublishHealthSnapshot(runtime_state_t* state, TickType_t now_ticks)
-{
-  if (state == NULL) {
-    return;
-  }
-
-  taskENTER_CRITICAL(&state->health_lock);
-  runtime_health_snapshot_t snapshot = state->health_snapshot;
-  snapshot.time_valid = state->health_time_valid;
-  snapshot.utc_offset_sec = state->health_utc_offset_sec;
-  snapshot.dst_in_effect = state->health_dst_in_effect;
-  snapshot.mesh_connected = state->health_mesh_connected;
-  snapshot.mesh_level = state->health_mesh_level;
-  snapshot.mesh_rssi = state->health_mesh_rssi;
-  snapshot.sd_mounted = state->sd_logger.is_mounted;
-  snapshot.sd_degraded = state->sd_degraded;
-  snapshot.sd_fail_count = state->sd_fail_count;
-  snapshot.sd_backoff_remaining_ms =
-    ComputeSdBackoffRemainingMs(state, now_ticks);
-  snapshot.sd_io_error_active = state->sd_last_io_error_active;
-  snapshot.fram_count = state->health_fram_count;
-  snapshot.fram_capacity = state->health_fram_capacity;
-  snapshot.fram_full = state->fram_full;
-  snapshot.fram_flush_watermark_records =
-    state->settings.fram_flush_watermark_records;
-  snapshot.fram_overrun_active =
-    (state->last_overrun_records_total > state->fram_overrun_ack_total);
-  snapshot.sensor_fault_present = state->last_sensor_fault_present;
-  snapshot.export_dropped_count = state->export_dropped_count;
-  snapshot.export_write_fail_count = state->export_write_fail_count;
-  snapshot.disp_attn_mask = state->settings.display_attention_mask;
-  snapshot.disp_attn_pol = state->settings.display_attention_policy;
-  state->health_snapshot = snapshot;
-  RuntimeHealthPublish(&state->health_cache, &snapshot);
-  taskEXIT_CRITICAL(&state->health_lock);
 }
 
 static void
@@ -714,6 +651,21 @@ DisplayTask(void* context)
 }
 
 static void
+HealthPublisherTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+  const TickType_t tick_delay = pdMS_TO_TICKS(50);
+
+  while (!state->stop_requested) {
+    RuntimeHealthPublisherTick(state);
+    vTaskDelay(tick_delay);
+  }
+
+  state->health_publisher_task = NULL;
+  vTaskDelete(NULL);
+}
+
+static void
 SetRunLogPolicy(void)
 {
   // Keep run-time logging quiet by default to avoid drowning the operator,
@@ -810,6 +762,9 @@ TryEmitCsvHeader(runtime_state_t* state)
   if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
     state->csv_header_emitted = false;
     state->export_write_fail_count++;
+    UpdateCachedUint32(state,
+                       &state->cached_status.export_write_fail_count,
+                       state->export_write_fail_count);
     return false;
   }
   return true;
@@ -833,6 +788,9 @@ EnqueueExportRecord(runtime_state_t* state,
 
   if (xQueueSend(state->export_queue, &item, 0) != pdTRUE) {
     state->export_dropped_count++;
+    UpdateCachedUint32(state,
+                       &state->cached_status.export_dropped_count,
+                       state->export_dropped_count);
   }
 }
 
@@ -1120,15 +1078,25 @@ MarkSdFailure(runtime_state_t* state,
   if (state == NULL) {
     return;
   }
+  const TickType_t now_ticks = xTaskGetTickCount();
   state->sd_degraded = true;
   state->sd_fail_count++;
   state->sd_backoff_until_ticks =
-    xTaskGetTickCount() + pdMS_TO_TICKS(kSdFlushFailureBackoffMs);
+    now_ticks + pdMS_TO_TICKS(kSdFlushFailureBackoffMs);
   if (IsSdIoOperation(operation)) {
     state->sd_last_io_error_active = true;
     state->sd_last_io_err = error;
     state->sd_last_errno = errno_value;
+    UpdateCachedBool(state, &state->cached_status.sd_io_error_active, true);
   }
+  UpdateCachedBool(
+    state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+  UpdateCachedBool(state, &state->cached_status.sd_degraded, true);
+  UpdateCachedUint32(
+    state, &state->cached_status.sd_fail_count, state->sd_fail_count);
+  UpdateCachedUint32(state,
+                     &state->cached_status.sd_backoff_remaining_ms,
+                     ComputeSdBackoffRemainingMs(state, now_ticks));
   const char* op_label = (operation != NULL) ? operation : "unknown";
   const char* errno_str = (errno_value != 0) ? strerror(errno_value) : "n/a";
   const char* action_label = did_unmount ? "unmount+backoff" : "backoff";
@@ -1346,6 +1314,9 @@ SensorTask(void* context)
       state->last_sensor_fault_present = false;
       state->last_sensor_fault_status = 0;
     }
+    UpdateCachedBool(state,
+                     &state->cached_status.sensor_fault_present,
+                     state->last_sensor_fault_present);
 
     if (time_valid) {
       record.flags |= LOG_RECORD_FLAG_TIME_VALID;
@@ -1360,8 +1331,10 @@ SensorTask(void* context)
       record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
     }
     const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
-    state->health_mesh_connected = mesh_connected;
-    state->health_mesh_level = state->mesh.last_level;
+    UpdateCachedBool(
+      state, &state->cached_status.mesh_connected, mesh_connected);
+    UpdateCachedInt32(
+      state, &state->cached_status.mesh_level, state->mesh.last_level);
     if (mesh_connected) {
       record.flags |= LOG_RECORD_FLAG_MESH_CONNECTED;
     }
@@ -1408,6 +1381,9 @@ ExportTask(void* context)
       }
       if (!CsvWriteRow(CsvDataPortWriter, NULL, &item.record, item.node_id)) {
         state->export_write_fail_count++;
+        UpdateCachedUint32(state,
+                           &state->cached_status.export_write_fail_count,
+                           state->export_write_fail_count);
         vTaskDelay(pdMS_TO_TICKS(50));
       }
     }
@@ -1453,6 +1429,10 @@ StorageTask(void* context)
         LogFramOverrunWarning(
           state, overrun_after, fram_count, fram_capacity, now_ticks);
         state->last_overrun_records_total = overrun_after;
+        UpdateCachedBool(
+          state,
+          &state->cached_status.fram_overrun_active,
+          state->last_overrun_records_total > state->fram_overrun_ack_total);
         UpdateFramFillState(state);
         if (state->fram_full) {
           record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
@@ -1467,6 +1447,15 @@ StorageTask(void* context)
     }
 
     const TickType_t now_ticks = xTaskGetTickCount();
+    UpdateCachedUint32(
+      state,
+      &state->cached_status.sd_backoff_remaining_ms,
+      ComputeSdBackoffRemainingMs(state, now_ticks));
+    UpdateCachedBool(
+      state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+    UpdateCachedBool(state, &state->cached_status.sd_degraded, state->sd_degraded);
+    UpdateCachedUint32(
+      state, &state->cached_status.sd_fail_count, state->sd_fail_count);
     const bool periodic_due =
       (pdTICKS_TO_MS(now_ticks - state->last_flush_ticks) >=
        state->settings.sd_flush_period_ms);
@@ -1522,7 +1511,6 @@ StorageTask(void* context)
       state->sd_was_mounted = true;
     }
 
-    PublishHealthSnapshot(state, now_ticks);
   }
 
   if (state->sd_logger.is_mounted) {
@@ -1544,8 +1532,10 @@ TimeSyncTask(void* context)
       const bool time_valid = TimeSyncIsSystemTimeValid();
       UpdateTimeHealthState(state, time_valid);
       const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
-      state->health_mesh_connected = mesh_connected;
-      state->health_mesh_level = state->mesh.last_level;
+      UpdateCachedBool(
+        state, &state->cached_status.mesh_connected, mesh_connected);
+      UpdateCachedInt32(
+        state, &state->cached_status.mesh_level, state->mesh.last_level);
       if (mesh_connected) {
         (void)MeshTransportRequestTime(&state->mesh);
       }
@@ -1558,8 +1548,10 @@ TimeSyncTask(void* context)
       const bool time_valid = TimeSyncIsSystemTimeValid();
       UpdateTimeHealthState(state, time_valid);
       const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
-      state->health_mesh_connected = mesh_connected;
-      state->health_mesh_level = state->mesh.last_level;
+      UpdateCachedBool(
+        state, &state->cached_status.mesh_connected, mesh_connected);
+      UpdateCachedInt32(
+        state, &state->cached_status.mesh_level, state->mesh.last_level);
       if (time_valid && mesh_connected) {
         const int64_t now_seconds = (int64_t)time(NULL);
         (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
@@ -1593,9 +1585,10 @@ TopologyTask(void* context)
         rssi = ap_record.rssi;
       }
     }
-    state->health_mesh_level = layer;
-    state->health_mesh_rssi = rssi;
-    state->health_mesh_connected = (layer > 0);
+    UpdateCachedInt32(state, &state->cached_status.mesh_level, layer);
+    UpdateCachedInt32(state, &state->cached_status.mesh_rssi, rssi);
+    UpdateCachedBool(
+      state, &state->cached_status.mesh_connected, (layer > 0));
 
     if (!state->log_quiet) {
       printf("topology role=%s allow_children=%u layer=%d parent=%s "
@@ -1664,9 +1657,9 @@ InitializeRuntimeStruct(void)
   memset(&g_state, 0, sizeof(g_state));
   memset(&g_runtime, 0, sizeof(g_runtime));
   g_state.last_temp_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
-  g_state.health_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
   RuntimeHealthInit(&g_state.health_cache);
-  g_state.health_mesh_level = -1;
+  RuntimeHealthPublisherInit(&g_state);
+  g_state.cached_status.mesh_level = -1;
 
   g_runtime.settings = &g_state.settings;
   g_runtime.fram_i2c = &g_state.fram_i2c;
@@ -1716,7 +1709,17 @@ RuntimeManagerInit(void)
       kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
   AppSettingsApplyTimeZone(&g_state.settings);
-  PublishHealthSnapshot(&g_state, xTaskGetTickCount());
+  UpdateCachedUint32(&g_state,
+                     &g_state.cached_status.disp_attn_mask,
+                     g_state.settings.display_attention_mask);
+  UpdateCachedUint32(&g_state,
+                     &g_state.cached_status.disp_attn_pol,
+                     g_state.settings.display_attention_policy);
+  UpdateCachedUint32(
+    &g_state,
+    &g_state.cached_status.fram_flush_watermark_records,
+    g_state.settings.fram_flush_watermark_records);
+  RuntimeHealthPublisherTick(&g_state);
 
 #if CONFIG_APP_MAX7219_ENABLE
   max7219_display_config_t display_config = {
@@ -1823,6 +1826,9 @@ RuntimeManagerInit(void)
   }
 
   (void)SdLoggerMount(&g_state.sd_logger, spi_host, CONFIG_APP_SD_CS_GPIO);
+  UpdateCachedBool(&g_state,
+                   &g_state.cached_status.sd_mounted,
+                   g_state.sd_logger.is_mounted);
 
   esp_err_t sensor_result =
     Max31865ReaderInit(&g_state.sensor, spi_host, CONFIG_APP_MAX31865_CS_GPIO);
@@ -1877,6 +1883,9 @@ EnsureSdMounted(void)
         &g_state, "SD mount failed", "mount", mount_result, 0, false);
     } else {
       ClearSdIoError(&g_state);
+      UpdateCachedBool(&g_state,
+                       &g_state.cached_status.sd_mounted,
+                       g_state.sd_logger.is_mounted);
     }
   }
 }
@@ -1891,7 +1900,8 @@ RuntimeStart(void)
     return ESP_OK;
   }
   if (g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-      g_state.time_sync_task != NULL || g_state.topology_task != NULL) {
+      g_state.time_sync_task != NULL || g_state.topology_task != NULL ||
+      g_state.health_publisher_task != NULL) {
     return ESP_ERR_INVALID_STATE;
   }
   if (g_state.log_queue == NULL) {
@@ -1919,8 +1929,20 @@ RuntimeStart(void)
   g_state.last_overrun_log_ticks = 0;
   g_state.last_overrun_records_total = 0;
   g_state.last_overrun_logged_total = 0;
+  UpdateCachedBool(&g_state, &g_state.cached_status.sd_degraded, false);
+  UpdateCachedUint32(&g_state, &g_state.cached_status.sd_fail_count, 0);
+  UpdateCachedUint32(
+    &g_state, &g_state.cached_status.sd_backoff_remaining_ms, 0);
+  UpdateCachedBool(
+    &g_state, &g_state.cached_status.sd_io_error_active, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.fram_full, false);
+  UpdateCachedBool(
+    &g_state, &g_state.cached_status.fram_overrun_active, false);
 
   EnsureSdMounted();
+  UpdateCachedBool(&g_state,
+                   &g_state.cached_status.sd_mounted,
+                   g_state.sd_logger.is_mounted);
   g_state.sd_was_mounted = g_state.sd_logger.is_mounted;
 
   const app_node_role_t role = g_state.settings.node_role;
@@ -2004,6 +2026,14 @@ RuntimeStart(void)
   BaseType_t export_created = pdPASS;
   BaseType_t time_created = pdPASS;
   BaseType_t topology_created = pdPASS;
+  BaseType_t health_publish_created = pdPASS;
+
+  health_publish_created = xTaskCreate(&HealthPublisherTask,
+                                       "health_pub",
+                                       2048,
+                                       &g_state,
+                                       3,
+                                       &g_state.health_publisher_task);
 
   if (role == APP_NODE_ROLE_SENSOR) {
     sensor_created = xTaskCreate(
@@ -2027,13 +2057,14 @@ RuntimeStart(void)
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
       export_created != pdPASS || time_created != pdPASS ||
-      topology_created != pdPASS) {
+      topology_created != pdPASS || health_publish_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.is_running = false;
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
             g_state.export_task != NULL || g_state.time_sync_task != NULL ||
-            g_state.topology_task != NULL) &&
+            g_state.topology_task != NULL ||
+            g_state.health_publisher_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -2060,7 +2091,8 @@ RuntimeStop(void)
   const TickType_t wait_start = xTaskGetTickCount();
   while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
           g_state.export_task != NULL || g_state.time_sync_task != NULL ||
-          g_state.topology_task != NULL) &&
+          g_state.topology_task != NULL ||
+          g_state.health_publisher_task != NULL) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
@@ -2173,6 +2205,10 @@ RuntimeAcknowledgeDisplayAttention(display_attention_item_t item)
   }
   g_state.fram_overrun_ack_total =
     FramLogGetOverrunRecordsTotal(&g_state.fram_log);
+  UpdateCachedBool(&g_state,
+                   &g_state.cached_status.fram_overrun_active,
+                   g_state.last_overrun_records_total >
+                     g_state.fram_overrun_ack_total);
   return true;
 }
 

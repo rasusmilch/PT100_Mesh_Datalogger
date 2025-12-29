@@ -26,6 +26,7 @@ idf_component_register(
     "pt100_table.c"
     "mesh_transport.c"
     "runtime_health.c"
+    "runtime_health_publisher.c"
     "runtime_manager.c"
     "sd_csv_verify.c"
     "sd_logger.c"
