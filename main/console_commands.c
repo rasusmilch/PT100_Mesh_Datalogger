@@ -3,11 +3,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <dirent.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #include "argtable3/argtable3.h"
@@ -565,6 +568,162 @@ CommandFram(int argc, char** argv)
          (unsigned)status.next_sequence,
          status.next_record_id);
   return 0;
+}
+
+static void
+PrintSdStatus(const app_runtime_t* runtime)
+{
+  const sd_logger_t* logger = runtime->sd_logger;
+  const bool sd_mounted = logger->is_mounted;
+  const bool sd_degraded = RuntimeSdIsDegraded();
+  const uint32_t sd_fail_count = RuntimeSdFailCount();
+  const TickType_t now_ticks = xTaskGetTickCount();
+  const uint32_t sd_backoff_until = RuntimeSdBackoffUntilTicks();
+  uint32_t sd_backoff_remaining_ms = 0;
+  if (sd_backoff_until != 0 && now_ticks < (TickType_t)sd_backoff_until) {
+    sd_backoff_remaining_ms =
+      (uint32_t)pdTICKS_TO_MS((TickType_t)sd_backoff_until - now_ticks);
+  }
+
+  printf("sd_mounted: %s\n", sd_mounted ? "yes" : "no");
+  printf("sd_degraded: %s\n", sd_degraded ? "yes" : "no");
+  printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
+  printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
+  printf("sd_last_record_id: %" PRIu64 "\n",
+         SdLoggerLastRecordIdOnSd(logger));
+  if (sd_mounted) {
+    printf("sd_mount_point: %s\n", logger->mount_point);
+    if (logger->card != NULL) {
+      const uint64_t size_bytes =
+        (uint64_t)logger->card->csd.capacity *
+        (uint64_t)logger->card->csd.sector_size;
+      printf("sd_card_name: %s\n", logger->card->cid.name);
+      printf("sd_card_size_mb: %llu\n",
+             (unsigned long long)(size_bytes / (1024ULL * 1024ULL)));
+    }
+  }
+}
+
+static void
+FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size)
+{
+  if (buffer == NULL || buffer_size == 0) {
+    return;
+  }
+  struct tm time_info;
+  if (timestamp == NULL || gmtime_r(timestamp, &time_info) == NULL) {
+    buffer[0] = '\0';
+    return;
+  }
+  strftime(buffer, buffer_size, "%Y-%m-%d %H:%M:%SZ", &time_info);
+}
+
+static int
+CommandSdView(const sd_logger_t* logger)
+{
+  if (!logger->is_mounted) {
+    printf("sd not mounted\n");
+    return 1;
+  }
+
+  DIR* dir = opendir(logger->mount_point);
+  if (dir == NULL) {
+    printf("sd view failed: %s\n", strerror(errno));
+    return 1;
+  }
+
+  printf("sd files in %s:\n", logger->mount_point);
+  struct dirent* entry = NULL;
+  int file_count = 0;
+  while ((entry = readdir(dir)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s", logger->mount_point, entry->d_name);
+    struct stat info;
+    if (stat(path, &info) != 0) {
+      printf("  %s (stat failed: %s)\n", entry->d_name, strerror(errno));
+      continue;
+    }
+    char time_buffer[32];
+    FormatFileTime(&info.st_mtime, time_buffer, sizeof(time_buffer));
+    const char* kind = S_ISDIR(info.st_mode) ? "dir" : "file";
+    printf("  %s %-4s size=%llu mtime=%s\n",
+           entry->d_name,
+           kind,
+           (unsigned long long)info.st_size,
+           time_buffer);
+    ++file_count;
+  }
+  closedir(dir);
+  printf("sd file count: %d\n", file_count);
+  return 0;
+}
+
+static int
+CommandSd(int argc, char** argv)
+{
+  if (g_runtime == NULL || g_runtime->sd_logger == NULL) {
+    return 1;
+  }
+  if (argc < 2) {
+    printf("usage: sd status|mount|unmount|format|view\n");
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "status") == 0) {
+    PrintSdStatus(g_runtime);
+    return 0;
+  }
+
+  if (strcmp(action, "view") == 0) {
+    return CommandSdView(g_runtime->sd_logger);
+  }
+
+  if (RuntimeIsRunning()) {
+    printf("Stop run mode first: run stop\n");
+    return 1;
+  }
+
+  if (strcmp(action, "mount") == 0) {
+    if (g_runtime->sd_logger->is_mounted) {
+      printf("sd already mounted\n");
+      return 0;
+    }
+    esp_err_t result = SdLoggerTryRemount(g_runtime->sd_logger, false);
+    if (result != ESP_OK) {
+      printf("sd mount failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("sd mounted\n");
+    return 0;
+  }
+
+  if (strcmp(action, "unmount") == 0) {
+    esp_err_t result = SdLoggerUnmount(g_runtime->sd_logger);
+    if (result != ESP_OK) {
+      printf("sd unmount failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("sd unmounted\n");
+    return 0;
+  }
+
+  if (strcmp(action, "format") == 0) {
+    (void)SdLoggerUnmount(g_runtime->sd_logger);
+    esp_err_t result = SdLoggerTryRemount(g_runtime->sd_logger, true);
+    if (result != ESP_OK) {
+      printf("sd format failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("sd format (if needed) complete\n");
+    return 0;
+  }
+
+  printf("unknown sd command. try 'sd status|mount|unmount|format|view'\n");
+  return 1;
 }
 
 // NOTE: The "log" command uses manual argv parsing.
@@ -1942,6 +2101,14 @@ RegisterCommands(void)
     .func = &CommandFlush,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&flush_cmd));
+
+  const esp_console_cmd_t sd_cmd = {
+    .command = "sd",
+    .help = "SD commands: sd status | sd mount | sd unmount | sd format | sd view",
+    .hint = NULL,
+    .func = &CommandSd,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&sd_cmd));
 
   const esp_console_cmd_t fram_cmd = {
     .command = "fram",
