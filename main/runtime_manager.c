@@ -35,6 +35,7 @@ static const uint32_t kSdFlushMaxMsPerPass = 50;
 static const uint32_t kSdFlushTimeSliceMs = 50;
 static const uint32_t kSdFlushWarnIntervalMs = 10000;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
+static const uint32_t kSdFlushMinIntervalMs = 200;
 static const uint32_t kExportQueueDepth = 64;
 
 typedef struct
@@ -55,6 +56,7 @@ typedef struct
   size_t batch_buffer_size;
 
   TickType_t last_flush_ticks;
+  TickType_t sd_next_flush_allowed_ticks;
   TickType_t sd_backoff_until_ticks;
   TickType_t last_sd_flush_warn_ticks;
   uint32_t sd_fail_count;
@@ -126,6 +128,42 @@ MarkSdFailure(runtime_state_t* state,
               esp_err_t error,
               int errno_value,
               bool did_unmount);
+
+static void
+SdMaintenanceTick(runtime_state_t* state)
+{
+  if (state == NULL || state->sd_logger.is_mounted) {
+    return;
+  }
+
+  const TickType_t now_ticks = xTaskGetTickCount();
+  if (state->sd_backoff_until_ticks != 0 &&
+      now_ticks < state->sd_backoff_until_ticks) {
+    return;
+  }
+
+  const bool was_degraded = state->sd_degraded;
+  const uint32_t prev_fail_count = state->sd_fail_count;
+  esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
+  if (mount_result != ESP_OK) {
+    MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
+    return;
+  }
+
+  state->sd_backoff_until_ticks = 0;
+  state->sd_degraded = false;
+  ClearSdIoError(state);
+
+  if (was_degraded || prev_fail_count != 0u) {
+    ESP_LOGW(kTag,
+             "SD recovered (mounted). fail_count=%u backoff cleared",
+             (unsigned)state->sd_fail_count);
+  }
+
+  if (FramLogGetBufferedRecords(&state->fram_log) > 0) {
+    state->sd_flush_pending = true;
+  }
+}
 
 static const char*
 ConversionModeToString(uint8_t mode)
@@ -1046,29 +1084,10 @@ SdFlushWorkerTick(runtime_state_t* state,
   }
 
   if (!state->sd_logger.is_mounted) {
-    const bool was_degraded = state->sd_degraded;
-    const uint32_t prev_fail_count = state->sd_fail_count;
-
-    esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
-    if (mount_result != ESP_OK) {
-      MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
-      if (more_pending_out != NULL) {
-        *more_pending_out = true;
-      }
-      return ESP_OK;
+    if (more_pending_out != NULL) {
+      *more_pending_out = true;
     }
-
-    // Mount succeeded. Clear any backoff/degraded latch so recoverable failures
-    // stop triggering operator attention once the SD path is healthy again.
-    state->sd_backoff_until_ticks = 0;
-    state->sd_degraded = false;
-    ClearSdIoError(state);
-
-    if (was_degraded || prev_fail_count != 0u) {
-      ESP_LOGW(kTag,
-               "SD recovered (mounted). fail_count=%u backoff cleared",
-               (unsigned)state->sd_fail_count);
-    }
+    return ESP_OK;
   }
 
   log_record_t first_record;
@@ -1304,12 +1323,14 @@ StorageTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
   state->last_flush_ticks = xTaskGetTickCount();
+  state->sd_next_flush_allowed_ticks = state->last_flush_ticks;
 
   while (!state->stop_requested ||
          uxQueueMessagesWaiting(state->log_queue) > 0) {
     log_record_t record;
-    if (xQueueReceive(state->log_queue, &record, pdMS_TO_TICKS(500)) ==
-        pdTRUE) {
+    const bool received =
+      (xQueueReceive(state->log_queue, &record, pdMS_TO_TICKS(500)) == pdTRUE);
+    if (received) {
       esp_err_t id_result = FramLogAssignRecordIds(&state->fram_log, &record);
       if (id_result != ESP_OK) {
         ESP_LOGE(
@@ -1362,7 +1383,18 @@ StorageTask(void* context)
       state->sd_flush_pending = true;
     }
 
-    if (state->sd_flush_pending) {
+    if (!state->sd_logger.is_mounted) {
+      SdMaintenanceTick(state);
+    }
+
+    const UBaseType_t queue_depth =
+      (state->log_queue != NULL)
+        ? uxQueueMessagesWaiting(state->log_queue)
+        : 0;
+    const bool queue_idle = (queue_depth <= 1u);
+    if (!received && queue_idle && state->sd_flush_pending &&
+        state->sd_logger.is_mounted &&
+        now_ticks >= state->sd_next_flush_allowed_ticks) {
       uint32_t flushed = 0;
       bool more_pending = false;
       esp_err_t flush_result = SdFlushWorkerTick(state,
@@ -1383,6 +1415,8 @@ StorageTask(void* context)
         }
         state->sd_flush_pending = more_pending;
       }
+      state->sd_next_flush_allowed_ticks =
+        xTaskGetTickCount() + pdMS_TO_TICKS(kSdFlushMinIntervalMs);
     }
 
     if (!state->sd_logger.is_mounted) {
@@ -1762,6 +1796,7 @@ RuntimeStart(void)
   g_state.last_sd_flush_warn_ticks = 0;
   g_state.sd_flush_records_since = 0;
   g_state.sd_flush_pending = false;
+  g_state.sd_next_flush_allowed_ticks = 0;
   g_state.sd_last_io_error_active = false;
   g_state.sd_last_io_err = ESP_OK;
   g_state.sd_last_errno = 0;
