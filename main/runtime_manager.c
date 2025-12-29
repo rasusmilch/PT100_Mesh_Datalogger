@@ -25,6 +25,7 @@
 #include "max31865_reader.h"
 #include "max7219_display.h"
 #include "mesh_transport.h"
+#include "runtime_health.h"
 #include "sd_logger.h"
 #include "time_sync.h"
 #include "wifi_service.h"
@@ -108,6 +109,18 @@ typedef struct
   uint32_t last_flags;
   TickType_t last_update_ticks;
   portMUX_TYPE last_temp_lock;
+
+  runtime_health_cache_t health_cache;
+  runtime_health_snapshot_t health_snapshot;
+  portMUX_TYPE health_lock;
+  bool health_time_valid;
+  int32_t health_utc_offset_sec;
+  bool health_dst_in_effect;
+  bool health_mesh_connected;
+  int32_t health_mesh_level;
+  int32_t health_mesh_rssi;
+  uint32_t health_fram_count;
+  uint32_t health_fram_capacity;
 } runtime_state_t;
 
 typedef struct
@@ -215,10 +228,14 @@ UpdateFramFillState(runtime_state_t* state)
   }
   if (!state->fram_i2c.initialized) {
     state->fram_full = false;
+    state->health_fram_count = 0;
+    state->health_fram_capacity = 0;
     return;
   }
   const size_t count = FramLogGetCountRecords(&state->fram_log);
   const size_t capacity = FramLogGetCapacityRecords(&state->fram_log);
+  state->health_fram_count = (uint32_t)count;
+  state->health_fram_capacity = (uint32_t)capacity;
   state->fram_full = (capacity > 0 && count >= capacity);
 }
 
@@ -342,31 +359,31 @@ CopyLastSample(runtime_state_t* state,
                TickType_t* update_ticks);
 
 static display_attention_mask_t
-ComputeActiveAttentionMask(const runtime_state_t* state)
+ComputeActiveAttentionMaskFromHealth(const runtime_health_snapshot_t* health)
 {
-  if (state == NULL) {
+  if (health == NULL) {
     return 0;
   }
 
   display_attention_mask_t active = 0;
+  const display_attention_mask_t mask = health->disp_attn_mask;
 
-  if (!state->sd_logger.is_mounted) {
+  if ((mask & kDispAttnSdOut) != 0u && !health->sd_mounted) {
     active |= kDispAttnSdOut;
   }
-  if (state->sd_last_io_error_active) {
+  if ((mask & kDispAttnSdIo) != 0u && health->sd_io_error_active) {
     active |= kDispAttnSdIo;
   }
-  if (FramLogGetOverrunRecordsTotal(&state->fram_log) >
-      state->fram_overrun_ack_total) {
+  if ((mask & kDispAttnFramOvr) != 0u && health->fram_overrun_active) {
     active |= kDispAttnFramOvr;
   }
-  if (state->last_sensor_fault_present) {
+  if ((mask & kDispAttnRtdFault) != 0u && health->sensor_fault_present) {
     active |= kDispAttnRtdFault;
   }
-  if (!TimeSyncIsSystemTimeValid()) {
+  if ((mask & kDispAttnTimeBad) != 0u && !health->time_valid) {
     active |= kDispAttnTimeBad;
   }
-  if (!MeshTransportIsConnected(&state->mesh)) {
+  if ((mask & kDispAttnMeshDown) != 0u && !health->mesh_connected) {
     active |= kDispAttnMeshDown;
   }
 
@@ -461,8 +478,82 @@ FormatTemperatureText(char* out,
 }
 
 static void
+UpdateTimeHealthState(runtime_state_t* state, bool time_valid)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->health_time_valid = time_valid;
+  if (!time_valid) {
+    state->health_utc_offset_sec = 0;
+    state->health_dst_in_effect = false;
+    return;
+  }
+
+  const time_t now = time(NULL);
+  struct tm utc_as_local;
+  struct tm local_time;
+  gmtime_r(&now, &utc_as_local);
+  localtime_r(&now, &local_time);
+  const time_t utc_epoch_as_local = mktime(&utc_as_local);
+  const long utc_offset_sec = (long)difftime(now, utc_epoch_as_local);
+  state->health_utc_offset_sec = (int32_t)utc_offset_sec;
+  state->health_dst_in_effect = (local_time.tm_isdst > 0);
+}
+
+static uint32_t
+ComputeSdBackoffRemainingMs(const runtime_state_t* state, TickType_t now_ticks)
+{
+  if (state == NULL || state->sd_backoff_until_ticks == 0 ||
+      now_ticks >= state->sd_backoff_until_ticks) {
+    return 0;
+  }
+  return (uint32_t)pdTICKS_TO_MS(state->sd_backoff_until_ticks - now_ticks);
+}
+
+static void
+PublishHealthSnapshot(runtime_state_t* state, TickType_t now_ticks)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  taskENTER_CRITICAL(&state->health_lock);
+  runtime_health_snapshot_t snapshot = state->health_snapshot;
+  snapshot.time_valid = state->health_time_valid;
+  snapshot.utc_offset_sec = state->health_utc_offset_sec;
+  snapshot.dst_in_effect = state->health_dst_in_effect;
+  snapshot.mesh_connected = state->health_mesh_connected;
+  snapshot.mesh_level = state->health_mesh_level;
+  snapshot.mesh_rssi = state->health_mesh_rssi;
+  snapshot.sd_mounted = state->sd_logger.is_mounted;
+  snapshot.sd_degraded = state->sd_degraded;
+  snapshot.sd_fail_count = state->sd_fail_count;
+  snapshot.sd_backoff_remaining_ms =
+    ComputeSdBackoffRemainingMs(state, now_ticks);
+  snapshot.sd_io_error_active = state->sd_last_io_error_active;
+  snapshot.fram_count = state->health_fram_count;
+  snapshot.fram_capacity = state->health_fram_capacity;
+  snapshot.fram_full = state->fram_full;
+  snapshot.fram_flush_watermark_records =
+    state->settings.fram_flush_watermark_records;
+  snapshot.fram_overrun_active =
+    (state->last_overrun_records_total > state->fram_overrun_ack_total);
+  snapshot.sensor_fault_present = state->last_sensor_fault_present;
+  snapshot.export_dropped_count = state->export_dropped_count;
+  snapshot.export_write_fail_count = state->export_write_fail_count;
+  snapshot.disp_attn_mask = state->settings.display_attention_mask;
+  snapshot.disp_attn_pol = state->settings.display_attention_policy;
+  state->health_snapshot = snapshot;
+  RuntimeHealthPublish(&state->health_cache, &snapshot);
+  taskEXIT_CRITICAL(&state->health_lock);
+}
+
+static void
 DisplayTask(void* context)
 {
+  // DisplayTask must only read RuntimeHealth snapshot; do not call subsystem APIs here.
+  // Guardrail: grep -R "MeshTransportIsConnected|esp_mesh_lite_get_level|TimeSyncIsSystemTimeValid|SdLogger|FramLog" main/*display*
   runtime_state_t* state = (runtime_state_t*)context;
   char last_text[12] = { 0 };
   display_attention_mask_t last_active_mask = 0;
@@ -507,9 +598,11 @@ DisplayTask(void* context)
     const uint32_t now_ms = (uint32_t)pdTICKS_TO_MS(now_ticks);
     const bool flash_on = ((now_ms / 500u) % 2u) == 0u;
 
-    const uint32_t policy = AppSettingsGetDisplayAttentionPolicy();
+    runtime_health_snapshot_t health;
+    RuntimeHealthRead(&state->health_cache, &health);
+    const uint32_t policy = health.disp_attn_pol;
     const display_attention_mask_t active_all =
-      ComputeActiveAttentionMask(state);
+      ComputeActiveAttentionMaskFromHealth(&health);
     display_attention_bit_t error_bits[8];
     display_attention_bit_t warn_bits[8];
     size_t error_count = 0;
@@ -1190,6 +1283,7 @@ SensorTask(void* context)
     int32_t millis = 0;
     TimeSyncGetNow(&epoch_sec, &millis);
     const bool time_valid = TimeSyncIsSystemTimeValid();
+    UpdateTimeHealthState(state, time_valid);
     record.timestamp_epoch_sec = time_valid ? epoch_sec : (int64_t)0;
     record.timestamp_millis = time_valid ? millis : 0;
 
@@ -1265,7 +1359,10 @@ SensorTask(void* context)
     if (state->fram_full) {
       record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
     }
-    if (MeshTransportIsConnected(&state->mesh)) {
+    const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
+    state->health_mesh_connected = mesh_connected;
+    state->health_mesh_level = state->mesh.last_level;
+    if (mesh_connected) {
       record.flags |= LOG_RECORD_FLAG_MESH_CONNECTED;
     }
 
@@ -1424,6 +1521,8 @@ StorageTask(void* context)
     } else if (!state->sd_was_mounted) {
       state->sd_was_mounted = true;
     }
+
+    PublishHealthSnapshot(state, now_ticks);
   }
 
   if (state->sd_logger.is_mounted) {
@@ -1442,7 +1541,12 @@ TimeSyncTask(void* context)
 
   if (state->settings.node_role == APP_NODE_ROLE_SENSOR) {
     while (!TimeSyncIsSystemTimeValid() && !state->stop_requested) {
-      if (MeshTransportIsConnected(&state->mesh)) {
+      const bool time_valid = TimeSyncIsSystemTimeValid();
+      UpdateTimeHealthState(state, time_valid);
+      const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
+      state->health_mesh_connected = mesh_connected;
+      state->health_mesh_level = state->mesh.last_level;
+      if (mesh_connected) {
         (void)MeshTransportRequestTime(&state->mesh);
       }
       vTaskDelay(pdMS_TO_TICKS(10 * 1000));
@@ -1451,8 +1555,12 @@ TimeSyncTask(void* context)
 
   if (state->settings.node_role == APP_NODE_ROLE_ROOT) {
     while (!state->stop_requested) {
-      if (TimeSyncIsSystemTimeValid() &&
-          MeshTransportIsConnected(&state->mesh)) {
+      const bool time_valid = TimeSyncIsSystemTimeValid();
+      UpdateTimeHealthState(state, time_valid);
+      const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
+      state->health_mesh_connected = mesh_connected;
+      state->health_mesh_level = state->mesh.last_level;
+      if (time_valid && mesh_connected) {
         const int64_t now_seconds = (int64_t)time(NULL);
         (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
       }
@@ -1485,6 +1593,9 @@ TopologyTask(void* context)
         rssi = ap_record.rssi;
       }
     }
+    state->health_mesh_level = layer;
+    state->health_mesh_rssi = rssi;
+    state->health_mesh_connected = (layer > 0);
 
     if (!state->log_quiet) {
       printf("topology role=%s allow_children=%u layer=%d parent=%s "
@@ -1553,6 +1664,9 @@ InitializeRuntimeStruct(void)
   memset(&g_state, 0, sizeof(g_state));
   memset(&g_runtime, 0, sizeof(g_runtime));
   g_state.last_temp_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+  g_state.health_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+  RuntimeHealthInit(&g_state.health_cache);
+  g_state.health_mesh_level = -1;
 
   g_runtime.settings = &g_state.settings;
   g_runtime.fram_i2c = &g_state.fram_i2c;
@@ -1602,6 +1716,7 @@ RuntimeManagerInit(void)
       kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
   AppSettingsApplyTimeZone(&g_state.settings);
+  PublishHealthSnapshot(&g_state, xTaskGetTickCount());
 
 #if CONFIG_APP_MAX7219_ENABLE
   max7219_display_config_t display_config = {
@@ -1670,6 +1785,7 @@ RuntimeManagerInit(void)
   }
   if (time_result == ESP_OK) {
     (void)TimeSyncSetSystemFromRtc(&g_state.time_sync);
+    UpdateTimeHealthState(&g_state, TimeSyncIsSystemTimeValid());
   }
 
   const spi_host_device_t spi_host = GetSpiHost();
