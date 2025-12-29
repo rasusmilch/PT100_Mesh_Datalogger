@@ -96,3 +96,4 @@ build/CMakeFiles/git-data/grabRef.cmake
 *.zip
 managed_components/espressif__esp_modem/port/linux/esp_netif_linux/CMakeLists.txt
 build/CMakeFiles/git-data/HEAD
+build/CMakeFiles/git-data/HEAD
