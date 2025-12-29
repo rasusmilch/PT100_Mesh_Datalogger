@@ -1,0 +1,153 @@
+#ifndef PT100_LOGGER_RUNTIME_STATE_H_
+#define PT100_LOGGER_RUNTIME_STATE_H_
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "app_settings.h"
+#include "esp_err.h"
+#include "fram_i2c.h"
+#include "fram_io.h"
+#include "fram_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include "i2c_bus.h"
+#include "max31865_reader.h"
+#include "max7219_display.h"
+#include "mesh_transport.h"
+#include "runtime_health.h"
+#include "sd_logger.h"
+#include "time_sync.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+  typedef struct
+  {
+    // time (written by time_sync module)
+    bool time_valid;
+    int32_t utc_offset_sec;
+    bool dst_in_effect;
+
+    // mesh (written by mesh task/module)
+    bool mesh_connected;
+    int32_t mesh_level;
+    int32_t mesh_rssi;
+
+    // sd (written by sd_logger/storage task)
+    bool sd_mounted;
+    bool sd_degraded;
+    uint32_t sd_fail_count;
+    uint32_t sd_backoff_remaining_ms;
+    bool sd_io_error_active;
+
+    // fram (written by fram_log or storage task when it updates counters)
+    uint32_t fram_count;
+    uint32_t fram_capacity;
+    bool fram_full;
+    uint32_t fram_flush_watermark_records;
+    bool fram_overrun_active;
+
+    // sensor
+    bool sensor_fault_present;
+
+    // export counters (written by export/storage path)
+    uint32_t export_dropped_count;
+    uint32_t export_write_fail_count;
+
+    // config (written by settings load/apply)
+    uint32_t disp_attn_mask;
+    uint32_t disp_attn_pol;
+  } runtime_cached_status_t;
+
+  typedef struct
+  {
+    TickType_t last_publish_ticks;
+    uint32_t publish_period_ms;
+    volatile bool dirty;
+  } runtime_health_publisher_state_t;
+
+  typedef struct runtime_state_t
+  {
+    app_settings_t settings;
+    fram_i2c_t fram_i2c;
+    fram_io_t fram_io;
+    fram_log_t fram_log;
+    sd_logger_t sd_logger;
+    max31865_reader_t sensor;
+    mesh_transport_t mesh;
+    time_sync_t time_sync;
+    i2c_bus_t i2c_bus;
+
+    QueueHandle_t log_queue;
+    QueueHandle_t export_queue;
+    uint8_t* batch_buffer;
+    size_t batch_buffer_size;
+
+    TickType_t last_flush_ticks;
+    TickType_t sd_next_flush_allowed_ticks;
+    TickType_t sd_backoff_until_ticks;
+    TickType_t last_sd_flush_warn_ticks;
+    uint32_t sd_fail_count;
+    uint32_t sd_flush_records_since;
+    bool sd_flush_pending;
+    bool sd_degraded;
+    bool sd_force_unmount_on_append;
+    bool sd_last_io_error_active;
+    esp_err_t sd_last_io_err;
+    int sd_last_errno;
+    bool fram_full;
+    bool sd_was_mounted;
+    TickType_t last_overrun_log_ticks;
+    uint64_t last_overrun_records_total;
+    uint64_t last_overrun_logged_total;
+    uint64_t fram_overrun_ack_total;
+
+    // Sensor fault logging state (rate-limited).
+    bool last_sensor_fault_present;
+    uint8_t last_sensor_fault_status;
+    TickType_t last_sensor_fault_log_ticks;
+
+    char node_id_string[32];
+
+    TaskHandle_t sensor_task;
+    TaskHandle_t storage_task;
+    TaskHandle_t export_task;
+    TaskHandle_t time_sync_task;
+    TaskHandle_t topology_task;
+    TaskHandle_t display_task;
+    TaskHandle_t health_publisher_task;
+
+    bool initialized;
+    bool is_running;
+    bool stop_requested;
+    bool mesh_started;
+    bool data_streaming_enabled;
+    bool log_quiet;
+
+    uint32_t export_dropped_count;
+    uint32_t export_write_fail_count;
+    bool csv_header_emitted;
+
+    max7219_display_t display;
+    bool display_initialized;
+    bool display_test_active;
+    TickType_t display_test_until_ticks;
+    int32_t last_temp_milli_c;
+    bool last_temp_valid;
+    uint32_t last_flags;
+    TickType_t last_update_ticks;
+    portMUX_TYPE last_temp_lock;
+
+    runtime_cached_status_t cached_status;
+    runtime_health_cache_t health_cache;
+    runtime_health_publisher_state_t health_publisher;
+  } runtime_state_t;
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // PT100_LOGGER_RUNTIME_STATE_H_
