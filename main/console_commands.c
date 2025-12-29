@@ -43,6 +43,9 @@
 #include "time_sync.h"
 
 static const char* kTag = "console";
+static void FormatFileTime(const time_t* timestamp,
+                           char* buffer,
+                           size_t buffer_size);
 static void
 MaybePushCalRawSampleFromSensor(void)
 {
@@ -500,6 +503,48 @@ FlushAllRecordsToSd(app_runtime_t* runtime)
   return runtime->flush_callback(runtime->flush_context);
 }
 
+static void
+FormatRecordFlags(uint16_t flags, char* out, size_t out_size)
+{
+  if (out == NULL || out_size == 0) {
+    return;
+  }
+  out[0] = '\0';
+  const struct
+  {
+    uint16_t flag;
+    const char* name;
+  } entries[] = {
+    { LOG_RECORD_FLAG_TIME_VALID, "time_valid" },
+    { LOG_RECORD_FLAG_CAL_VALID, "cal_valid" },
+    { LOG_RECORD_FLAG_SD_ERROR, "sd_error" },
+    { LOG_RECORD_FLAG_MESH_CONNECTED, "mesh_connected" },
+    { LOG_RECORD_FLAG_SENSOR_FAULT, "sensor_fault" },
+    { LOG_RECORD_FLAG_FRAM_FULL, "fram_full" },
+  };
+
+  size_t used = 0;
+  bool first = true;
+  for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
+    if ((flags & entries[i].flag) == 0) {
+      continue;
+    }
+    const char* separator = first ? "" : ",";
+    const int written =
+      snprintf(out + used, out_size - used, "%s%s", separator, entries[i].name);
+    if (written < 0 || (size_t)written >= out_size - used) {
+      out[out_size - 1] = '\0';
+      return;
+    }
+    used += (size_t)written;
+    first = false;
+  }
+
+  if (first) {
+    snprintf(out, out_size, "none");
+  }
+}
+
 static int
 CommandFlush(int argc, char** argv)
 {
@@ -524,13 +569,14 @@ CommandFram(int argc, char** argv)
     return 1;
   }
   if (argc < 2) {
-    printf("usage: fram status\n");
+    printf("usage: fram status | fram show | fram clear\n");
     return 1;
   }
 
   const char* action = argv[1];
-  if (strcmp(action, "status") != 0 && strcmp(action, "show") != 0) {
-    printf("unknown fram command. try 'fram status'\n");
+  if (strcmp(action, "status") != 0 && strcmp(action, "show") != 0 &&
+      strcmp(action, "clear") != 0) {
+    printf("unknown fram command. try 'fram status | fram show | fram clear'\n");
     return 1;
   }
 
@@ -556,14 +602,69 @@ CommandFram(int argc, char** argv)
          (unsigned)status.buffered_count,
          (unsigned)status.next_sequence,
          status.next_record_id);
-  printf("FRAM log: cap=%u rec write=%u read=%u count=%u seq=%u id=%" PRIu64
-         "\n",
-         (unsigned)status.capacity_records,
-         (unsigned)status.write_index_abs,
-         (unsigned)status.read_index_abs,
-         (unsigned)status.buffered_count,
-         (unsigned)status.next_sequence,
-         status.next_record_id);
+  if (strcmp(action, "clear") == 0) {
+    result = FramLogReset(g_runtime->fram_log);
+    if (result != ESP_OK) {
+      printf("fram clear failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    if (g_runtime->fram_full != NULL) {
+      *g_runtime->fram_full = false;
+    }
+    printf("fram: cleared\n");
+    return 0;
+  }
+  if (strcmp(action, "show") == 0) {
+    const uint32_t buffered = FramLogGetBufferedRecords(g_runtime->fram_log);
+    const uint64_t last_sd_id =
+      SdLoggerLastRecordIdOnSd(g_runtime->sd_logger);
+    printf("fram: buffered=%u last_sd_record_id=%" PRIu64 "\n",
+           (unsigned)buffered,
+           last_sd_id);
+    for (uint32_t offset = 0; offset < buffered; ++offset) {
+      log_record_t record;
+      const esp_err_t peek_result =
+        FramLogPeekOffset(g_runtime->fram_log, offset, &record);
+      if (peek_result == ESP_ERR_NOT_FOUND) {
+        break;
+      }
+      const bool corrupted = (peek_result == ESP_ERR_INVALID_RESPONSE);
+      if (peek_result != ESP_OK && !corrupted) {
+        printf("fram show failed at offset %u: %s\n",
+               (unsigned)offset,
+               esp_err_to_name(peek_result));
+        return 1;
+      }
+
+      char time_string[32] = "unknown";
+      if (record.timestamp_epoch_sec > 0) {
+        const time_t epoch = (time_t)record.timestamp_epoch_sec;
+        FormatFileTime(&epoch, time_string, sizeof(time_string));
+      }
+
+      char flags_string[128];
+      FormatRecordFlags(record.flags, flags_string, sizeof(flags_string));
+      const bool pending = record.record_id > last_sd_id;
+
+      printf("record[%u]: id=%" PRIu64 " seq=%u pending=%s corrupt=%s\n",
+             (unsigned)offset,
+             record.record_id,
+             (unsigned)record.sequence,
+             pending ? "yes" : "no",
+             corrupted ? "yes" : "no");
+      printf("  time: %s.%03d epoch=%" PRIi64 "\n",
+             time_string,
+             (int)record.timestamp_millis,
+             record.timestamp_epoch_sec);
+      printf("  temp: raw=%.3fC cal=%.3fC resistance=%.3f ohm\n",
+             record.raw_temp_milli_c / 1000.0,
+             record.temp_milli_c / 1000.0,
+             record.resistance_milli_ohm / 1000.0);
+      printf("  flags: 0x%04x [%s]\n",
+             (unsigned)record.flags,
+             flags_string);
+    }
+  }
   return 0;
 }
 
@@ -2114,7 +2215,7 @@ RegisterCommands(void)
 
   const esp_console_cmd_t fram_cmd = {
     .command = "fram",
-    .help = "FRAM log commands: fram status | fram show",
+    .help = "FRAM log commands: fram status | fram show | fram clear",
     .hint = NULL,
     .func = &CommandFram,
   };
