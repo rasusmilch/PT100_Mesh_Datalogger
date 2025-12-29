@@ -67,11 +67,7 @@ BuildDailyCsvPath(const sd_logger_t* logger,
 
   strftime(date_out, date_out_size, "%Y-%m-%dZ", &time_info);
 
-  snprintf(path_out,
-           path_out_size,
-           "%s/%s.csv",
-           logger->mount_point,
-           date_out);
+  snprintf(path_out, path_out_size, "%s/%s.csv", logger->mount_point, date_out);
 }
 
 static esp_err_t
@@ -149,10 +145,8 @@ SdLoggerTryRemount(sd_logger_t* logger, bool format_if_mount_failed)
   if (!logger->slot_config_valid) {
     return ESP_ERR_INVALID_STATE;
   }
-  return SdLoggerMountInternal(logger,
-                               logger->host_id,
-                               logger->cs_gpio,
-                               format_if_mount_failed);
+  return SdLoggerMountInternal(
+    logger, logger->host_id, logger->cs_gpio, format_if_mount_failed);
 }
 
 esp_err_t
@@ -181,7 +175,6 @@ SdLoggerUnmount(sd_logger_t* logger)
   return ESP_OK;
 }
 
-
 static esp_err_t
 ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
 {
@@ -189,7 +182,10 @@ ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
   esp_err_t resume_result = SdCsvFindLastRecordIdAndRepairTail(
     file, logger->config.tail_scan_bytes, &resume_info);
   if (resume_result != ESP_OK) {
-    ESP_LOGE(kTag, "Failed to scan/repair %s: %s", path, esp_err_to_name(resume_result));
+    ESP_LOGE(kTag,
+             "Failed to scan/repair %s: %s",
+             path,
+             esp_err_to_name(resume_result));
     return resume_result;
   }
   if (resume_info.file_was_truncated) {
@@ -217,7 +213,8 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
 
   char date_string[16];
   char path[128];
-  BuildDailyCsvPath(logger, epoch_utc, date_string, sizeof(date_string), path, sizeof(path));
+  BuildDailyCsvPath(
+    logger, epoch_utc, date_string, sizeof(date_string), path, sizeof(path));
 
   if (logger->file != NULL && strcmp(logger->current_date, date_string) == 0) {
     return ESP_OK; // already open for today
@@ -228,7 +225,8 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
 
   logger->file = fopen(path, "a+b");
   if (logger->file == NULL) {
-    ESP_LOGE(kTag, "fopen failed for %s: %s (%d)", path, strerror(errno), errno);
+    ESP_LOGE(
+      kTag, "fopen failed for %s: %s (%d)", path, strerror(errno), errno);
     return ESP_FAIL;
   }
 
@@ -299,4 +297,53 @@ SdLoggerClose(sd_logger_t* logger)
   }
   logger->current_date[0] = '\0';
   logger->last_record_id_on_sd = 0;
+}
+
+esp_err_t
+SdLoggerFormatDestructive(sd_logger_t* logger)
+{
+  if (logger == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  // Close any open file handles before formatting.
+  SdLoggerClose(logger);
+
+  // Ensure we have a mounted/registered card context.
+  // format_if_mount_failed=true handles blank or corrupted cards.
+  esp_err_t mount_result = SdLoggerTryRemount(logger, true);
+  if (mount_result != ESP_OK) {
+    ESP_LOGE(kTag,
+             "SD format: failed to mount/init card: %s",
+             esp_err_to_name(mount_result));
+    return mount_result;
+  }
+  if (!logger->is_mounted || logger->card == NULL) {
+    ESP_LOGE(kTag, "SD format: card not initialized");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  // Destructive format (mkfs). This recreates the filesystem even if already
+  // mounted.
+  ESP_LOGW(kTag, "Formatting SD card at %s (destructive)", logger->mount_point);
+  esp_err_t format_result =
+    esp_vfs_fat_sdcard_format(logger->mount_point, logger->card);
+  if (format_result != ESP_OK) {
+    ESP_LOGE(kTag, "SD format failed: %s", esp_err_to_name(format_result));
+    return format_result;
+  }
+
+  // Sanity-check that the mount point is usable after format.
+  struct stat stat_buffer;
+  if (stat(logger->mount_point, &stat_buffer) != 0) {
+    ESP_LOGE(kTag,
+             "SD format succeeded but mount point is not accessible: %s (%d)",
+             strerror(errno),
+             errno);
+    return ESP_FAIL;
+  }
+
+  logger->current_date[0] = '\0';
+  logger->last_record_id_on_sd = 0;
+  return ESP_OK;
 }

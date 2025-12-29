@@ -136,12 +136,8 @@ static void
 PrintDisplayAttentionPolicy(uint32_t policy)
 {
   const display_attention_item_t items[] = {
-    kDispAttnItemSdOut,
-    kDispAttnItemSdIo,
-    kDispAttnItemFramOvr,
-    kDispAttnItemRtdFault,
-    kDispAttnItemTimeBad,
-    kDispAttnItemMeshDown,
+    kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
+    kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemMeshDown,
   };
   printf("display_attention_policy: 0x%08" PRIX32 "\n", policy);
   for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
@@ -351,7 +347,8 @@ CommandDisplay(int argc, char** argv)
     return 1;
   }
   if (argc < 2) {
-    printf("usage: disp show | disp units C|F | disp attn ... | disp test [ms]\n");
+    printf(
+      "usage: disp show | disp units C|F | disp attn ... | disp test [ms]\n");
     return 1;
   }
 
@@ -589,14 +586,12 @@ PrintSdStatus(const app_runtime_t* runtime)
   printf("sd_degraded: %s\n", sd_degraded ? "yes" : "no");
   printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
   printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
-  printf("sd_last_record_id: %" PRIu64 "\n",
-         SdLoggerLastRecordIdOnSd(logger));
+  printf("sd_last_record_id: %" PRIu64 "\n", SdLoggerLastRecordIdOnSd(logger));
   if (sd_mounted) {
     printf("sd_mount_point: %s\n", logger->mount_point);
     if (logger->card != NULL) {
-      const uint64_t size_bytes =
-        (uint64_t)logger->card->csd.capacity *
-        (uint64_t)logger->card->csd.sector_size;
+      const uint64_t size_bytes = (uint64_t)logger->card->csd.capacity *
+                                  (uint64_t)logger->card->csd.sector_size;
       printf("sd_card_name: %s\n", logger->card->cid.name);
       printf("sd_card_size_mb: %llu\n",
              (unsigned long long)(size_bytes / (1024ULL * 1024ULL)));
@@ -639,8 +634,15 @@ CommandSdView(const sd_logger_t* logger)
     if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
       continue;
     }
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s", logger->mount_point, entry->d_name);
+    // FATFS long file names may be up to 255 chars. Include mount point, '/',
+    // and NUL terminator. Keep this comfortably above worst-case.
+    char path[512];
+    int path_length =
+      snprintf(path, sizeof(path), "%s/%s", logger->mount_point, entry->d_name);
+    if (path_length < 0 || path_length >= (int)sizeof(path)) {
+      printf("  %s (path too long)\n", entry->d_name);
+      continue;
+    }
     struct stat info;
     if (stat(path, &info) != 0) {
       printf("  %s (stat failed: %s)\n", entry->d_name, strerror(errno));
@@ -712,13 +714,12 @@ CommandSd(int argc, char** argv)
   }
 
   if (strcmp(action, "format") == 0) {
-    (void)SdLoggerUnmount(g_runtime->sd_logger);
-    esp_err_t result = SdLoggerTryRemount(g_runtime->sd_logger, true);
+    esp_err_t result = SdLoggerFormatDestructive(g_runtime->sd_logger);
     if (result != ESP_OK) {
       printf("sd format failed: %s\n", esp_err_to_name(result));
       return 1;
     }
-    printf("sd format (if needed) complete\n");
+    printf("sd format complete (FAT filesystem recreated)\n");
     return 0;
   }
 
@@ -2079,8 +2080,8 @@ RegisterCommands(void)
 
   const esp_console_cmd_t disp_cmd = {
     .command = "disp",
-    .help =
-      "Display settings: disp show | disp units C|F | disp attn show|set|defaults|ack",
+    .help = "Display settings: disp show | disp units C|F | disp attn "
+            "show|set|defaults|ack",
     .hint = NULL,
     .func = &CommandDisplay,
   };
@@ -2104,7 +2105,8 @@ RegisterCommands(void)
 
   const esp_console_cmd_t sd_cmd = {
     .command = "sd",
-    .help = "SD commands: sd status | sd mount | sd unmount | sd format | sd view",
+    .help =
+      "SD commands: sd status | sd mount | sd unmount | sd format | sd view",
     .hint = NULL,
     .func = &CommandSd,
   };

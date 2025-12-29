@@ -120,6 +120,8 @@ static runtime_state_t g_state;
 static app_runtime_t g_runtime;
 static esp_err_t
 RuntimeFlushToSd(void* context);
+static void
+ClearSdIoError(runtime_state_t* state);
 
 static void
 MarkSdFailure(runtime_state_t* state,
@@ -1388,9 +1390,7 @@ StorageTask(void* context)
     }
 
     const UBaseType_t queue_depth =
-      (state->log_queue != NULL)
-        ? uxQueueMessagesWaiting(state->log_queue)
-        : 0;
+      (state->log_queue != NULL) ? uxQueueMessagesWaiting(state->log_queue) : 0;
     const bool queue_idle = (queue_depth <= 1u);
     if (!received && queue_idle && state->sd_flush_pending &&
         state->sd_logger.is_mounted &&
