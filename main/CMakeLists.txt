@@ -25,6 +25,7 @@ idf_component_register(
     "max7219_display.c"
     "pt100_table.c"
     "mesh_transport.c"
+    "runtime_health.c"
     "runtime_manager.c"
     "sd_csv_verify.c"
     "sd_logger.c"
