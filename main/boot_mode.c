@@ -74,7 +74,7 @@ DiagnosticsOverrideRequested(void)
   };
   (void)gpio_config(&config);
 
-  return gpio_get_level(gpio) == 1;
+  return gpio_get_level(gpio) == 0;
 #else
   return false;
 #endif
