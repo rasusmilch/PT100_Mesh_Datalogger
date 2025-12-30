@@ -441,9 +441,8 @@ FormatTemperatureText(char* out,
     unit_char = 'F';
   }
 
-  const int32_t tenths =
-    (int32_t)((temp_milli >= 0) ? (temp_milli + 50) / 100
-                                : (temp_milli - 50) / 100);
+  const int32_t tenths = (int32_t)((temp_milli >= 0) ? (temp_milli + 50) / 100
+                                                     : (temp_milli - 50) / 100);
   const int32_t abs_tenths = (tenths < 0) ? -tenths : tenths;
   if (abs_tenths >= 10000) {
     snprintf(out, out_len, (tenths >= 0) ? "HI" : "LO");
@@ -518,8 +517,8 @@ BuildDisplayTestText(char* text, size_t text_size, uint32_t elapsed_ms)
   const char glyphs[] = "IDLESTOP ";
   const size_t glyph_count = sizeof(glyphs) - 1u;
 
-  const size_t banner_total_steps = (sizeof(banners) / sizeof(banners[0])) *
-                                    banner_steps;
+  const size_t banner_total_steps =
+    (sizeof(banners) / sizeof(banners[0])) * banner_steps;
   const size_t glyph_total_steps = glyph_count * 5u;
   const size_t total_steps = banner_total_steps + glyph_total_steps;
 
@@ -1734,9 +1733,9 @@ DrainFramToSd(runtime_state_t* state,
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
   }
 
-  const int32_t drain_records_per_pass =
-    (max_records_per_pass > 0) ? max_records_per_pass
-                               : (int32_t)kSdFlushMaxRecordsPerPass;
+  const int32_t drain_records_per_pass = (max_records_per_pass > 0)
+                                           ? max_records_per_pass
+                                           : (int32_t)kSdFlushMaxRecordsPerPass;
   const int32_t yield_interval_records =
     (yield_every_records > 0) ? yield_every_records : drain_records_per_pass;
 
@@ -1803,12 +1802,10 @@ drain_done:
     state, &state->cached_status.last_drain_remaining, remaining);
   UpdateCachedUint32(
     state, &state->cached_status.last_drain_duration_ms, duration_ms);
-  UpdateCachedInt32(state,
-                    &state->cached_status.last_drain_flushed_records,
-                    flushed_records);
-  UpdateCachedInt32(state,
-                    &state->cached_status.last_drain_flushed_bytes,
-                    flushed_bytes);
+  UpdateCachedInt32(
+    state, &state->cached_status.last_drain_flushed_records, flushed_records);
+  UpdateCachedInt32(
+    state, &state->cached_status.last_drain_flushed_bytes, flushed_bytes);
 
   if (out_stats != NULL) {
     out_stats->flushed_records = flushed_records;
@@ -2178,7 +2175,9 @@ SdWithTemporaryMount(runtime_state_t* state, runtime_sd_op_fn_t op, void* ctx)
     if (mount_result != ESP_OK) {
       UpdateCachedBool(
         state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
-      ESP_LOGW(kTag, "SD mount failed for diagnostics: %s", esp_err_to_name(mount_result));
+      ESP_LOGW(kTag,
+               "SD mount failed for diagnostics: %s",
+               esp_err_to_name(mount_result));
       return mount_result;
     }
     mounted_here = true;
@@ -2473,7 +2472,7 @@ EnterRunMode(void)
   RuntimeEnableDataStreaming(true);
   sd_drain_stats_t drain_stats = { 0 };
   esp_err_t drain_result = DrainFramToSd(&g_state,
-                                         false,
+                                         true,
                                          CONFIG_APP_START_DRAIN_MAX_MS,
                                          CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
                                          CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
@@ -2503,11 +2502,11 @@ EnterDiagMode(void)
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
   sd_drain_stats_t drain_stats = { 0 };
   esp_err_t flush_result = DrainFramToSd(&g_state,
-                                        true,
-                                        CONFIG_APP_STOP_DRAIN_MAX_MS,
-                                        CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
-                                        CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
-                                        &drain_stats);
+                                         true,
+                                         CONFIG_APP_STOP_DRAIN_MAX_MS,
+                                         CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
+                                         CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
+                                         &drain_stats);
   if (flush_result == ESP_ERR_TIMEOUT) {
     ESP_LOGW(kTag,
              "Stop drain timed out: remaining=%d duration=%d ms",

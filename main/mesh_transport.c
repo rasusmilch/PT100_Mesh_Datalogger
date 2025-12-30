@@ -485,7 +485,18 @@ MeshTransportStart(mesh_transport_t* mesh,
 
     esp_err_t router_result = esp_mesh_lite_set_router_config(&router_config);
     if (router_result != ESP_OK) {
-      return router_result;
+      if (router_result == ESP_ERR_INVALID_STATE) {
+        // Non-fatal: router config may already be set, or mesh-lite may already be
+        // running. Proceed so logging can continue.
+        ESP_LOGW(kTag,
+                 "Set router config returned %s; continuing",
+                 esp_err_to_name(router_result));
+      } else {
+        ESP_LOGW(kTag,
+                 "Set router config failed: %s",
+                 esp_err_to_name(router_result));
+        return router_result;
+      }
     }
   }
 
