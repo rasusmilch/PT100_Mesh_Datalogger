@@ -51,6 +51,16 @@ extern "C" {
 
   esp_err_t EnterDiagMode(void);
 
+  typedef esp_err_t (*runtime_sd_op_fn_t)(app_runtime_t* runtime, void* ctx);
+
+  esp_err_t RuntimeWithTemporarySdMount(runtime_sd_op_fn_t op, void* ctx);
+
+  void RuntimeRequestRunStart(void);
+
+  void RuntimeRequestRunStop(void);
+
+  esp_err_t RuntimeSdUnmountNow(void);
+
   void RuntimeEnableDataStreaming(bool enabled);
 
   bool RuntimeIsDataStreamingEnabled(void);

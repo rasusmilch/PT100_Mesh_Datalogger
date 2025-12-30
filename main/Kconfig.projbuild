@@ -198,6 +198,36 @@ config APP_SD_CS_GPIO
   range -1 48
   default 15
 
+config APP_RUN_STOP_GPIO_ENABLE
+  bool "Enable run stop GPIO input"
+  default n
+
+config APP_RUN_STOP_GPIO_NUM
+  int "Run stop GPIO number (active-low)"
+  range -1 48
+  default -1
+  depends on APP_RUN_STOP_GPIO_ENABLE
+
+config APP_RUN_START_GPIO_ENABLE
+  bool "Enable run start GPIO input"
+  default n
+
+config APP_RUN_START_GPIO_NUM
+  int "Run start GPIO number (active-low)"
+  range -1 48
+  default -1
+  depends on APP_RUN_START_GPIO_ENABLE
+
+config APP_RUN_GPIO_DEBOUNCE_MS
+  int "Run GPIO debounce time (ms)"
+  range 1 1000
+  default 50
+
+config APP_RUN_GPIO_HOLD_MS
+  int "Run GPIO hold low time (ms)"
+  range 1 5000
+  default 100
+
 config APP_FRAM_SIZE_BYTES
   int "FRAM size in bytes"
   range 4096 33554432
