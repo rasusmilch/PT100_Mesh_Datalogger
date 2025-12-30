@@ -58,6 +58,13 @@ RuntimeHealthPublisherTick(runtime_state_t* state)
     state->cached_status.export_write_fail_count;
   snapshot.disp_attn_mask = state->cached_status.disp_attn_mask;
   snapshot.disp_attn_pol = state->cached_status.disp_attn_pol;
+  snapshot.last_drain_result = state->cached_status.last_drain_result;
+  snapshot.last_drain_remaining = state->cached_status.last_drain_remaining;
+  snapshot.last_drain_duration_ms = state->cached_status.last_drain_duration_ms;
+  snapshot.last_drain_flushed_records =
+    state->cached_status.last_drain_flushed_records;
+  snapshot.last_drain_flushed_bytes =
+    state->cached_status.last_drain_flushed_bytes;
 
   RuntimeHealthPublish(&state->health_cache, &snapshot);
   state->health_publisher.last_publish_ticks = now_ticks;

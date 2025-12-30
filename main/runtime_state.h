@@ -60,6 +60,13 @@ extern "C" {
     // config (written by settings load/apply)
     uint32_t disp_attn_mask;
     uint32_t disp_attn_pol;
+
+    // drain stats (written by drain helper)
+    int32_t last_drain_result;
+    uint32_t last_drain_remaining;
+    uint32_t last_drain_duration_ms;
+    int32_t last_drain_flushed_records;
+    int32_t last_drain_flushed_bytes;
   } runtime_cached_status_t;
 
   typedef struct

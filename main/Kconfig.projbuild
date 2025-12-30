@@ -280,6 +280,42 @@ config APP_SD_PERIODIC_FLUSH_MS
     Even if the FRAM watermark is not reached, the app will attempt to flush
     buffered records after this many milliseconds to keep latency bounded.
 
+config APP_STOP_DRAIN_MAX_MS
+  int "Stop drain max duration (ms, -1 for no limit)"
+  range -1 600000
+  default 15000
+  help
+    Maximum duration for the STOP drain (entering diagnostics). Use -1 to
+    drain until FRAM is empty without a time limit.
+
+config APP_START_DRAIN_MAX_MS
+  int "Start drain max duration (ms, -1 for no limit)"
+  range -1 600000
+  default 5000
+  help
+    Maximum duration for the START drain (entering run mode). Use -1 to
+    drain until FRAM is empty without a time limit.
+
+config APP_DRAIN_MAX_RECORDS_PER_PASS
+  int "Drain max records per pass"
+  range 1 10000
+  default 200
+  help
+    Maximum number of records flushed per drain loop iteration.
+
+config APP_DRAIN_YIELD_EVERY_RECORDS
+  int "Drain yield every N records"
+  range 1 10000
+  default 200
+  help
+    Yield to other tasks after draining this many records.
+
+config APP_DRAIN_LOG_PROGRESS
+  bool "Log drain progress"
+  default y
+  help
+    Log drain progress while flushing FRAM to SD.
+
 config APP_SD_TAIL_SCAN_BYTES
   int "Bytes to scan when repairing SD tail"
   range 4096 1048576
