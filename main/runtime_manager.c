@@ -40,6 +40,7 @@ static const uint32_t kSdFlushWarnIntervalMs = 10000;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kSdFlushMinIntervalMs = 200;
 static const uint32_t kExportQueueDepth = 64;
+static const uint32_t kSdStopFlushMaxMs = 3000;
 
 static void
 UpdateCachedBool(runtime_state_t* state, bool* field, bool value)
@@ -92,6 +93,10 @@ static esp_err_t
 RuntimeFlushToSd(void* context);
 static void
 ClearSdIoError(runtime_state_t* state);
+static esp_err_t
+BestEffortFlushFramToSdOnStop(runtime_state_t* state);
+static void
+ControlTask(void* context);
 
 static void
 MarkSdFailure(runtime_state_t* state,
@@ -1621,6 +1626,117 @@ TopologyTask(void* context)
 }
 
 static esp_err_t
+BestEffortFlushFramToSdOnStop(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (state->batch_buffer == NULL || state->batch_buffer_size == 0) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  if (FramLogGetBufferedRecords(&state->fram_log) == 0) {
+    return ESP_OK;
+  }
+
+  bool mounted_here = false;
+  if (!state->sd_logger.is_mounted) {
+    esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
+    if (mount_result != ESP_OK) {
+      UpdateCachedBool(
+        state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+      ESP_LOGW(kTag,
+               "Stop flush skipped: SD mount failed: %s",
+               esp_err_to_name(mount_result));
+      return mount_result;
+    }
+    mounted_here = true;
+    ClearSdIoError(state);
+    UpdateCachedBool(
+      state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+  }
+
+  const TickType_t start_ticks = xTaskGetTickCount();
+  const TickType_t saved_backoff = state->sd_backoff_until_ticks;
+  state->sd_backoff_until_ticks = 0;
+
+  esp_err_t result = ESP_OK;
+  while (FramLogGetBufferedRecords(&state->fram_log) > 0) {
+    uint32_t flushed = 0;
+    bool more_pending = false;
+    result = SdFlushWorkerTick(state,
+                               kSdFlushMaxRecordsPerPass,
+                               kSdFlushMaxMsPerPass,
+                               &flushed,
+                               &more_pending);
+    if (result != ESP_OK) {
+      break;
+    }
+    if (flushed > 0) {
+      state->sd_flush_records_since = 0;
+    }
+    UpdateFramFillState(state);
+    if (!more_pending) {
+      break;
+    }
+    if (pdTICKS_TO_MS(xTaskGetTickCount() - start_ticks) >=
+        kSdStopFlushMaxMs) {
+      result = ESP_ERR_TIMEOUT;
+      break;
+    }
+    vTaskDelay(1);
+  }
+
+  if (state->sd_backoff_until_ticks == 0 && saved_backoff != 0) {
+    state->sd_backoff_until_ticks = saved_backoff;
+  }
+
+  const uint32_t remaining =
+    (uint32_t)FramLogGetBufferedRecords(&state->fram_log);
+  if (result == ESP_OK) {
+    ESP_LOGI(kTag, "Stop flush complete; remaining=%u", (unsigned)remaining);
+  } else {
+    ESP_LOGW(kTag,
+             "Stop flush incomplete: %s remaining=%u",
+             esp_err_to_name(result),
+             (unsigned)remaining);
+  }
+
+  if (mounted_here) {
+    (void)SdLoggerUnmount(&state->sd_logger);
+    UpdateCachedBool(
+      state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+  }
+
+  return result;
+}
+
+static void
+ControlTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+
+  while (true) {
+    bool request_start = false;
+    bool request_stop = false;
+    taskENTER_CRITICAL(&state->request_lock);
+    request_start = state->request_run_start;
+    request_stop = state->request_run_stop;
+    state->request_run_start = false;
+    state->request_run_stop = false;
+    taskEXIT_CRITICAL(&state->request_lock);
+
+    if (request_stop && RuntimeIsRunning()) {
+      (void)EnterDiagMode();
+    } else if (request_start && !RuntimeIsRunning()) {
+      (void)EnterRunMode();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
+static esp_err_t
 RuntimeFlushToSd(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
@@ -1670,6 +1786,7 @@ InitializeRuntimeStruct(void)
   memset(&g_state, 0, sizeof(g_state));
   memset(&g_runtime, 0, sizeof(g_runtime));
   g_state.last_temp_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+  g_state.request_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
   RuntimeHealthInit(&g_state.health_cache);
   RuntimeHealthPublisherInit(&g_state);
   g_state.cached_status.mesh_level = -1;
@@ -1879,6 +1996,16 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create export queue");
   }
 
+  BaseType_t control_created = xTaskCreate(
+    &ControlTask, "control", 3072, &g_state, 3, &g_state.control_task);
+  if (control_created != pdPASS) {
+    g_state.control_task = NULL;
+    if (first_error == ESP_OK) {
+      first_error = ESP_ERR_NO_MEM;
+    }
+    ESP_LOGE(kTag, "Failed to create control task");
+  }
+
   g_state.initialized = true;
   return first_error;
 }
@@ -1899,6 +2026,48 @@ EnsureSdMounted(void)
                        g_state.sd_logger.is_mounted);
     }
   }
+}
+
+static esp_err_t
+SdWithTemporaryMount(runtime_state_t* state, runtime_sd_op_fn_t op, void* ctx)
+{
+  if (state == NULL || op == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  bool mounted_here = false;
+  if (!state->sd_logger.is_mounted) {
+    esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
+    if (mount_result != ESP_OK) {
+      UpdateCachedBool(
+        state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+      ESP_LOGW(kTag, "SD mount failed for diagnostics: %s", esp_err_to_name(mount_result));
+      return mount_result;
+    }
+    mounted_here = true;
+    ClearSdIoError(state);
+    UpdateCachedBool(
+      state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+  }
+
+  esp_err_t result = op(&g_runtime, ctx);
+
+  if (mounted_here) {
+    esp_err_t unmount_result = SdLoggerUnmount(&state->sd_logger);
+    UpdateCachedBool(
+      state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+    if (result == ESP_OK && unmount_result != ESP_OK) {
+      result = unmount_result;
+    }
+  }
+
+  return result;
+}
+
+esp_err_t
+RuntimeWithTemporarySdMount(runtime_sd_op_fn_t op, void* ctx)
+{
+  return SdWithTemporaryMount(&g_state, op, ctx);
 }
 
 esp_err_t
@@ -2139,9 +2308,19 @@ esp_err_t
 EnterDiagMode(void)
 {
   RuntimeEnableDataStreaming(false);
-  esp_err_t result = RuntimeStop();
+  esp_err_t stop_result = RuntimeStop();
+  esp_err_t flush_result = BestEffortFlushFramToSdOnStop(&g_state);
+  esp_err_t unmount_result = SdLoggerUnmount(&g_state.sd_logger);
+  UpdateCachedBool(
+    &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
   RuntimeSetLogPolicyDiag();
-  return result;
+  if (stop_result != ESP_OK) {
+    return stop_result;
+  }
+  if (flush_result != ESP_OK && flush_result != ESP_ERR_TIMEOUT) {
+    return flush_result;
+  }
+  return unmount_result;
 }
 
 void
@@ -2176,6 +2355,31 @@ void
 RuntimeSetLogPolicyDiag(void)
 {
   SetDiagLogPolicy();
+}
+
+void
+RuntimeRequestRunStart(void)
+{
+  taskENTER_CRITICAL(&g_state.request_lock);
+  g_state.request_run_start = true;
+  taskEXIT_CRITICAL(&g_state.request_lock);
+}
+
+void
+RuntimeRequestRunStop(void)
+{
+  taskENTER_CRITICAL(&g_state.request_lock);
+  g_state.request_run_stop = true;
+  taskEXIT_CRITICAL(&g_state.request_lock);
+}
+
+esp_err_t
+RuntimeSdUnmountNow(void)
+{
+  esp_err_t result = SdLoggerUnmount(&g_state.sd_logger);
+  UpdateCachedBool(
+    &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
+  return result;
 }
 
 void

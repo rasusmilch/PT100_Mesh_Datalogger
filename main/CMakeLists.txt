@@ -28,6 +28,7 @@ idf_component_register(
     "runtime_health.c"
     "runtime_health_publisher.c"
     "runtime_manager.c"
+    "run_gpio.c"
     "sd_csv_verify.c"
     "sd_logger.c"
     "wifi_service.c"

@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
+#include "run_gpio.h"
 #include "runtime_manager.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -44,6 +45,7 @@ app_main(void)
   g_runtime = RuntimeGetRuntime();
   if (g_runtime != NULL) {
     ESP_ERROR_CHECK(ConsoleCommandsStart((app_runtime_t*)g_runtime, boot_mode));
+    RunGpioInit();
   } else {
     ESP_LOGE(kTag, "Runtime unavailable; console not started");
     return;

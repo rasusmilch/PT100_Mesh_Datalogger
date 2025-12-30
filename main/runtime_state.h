@@ -119,6 +119,7 @@ extern "C" {
     TaskHandle_t topology_task;
     TaskHandle_t display_task;
     TaskHandle_t health_publisher_task;
+    TaskHandle_t control_task;
 
     bool initialized;
     bool is_running;
@@ -126,6 +127,10 @@ extern "C" {
     bool mesh_started;
     bool data_streaming_enabled;
     bool log_quiet;
+
+    bool request_run_start;
+    bool request_run_stop;
+    portMUX_TYPE request_lock;
 
     uint32_t export_dropped_count;
     uint32_t export_write_fail_count;

@@ -457,8 +457,10 @@ RunRecordIdContinuityTest(const app_runtime_t* runtime,
   return monotonic && commit_result == ESP_OK;
 }
 
-int
-RunDiagStorage(const app_runtime_t* runtime, bool full, diag_verbosity_t verbosity)
+static int
+RunDiagStorageImpl(const app_runtime_t* runtime,
+                   bool full,
+                   diag_verbosity_t verbosity)
 {
   diag_ctx_t ctx;
   DiagInitCtx(&ctx, "Storage", verbosity);
@@ -527,4 +529,39 @@ RunDiagStorage(const app_runtime_t* runtime, bool full, diag_verbosity_t verbosi
 
   DiagPrintSummary(&ctx, total_steps);
   return (ctx.steps_failed == 0) ? 0 : 1;
+}
+
+typedef struct
+{
+  bool full;
+  diag_verbosity_t verbosity;
+  int result;
+} diag_storage_ctx_t;
+
+static esp_err_t
+RunDiagStorageWithMount(app_runtime_t* runtime, void* ctx)
+{
+  diag_storage_ctx_t* args = (diag_storage_ctx_t*)ctx;
+  args->result = RunDiagStorageImpl(runtime, args->full, args->verbosity);
+  return (args->result == 0) ? ESP_OK : ESP_FAIL;
+}
+
+int
+RunDiagStorage(const app_runtime_t* runtime, bool full, diag_verbosity_t verbosity)
+{
+  if (!RuntimeIsRunning()) {
+    diag_storage_ctx_t ctx = {
+      .full = full,
+      .verbosity = verbosity,
+      .result = 1,
+    };
+    esp_err_t result =
+      RuntimeWithTemporarySdMount(&RunDiagStorageWithMount, &ctx);
+    if (result != ESP_OK) {
+      return 1;
+    }
+    return ctx.result;
+  }
+
+  return RunDiagStorageImpl(runtime, full, verbosity);
 }

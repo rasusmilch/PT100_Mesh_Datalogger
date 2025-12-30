@@ -10,12 +10,12 @@
 
 #include "sd_logger.h"
 
-int
-RunDiagSd(const app_runtime_t* runtime,
-          bool full,
-          bool format_if_needed,
-          bool mount,
-          diag_verbosity_t verbosity)
+static int
+RunDiagSdImpl(const app_runtime_t* runtime,
+              bool full,
+              bool format_if_needed,
+              bool mount,
+              diag_verbosity_t verbosity)
 {
 
   diag_ctx_t ctx;
@@ -124,4 +124,50 @@ RunDiagSd(const app_runtime_t* runtime,
   DiagHeapCheck(&ctx, "post_sd_diag");
   DiagPrintSummary(&ctx, total_steps);
   return (ctx.steps_failed == 0) ? 0 : 1;
+}
+
+typedef struct
+{
+  bool full;
+  bool format_if_needed;
+  bool mount;
+  diag_verbosity_t verbosity;
+  int result;
+} diag_sd_ctx_t;
+
+static esp_err_t
+RunDiagSdWithMount(app_runtime_t* runtime, void* ctx)
+{
+  diag_sd_ctx_t* args = (diag_sd_ctx_t*)ctx;
+  args->result = RunDiagSdImpl(runtime,
+                               args->full,
+                               args->format_if_needed,
+                               args->mount,
+                               args->verbosity);
+  return (args->result == 0) ? ESP_OK : ESP_FAIL;
+}
+
+int
+RunDiagSd(const app_runtime_t* runtime,
+          bool full,
+          bool format_if_needed,
+          bool mount,
+          diag_verbosity_t verbosity)
+{
+  if (!RuntimeIsRunning()) {
+    diag_sd_ctx_t ctx = {
+      .full = full,
+      .format_if_needed = format_if_needed,
+      .mount = mount,
+      .verbosity = verbosity,
+      .result = 1,
+    };
+    esp_err_t result = RuntimeWithTemporarySdMount(&RunDiagSdWithMount, &ctx);
+    if (result != ESP_OK) {
+      return 1;
+    }
+    return ctx.result;
+  }
+
+  return RunDiagSdImpl(runtime, full, format_if_needed, mount, verbosity);
 }

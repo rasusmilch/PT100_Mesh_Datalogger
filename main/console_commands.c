@@ -503,6 +503,13 @@ FlushAllRecordsToSd(app_runtime_t* runtime)
   return runtime->flush_callback(runtime->flush_context);
 }
 
+static esp_err_t
+FlushOp(app_runtime_t* runtime, void* ctx)
+{
+  (void)ctx;
+  return FlushAllRecordsToSd(runtime);
+}
+
 static void
 FormatRecordFlags(uint16_t flags, char* out, size_t out_size)
 {
@@ -554,7 +561,12 @@ CommandFlush(int argc, char** argv)
     return 1;
   }
 
-  esp_err_t result = FlushAllRecordsToSd(g_runtime);
+  esp_err_t result = ESP_OK;
+  if (RuntimeIsRunning()) {
+    result = FlushAllRecordsToSd(g_runtime);
+  } else {
+    result = RuntimeWithTemporarySdMount(&FlushOp, NULL);
+  }
   if (result != ESP_OK) {
     printf("flush failed: %s\n", esp_err_to_name(result));
     return 1;
@@ -764,6 +776,36 @@ CommandSdView(const sd_logger_t* logger)
   return 0;
 }
 
+static esp_err_t
+SdStatusOp(app_runtime_t* runtime, void* ctx)
+{
+  (void)ctx;
+  PrintSdStatus(runtime);
+  return ESP_OK;
+}
+
+static esp_err_t
+SdViewOp(app_runtime_t* runtime, void* ctx)
+{
+  (void)ctx;
+  return (CommandSdView(runtime->sd_logger) == 0) ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t
+SdFormatOp(app_runtime_t* runtime, void* ctx)
+{
+  (void)ctx;
+  return SdLoggerFormatDestructive(runtime->sd_logger);
+}
+
+static esp_err_t
+SdMountOp(app_runtime_t* runtime, void* ctx)
+{
+  (void)runtime;
+  (void)ctx;
+  return ESP_OK;
+}
+
 static int
 CommandSd(int argc, char** argv)
 {
@@ -777,11 +819,27 @@ CommandSd(int argc, char** argv)
 
   const char* action = argv[1];
   if (strcmp(action, "status") == 0) {
+    if (!RuntimeIsRunning()) {
+      esp_err_t result = RuntimeWithTemporarySdMount(&SdStatusOp, NULL);
+      if (result != ESP_OK) {
+        printf("sd status failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+      return 0;
+    }
     PrintSdStatus(g_runtime);
     return 0;
   }
 
   if (strcmp(action, "view") == 0) {
+    if (!RuntimeIsRunning()) {
+      esp_err_t result = RuntimeWithTemporarySdMount(&SdViewOp, NULL);
+      if (result != ESP_OK) {
+        printf("sd view failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+      return 0;
+    }
     return CommandSdView(g_runtime->sd_logger);
   }
 
@@ -791,21 +849,17 @@ CommandSd(int argc, char** argv)
   }
 
   if (strcmp(action, "mount") == 0) {
-    if (g_runtime->sd_logger->is_mounted) {
-      printf("sd already mounted\n");
-      return 0;
-    }
-    esp_err_t result = SdLoggerTryRemount(g_runtime->sd_logger, false);
+    esp_err_t result = RuntimeWithTemporarySdMount(&SdMountOp, NULL);
     if (result != ESP_OK) {
       printf("sd mount failed: %s\n", esp_err_to_name(result));
       return 1;
     }
-    printf("sd mounted\n");
+    printf("sd mounted (temporary)\n");
     return 0;
   }
 
   if (strcmp(action, "unmount") == 0) {
-    esp_err_t result = SdLoggerUnmount(g_runtime->sd_logger);
+    esp_err_t result = RuntimeSdUnmountNow();
     if (result != ESP_OK) {
       printf("sd unmount failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -815,7 +869,7 @@ CommandSd(int argc, char** argv)
   }
 
   if (strcmp(action, "format") == 0) {
-    esp_err_t result = SdLoggerFormatDestructive(g_runtime->sd_logger);
+    esp_err_t result = RuntimeWithTemporarySdMount(&SdFormatOp, NULL);
     if (result != ESP_OK) {
       printf("sd format failed: %s\n", esp_err_to_name(result));
       return 1;
