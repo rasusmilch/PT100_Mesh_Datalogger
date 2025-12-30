@@ -44,6 +44,13 @@ extern "C" {
     // attention config (what to show)
     uint32_t disp_attn_mask;
     uint32_t disp_attn_pol;
+
+    // drain stats
+    int32_t last_drain_result;
+    uint32_t last_drain_remaining;
+    uint32_t last_drain_duration_ms;
+    int32_t last_drain_flushed_records;
+    int32_t last_drain_flushed_bytes;
   } runtime_health_snapshot_t;
 
   typedef struct

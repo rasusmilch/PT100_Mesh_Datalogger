@@ -11,6 +11,7 @@
 #include "i2c_bus.h"
 #include "max31865_reader.h"
 #include "mesh_transport.h"
+#include "runtime_state.h"
 #include "sd_logger.h"
 #include "time_sync.h"
 
@@ -37,9 +38,20 @@ extern "C" {
     uint32_t* export_write_fail_count;
   } app_runtime_t;
 
+  typedef struct
+  {
+    int32_t flushed_records;
+    int32_t remaining_records;
+    int32_t flushed_bytes;
+    int32_t duration_ms;
+    esp_err_t result;
+  } sd_drain_stats_t;
+
   esp_err_t RuntimeManagerInit(void);
 
   const app_runtime_t* RuntimeGetRuntime(void);
+
+  const runtime_cached_status_t* RuntimeGetCachedStatus(void);
 
   esp_err_t RuntimeStart(void);
 

@@ -1522,6 +1522,18 @@ CommandRun(int argc, char** argv)
       printf("start failed: %s\n", esp_err_to_name(result));
       return 1;
     }
+    const runtime_cached_status_t* status = RuntimeGetCachedStatus();
+    if (status != NULL) {
+      printf("drain: flushed=%d remaining=%u duration=%u ms result=%s\n",
+             status->last_drain_flushed_records,
+             (unsigned)status->last_drain_remaining,
+             (unsigned)status->last_drain_duration_ms,
+             esp_err_to_name((esp_err_t)status->last_drain_result));
+      if (status->last_drain_result == ESP_ERR_TIMEOUT) {
+        printf("drain timed out; remaining=%u\n",
+               (unsigned)status->last_drain_remaining);
+      }
+    }
     printf("runtime started\n");
     return 0;
   }
@@ -1535,6 +1547,18 @@ CommandRun(int argc, char** argv)
     if (result != ESP_OK) {
       printf("stop failed: %s\n", esp_err_to_name(result));
       return 1;
+    }
+    const runtime_cached_status_t* status = RuntimeGetCachedStatus();
+    if (status != NULL) {
+      printf("drain: flushed=%d remaining=%u duration=%u ms result=%s\n",
+             status->last_drain_flushed_records,
+             (unsigned)status->last_drain_remaining,
+             (unsigned)status->last_drain_duration_ms,
+             esp_err_to_name((esp_err_t)status->last_drain_result));
+      if (status->last_drain_result == ESP_ERR_TIMEOUT) {
+        printf("drain timed out; remaining=%u\n",
+               (unsigned)status->last_drain_remaining);
+      }
     }
     printf("runtime stopped\n");
     return 0;

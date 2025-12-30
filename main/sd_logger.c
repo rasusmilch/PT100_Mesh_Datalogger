@@ -296,7 +296,6 @@ SdLoggerClose(sd_logger_t* logger)
     logger->file_buffer = NULL;
   }
   logger->current_date[0] = '\0';
-  logger->last_record_id_on_sd = 0;
 }
 
 esp_err_t
