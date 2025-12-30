@@ -43,9 +43,8 @@
 #include "time_sync.h"
 
 static const char* kTag = "console";
-static void FormatFileTime(const time_t* timestamp,
-                           char* buffer,
-                           size_t buffer_size);
+static void
+FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
 static void
 MaybePushCalRawSampleFromSensor(void)
 {
@@ -588,7 +587,8 @@ CommandFram(int argc, char** argv)
   const char* action = argv[1];
   if (strcmp(action, "status") != 0 && strcmp(action, "show") != 0 &&
       strcmp(action, "clear") != 0) {
-    printf("unknown fram command. try 'fram status | fram show | fram clear'\n");
+    printf(
+      "unknown fram command. try 'fram status | fram show | fram clear'\n");
     return 1;
   }
 
@@ -628,8 +628,7 @@ CommandFram(int argc, char** argv)
   }
   if (strcmp(action, "show") == 0) {
     const uint32_t buffered = FramLogGetBufferedRecords(g_runtime->fram_log);
-    const uint64_t last_sd_id =
-      SdLoggerLastRecordIdOnSd(g_runtime->sd_logger);
+    const uint64_t last_sd_id = SdLoggerLastRecordIdOnSd(g_runtime->sd_logger);
     printf("fram: buffered=%u last_sd_record_id=%" PRIu64 "\n",
            (unsigned)buffered,
            last_sd_id);
@@ -672,9 +671,7 @@ CommandFram(int argc, char** argv)
              record.raw_temp_milli_c / 1000.0,
              record.temp_milli_c / 1000.0,
              record.resistance_milli_ohm / 1000.0);
-      printf("  flags: 0x%04x [%s]\n",
-             (unsigned)record.flags,
-             flags_string);
+      printf("  flags: 0x%04x [%s]\n", (unsigned)record.flags, flags_string);
     }
   }
   return 0;
@@ -1524,7 +1521,7 @@ CommandRun(int argc, char** argv)
     }
     const runtime_cached_status_t* status = RuntimeGetCachedStatus();
     if (status != NULL) {
-      printf("drain: flushed=%d remaining=%u duration=%u ms result=%s\n",
+      printf("drain: flushed=%ld remaining=%u duration=%u ms result=%s\n",
              status->last_drain_flushed_records,
              (unsigned)status->last_drain_remaining,
              (unsigned)status->last_drain_duration_ms,
@@ -1550,7 +1547,7 @@ CommandRun(int argc, char** argv)
     }
     const runtime_cached_status_t* status = RuntimeGetCachedStatus();
     if (status != NULL) {
-      printf("drain: flushed=%d remaining=%u duration=%u ms result=%s\n",
+      printf("drain: flushed=%ld remaining=%u duration=%u ms result=%s\n",
              status->last_drain_flushed_records,
              (unsigned)status->last_drain_remaining,
              (unsigned)status->last_drain_duration_ms,
