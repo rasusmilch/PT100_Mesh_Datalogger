@@ -2469,10 +2469,14 @@ esp_err_t
 EnterRunMode(void)
 {
   RuntimeSetLogPolicyRun();
-  RuntimeEnableDataStreaming(true);
+
+  // Best-effort mount so we can drain FRAM backlog (e.g., after power
+  // loss/restart).
+  EnsureSdMounted();
+
   sd_drain_stats_t drain_stats = { 0 };
   esp_err_t drain_result = DrainFramToSd(&g_state,
-                                         true,
+                                         false,
                                          CONFIG_APP_START_DRAIN_MAX_MS,
                                          CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
                                          CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
@@ -2488,6 +2492,9 @@ EnterRunMode(void)
              esp_err_to_name(drain_result),
              drain_stats.remaining_records);
   }
+
+  RuntimeEnableDataStreaming(true);
+
   esp_err_t result = RuntimeStart();
   if (result != ESP_OK) {
     RuntimeSetLogPolicyDiag();
