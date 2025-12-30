@@ -57,6 +57,10 @@ extern "C" {
     uint32_t export_dropped_count;
     uint32_t export_write_fail_count;
 
+    // runtime
+    bool runtime_running;
+    bool stop_requested;
+
     // config (written by settings load/apply)
     uint32_t disp_attn_mask;
     uint32_t disp_attn_pol;
@@ -146,6 +150,7 @@ extern "C" {
     max7219_display_t display;
     bool display_initialized;
     bool display_test_active;
+    TickType_t display_test_start_ticks;
     TickType_t display_test_until_ticks;
     int32_t last_temp_milli_c;
     bool last_temp_valid;

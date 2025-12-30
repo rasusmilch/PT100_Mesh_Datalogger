@@ -506,6 +506,45 @@ ComputeSdBackoffRemainingMs(const runtime_state_t* state, TickType_t now_ticks)
 }
 
 static void
+BuildDisplayTestText(char* text, size_t text_size, uint32_t elapsed_ms)
+{
+  if (text == NULL || text_size < 6u) {
+    return;
+  }
+
+  const uint32_t step_ms = 250u;
+  const char* banners[] = { "IDLE ", "STOP " };
+  const size_t banner_steps = 4u;
+  const char glyphs[] = "IDLESTOP ";
+  const size_t glyph_count = sizeof(glyphs) - 1u;
+
+  const size_t banner_total_steps = (sizeof(banners) / sizeof(banners[0])) *
+                                    banner_steps;
+  const size_t glyph_total_steps = glyph_count * 5u;
+  const size_t total_steps = banner_total_steps + glyph_total_steps;
+
+  size_t step = 0u;
+  if (total_steps > 0u) {
+    step = (elapsed_ms / step_ms) % total_steps;
+  }
+
+  if (step < banner_total_steps) {
+    const size_t banner_index = step / banner_steps;
+    snprintf(text, text_size, "%s", banners[banner_index]);
+    return;
+  }
+
+  step -= banner_total_steps;
+  const size_t glyph_index = step / 5u;
+  const size_t position = step % 5u;
+  memset(text, ' ', text_size);
+  text[5] = '\0';
+  if (glyph_index < glyph_count && position < 5u) {
+    text[position] = glyphs[glyph_index];
+  }
+}
+
+static void
 DisplayTask(void* context)
 {
   // DisplayTask must only read RuntimeHealth snapshot; do not call subsystem
@@ -532,7 +571,14 @@ DisplayTask(void* context)
     if (state->display_test_active) {
       const TickType_t now_ticks = xTaskGetTickCount();
       if (now_ticks < state->display_test_until_ticks) {
-        Max7219DisplayShowTestPattern(&state->display);
+        char text[12];
+        const uint32_t elapsed_ms =
+          (uint32_t)pdTICKS_TO_MS(now_ticks - state->display_test_start_ticks);
+        BuildDisplayTestText(text, sizeof(text), elapsed_ms);
+        if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+          Max7219DisplaySetText(&state->display, text);
+          snprintf(last_text, sizeof(last_text), "%s", text);
+        }
         vTaskDelay(pdMS_TO_TICKS(250));
         continue;
       }
@@ -541,15 +587,6 @@ DisplayTask(void* context)
       last_text[0] = '\0';
       last_active_mask = 0;
       last_warn_mask = 0;
-    }
-
-    if (!state->is_running) {
-      if (last_text[0] != '\0') {
-        Max7219DisplayClear(&state->display);
-        last_text[0] = '\0';
-      }
-      vTaskDelay(pdMS_TO_TICKS(500));
-      continue;
     }
 
     const TickType_t now_ticks = xTaskGetTickCount();
@@ -638,6 +675,18 @@ DisplayTask(void* context)
       }
 
       const char* text = AttentionBitToCode(warn_bits[warn_code_index]);
+      if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+        Max7219DisplaySetText(&state->display, text);
+        snprintf(last_text, sizeof(last_text), "%s", text);
+      }
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
+    const bool runtime_running = state->cached_status.runtime_running;
+    const bool stop_requested = state->cached_status.stop_requested;
+    if (!runtime_running) {
+      const char* text = stop_requested ? "STOP " : "IDLE ";
       if (strncmp(last_text, text, sizeof(last_text)) != 0) {
         Max7219DisplaySetText(&state->display, text);
         snprintf(last_text, sizeof(last_text), "%s", text);
@@ -1934,6 +1983,8 @@ RuntimeManagerInit(void)
   UpdateCachedUint32(&g_state,
                      &g_state.cached_status.fram_flush_watermark_records,
                      g_state.settings.fram_flush_watermark_records);
+  UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
   RuntimeHealthPublisherTick(&g_state);
 
 #if CONFIG_APP_MAX7219_ENABLE
@@ -2181,6 +2232,7 @@ RuntimeStart(void)
   }
 
   g_state.stop_requested = false;
+  UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
   g_state.fram_full = false;
   g_state.sd_degraded = false;
   g_state.sd_fail_count = 0;
@@ -2283,6 +2335,7 @@ RuntimeStart(void)
   }
 
   g_state.is_running = true;
+  UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, true);
 
   BaseType_t sensor_created = pdPASS;
   BaseType_t storage_created = pdPASS;
@@ -2323,6 +2376,8 @@ RuntimeStart(void)
       topology_created != pdPASS || health_publish_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.is_running = false;
+    UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);
+    UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
             g_state.export_task != NULL || g_state.time_sync_task != NULL ||
@@ -2330,6 +2385,13 @@ RuntimeStart(void)
             g_state.health_publisher_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (g_state.sensor_task == NULL && g_state.storage_task == NULL &&
+        g_state.export_task == NULL && g_state.time_sync_task == NULL &&
+        g_state.topology_task == NULL &&
+        g_state.health_publisher_task == NULL) {
+      g_state.stop_requested = false;
+      UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
     }
     return ESP_ERR_NO_MEM;
   }
@@ -2350,6 +2412,8 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
 
   state->stop_requested = true;
   state->is_running = false;
+  UpdateCachedBool(state, &state->cached_status.stop_requested, true);
+  UpdateCachedBool(state, &state->cached_status.runtime_running, false);
 
   const TickType_t wait_start = xTaskGetTickCount();
   while ((state->sensor_task != NULL || state->storage_task != NULL ||
@@ -2383,6 +2447,8 @@ RuntimeStopAllTasks(runtime_state_t* state)
   if (state->export_queue != NULL) {
     (void)xQueueReset(state->export_queue);
   }
+  state->stop_requested = false;
+  UpdateCachedBool(state, &state->cached_status.stop_requested, false);
   return ESP_OK;
 }
 
@@ -2574,8 +2640,9 @@ RuntimeShowDisplayTestPattern(uint32_t duration_ms)
   if (duration_ms == 0) {
     duration_ms = 2000u;
   }
+  g_state.display_test_start_ticks = xTaskGetTickCount();
   g_state.display_test_until_ticks =
-    xTaskGetTickCount() + pdMS_TO_TICKS(duration_ms);
+    g_state.display_test_start_ticks + pdMS_TO_TICKS(duration_ms);
   g_state.display_test_active = true;
   return ESP_OK;
 }
