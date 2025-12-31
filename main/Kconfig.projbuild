@@ -288,6 +288,12 @@ config APP_STOP_DRAIN_MAX_MS
     Maximum duration for the STOP drain (entering diagnostics). Use -1 to
     drain until FRAM is empty without a time limit.
 
+config APP_START_DRAIN_ENABLE
+  bool "Enable start drain on run start"
+  default y
+  help
+    Attempt to drain FRAM to SD on every transition into run mode.
+
 config APP_START_DRAIN_MAX_MS
   int "Start drain max duration (ms, -1 for no limit)"
   range -1 600000
@@ -295,6 +301,20 @@ config APP_START_DRAIN_MAX_MS
   help
     Maximum duration for the START drain (entering run mode). Use -1 to
     drain until FRAM is empty without a time limit.
+
+config APP_START_DRAIN_MAX_RECORDS_PER_PASS
+  int "Start drain max records per pass"
+  range 1 10000
+  default 200
+  help
+    Maximum number of records flushed per start drain loop iteration.
+
+config APP_START_DRAIN_YIELD_EVERY_RECORDS
+  int "Start drain yield every N records"
+  range 1 10000
+  default 100
+  help
+    Yield to other tasks after draining this many records on start.
 
 config APP_DRAIN_MAX_RECORDS_PER_PASS
   int "Drain max records per pass"
