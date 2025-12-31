@@ -39,6 +39,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "linenoise/linenoise.h"
+#include "console_alerts.h"
 #include "runtime_manager.h"
 #include "time_sync.h"
 
@@ -2480,6 +2481,8 @@ RegisterCommands(void)
     .func = &CommandReboot,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&reboot_cmd));
+
+  ConsoleAlertsRegister(g_runtime);
 }
 
 static void

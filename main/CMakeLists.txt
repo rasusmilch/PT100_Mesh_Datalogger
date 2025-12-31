@@ -2,9 +2,12 @@ idf_component_register(
   SRCS
     "app_main.c"
     "app_settings.c"
+    "alerts/alert_manager.c"
+    "alerts/alert_ntfy.c"
     "boot_mode.c"
     "calibration.c"
     "console_commands.c"
+    "console_alerts.c"
     "diagnostics/diag_common.c"
     "diagnostics/diag_fram.c"
     "diagnostics/diag_mesh.c"
@@ -42,6 +45,7 @@ idf_component_register(
     esp_wifi
     esp_event
     esp_timer
+    esp_http_client
     console
     vfs
     fatfs

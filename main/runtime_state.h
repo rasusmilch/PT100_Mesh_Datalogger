@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "alerts/alert_manager.h"
 #include "i2c_bus.h"
 #include "max31865_reader.h"
 #include "max7219_display.h"
@@ -131,6 +132,11 @@ extern "C" {
     TaskHandle_t display_task;
     TaskHandle_t health_publisher_task;
     TaskHandle_t control_task;
+    TaskHandle_t alert_monitor_task;
+    TaskHandle_t alert_sender_task;
+
+    alert_task_context_t alert_monitor_context;
+    alert_task_context_t alert_sender_context;
 
     bool initialized;
     bool is_running;
@@ -161,6 +167,8 @@ extern "C" {
     runtime_cached_status_t cached_status;
     runtime_health_cache_t health_cache;
     runtime_health_publisher_state_t health_publisher;
+
+    alert_manager_t alert_manager;
   } runtime_state_t;
 
 #ifdef __cplusplus

@@ -16,6 +16,7 @@
 #include "esp_mesh_lite.h"
 #include "esp_mesh_lite_port.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "fram_i2c.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
@@ -31,6 +32,7 @@
 #include "sd_logger.h"
 #include "time_sync.h"
 #include "wifi_service.h"
+#include "alerts/alert_manager.h"
 
 static const char* kTag = "runtime";
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
@@ -875,6 +877,19 @@ RootRecordRxCallback(const pt100_mesh_addr_t* from,
   char node_id[32];
   FormatMacString(from->addr, node_id, sizeof(node_id));
   EnqueueExportRecord(&g_state, node_id, record);
+  if (g_state.settings.node_role == APP_NODE_ROLE_ROOT) {
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+    uint64_t leaf_id = 0;
+    for (int i = 0; i < 6; ++i) {
+      leaf_id = (leaf_id << 8) | from->addr[i];
+    }
+    AlertManagerOnSample(&g_state.alert_manager,
+                         leaf_id,
+                         record,
+                         now_ms,
+                         now_epoch);
+  }
 }
 
 static esp_err_t
@@ -2061,6 +2076,7 @@ InitializeRuntimeStruct(void)
   g_runtime.time_sync = &g_state.time_sync;
   g_runtime.i2c_bus = &g_state.i2c_bus;
   g_runtime.node_id_string = g_state.node_id_string;
+  g_runtime.alert_manager = &g_state.alert_manager;
   g_runtime.flush_callback = &RuntimeFlushToSd;
   g_runtime.flush_context = &g_state;
   g_runtime.fram_full = &g_state.fram_full;
@@ -2117,6 +2133,9 @@ RuntimeManagerInit(void)
   UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
   RuntimeHealthPublisherTick(&g_state);
+
+  AlertManagerInit(&g_state.alert_manager, g_state.node_id_string);
+  (void)AlertManagerLoadConfig(&g_state.alert_manager);
 
 #if CONFIG_APP_MAX7219_ENABLE
   max7219_display_config_t display_config = {
@@ -2505,9 +2524,37 @@ RuntimeStart(void)
   topology_created = xTaskCreate(
     &TopologyTask, "topology", 3072, &g_state, 3, &g_state.topology_task);
 
+  BaseType_t alert_monitor_created = pdPASS;
+  BaseType_t alert_sender_created = pdPASS;
+  if (role == APP_NODE_ROLE_ROOT) {
+    g_state.alert_monitor_context =
+      (alert_task_context_t){ .manager = &g_state.alert_manager,
+                              .stop_requested = &g_state.stop_requested,
+                              .task_handle = &g_state.alert_monitor_task };
+    g_state.alert_sender_context =
+      (alert_task_context_t){ .manager = &g_state.alert_manager,
+                              .stop_requested = &g_state.stop_requested,
+                              .task_handle = &g_state.alert_sender_task };
+    alert_monitor_created = xTaskCreate(&AlertManagerMonitorTask,
+                                        "alert_mon",
+                                        4096,
+                                        &g_state.alert_monitor_context,
+                                        3,
+                                        &g_state.alert_monitor_task);
+    alert_sender_created = xTaskCreate(&AlertManagerSenderTask,
+                                       "alert_send",
+                                       4096,
+                                       &g_state.alert_sender_context,
+                                       3,
+                                       &g_state.alert_sender_task);
+    AlertManagerEmitRootRestart(&g_state.alert_manager,
+                                esp_timer_get_time() / 1000);
+  }
+
   if (sensor_created != pdPASS || storage_created != pdPASS ||
       export_created != pdPASS || time_created != pdPASS ||
-      topology_created != pdPASS || health_publish_created != pdPASS) {
+      topology_created != pdPASS || health_publish_created != pdPASS ||
+      alert_monitor_created != pdPASS || alert_sender_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.is_running = false;
     UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);
@@ -2516,14 +2563,18 @@ RuntimeStart(void)
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
             g_state.export_task != NULL || g_state.time_sync_task != NULL ||
             g_state.topology_task != NULL ||
-            g_state.health_publisher_task != NULL) &&
+            g_state.health_publisher_task != NULL ||
+            g_state.alert_monitor_task != NULL ||
+            g_state.alert_sender_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
     if (g_state.sensor_task == NULL && g_state.storage_task == NULL &&
         g_state.export_task == NULL && g_state.time_sync_task == NULL &&
         g_state.topology_task == NULL &&
-        g_state.health_publisher_task == NULL) {
+        g_state.health_publisher_task == NULL &&
+        g_state.alert_monitor_task == NULL &&
+        g_state.alert_sender_task == NULL) {
       g_state.stop_requested = false;
       UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
     }
@@ -2553,7 +2604,9 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   while ((state->sensor_task != NULL || state->storage_task != NULL ||
           state->export_task != NULL || state->time_sync_task != NULL ||
           state->topology_task != NULL ||
-          state->health_publisher_task != NULL) &&
+          state->health_publisher_task != NULL ||
+          state->alert_monitor_task != NULL ||
+          state->alert_sender_task != NULL) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
