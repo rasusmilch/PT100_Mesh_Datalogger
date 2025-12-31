@@ -99,6 +99,9 @@ DrainFramToSd(runtime_state_t* state,
               int32_t max_records_per_pass,
               int32_t yield_every_records,
               sd_drain_stats_t* out_stats);
+static esp_err_t
+DrainFramToSdOnStartBestEffort(runtime_state_t* state,
+                               sd_drain_stats_t* out_stats);
 static void
 ControlTask(void* context);
 
@@ -1838,6 +1841,137 @@ drain_done:
 }
 
 static void
+UpdateStartDrainCachedStatus(runtime_state_t* state,
+                             const sd_drain_stats_t* stats)
+{
+  if (state == NULL || stats == NULL) {
+    return;
+  }
+  UpdateCachedInt32(
+    state, &state->cached_status.last_drain_result, stats->result);
+  UpdateCachedUint32(state,
+                     &state->cached_status.last_drain_remaining,
+                     (uint32_t)stats->remaining_records);
+  UpdateCachedUint32(state,
+                     &state->cached_status.last_drain_duration_ms,
+                     (uint32_t)stats->duration_ms);
+  UpdateCachedInt32(state,
+                    &state->cached_status.last_drain_flushed_records,
+                    stats->flushed_records);
+  UpdateCachedInt32(
+    state, &state->cached_status.last_drain_flushed_bytes, stats->flushed_bytes);
+}
+
+static esp_err_t
+DrainFramToSdOnStartBestEffort(runtime_state_t* state,
+                               sd_drain_stats_t* out_stats)
+{
+  sd_drain_stats_t local_stats = { 0 };
+  sd_drain_stats_t* stats = (out_stats != NULL) ? out_stats : &local_stats;
+  if (stats == &local_stats) {
+    memset(stats, 0, sizeof(*stats));
+  }
+
+  if (state == NULL) {
+    stats->result = ESP_ERR_INVALID_ARG;
+    UpdateStartDrainCachedStatus(state, stats);
+    ESP_LOGW(kTag,
+             "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
+             stats->flushed_records,
+             stats->remaining_records,
+             stats->duration_ms,
+             esp_err_to_name(stats->result));
+    return ESP_ERR_INVALID_ARG;
+  }
+
+#if !CONFIG_APP_START_DRAIN_ENABLE
+  const int32_t initial_remaining =
+    (int32_t)FramLogGetBufferedRecords(&state->fram_log);
+  EnsureSdMounted();
+  UpdateCachedBool(
+    state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+  stats->flushed_records = 0;
+  stats->remaining_records = initial_remaining;
+  stats->flushed_bytes = 0;
+  stats->duration_ms = 0;
+  stats->result = ESP_ERR_NOT_SUPPORTED;
+  UpdateStartDrainCachedStatus(state, stats);
+  UpdateFramFillState(state);
+  ESP_LOGW(kTag,
+           "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
+           stats->flushed_records,
+           stats->remaining_records,
+           stats->duration_ms,
+           esp_err_to_name(stats->result));
+  return stats->result;
+#endif
+
+  const int32_t initial_remaining =
+    (int32_t)FramLogGetBufferedRecords(&state->fram_log);
+
+  EnsureSdMounted();
+  UpdateCachedBool(
+    state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+
+  if (initial_remaining <= 0) {
+    stats->flushed_records = 0;
+    stats->remaining_records = 0;
+    stats->flushed_bytes = 0;
+    stats->duration_ms = 0;
+    stats->result = ESP_OK;
+    UpdateStartDrainCachedStatus(state, stats);
+    UpdateFramFillState(state);
+    ESP_LOGW(kTag,
+             "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
+             stats->flushed_records,
+             stats->remaining_records,
+             stats->duration_ms,
+             esp_err_to_name(stats->result));
+    return ESP_OK;
+  }
+
+  if (!state->sd_logger.is_mounted) {
+    stats->flushed_records = 0;
+    stats->remaining_records = initial_remaining;
+    stats->flushed_bytes = 0;
+    stats->duration_ms = 0;
+    stats->result = ESP_ERR_INVALID_STATE;
+    UpdateStartDrainCachedStatus(state, stats);
+    UpdateFramFillState(state);
+    ESP_LOGW(kTag, "Start drain skipped; SD not mounted");
+    ESP_LOGW(kTag,
+             "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
+             stats->flushed_records,
+             stats->remaining_records,
+             stats->duration_ms,
+             esp_err_to_name(stats->result));
+    return stats->result;
+  }
+
+  esp_err_t result =
+    DrainFramToSd(state,
+                  false,
+                  CONFIG_APP_START_DRAIN_MAX_MS,
+                  CONFIG_APP_START_DRAIN_MAX_RECORDS_PER_PASS,
+                  CONFIG_APP_START_DRAIN_YIELD_EVERY_RECORDS,
+                  stats);
+
+  if (result == ESP_ERR_TIMEOUT) {
+    state->sd_flush_pending = true;
+  }
+
+  UpdateFramFillState(state);
+  UpdateStartDrainCachedStatus(state, stats);
+  ESP_LOGW(kTag,
+           "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
+           stats->flushed_records,
+           stats->remaining_records,
+           stats->duration_ms,
+           esp_err_to_name(stats->result));
+  return result;
+}
+
+static void
 ControlTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
@@ -2254,9 +2388,8 @@ RuntimeStart(void)
   UpdateCachedBool(&g_state, &g_state.cached_status.fram_full, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.fram_overrun_active, false);
 
-  EnsureSdMounted();
-  UpdateCachedBool(
-    &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
+  sd_drain_stats_t drain_stats = { 0 };
+  (void)DrainFramToSdOnStartBestEffort(&g_state, &drain_stats);
   g_state.sd_was_mounted = g_state.sd_logger.is_mounted;
 
   const app_node_role_t role = g_state.settings.node_role;
@@ -2285,6 +2418,8 @@ RuntimeStart(void)
     router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
     router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
   }
+
+  RuntimeEnableDataStreaming(true);
 
   if (!g_state.mesh_started) {
     esp_err_t wifi_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
@@ -2469,31 +2604,6 @@ esp_err_t
 EnterRunMode(void)
 {
   RuntimeSetLogPolicyRun();
-
-  // Best-effort mount so we can drain FRAM backlog (e.g., after power
-  // loss/restart).
-  EnsureSdMounted();
-
-  sd_drain_stats_t drain_stats = { 0 };
-  esp_err_t drain_result = DrainFramToSd(&g_state,
-                                         false,
-                                         CONFIG_APP_START_DRAIN_MAX_MS,
-                                         CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
-                                         CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
-                                         &drain_stats);
-  if (drain_result == ESP_ERR_TIMEOUT) {
-    ESP_LOGW(kTag,
-             "Start drain timed out: remaining=%d duration=%d ms",
-             drain_stats.remaining_records,
-             drain_stats.duration_ms);
-  } else if (drain_result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "Start drain failed: %s remaining=%d",
-             esp_err_to_name(drain_result),
-             drain_stats.remaining_records);
-  }
-
-  RuntimeEnableDataStreaming(true);
 
   esp_err_t result = RuntimeStart();
   if (result != ESP_OK) {
