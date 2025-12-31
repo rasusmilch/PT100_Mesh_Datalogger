@@ -11,6 +11,7 @@
 #include "i2c_bus.h"
 #include "max31865_reader.h"
 #include "mesh_transport.h"
+#include "alerts/alert_manager.h"
 #include "runtime_state.h"
 #include "sd_logger.h"
 #include "time_sync.h"
@@ -31,6 +32,7 @@ extern "C" {
     time_sync_t* time_sync;
     i2c_bus_t* i2c_bus;
     const char* node_id_string;
+    alert_manager_t* alert_manager;
     esp_err_t (*flush_callback)(void* context);
     void* flush_context;
     bool* fram_full;
