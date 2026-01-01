@@ -755,29 +755,28 @@ HealthPublisherTask(void* context)
 static void
 SetRunLogPolicy(void)
 {
-  // Keep run-time logging quiet by default to avoid drowning the operator,
-  // but always allow warning/error logs from critical subsystems.
-  // esp_log_level_set("*", ESP_LOG_NONE);
-  // esp_log_level_set("runtime", ESP_LOG_WARN);
-  // esp_log_level_set("sd_logger", ESP_LOG_WARN);
-  // esp_log_level_set("sd_csv_verify", ESP_LOG_WARN);
-  // esp_log_level_set("fram_log", ESP_LOG_WARN);
-  // esp_log_level_set("max7219", ESP_LOG_WARN);
-  // esp_log_level_set("max31865", ESP_LOG_WARN);
-  // esp_log_level_set("mesh", ESP_LOG_WARN);
-  // g_state.log_quiet = true;
-
-  // Operator console and data console are separate. Do not suppress logs in run
-  // mode; rely on ESP-IDF's configured log levels (menuconfig / defaults).
+  // Operator console should not be drowned by Mesh-Lite scan chatter.
+  // Do NOT globally mute logs; only reduce known-noisy tags.
   //
-  // This ensures mount/flush INFO logs (e.g., sd_logger/runtime) are visible.
-  g_state.log_quiet = false;
+  // Keep your own subsystem logs (runtime/sd_logger/etc.) unchanged so
+  // mount/flush INFO remains visible.
+  esp_log_level_set("wifi", ESP_LOG_ERROR);     // hides repetitive WARN spam
+  esp_log_level_set("vendor_ie", ESP_LOG_WARN); // hides scan start/stop INFO
+  esp_log_level_set("Mesh-Lite", ESP_LOG_WARN); // hides "connecting" INFO
+
+  // Suppress periodic printf()-style noise (e.g. topology line). Your operator
+  // console still gets command responses and ESP_LOG* output.
+  g_state.log_quiet = true;
 }
 
 static void
 SetDiagLogPolicy(void)
 {
   esp_log_level_set("*", ESP_LOG_INFO);
+  // Restore noisy tags for diagnosis sessions.
+  esp_log_level_set("wifi", ESP_LOG_INFO);
+  esp_log_level_set("vendor_ie", ESP_LOG_INFO);
+  esp_log_level_set("Mesh-Lite", ESP_LOG_INFO);
   g_state.log_quiet = false;
 }
 
@@ -1696,6 +1695,9 @@ TopologyTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
   const TickType_t interval_ticks = pdMS_TO_TICKS(30 * 1000);
+  const TickType_t warn_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
+  TickType_t last_disconnected_warn_ticks = 0;
+  bool was_connected = false;
 
   while (!state->stop_requested) {
     const char* role = AppSettingsRoleToString(state->settings.node_role);
@@ -1715,6 +1717,24 @@ TopologyTask(void* context)
     UpdateCachedInt32(state, &state->cached_status.mesh_level, layer);
     UpdateCachedInt32(state, &state->cached_status.mesh_rssi, rssi);
     UpdateCachedBool(state, &state->cached_status.mesh_connected, (layer > 0));
+
+    // Replace the vendor/wifi spam with a single rate-limited warning.
+    const bool connected_now = (layer > 0);
+    if (connected_now) {
+      was_connected = true;
+      last_disconnected_warn_ticks = 0;
+    } else if (MeshTransportIsStarted(&state->mesh)) {
+      const TickType_t now_ticks = xTaskGetTickCount();
+      const bool should_warn =
+        (last_disconnected_warn_ticks == 0) ||
+        ((now_ticks - last_disconnected_warn_ticks) >= warn_period_ticks);
+      if (should_warn) {
+        ESP_LOGW(kTag,
+                 "Mesh not connected (layer=%d). Still scanning for AP/root...",
+                 layer);
+        last_disconnected_warn_ticks = now_ticks;
+      }
+    }
 
     if (!state->log_quiet) {
       printf("topology role=%s allow_children=%u layer=%d parent=%s "
