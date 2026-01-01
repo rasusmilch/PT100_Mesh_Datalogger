@@ -166,7 +166,8 @@ AlertManagerQueueNotification(alert_manager_t* manager,
       manager->global_window_start_ms = (uint32_t)now_ms;
       manager->global_sent_in_window = 0;
     }
-    if (manager->global_sent_in_window >= manager->config.global_max_per_minute) {
+    if (manager->global_sent_in_window >=
+        manager->config.global_max_per_minute) {
       if (state != NULL) {
         state->notify_suppressed_count++;
       }
@@ -282,8 +283,7 @@ GetLimits(const alert_manager_t* manager,
     return false;
   }
   alert_leaf_config_t leaf_config;
-  if (GetLeafConfig(manager, leaf_id, &leaf_config) &&
-      leaf_config.has_limits) {
+  if (GetLeafConfig(manager, leaf_id, &leaf_config) && leaf_config.has_limits) {
     *high_out = leaf_config.high_limit_milli_c;
     *low_out = leaf_config.low_limit_milli_c;
     return true;
@@ -305,7 +305,8 @@ RefreshMeshOnline(alert_manager_t* manager, int64_t now_ms)
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
   uint32_t total_nodes = 0;
   const node_info_list_t* node = esp_mesh_lite_get_nodes_list(&total_nodes);
-  for (const node_info_list_t* entry = node; entry != NULL; entry = entry->next) {
+  for (const node_info_list_t* entry = node; entry != NULL;
+       entry = entry->next) {
     const esp_mesh_lite_node_info_t* info = entry->node;
     if (info == NULL) {
       continue;
@@ -345,19 +346,14 @@ static void
 ApplyDefaults(alert_manager_t* manager)
 {
   manager->config.version = kAlertConfigVersion;
-  snprintf(manager->config.ntfy_url,
-           sizeof(manager->config.ntfy_url),
-           "");
-  snprintf(manager->config.ntfy_topic,
-           sizeof(manager->config.ntfy_topic),
-           "");
-  snprintf(manager->config.ntfy_token,
-           sizeof(manager->config.ntfy_token),
-           "");
-  manager->config.enable_mask = (1u << ALERT_MISSING_RECORDS) |
-                                (1u << ALERT_LEAF_OFFLINE) |
-                                (1u << ALERT_LEAF_RESTART) |
-                                (1u << ALERT_ROOT_RESTART);
+  // Avoid -Wformat-zero-length from snprintf("", ...). These strings are
+  // intentionally empty defaults.
+  memset(manager->config.ntfy_url, 0, sizeof(manager->config.ntfy_url));
+  memset(manager->config.ntfy_topic, 0, sizeof(manager->config.ntfy_topic));
+  memset(manager->config.ntfy_token, 0, sizeof(manager->config.ntfy_token));
+  manager->config.enable_mask =
+    (1u << ALERT_MISSING_RECORDS) | (1u << ALERT_LEAF_OFFLINE) |
+    (1u << ALERT_LEAF_RESTART) | (1u << ALERT_ROOT_RESTART);
   manager->config.per_key_cooldown_ms = 300000;
   manager->config.global_max_per_minute = 12;
   manager->config.missing_gap_ms = 15000;
@@ -367,9 +363,8 @@ ApplyDefaults(alert_manager_t* manager)
   manager->config.default_high_milli_c = 80000;
   manager->config.default_low_milli_c = 20000;
   manager->config.leaf_override_count = 0;
-  memset(manager->config.leaf_overrides,
-         0,
-         sizeof(manager->config.leaf_overrides));
+  memset(
+    manager->config.leaf_overrides, 0, sizeof(manager->config.leaf_overrides));
 }
 
 void
@@ -422,10 +417,8 @@ AlertManagerSaveConfig(alert_manager_t* manager)
   if (result != ESP_OK) {
     return result;
   }
-  result = nvs_set_blob(handle,
-                        kAlertNvsConfigKey,
-                        &manager->config,
-                        sizeof(manager->config));
+  result = nvs_set_blob(
+    handle, kAlertNvsConfigKey, &manager->config, sizeof(manager->config));
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }
@@ -608,8 +601,7 @@ AlertManagerTick(alert_manager_t* manager, int64_t now_ms, int64_t now_epoch)
     }
 
     if ((mask & (1u << ALERT_LEAF_OFFLINE)) != 0u && leaf->last_online_ms > 0) {
-      const uint32_t offline_ms =
-        (uint32_t)(now_ms - leaf->last_online_ms);
+      const uint32_t offline_ms = (uint32_t)(now_ms - leaf->last_online_ms);
       const bool offline_active =
         (!leaf->online && offline_ms >= manager->config.offline_ms);
       alert_notification_payload_t payload = { 0 };
@@ -748,8 +740,7 @@ AlertManagerSetHoldMs(alert_manager_t* manager, uint32_t hold_ms)
 }
 
 bool
-AlertManagerSetHysteresis(alert_manager_t* manager,
-                          int32_t hysteresis_milli_c)
+AlertManagerSetHysteresis(alert_manager_t* manager, int32_t hysteresis_milli_c)
 {
   if (manager == NULL || hysteresis_milli_c < 0) {
     return false;
@@ -777,7 +768,8 @@ AlertManagerSetNtfyUrl(alert_manager_t* manager, const char* url)
   if (manager == NULL || url == NULL) {
     return false;
   }
-  snprintf(manager->config.ntfy_url, sizeof(manager->config.ntfy_url), "%s", url);
+  snprintf(
+    manager->config.ntfy_url, sizeof(manager->config.ntfy_url), "%s", url);
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
@@ -1003,10 +995,9 @@ AlertManagerSenderTask(void* context)
       ctx->manager->ntfy.send_fail++;
       ctx->manager->ntfy.last_http_status = status;
       ctx->manager->ntfy.last_err = err;
-      ctx->manager->ntfy.backoff_ms =
-        (ctx->manager->ntfy.backoff_ms == 0)
-          ? 1000
-          : (ctx->manager->ntfy.backoff_ms * 2);
+      ctx->manager->ntfy.backoff_ms = (ctx->manager->ntfy.backoff_ms == 0)
+                                        ? 1000
+                                        : (ctx->manager->ntfy.backoff_ms * 2);
       if (ctx->manager->ntfy.backoff_ms > 30000) {
         ctx->manager->ntfy.backoff_ms = 30000;
       }

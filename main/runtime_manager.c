@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "alerts/alert_manager.h"
 #include "calibration.h"
 #include "data_csv.h"
 #include "data_port.h"
@@ -32,7 +33,6 @@
 #include "sd_logger.h"
 #include "time_sync.h"
 #include "wifi_service.h"
-#include "alerts/alert_manager.h"
 
 static const char* kTag = "runtime";
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
@@ -106,6 +106,9 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
                                sd_drain_stats_t* out_stats);
 static void
 ControlTask(void* context);
+
+static void
+EnsureSdMounted(void);
 
 static void
 MarkSdFailure(runtime_state_t* state,
@@ -884,11 +887,8 @@ RootRecordRxCallback(const pt100_mesh_addr_t* from,
     for (int i = 0; i < 6; ++i) {
       leaf_id = (leaf_id << 8) | from->addr[i];
     }
-    AlertManagerOnSample(&g_state.alert_manager,
-                         leaf_id,
-                         record,
-                         now_ms,
-                         now_epoch);
+    AlertManagerOnSample(
+      &g_state.alert_manager, leaf_id, record, now_ms, now_epoch);
   }
 }
 
@@ -1873,8 +1873,9 @@ UpdateStartDrainCachedStatus(runtime_state_t* state,
   UpdateCachedInt32(state,
                     &state->cached_status.last_drain_flushed_records,
                     stats->flushed_records);
-  UpdateCachedInt32(
-    state, &state->cached_status.last_drain_flushed_bytes, stats->flushed_bytes);
+  UpdateCachedInt32(state,
+                    &state->cached_status.last_drain_flushed_bytes,
+                    stats->flushed_bytes);
 }
 
 static esp_err_t
@@ -1963,13 +1964,12 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
     return stats->result;
   }
 
-  esp_err_t result =
-    DrainFramToSd(state,
-                  false,
-                  CONFIG_APP_START_DRAIN_MAX_MS,
-                  CONFIG_APP_START_DRAIN_MAX_RECORDS_PER_PASS,
-                  CONFIG_APP_START_DRAIN_YIELD_EVERY_RECORDS,
-                  stats);
+  esp_err_t result = DrainFramToSd(state,
+                                   false,
+                                   CONFIG_APP_START_DRAIN_MAX_MS,
+                                   CONFIG_APP_START_DRAIN_MAX_RECORDS_PER_PASS,
+                                   CONFIG_APP_START_DRAIN_YIELD_EVERY_RECORDS,
+                                   stats);
 
   if (result == ESP_ERR_TIMEOUT) {
     state->sd_flush_pending = true;
@@ -2601,13 +2601,12 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   UpdateCachedBool(state, &state->cached_status.runtime_running, false);
 
   const TickType_t wait_start = xTaskGetTickCount();
-  while ((state->sensor_task != NULL || state->storage_task != NULL ||
-          state->export_task != NULL || state->time_sync_task != NULL ||
-          state->topology_task != NULL ||
-          state->health_publisher_task != NULL ||
-          state->alert_monitor_task != NULL ||
-          state->alert_sender_task != NULL) &&
-         (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
+  while (
+    (state->sensor_task != NULL || state->storage_task != NULL ||
+     state->export_task != NULL || state->time_sync_task != NULL ||
+     state->topology_task != NULL || state->health_publisher_task != NULL ||
+     state->alert_monitor_task != NULL || state->alert_sender_task != NULL) &&
+    (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 
@@ -2798,6 +2797,19 @@ RuntimeAcknowledgeDisplayAttention(display_attention_item_t item)
                    g_state.last_overrun_records_total >
                      g_state.fram_overrun_ack_total);
   return true;
+}
+
+void
+RuntimeSetDisplayAttentionPolicy(uint32_t policy)
+{
+  // Keep the settings copy updated (used by diagnostics/status printing), but
+  // more importantly, update the cached status so the display task and health
+  // publisher see the new policy immediately.
+  g_state.settings.display_attention_policy = policy;
+  UpdateCachedUint32(&g_state, &g_state.cached_status.disp_attn_pol, policy);
+  UpdateCachedUint32(&g_state,
+                     &g_state.cached_status.disp_attn_mask,
+                     g_state.settings.display_attention_mask);
 }
 
 esp_err_t

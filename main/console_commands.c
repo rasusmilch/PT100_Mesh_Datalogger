@@ -171,6 +171,9 @@ SaveDisplayAttentionPolicy(uint32_t policy)
   g_runtime->settings->display_attention_policy = policy;
   g_runtime->settings->display_attention_mask =
     AppSettingsGetDisplayAttentionMask();
+
+  // Ensure the display task reflects policy changes immediately.
+  RuntimeSetDisplayAttentionPolicy(policy);
   printf("OK\n");
   PrintDisplayAttentionPolicy(policy);
   return 0;

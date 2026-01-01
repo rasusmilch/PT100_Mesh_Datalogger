@@ -2,6 +2,7 @@
 #define PT100_LOGGER_RUNTIME_MANAGER_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "app_settings.h"
 #include "esp_err.h"
@@ -92,6 +93,10 @@ extern "C" {
   uint32_t RuntimeSdBackoffUntilTicks(void);
 
   bool RuntimeAcknowledgeDisplayAttention(display_attention_item_t item);
+
+// Updates the in-memory/cached display attention policy immediately so the
+// display task reflects changes without requiring a reboot.
+void RuntimeSetDisplayAttentionPolicy(uint32_t policy);
 
   esp_err_t RuntimeShowDisplayTestPattern(uint32_t duration_ms);
 
