@@ -157,7 +157,10 @@ SdMaintenanceTick(runtime_state_t* state)
   }
 
   if (FramLogGetBufferedRecords(&state->fram_log) > 0) {
+    // We have backlog and SD is now available. Start draining immediately.
     state->sd_flush_pending = true;
+    state->sd_start_drain_pending = true;
+    state->sd_next_flush_allowed_ticks = 0;
   }
 }
 
@@ -1249,6 +1252,9 @@ SdFlushWorkerTick(runtime_state_t* state,
   if (peek_result == ESP_ERR_INVALID_RESPONSE) {
     ESP_LOGE(kTag, "Corrupted FRAM record detected during SD flush");
     (void)FramLogSkipCorruptedRecord(&state->fram_log);
+    if (more_pending_out != NULL) {
+      *more_pending_out = (FramLogGetBufferedRecords(&state->fram_log) > 0);
+    }
     return ESP_OK;
   }
   if (peek_result != ESP_OK) {
@@ -1285,6 +1291,12 @@ SdFlushWorkerTick(runtime_state_t* state,
     return batch_result;
   }
   if (records_used == 0 || bytes_used == 0) {
+    // We still have buffered records, but couldn't build a batch this pass
+    // (e.g., time jumped while formatting dates or a corrupted record was skipped).
+    // Keep the flush pending so we retry soon instead of waiting for watermark/periodic.
+    if (more_pending_out != NULL) {
+      *more_pending_out = true;
+    }
     return ESP_OK;
   }
 
@@ -1573,7 +1585,8 @@ StorageTask(void* context)
     const UBaseType_t queue_depth =
       (state->log_queue != NULL) ? uxQueueMessagesWaiting(state->log_queue) : 0;
     const bool queue_idle = (queue_depth <= 1u);
-    if (!received && queue_idle && state->sd_flush_pending &&
+    const bool allow_flush_now = (!received) || state->sd_start_drain_pending;
+    if (allow_flush_now && queue_idle && state->sd_flush_pending &&
         state->sd_logger.is_mounted &&
         now_ticks >= state->sd_next_flush_allowed_ticks) {
       uint32_t flushed = 0;
@@ -1596,6 +1609,9 @@ StorageTask(void* context)
           }
         }
         state->sd_flush_pending = more_pending;
+        if (!more_pending) {
+          state->sd_start_drain_pending = false;
+        }
       }
       state->sd_next_flush_allowed_ticks =
         xTaskGetTickCount() + pdMS_TO_TICKS(kSdFlushMinIntervalMs);
@@ -1930,6 +1946,7 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
     state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
 
   if (initial_remaining <= 0) {
+    state->sd_start_drain_pending = false;
     stats->flushed_records = 0;
     stats->remaining_records = 0;
     stats->flushed_bytes = 0;
@@ -1954,6 +1971,11 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
     stats->result = ESP_ERR_INVALID_STATE;
     UpdateStartDrainCachedStatus(state, stats);
     UpdateFramFillState(state);
+    // SD isn't available yet. Make sure the normal storage loop drains FRAM
+    // as soon as the card mounts (don't wait for watermark/periodic flush).
+    state->sd_start_drain_pending = true;
+    state->sd_flush_pending = true;
+    state->sd_next_flush_allowed_ticks = 0;
     ESP_LOGW(kTag, "Start drain skipped; SD not mounted");
     ESP_LOGW(kTag,
              "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
@@ -1973,6 +1995,9 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
 
   if (result == ESP_ERR_TIMEOUT) {
     state->sd_flush_pending = true;
+    state->sd_start_drain_pending = true;
+  } else if (result == ESP_OK && stats->remaining_records <= 0) {
+    state->sd_start_drain_pending = false;
   }
 
   UpdateFramFillState(state);
@@ -2392,6 +2417,7 @@ RuntimeStart(void)
   g_state.last_sd_flush_warn_ticks = 0;
   g_state.sd_flush_records_since = 0;
   g_state.sd_flush_pending = false;
+  g_state.sd_start_drain_pending = false;
   g_state.sd_next_flush_allowed_ticks = 0;
   g_state.sd_last_io_error_active = false;
   g_state.sd_last_io_err = ESP_OK;

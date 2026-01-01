@@ -8,6 +8,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "data_csv.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
@@ -93,6 +96,10 @@ SdLoggerMountInternal(sd_logger_t* logger,
 {
   sdmmc_host_t sd_host = SDSPI_HOST_DEFAULT();
   sd_host.slot = host;
+  // Hot-insert and longer wiring runs are significantly more reliable at a
+  // lower SPI clock. If you want maximum throughput later, make this
+  // configurable and/or raise it after a successful probe.
+  sd_host.max_freq_khz = 10000; // 10 MHz
 
   sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
   slot_config.gpio_cs = cs_gpio;
@@ -116,6 +123,10 @@ SdLoggerMountInternal(sd_logger_t* logger,
   logger->is_mounted = true;
   logger->card = card;
   ESP_LOGI(kTag, "SD mounted at %s", logger->mount_point);
+
+  // Give the card a brief settle window after mount, especially if it was
+  // inserted while the system was already running.
+  vTaskDelay(pdMS_TO_TICKS(150));
   return ESP_OK;
 }
 

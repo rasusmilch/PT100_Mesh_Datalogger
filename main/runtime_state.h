@@ -105,6 +105,9 @@ extern "C" {
     uint32_t sd_fail_count;
     uint32_t sd_flush_records_since;
     bool sd_flush_pending;
+    // If the FRAM->SD drain was requested at run start but SD was not mounted,
+    // keep trying aggressively once the card becomes available.
+    bool sd_start_drain_pending;
     bool sd_degraded;
     bool sd_force_unmount_on_append;
     bool sd_last_io_error_active;
