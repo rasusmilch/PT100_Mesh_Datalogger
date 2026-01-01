@@ -27,10 +27,7 @@ IoRead(const fram_log_t* log, uint32_t address, void* out, size_t len)
 }
 
 static esp_err_t
-IoWrite(const fram_log_t* log,
-        uint32_t address,
-        const void* data,
-        size_t len)
+IoWrite(const fram_log_t* log, uint32_t address, const void* data, size_t len)
 {
   if (log == NULL || log->io.write == NULL) {
     return ESP_ERR_INVALID_STATE;
@@ -127,6 +124,59 @@ RecordAddressForIndex(const fram_log_t* log, uint32_t record_index)
   return log->record_region_offset + slot * sizeof(log_record_t);
 }
 
+typedef enum
+{
+  RECORD_VALIDATE_OK = 0,
+  RECORD_VALIDATE_BAD_MAGIC,
+  RECORD_VALIDATE_BAD_SCHEMA,
+  RECORD_VALIDATE_BAD_CRC,
+} record_validate_result_t;
+
+static const char*
+RecordValidateResultToString(record_validate_result_t result)
+{
+  switch (result) {
+    case RECORD_VALIDATE_OK:
+      return "ok";
+    case RECORD_VALIDATE_BAD_MAGIC:
+      return "bad-magic";
+    case RECORD_VALIDATE_BAD_SCHEMA:
+      return "bad-schema";
+    case RECORD_VALIDATE_BAD_CRC:
+      return "bad-crc";
+    default:
+      return "unknown";
+  }
+}
+
+static record_validate_result_t
+ValidateRecord(log_record_t* record, uint16_t* actual_crc_out)
+{
+  if (record == NULL) {
+    return RECORD_VALIDATE_BAD_CRC;
+  }
+  if (record->magic != LOG_RECORD_MAGIC) {
+    return RECORD_VALIDATE_BAD_MAGIC;
+  }
+  if (record->schema_version != LOG_RECORD_SCHEMA_VER) {
+    return RECORD_VALIDATE_BAD_SCHEMA;
+  }
+
+  const uint16_t expected_crc = record->crc16_ccitt;
+  record->crc16_ccitt = 0;
+  const uint16_t actual_crc =
+    Crc16CcittFalse(record, sizeof(*record) - sizeof(uint16_t));
+  record->crc16_ccitt = expected_crc;
+
+  if (actual_crc_out != NULL) {
+    *actual_crc_out = actual_crc;
+  }
+  if (expected_crc != actual_crc) {
+    return RECORD_VALIDATE_BAD_CRC;
+  }
+  return RECORD_VALIDATE_OK;
+}
+
 static esp_err_t
 WriteRecord(const fram_log_t* log, uint32_t record_index, log_record_t record)
 {
@@ -137,7 +187,43 @@ WriteRecord(const fram_log_t* log, uint32_t record_index, log_record_t record)
     Crc16CcittFalse(&record, sizeof(record) - sizeof(record.crc16_ccitt));
 
   const uint32_t address = RecordAddressForIndex(log, record_index);
-  return IoWrite(log, address, &record, sizeof(record));
+
+  // Verify on write to catch bus noise/torn transactions early (prevents
+  // persisting bad records that would later be dropped during SD flush).
+  static const int kWriteVerifyRetries = 2;
+  esp_err_t last_error = ESP_OK;
+  for (int attempt = 0; attempt <= kWriteVerifyRetries; ++attempt) {
+    const esp_err_t write_result =
+      IoWrite(log, address, &record, sizeof(record));
+    if (write_result != ESP_OK) {
+      last_error = write_result;
+      continue;
+    }
+
+    log_record_t verify;
+    const esp_err_t read_result = IoRead(log, address, &verify, sizeof(verify));
+    if (read_result != ESP_OK) {
+      last_error = read_result;
+      continue;
+    }
+
+    uint16_t actual_crc = 0;
+    const record_validate_result_t validate_result =
+      ValidateRecord(&verify, &actual_crc);
+    if (validate_result == RECORD_VALIDATE_OK) {
+      return ESP_OK;
+    }
+    last_error = ESP_ERR_INVALID_RESPONSE;
+  }
+
+  ((fram_log_t*)log)->saw_corruption = true;
+  ESP_LOGE(kTag,
+           "FRAM write verify failed at index=%u slot=%u addr=0x%04x: %s",
+           (unsigned)record_index,
+           (unsigned)(record_index % ((fram_log_t*)log)->capacity_records),
+           (unsigned)address,
+           esp_err_to_name(last_error));
+  return last_error;
 }
 
 static esp_err_t
@@ -146,8 +232,7 @@ ReadRecord(const fram_log_t* log,
            log_record_t* record_out)
 {
   const uint32_t address = RecordAddressForIndex(log, record_index);
-  esp_err_t result =
-    IoRead(log, address, record_out, sizeof(*record_out));
+  esp_err_t result = IoRead(log, address, record_out, sizeof(*record_out));
   if (result != ESP_OK) {
     return result;
   }
@@ -439,8 +524,8 @@ FramLogPersistHeader(fram_log_t* log)
   // Alternate header copies to reduce single-address pounding (even though FRAM
   // tolerates it well).
   const uint8_t next_copy_index = (uint8_t)((log->header_copy_index + 1u) % 2u);
-  const uint32_t address = (next_copy_index == 0u) ? kHeaderCopy0Address
-                                                   : kHeaderCopy1Address;
+  const uint32_t address =
+    (next_copy_index == 0u) ? kHeaderCopy0Address : kHeaderCopy1Address;
 
   esp_err_t result = WriteHeaderAt(log, address, &header);
   if (result != ESP_OK) {
@@ -624,9 +709,38 @@ FramLogSkipCorruptedRecord(fram_log_t* log)
   if (log->record_count == 0) {
     return ESP_ERR_NOT_FOUND;
   }
-  ESP_LOGW(kTag,
-           "Skipping corrupted record at index=%u",
-           (unsigned)log->read_index);
+
+  // Best-effort detail to help diagnose why corruption occurred.
+  const uint32_t address = RecordAddressForIndex(log, log->read_index);
+  log_record_t record;
+  const esp_err_t read_result = IoRead(log, address, &record, sizeof(record));
+  if (read_result == ESP_OK) {
+    uint16_t actual_crc = 0;
+    const record_validate_result_t validate_result =
+      ValidateRecord(&record, &actual_crc);
+    const uint16_t expected_crc = record.crc16_ccitt;
+    ESP_LOGW(kTag,
+             "Skipping corrupted record at index=%u slot=%u addr=0x%04x "
+             "reason=%s magic=0x%08" PRIx32 " schema=%" PRIu32 " "
+             "exp_crc=0x%04x act_crc=0x%04x",
+             (unsigned)log->read_index,
+             (unsigned)(log->read_index % log->capacity_records),
+             (unsigned)address,
+             RecordValidateResultToString(validate_result),
+             record.magic,
+             record.schema_version,
+             (unsigned)expected_crc,
+             (unsigned)actual_crc);
+  } else {
+    ESP_LOGW(kTag,
+             "Skipping corrupted record at index=%u slot=%u addr=0x%04x "
+             "(read failed: %s)",
+             (unsigned)log->read_index,
+             (unsigned)(log->read_index % log->capacity_records),
+             (unsigned)address,
+             esp_err_to_name(read_result));
+  }
+
   log->saw_corruption = true;
   log->read_index++;
   log->record_count--;

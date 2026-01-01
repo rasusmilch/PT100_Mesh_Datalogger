@@ -696,7 +696,14 @@ DisplayTask(void* context)
     const bool runtime_running = state->cached_status.runtime_running;
     const bool stop_requested = state->cached_status.stop_requested;
     if (!runtime_running) {
-      const char* text = stop_requested ? "STOP " : "IDLE ";
+      const bool stop_save_active =
+        stop_requested && (state->cached_status.fram_count > 0u ||
+                           state->cached_status.sd_mounted);
+
+      // Operator feedback:
+      // - "SAVE" while draining/unmounting after stop
+      // - "IDLE" once fully stopped and SD is unmounted
+      const char* text = stop_save_active ? "SAVE " : "IDLE ";
       if (strncmp(last_text, text, sizeof(last_text)) != 0) {
         Max7219DisplaySetText(&state->display, text);
         snprintf(last_text, sizeof(last_text), "%s", text);
@@ -750,15 +757,21 @@ SetRunLogPolicy(void)
 {
   // Keep run-time logging quiet by default to avoid drowning the operator,
   // but always allow warning/error logs from critical subsystems.
-  esp_log_level_set("*", ESP_LOG_NONE);
-  esp_log_level_set("runtime", ESP_LOG_WARN);
-  esp_log_level_set("sd_logger", ESP_LOG_WARN);
-  esp_log_level_set("sd_csv_verify", ESP_LOG_WARN);
-  esp_log_level_set("fram_log", ESP_LOG_WARN);
-  esp_log_level_set("max7219", ESP_LOG_WARN);
-  esp_log_level_set("max31865", ESP_LOG_WARN);
-  esp_log_level_set("mesh", ESP_LOG_WARN);
-  g_state.log_quiet = true;
+  // esp_log_level_set("*", ESP_LOG_NONE);
+  // esp_log_level_set("runtime", ESP_LOG_WARN);
+  // esp_log_level_set("sd_logger", ESP_LOG_WARN);
+  // esp_log_level_set("sd_csv_verify", ESP_LOG_WARN);
+  // esp_log_level_set("fram_log", ESP_LOG_WARN);
+  // esp_log_level_set("max7219", ESP_LOG_WARN);
+  // esp_log_level_set("max31865", ESP_LOG_WARN);
+  // esp_log_level_set("mesh", ESP_LOG_WARN);
+  // g_state.log_quiet = true;
+
+  // Operator console and data console are separate. Do not suppress logs in run
+  // mode; rely on ESP-IDF's configured log levels (menuconfig / defaults).
+  //
+  // This ensures mount/flush INFO logs (e.g., sd_logger/runtime) are visible.
+  g_state.log_quiet = false;
 }
 
 static void
@@ -1292,8 +1305,9 @@ SdFlushWorkerTick(runtime_state_t* state,
   }
   if (records_used == 0 || bytes_used == 0) {
     // We still have buffered records, but couldn't build a batch this pass
-    // (e.g., time jumped while formatting dates or a corrupted record was skipped).
-    // Keep the flush pending so we retry soon instead of waiting for watermark/periodic.
+    // (e.g., time jumped while formatting dates or a corrupted record was
+    // skipped). Keep the flush pending so we retry soon instead of waiting for
+    // watermark/periodic.
     if (more_pending_out != NULL) {
       *more_pending_out = true;
     }
@@ -2693,8 +2707,11 @@ EnterRunMode(void)
 esp_err_t
 EnterDiagMode(void)
 {
+  RuntimeSetLogPolicyDiag();
   RuntimeEnableDataStreaming(false);
+  ESP_LOGW(kTag, "Stop: sampling halt requested");
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
+  ESP_LOGW(kTag, "Stop: draining FRAM->SD (and unmounting)");
   sd_drain_stats_t drain_stats = { 0 };
   esp_err_t flush_result = DrainFramToSd(&g_state,
                                          true,
@@ -2713,8 +2730,9 @@ EnterDiagMode(void)
              esp_err_to_name(flush_result),
              drain_stats.remaining_records);
   }
+  ESP_LOGW(kTag, "Stop: finalize");
   esp_err_t finalize_result = RuntimeStopAllTasks(&g_state);
-  RuntimeSetLogPolicyDiag();
+
   if (stop_result != ESP_OK) {
     return stop_result;
   }
