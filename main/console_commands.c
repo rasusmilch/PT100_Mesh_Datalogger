@@ -259,6 +259,15 @@ CommandStatus(int argc, char** argv)
   printf("allow_children: %s\n", settings->allow_children ? "yes" : "no");
   printf("tz_posix: %s\n", settings->tz_posix);
   printf("dst_enabled: %s\n", settings->dst_enabled ? "yes" : "no");
+  printf("mqtt_enabled: %s\n", settings->mqtt_enabled ? "yes" : "no");
+  printf("mqtt_broker_uri: %s\n", settings->mqtt_broker_uri);
+  printf("mqtt_topic_prefix: %s\n", settings->mqtt_topic_prefix);
+  printf("mqtt_qos: %u\n", (unsigned)settings->mqtt_qos);
+  printf("mqtt_retain: %s\n", settings->mqtt_retain ? "yes" : "no");
+  if (settings->node_role == APP_NODE_ROLE_ROOT) {
+    printf("mqtt_bridge_mode: %s\n",
+           AppSettingsMqttBridgeModeToString(settings->mqtt_bridge_mode));
+  }
 
   // Ensure the TZ rules are loaded before formatting local time.
   // (TZ is applied via AppSettingsApplyTimeZone() at boot and by the tz/dst
@@ -322,8 +331,46 @@ CommandStatus(int argc, char** argv)
     (g_runtime->export_write_fail_count != NULL)
       ? *g_runtime->export_write_fail_count
       : 0u;
-  printf("export_dropped_count: %u\n", (unsigned)export_dropped);
-  printf("export_write_fail_count: %u\n", (unsigned)export_write_fail);
+  printf("data_csv_drop_count: %u\n", (unsigned)export_dropped);
+  printf("data_csv_write_fail_count: %u\n", (unsigned)export_write_fail);
+  const uint32_t export_drop_count =
+    (g_runtime->export_drop_count != NULL) ? *g_runtime->export_drop_count : 0u;
+  const uint32_t export_send_fail_count =
+    (g_runtime->export_send_fail_count != NULL)
+      ? *g_runtime->export_send_fail_count
+      : 0u;
+  const uint32_t broker_drop_count =
+    (g_runtime->broker_drop_count != NULL) ? *g_runtime->broker_drop_count : 0u;
+  const uint32_t broker_send_fail_count =
+    (g_runtime->broker_send_fail_count != NULL)
+      ? *g_runtime->broker_send_fail_count
+      : 0u;
+  const bool mqtt_connected =
+    (g_runtime->mqtt_client_connected != NULL)
+      ? *g_runtime->mqtt_client_connected
+      : false;
+  UBaseType_t export_outbox_used = 0;
+  if (g_runtime->export_outbox != NULL && *g_runtime->export_outbox != NULL) {
+    export_outbox_used = uxQueueMessagesWaiting(*g_runtime->export_outbox);
+  }
+  printf("mqtt_connected: %s\n", mqtt_connected ? "yes" : "no");
+  printf("export_outbox_depth/used: %u/%u\n",
+         (unsigned)CONFIG_APP_EXPORT_OUTBOX_DEPTH,
+         (unsigned)export_outbox_used);
+  printf("export_drop_count: %u\n", (unsigned)export_drop_count);
+  printf("export_send_fail_count: %u\n", (unsigned)export_send_fail_count);
+  if (settings->node_role == APP_NODE_ROLE_ROOT) {
+    UBaseType_t broker_outbox_used = 0;
+    if (g_runtime->broker_outbox != NULL && *g_runtime->broker_outbox != NULL) {
+      broker_outbox_used = uxQueueMessagesWaiting(*g_runtime->broker_outbox);
+    }
+    printf("broker_outbox_depth/used: %u/%u\n",
+           (unsigned)CONFIG_APP_BROKER_OUTBOX_DEPTH,
+           (unsigned)broker_outbox_used);
+    printf("broker_drop_count: %u\n", (unsigned)broker_drop_count);
+    printf("broker_send_fail_count: %u\n",
+           (unsigned)broker_send_fail_count);
+  }
 
   printf("calibration: mode=%s degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
          CalibrationModeToString(settings->calibration.mode),
@@ -2020,6 +2067,184 @@ CommandNet(int argc, char** argv)
   return 1;
 }
 
+static void
+PrintMqttRestartNote(void)
+{
+  if (RuntimeIsRunning()) {
+    printf("Change applied; takes effect after run stop/start\n");
+  }
+}
+
+static int
+CommandMqtt(int argc, char** argv)
+{
+  if (g_runtime == NULL) {
+    return 1;
+  }
+  if (argc < 2) {
+    printf("usage: mqtt show | mqtt enable on|off | mqtt broker set <uri> | "
+           "mqtt prefix set <prefix> | mqtt qos set 0|1 | mqtt retain set "
+           "on|off | mqtt bridge set off|serial|broker|both\n");
+    return 1;
+  }
+
+  app_settings_t* settings = g_runtime->settings;
+  const char* action = argv[1];
+
+  if (strcmp(action, "show") == 0) {
+    printf("mqtt_enabled: %s\n", settings->mqtt_enabled ? "yes" : "no");
+    printf("mqtt_broker_uri: %s\n", settings->mqtt_broker_uri);
+    printf("mqtt_topic_prefix: %s\n", settings->mqtt_topic_prefix);
+    printf("mqtt_qos: %u\n", (unsigned)settings->mqtt_qos);
+    printf("mqtt_retain: %s\n", settings->mqtt_retain ? "yes" : "no");
+    printf("mqtt_bridge_mode: %s\n",
+           AppSettingsMqttBridgeModeToString(settings->mqtt_bridge_mode));
+    return 0;
+  }
+
+  if (strcmp(action, "enable") == 0) {
+    if (argc != 3) {
+      printf("usage: mqtt enable on|off\n");
+      return 1;
+    }
+    const bool enabled = (strcmp(argv[2], "on") == 0);
+    if (!enabled && strcmp(argv[2], "off") != 0) {
+      printf("usage: mqtt enable on|off\n");
+      return 1;
+    }
+    settings->mqtt_enabled = enabled;
+    esp_err_t result = AppSettingsSaveMqttEnabled(enabled);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("mqtt_enabled set to %s\n", enabled ? "on" : "off");
+    PrintMqttRestartNote();
+    return 0;
+  }
+
+  if (strcmp(action, "broker") == 0) {
+    if (argc != 4 || strcmp(argv[2], "set") != 0) {
+      printf("usage: mqtt broker set <uri>\n");
+      return 1;
+    }
+    const char* uri = argv[3];
+    if (uri[0] == '\0') {
+      printf("invalid broker uri\n");
+      return 1;
+    }
+    esp_err_t result = AppSettingsSaveMqttBrokerUri(uri);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    snprintf(settings->mqtt_broker_uri,
+             sizeof(settings->mqtt_broker_uri),
+             "%s",
+             uri);
+    printf("mqtt_broker_uri set to %s\n", settings->mqtt_broker_uri);
+    PrintMqttRestartNote();
+    return 0;
+  }
+
+  if (strcmp(action, "prefix") == 0) {
+    if (argc != 4 || strcmp(argv[2], "set") != 0) {
+      printf("usage: mqtt prefix set <prefix>\n");
+      return 1;
+    }
+    const char* prefix = argv[3];
+    if (prefix[0] == '\0') {
+      printf("invalid prefix\n");
+      return 1;
+    }
+    esp_err_t result = AppSettingsSaveMqttTopicPrefix(prefix);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    snprintf(settings->mqtt_topic_prefix,
+             sizeof(settings->mqtt_topic_prefix),
+             "%s",
+             prefix);
+    printf("mqtt_topic_prefix set to %s\n", settings->mqtt_topic_prefix);
+    PrintMqttRestartNote();
+    return 0;
+  }
+
+  if (strcmp(action, "qos") == 0) {
+    if (argc != 4 || strcmp(argv[2], "set") != 0) {
+      printf("usage: mqtt qos set 0|1\n");
+      return 1;
+    }
+    char* end = NULL;
+    long qos_long = strtol(argv[3], &end, 10);
+    if (end == argv[3] || *end != '\0' || (qos_long != 0 && qos_long != 1)) {
+      printf("usage: mqtt qos set 0|1\n");
+      return 1;
+    }
+    settings->mqtt_qos = (uint8_t)qos_long;
+    esp_err_t result = AppSettingsSaveMqttQos((uint8_t)qos_long);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("mqtt_qos set to %ld\n", qos_long);
+    PrintMqttRestartNote();
+    return 0;
+  }
+
+  if (strcmp(action, "retain") == 0) {
+    if (argc != 4 || strcmp(argv[2], "set") != 0) {
+      printf("usage: mqtt retain set on|off\n");
+      return 1;
+    }
+    const bool retain = (strcmp(argv[3], "on") == 0);
+    if (!retain && strcmp(argv[3], "off") != 0) {
+      printf("usage: mqtt retain set on|off\n");
+      return 1;
+    }
+    settings->mqtt_retain = retain;
+    esp_err_t result = AppSettingsSaveMqttRetain(retain);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("mqtt_retain set to %s\n", retain ? "on" : "off");
+    PrintMqttRestartNote();
+    return 0;
+  }
+
+  if (strcmp(action, "bridge") == 0) {
+    if (argc != 4 || strcmp(argv[2], "set") != 0) {
+      printf("usage: mqtt bridge set off|serial|broker|both\n");
+      return 1;
+    }
+    mqtt_bridge_mode_t mode = MQTT_BRIDGE_OFF;
+    if (!AppSettingsParseMqttBridgeMode(argv[3], &mode)) {
+      printf("usage: mqtt bridge set off|serial|broker|both\n");
+      return 1;
+    }
+    settings->mqtt_bridge_mode = mode;
+    esp_err_t result = AppSettingsSaveMqttBridgeMode(mode);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    if (settings->node_role != APP_NODE_ROLE_ROOT) {
+      printf("note: bridge mode applies to root nodes\n");
+    }
+    printf("mqtt_bridge_mode set to %s\n",
+           AppSettingsMqttBridgeModeToString(mode));
+    PrintMqttRestartNote();
+    return 0;
+  }
+
+  printf("unknown action. usage: mqtt show | mqtt enable on|off | mqtt broker "
+         "set <uri> | mqtt prefix set <prefix> | mqtt qos set 0|1 | mqtt "
+         "retain set on|off | mqtt bridge set off|serial|broker|both\n");
+  return 1;
+}
+
 static int
 CommandChildren(int argc, char** argv)
 {
@@ -2389,6 +2614,16 @@ RegisterCommands(void)
     .func = &CommandLog,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&log_cmd));
+
+  const esp_console_cmd_t mqtt_cmd = {
+    .command = "mqtt",
+    .help = "MQTT settings: mqtt show | mqtt enable on|off | mqtt broker set "
+            "<uri> | mqtt prefix set <prefix> | mqtt qos set 0|1 | mqtt "
+            "retain set on|off | mqtt bridge set off|serial|broker|both",
+    .hint = NULL,
+    .func = &CommandMqtt,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&mqtt_cmd));
 
   g_cal_args.action =
     arg_str1(NULL, NULL, "<action>", "clear|add|list|show|apply|live|capture");

@@ -43,6 +43,12 @@ static const char* kKeyDisplayUnits = "disp_units";
 static const char* kKeyDisplayAttentionMask = "disp_attn";
 static const char* kKeyDisplayAttentionPolicy = "disp_attn_pol";
 static const char* kKeyNetMode = "net_mode";
+static const char* kKeyMqttEnabled = "mqtt_en";
+static const char* kKeyMqttBrokerUri = "mqtt_uri";
+static const char* kKeyMqttTopicPrefix = "mqtt_pfx";
+static const char* kKeyMqttQos = "mqtt_qos";
+static const char* kKeyMqttRetain = "mqtt_ret";
+static const char* kKeyMqttBridgeMode = "mqtt_bmode";
 static const uint8_t kCalibrationContextVersion = 1;
 static uint32_t g_display_attention_policy = 0;
 static display_attention_mask_t g_display_attention_mask = 0;
@@ -161,6 +167,48 @@ AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out)
   return false;
 }
 
+const char*
+AppSettingsMqttBridgeModeToString(mqtt_bridge_mode_t mode)
+{
+  switch (mode) {
+    case MQTT_BRIDGE_OFF:
+      return "OFF";
+    case MQTT_BRIDGE_SERIAL:
+      return "SERIAL";
+    case MQTT_BRIDGE_BROKER:
+      return "BROKER";
+    case MQTT_BRIDGE_BOTH:
+      return "BOTH";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+bool
+AppSettingsParseMqttBridgeMode(const char* value, mqtt_bridge_mode_t* mode_out)
+{
+  if (value == NULL || mode_out == NULL) {
+    return false;
+  }
+  if (strcasecmp(value, "off") == 0) {
+    *mode_out = MQTT_BRIDGE_OFF;
+    return true;
+  }
+  if (strcasecmp(value, "serial") == 0) {
+    *mode_out = MQTT_BRIDGE_SERIAL;
+    return true;
+  }
+  if (strcasecmp(value, "broker") == 0) {
+    *mode_out = MQTT_BRIDGE_BROKER;
+    return true;
+  }
+  if (strcasecmp(value, "both") == 0) {
+    *mode_out = MQTT_BRIDGE_BOTH;
+    return true;
+  }
+  return false;
+}
+
 static void
 ApplyDefaults(app_settings_t* settings)
 {
@@ -189,6 +237,18 @@ ApplyDefaults(app_settings_t* settings)
   settings->display_attention_mask =
     AppSettingsDefaultDisplayAttentionMask();
   settings->net_mode = APP_NET_MODE_MESH;
+  settings->mqtt_enabled = false;
+  snprintf(settings->mqtt_broker_uri,
+           sizeof(settings->mqtt_broker_uri),
+           "%s",
+           APP_SETTINGS_MQTT_BROKER_URI_DEFAULT);
+  snprintf(settings->mqtt_topic_prefix,
+           sizeof(settings->mqtt_topic_prefix),
+           "%s",
+           APP_SETTINGS_MQTT_TOPIC_PREFIX_DEFAULT);
+  settings->mqtt_qos = 0;
+  settings->mqtt_retain = false;
+  settings->mqtt_bridge_mode = MQTT_BRIDGE_BROKER;
   g_display_attention_policy = settings->display_attention_policy;
   g_display_attention_mask = settings->display_attention_mask;
 }
@@ -448,6 +508,56 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->net_mode = (app_net_mode_t)net_mode;
   }
 
+  uint8_t mqtt_enabled = settings_out->mqtt_enabled ? 1 : 0;
+  result = nvs_get_u8(handle, kKeyMqttEnabled, &mqtt_enabled);
+  if (result == ESP_OK && mqtt_enabled <= 1) {
+    settings_out->mqtt_enabled = (mqtt_enabled == 1);
+  }
+
+  size_t broker_len = sizeof(settings_out->mqtt_broker_uri);
+  result = nvs_get_str(handle,
+                       kKeyMqttBrokerUri,
+                       settings_out->mqtt_broker_uri,
+                       &broker_len);
+  if (result != ESP_OK || broker_len == 0 ||
+      broker_len > sizeof(settings_out->mqtt_broker_uri)) {
+    snprintf(settings_out->mqtt_broker_uri,
+             sizeof(settings_out->mqtt_broker_uri),
+             "%s",
+             APP_SETTINGS_MQTT_BROKER_URI_DEFAULT);
+  }
+
+  size_t prefix_len = sizeof(settings_out->mqtt_topic_prefix);
+  result = nvs_get_str(handle,
+                       kKeyMqttTopicPrefix,
+                       settings_out->mqtt_topic_prefix,
+                       &prefix_len);
+  if (result != ESP_OK || prefix_len == 0 ||
+      prefix_len > sizeof(settings_out->mqtt_topic_prefix)) {
+    snprintf(settings_out->mqtt_topic_prefix,
+             sizeof(settings_out->mqtt_topic_prefix),
+             "%s",
+             APP_SETTINGS_MQTT_TOPIC_PREFIX_DEFAULT);
+  }
+
+  uint8_t mqtt_qos = settings_out->mqtt_qos;
+  result = nvs_get_u8(handle, kKeyMqttQos, &mqtt_qos);
+  if (result == ESP_OK && mqtt_qos <= 1) {
+    settings_out->mqtt_qos = mqtt_qos;
+  }
+
+  uint8_t mqtt_retain = settings_out->mqtt_retain ? 1 : 0;
+  result = nvs_get_u8(handle, kKeyMqttRetain, &mqtt_retain);
+  if (result == ESP_OK && mqtt_retain <= 1) {
+    settings_out->mqtt_retain = (mqtt_retain == 1);
+  }
+
+  uint8_t mqtt_bridge_mode = (uint8_t)settings_out->mqtt_bridge_mode;
+  result = nvs_get_u8(handle, kKeyMqttBridgeMode, &mqtt_bridge_mode);
+  if (result == ESP_OK && mqtt_bridge_mode <= (uint8_t)MQTT_BRIDGE_BOTH) {
+    settings_out->mqtt_bridge_mode = (mqtt_bridge_mode_t)mqtt_bridge_mode;
+  }
+
   uint32_t display_attention_policy =
     (uint32_t)settings_out->display_attention_policy;
   esp_err_t policy_result =
@@ -498,7 +608,7 @@ AppSettingsLoad(app_settings_t* settings_out)
   nvs_close(handle);
   ESP_LOGI(
     kTag,
-    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s net_mode=%s disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
+    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s net_mode=%s mqtt_en=%u mqtt_uri=%s mqtt_pfx=%s mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
     (unsigned)settings_out->log_period_ms,
     (unsigned)settings_out->fram_flush_watermark_records,
     (unsigned)settings_out->sd_flush_period_ms,
@@ -511,6 +621,12 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->allow_children ? 1u : 0u,
     AppSettingsDisplayUnitsToString(settings_out->display_units),
     AppSettingsNetModeToString(settings_out->net_mode),
+    settings_out->mqtt_enabled ? 1u : 0u,
+    settings_out->mqtt_broker_uri,
+    settings_out->mqtt_topic_prefix,
+    (unsigned)settings_out->mqtt_qos,
+    settings_out->mqtt_retain ? 1u : 0u,
+    AppSettingsMqttBridgeModeToString(settings_out->mqtt_bridge_mode),
     (uint32_t)settings_out->display_attention_policy,
     (uint32_t)settings_out->display_attention_mask);
   return ESP_OK;
@@ -789,6 +905,116 @@ AppSettingsSaveNetMode(app_net_mode_t mode)
   }
 
   result = nvs_set_u8(handle, kKeyNetMode, (uint8_t)mode);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveMqttEnabled(bool enabled)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u8(handle, kKeyMqttEnabled, enabled ? 1 : 0);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveMqttBrokerUri(const char* uri)
+{
+  if (uri == NULL || uri[0] == '\0' ||
+      strlen(uri) >= sizeof(((app_settings_t*)0)->mqtt_broker_uri)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_str(handle, kKeyMqttBrokerUri, uri);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveMqttTopicPrefix(const char* prefix)
+{
+  if (prefix == NULL || prefix[0] == '\0' ||
+      strlen(prefix) >= sizeof(((app_settings_t*)0)->mqtt_topic_prefix)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_str(handle, kKeyMqttTopicPrefix, prefix);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveMqttQos(uint8_t qos)
+{
+  if (qos > 1) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u8(handle, kKeyMqttQos, qos);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveMqttRetain(bool retain)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u8(handle, kKeyMqttRetain, retain ? 1 : 0);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveMqttBridgeMode(mqtt_bridge_mode_t mode)
+{
+  if (mode > MQTT_BRIDGE_BOTH) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u8(handle, kKeyMqttBridgeMode, (uint8_t)mode);
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }

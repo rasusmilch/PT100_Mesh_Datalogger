@@ -39,6 +39,13 @@ extern "C" {
     bool* fram_full;
     uint32_t* export_dropped_count;
     uint32_t* export_write_fail_count;
+    QueueHandle_t* export_outbox;
+    QueueHandle_t* broker_outbox;
+    uint32_t* export_drop_count;
+    uint32_t* export_send_fail_count;
+    uint32_t* broker_drop_count;
+    uint32_t* broker_send_fail_count;
+    bool* mqtt_client_connected;
   } app_runtime_t;
 
   typedef struct

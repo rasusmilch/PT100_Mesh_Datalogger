@@ -43,9 +43,16 @@ typedef struct
 } mesh_message_t;
 #pragma pack(pop)
 
+typedef struct
+{
+  uint8_t src_mac[6];
+  log_record_t record;
+} mesh_publish_record_payload_t;
+
 static const uint32_t kRawMsgIdRecord = 0x00000001u;
 static const uint32_t kRawMsgIdTimeRequest = 0x00000002u;
 static const uint32_t kRawMsgIdTimeSync = 0x00000003u;
+static const uint32_t kRawMsgIdPublishRecord = 0x00000004u;
 
 static const uint32_t kRawMsgMaxRetry = 3u;
 static const uint16_t kRawMsgRetryIntervalMs = 300u;
@@ -140,6 +147,34 @@ OnRawRecord(uint8_t* data,
 }
 
 static esp_err_t
+OnRawPublishRecord(uint8_t* data,
+                   uint32_t len,
+                   uint8_t** out_data,
+                   uint32_t* out_len,
+                   uint32_t seq)
+{
+  (void)seq;
+  ResetRawMessageOutput(out_data, out_len);
+
+  if (g_mesh == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (len < sizeof(mesh_publish_record_payload_t)) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+
+  mesh_publish_record_payload_t payload;
+  memcpy(&payload, data, sizeof(payload));
+
+  if (g_mesh->publish_record_rx_callback != NULL) {
+    g_mesh->publish_record_rx_callback(
+      payload.src_mac, &payload.record, g_mesh->publish_record_rx_context);
+  }
+  return ESP_OK;
+}
+
+static esp_err_t
 OnRawTimeRequest(uint8_t* data,
                  uint32_t len,
                  uint8_t** out_data,
@@ -223,6 +258,7 @@ OnRawTimeSync(uint8_t* data,
 
 static const esp_mesh_lite_raw_msg_action_t kMeshRawActions[] = {
   { kRawMsgIdRecord, 0, OnRawRecord },
+  { kRawMsgIdPublishRecord, 0, OnRawPublishRecord },
   { kRawMsgIdTimeRequest, 0, OnRawTimeRequest },
   { kRawMsgIdTimeSync, 0, OnRawTimeSync },
   ESP_MESH_LITE_RAW_MSG_ACTION_END,
@@ -400,6 +436,8 @@ MeshTransportStart(mesh_transport_t* mesh,
                    const char* router_password,
                    mesh_record_rx_callback_t record_rx_callback,
                    void* record_rx_context,
+                   mesh_publish_record_rx_callback_t publish_record_rx_callback,
+                   void* publish_record_rx_context,
                    const time_sync_t* time_sync)
 {
   if (mesh == NULL) {
@@ -409,6 +447,8 @@ MeshTransportStart(mesh_transport_t* mesh,
   mesh->is_root = is_root;
   mesh->record_rx_callback = record_rx_callback;
   mesh->record_rx_context = record_rx_context;
+  mesh->publish_record_rx_callback = publish_record_rx_callback;
+  mesh->publish_record_rx_context = publish_record_rx_context;
   mesh->time_sync = time_sync;
 
   g_mesh = mesh;
@@ -566,6 +606,27 @@ MeshTransportSendRecord(const mesh_transport_t* mesh,
   return SendRawMessage(kRawMsgIdRecord,
                         (const uint8_t*)&msg,
                         msg_size,
+                        esp_mesh_lite_send_raw_msg_to_root);
+}
+
+esp_err_t
+MeshTransportSendPublishRecord(const mesh_transport_t* mesh,
+                               const uint8_t src_mac[6],
+                               const log_record_t* record)
+{
+  if (mesh == NULL || record == NULL || src_mac == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!mesh->mesh_lite_started || !mesh->is_connected) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  mesh_publish_record_payload_t payload;
+  memset(&payload, 0, sizeof(payload));
+  memcpy(payload.src_mac, src_mac, sizeof(payload.src_mac));
+  payload.record = *record;
+  return SendRawMessage(kRawMsgIdPublishRecord,
+                        (const uint8_t*)&payload,
+                        sizeof(payload),
                         esp_mesh_lite_send_raw_msg_to_root);
 }
 

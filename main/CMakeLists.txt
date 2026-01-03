@@ -24,8 +24,10 @@ idf_component_register(
     "fram_log.c"
     "fram_spi.c"
     "i2c_bus.c"
+    "log_rate_limit.c"
     "max31865_reader.c"
     "max7219_display.c"
+    "mqtt_client_wrap.c"
     "pt100_table.c"
     "mesh_transport.c"
     "runtime_health.c"
@@ -54,6 +56,7 @@ idf_component_register(
     driver
     esp_rom
     mbedtls
+    espressif__mqtt
 )
 
 # Mesh-Lite invokes esp_wifi_scan_start() internally. We observed scan configs reaching the

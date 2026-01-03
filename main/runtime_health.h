@@ -40,6 +40,11 @@ extern "C" {
     // export
     uint32_t export_dropped_count;
     uint32_t export_write_fail_count;
+    uint32_t export_drop_count;
+    uint32_t export_send_fail_count;
+    uint32_t broker_drop_count;
+    uint32_t broker_send_fail_count;
+    bool mqtt_connected;
 
     // attention config (what to show)
     uint32_t disp_attn_mask;

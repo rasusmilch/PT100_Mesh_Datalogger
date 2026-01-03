@@ -538,6 +538,8 @@ RunDiagMesh(const app_runtime_t* runtime,
                                         CONFIG_APP_WIFI_ROUTER_PASSWORD,
                                         NULL,
                                         NULL,
+                                        NULL,
+                                        NULL,
                                         runtime->time_sync);
       mesh_started_by_diag = (start_result == ESP_OK);
     }
