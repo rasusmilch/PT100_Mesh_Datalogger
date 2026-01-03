@@ -12,11 +12,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "log_record.h"
 #include "alerts/alert_manager.h"
 #include "i2c_bus.h"
 #include "max31865_reader.h"
 #include "max7219_display.h"
 #include "mesh_transport.h"
+#include "mqtt_client_wrap.h"
 #include "runtime_health.h"
 #include "sd_logger.h"
 #include "time_sync.h"
@@ -57,6 +59,11 @@ extern "C" {
     // export counters (written by export/storage path)
     uint32_t export_dropped_count;
     uint32_t export_write_fail_count;
+    uint32_t export_drop_count;
+    uint32_t export_send_fail_count;
+    uint32_t broker_drop_count;
+    uint32_t broker_send_fail_count;
+    bool mqtt_connected;
 
     // runtime
     bool runtime_running;
@@ -81,9 +88,23 @@ extern "C" {
     volatile bool dirty;
   } runtime_health_publisher_state_t;
 
+  typedef struct
+  {
+    uint8_t src_mac[6];
+    log_record_t record;
+  } export_record_item_t;
+
   typedef struct runtime_state_t
   {
     app_settings_t settings;
+    app_net_mode_t net_mode_active;
+    app_node_role_t node_role_active;
+    bool mqtt_enabled_active;
+    char mqtt_broker_uri_active[128];
+    char mqtt_topic_prefix_active[64];
+    uint8_t mqtt_qos_active;
+    bool mqtt_retain_active;
+    mqtt_bridge_mode_t mqtt_bridge_mode_active;
     fram_i2c_t fram_i2c;
     fram_io_t fram_io;
     fram_log_t fram_log;
@@ -95,6 +116,8 @@ extern "C" {
 
     QueueHandle_t log_queue;
     QueueHandle_t export_queue;
+    QueueHandle_t export_outbox;
+    QueueHandle_t broker_outbox;
     uint8_t* batch_buffer;
     size_t batch_buffer_size;
 
@@ -126,15 +149,19 @@ extern "C" {
     TickType_t last_sensor_fault_log_ticks;
 
     char node_id_string[32];
+    uint8_t local_mac[6];
 
     TaskHandle_t sensor_task;
     TaskHandle_t storage_task;
     TaskHandle_t export_task;
+    TaskHandle_t export_network_task;
     TaskHandle_t time_sync_task;
     TaskHandle_t topology_task;
     TaskHandle_t display_task;
     TaskHandle_t health_publisher_task;
     TaskHandle_t wifi_direct_task;
+    TaskHandle_t bridge_task;
+    TaskHandle_t broker_task;
     TaskHandle_t control_task;
     TaskHandle_t alert_monitor_task;
     TaskHandle_t alert_sender_task;
@@ -157,6 +184,10 @@ extern "C" {
 
     uint32_t export_dropped_count;
     uint32_t export_write_fail_count;
+    uint32_t export_drop_count;
+    uint32_t export_send_fail_count;
+    uint32_t broker_drop_count;
+    uint32_t broker_send_fail_count;
     bool csv_header_emitted;
 
     max7219_display_t display;
@@ -175,6 +206,13 @@ extern "C" {
     runtime_health_publisher_state_t health_publisher;
 
     alert_manager_t alert_manager;
+    mqtt_client_wrap_t mqtt_client;
+    bool mqtt_client_connected;
+    uint32_t last_export_drop_log_ms;
+    uint32_t last_export_fail_log_ms;
+    uint32_t last_broker_drop_log_ms;
+    uint32_t last_broker_fail_log_ms;
+    uint32_t last_mqtt_fail_log_ms;
   } runtime_state_t;
 
 #ifdef __cplusplus

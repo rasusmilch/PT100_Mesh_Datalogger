@@ -56,6 +56,11 @@ RuntimeHealthPublisherTick(runtime_state_t* state)
   snapshot.export_dropped_count = state->cached_status.export_dropped_count;
   snapshot.export_write_fail_count =
     state->cached_status.export_write_fail_count;
+  snapshot.export_drop_count = state->cached_status.export_drop_count;
+  snapshot.export_send_fail_count = state->cached_status.export_send_fail_count;
+  snapshot.broker_drop_count = state->cached_status.broker_drop_count;
+  snapshot.broker_send_fail_count = state->cached_status.broker_send_fail_count;
+  snapshot.mqtt_connected = state->cached_status.mqtt_connected;
   snapshot.disp_attn_mask = state->cached_status.disp_attn_mask;
   snapshot.disp_attn_pol = state->cached_status.disp_attn_pol;
   snapshot.last_drain_result = state->cached_status.last_drain_result;

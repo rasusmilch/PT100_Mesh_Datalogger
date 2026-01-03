@@ -18,6 +18,10 @@ extern "C"
                                             const log_record_t* record,
                                             void* context);
 
+  typedef void (*mesh_publish_record_rx_callback_t)(const uint8_t src_mac[6],
+                                                    const log_record_t* record,
+                                                    void* context);
+
   typedef struct
   {
     // NOTE: These flags are read/written from multiple tasks (event handler,
@@ -30,6 +34,8 @@ extern "C"
     pt100_mesh_addr_t root_address;
     mesh_record_rx_callback_t record_rx_callback;
     void* record_rx_context;
+    mesh_publish_record_rx_callback_t publish_record_rx_callback;
+    void* publish_record_rx_context;
     const time_sync_t* time_sync; // used for RTC updates on time sync messages
   } mesh_transport_t;
 
@@ -46,6 +52,9 @@ extern "C"
                                const char* router_password,
                                mesh_record_rx_callback_t record_rx_callback,
                                void* record_rx_context,
+                               mesh_publish_record_rx_callback_t
+                                 publish_record_rx_callback,
+                               void* publish_record_rx_context,
                                const time_sync_t* time_sync);
 
   bool MeshTransportIsConnected(const mesh_transport_t* mesh);
@@ -56,6 +65,11 @@ extern "C"
   // Leaf nodes: send a log record upstream to the root.
   esp_err_t MeshTransportSendRecord(const mesh_transport_t* mesh,
                                     const log_record_t* record);
+
+  // Leaf nodes: send a publish candidate upstream to the root.
+  esp_err_t MeshTransportSendPublishRecord(const mesh_transport_t* mesh,
+                                           const uint8_t src_mac[6],
+                                           const log_record_t* record);
 
   // Root nodes: broadcast time to all known nodes.
   esp_err_t MeshTransportBroadcastTime(const mesh_transport_t* mesh,

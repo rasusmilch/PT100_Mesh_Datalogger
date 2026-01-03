@@ -24,9 +24,11 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "i2c_bus.h"
+#include "log_rate_limit.h"
 #include "max31865_reader.h"
 #include "max7219_display.h"
 #include "mesh_transport.h"
+#include "mqtt_client_wrap.h"
 #include "runtime_health.h"
 #include "runtime_health_publisher.h"
 #include "runtime_state.h"
@@ -44,6 +46,9 @@ static const uint32_t kSdFlushWarnIntervalMs = 10000;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kSdFlushMinIntervalMs = 200;
 static const uint32_t kExportQueueDepth = 64;
+static const uint32_t kExportOutboxDepth = CONFIG_APP_EXPORT_OUTBOX_DEPTH;
+static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
+static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 
 static void
 UpdateCachedBool(runtime_state_t* state, bool* field, bool value)
@@ -90,8 +95,21 @@ typedef struct
   char node_id[32];
 } export_item_t;
 
+typedef struct
+{
+  char topic[128];
+  char payload[256];
+  uint16_t payload_len;
+} broker_publish_item_t;
+
 static runtime_state_t g_state;
 static app_runtime_t g_runtime;
+static StaticQueue_t g_export_outbox_queue_struct;
+static StaticQueue_t g_broker_outbox_queue_struct;
+static uint8_t g_export_outbox_storage[CONFIG_APP_EXPORT_OUTBOX_DEPTH *
+                                       sizeof(export_record_item_t)];
+static uint8_t g_broker_outbox_storage[CONFIG_APP_BROKER_OUTBOX_DEPTH *
+                                       sizeof(broker_publish_item_t)];
 static esp_err_t
 RuntimeFlushToSd(void* context);
 static void
@@ -177,6 +195,18 @@ ConversionModeToString(uint8_t mode)
     default:
       return "UNKNOWN";
   }
+}
+
+static bool
+BridgeModeUsesSerial(mqtt_bridge_mode_t mode)
+{
+  return mode == MQTT_BRIDGE_SERIAL || mode == MQTT_BRIDGE_BOTH;
+}
+
+static bool
+BridgeModeUsesBroker(mqtt_bridge_mode_t mode)
+{
+  return mode == MQTT_BRIDGE_BROKER || mode == MQTT_BRIDGE_BOTH;
 }
 
 static bool
@@ -844,6 +874,34 @@ CsvDataPortWriter(const char* bytes, size_t len, void* context)
 }
 
 static bool
+BuildMqttTopic(const char* prefix,
+               const char* node_id,
+               char* out,
+               size_t out_size)
+{
+  if (node_id == NULL || out == NULL || out_size == 0) {
+    return false;
+  }
+  const char* prefix_value = prefix;
+  if (prefix_value == NULL || prefix_value[0] == '\0') {
+    prefix_value = APP_SETTINGS_MQTT_TOPIC_PREFIX_DEFAULT;
+  }
+  const int written =
+    snprintf(out, out_size, "%s/%s/record", prefix_value, node_id);
+  return written > 0 && (size_t)written < out_size;
+}
+
+static bool
+BuildMqttPayload(const log_record_t* record,
+                 const char* node_id,
+                 char* out,
+                 size_t out_size,
+                 size_t* written_out)
+{
+  return CsvFormatRow(record, node_id, out, out_size, written_out);
+}
+
+static bool
 TryEmitCsvHeader(runtime_state_t* state)
 {
   if (state == NULL) {
@@ -862,6 +920,28 @@ TryEmitCsvHeader(runtime_state_t* state)
     return false;
   }
   return true;
+}
+
+static void
+SnapshotActiveSettings(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->node_role_active = state->settings.node_role;
+  state->net_mode_active = (state->settings.node_role == APP_NODE_ROLE_ROOT)
+                             ? APP_NET_MODE_MESH
+                             : state->settings.net_mode;
+  state->mqtt_enabled_active = state->settings.mqtt_enabled;
+  strlcpy(state->mqtt_broker_uri_active,
+          state->settings.mqtt_broker_uri,
+          sizeof(state->mqtt_broker_uri_active));
+  strlcpy(state->mqtt_topic_prefix_active,
+          state->settings.mqtt_topic_prefix,
+          sizeof(state->mqtt_topic_prefix_active));
+  state->mqtt_qos_active = state->settings.mqtt_qos;
+  state->mqtt_retain_active = state->settings.mqtt_retain;
+  state->mqtt_bridge_mode_active = state->settings.mqtt_bridge_mode;
 }
 
 static void
@@ -889,6 +969,86 @@ EnqueueExportRecord(runtime_state_t* state,
 }
 
 static void
+EnqueueExportOutbox(runtime_state_t* state,
+                    const uint8_t src_mac[6],
+                    const log_record_t* record)
+{
+  if (state == NULL || record == NULL || src_mac == NULL ||
+      state->export_outbox == NULL) {
+    return;
+  }
+
+  export_record_item_t item;
+  memset(&item, 0, sizeof(item));
+  memcpy(item.src_mac, src_mac, sizeof(item.src_mac));
+  item.record = *record;
+
+  if (xQueueSend(state->export_outbox, &item, 0) != pdTRUE) {
+    state->export_drop_count++;
+    UpdateCachedUint32(state,
+                       &state->cached_status.export_drop_count,
+                       state->export_drop_count);
+    if (LogRateLimitAllow(&state->last_export_drop_log_ms,
+                          kExportLogRateLimitMs)) {
+      ESP_LOGW(kTag, "export outbox full; dropping network export");
+    }
+  }
+}
+
+static void
+EnqueueBrokerPublish(runtime_state_t* state,
+                     const uint8_t src_mac[6],
+                     const log_record_t* record)
+{
+  if (state == NULL || src_mac == NULL || record == NULL ||
+      state->broker_outbox == NULL) {
+    return;
+  }
+
+  char node_id[32] = { 0 };
+  FormatMacString(src_mac, node_id, sizeof(node_id));
+
+  broker_publish_item_t publish_item;
+  memset(&publish_item, 0, sizeof(publish_item));
+  if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
+                      node_id,
+                      publish_item.topic,
+                      sizeof(publish_item.topic))) {
+    state->broker_send_fail_count++;
+    UpdateCachedUint32(state,
+                       &state->cached_status.broker_send_fail_count,
+                       state->broker_send_fail_count);
+    return;
+  }
+
+  size_t payload_len = 0;
+  if (!BuildMqttPayload(record,
+                        node_id,
+                        publish_item.payload,
+                        sizeof(publish_item.payload),
+                        &payload_len)) {
+    state->broker_send_fail_count++;
+    UpdateCachedUint32(state,
+                       &state->cached_status.broker_send_fail_count,
+                       state->broker_send_fail_count);
+    return;
+  }
+
+  publish_item.payload_len = (uint16_t)payload_len;
+
+  if (xQueueSend(state->broker_outbox, &publish_item, 0) != pdTRUE) {
+    state->broker_drop_count++;
+    UpdateCachedUint32(state,
+                       &state->cached_status.broker_drop_count,
+                       state->broker_drop_count);
+    if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
+                          kExportLogRateLimitMs)) {
+      ESP_LOGW(kTag, "broker outbox full; dropping publish");
+    }
+  }
+}
+
+static void
 RootRecordRxCallback(const pt100_mesh_addr_t* from,
                      const log_record_t* record,
                      void* context)
@@ -907,6 +1067,58 @@ RootRecordRxCallback(const pt100_mesh_addr_t* from,
     AlertManagerOnSample(
       &g_state.alert_manager, leaf_id, record, now_ms, now_epoch);
   }
+}
+
+static void
+RootPublishRecordRxCallback(const uint8_t src_mac[6],
+                            const log_record_t* record,
+                            void* context)
+{
+  (void)context;
+  EnqueueExportOutbox(&g_state, src_mac, record);
+}
+
+static void
+UpdateMqttConnectionState(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  const bool connected = MqttClientWrapIsConnected(&state->mqtt_client);
+  state->mqtt_client_connected = connected;
+  UpdateCachedBool(state, &state->cached_status.mqtt_connected, connected);
+}
+
+static void
+EnsureMqttClientState(runtime_state_t* state, bool should_run)
+{
+  if (state == NULL) {
+    return;
+  }
+  if (!should_run) {
+    MqttClientWrapStop(&state->mqtt_client);
+    UpdateMqttConnectionState(state);
+    return;
+  }
+
+  const bool wifi_connected = WifiManagerIsConnected();
+  if (!wifi_connected) {
+    MqttClientWrapStop(&state->mqtt_client);
+    UpdateMqttConnectionState(state);
+    return;
+  }
+
+  const esp_err_t start_result =
+    MqttClientWrapStart(&state->mqtt_client, state->mqtt_broker_uri_active);
+  if (start_result != ESP_OK) {
+    if (LogRateLimitAllow(&state->last_mqtt_fail_log_ms,
+                          kExportLogRateLimitMs)) {
+      ESP_LOGW(kTag,
+               "MQTT start failed: %s",
+               esp_err_to_name(start_result));
+    }
+  }
+  UpdateMqttConnectionState(state);
 }
 
 static esp_err_t
@@ -1451,8 +1663,7 @@ SensorTask(void* context)
     if (state->fram_full) {
       record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
     }
-    const bool mesh_connected =
-      false; // MeshTransportIsConnected(&state->mesh);
+    const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
     UpdateCachedBool(
       state, &state->cached_status.mesh_connected, mesh_connected);
     UpdateCachedInt32(
@@ -1516,6 +1727,256 @@ ExportTask(void* context)
 }
 
 static void
+ExportNetworkTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+
+  while (!state->stop_requested ||
+         (state->export_outbox != NULL &&
+          uxQueueMessagesWaiting(state->export_outbox) > 0)) {
+    if (state->export_outbox == NULL) {
+      vTaskDelay(pdMS_TO_TICKS(200));
+      continue;
+    }
+    export_record_item_t item;
+    if (xQueuePeek(state->export_outbox, &item, pdMS_TO_TICKS(500)) != pdTRUE) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
+    if (state->net_mode_active == APP_NET_MODE_MESH) {
+      if (!MeshTransportIsConnected(&state->mesh)) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        continue;
+      }
+      const esp_err_t send_result =
+        MeshTransportSendPublishRecord(&state->mesh,
+                                       item.src_mac,
+                                       &item.record);
+      if (send_result == ESP_OK) {
+        (void)xQueueReceive(state->export_outbox, &item, 0);
+      } else {
+        state->export_send_fail_count++;
+        UpdateCachedUint32(state,
+                           &state->cached_status.export_send_fail_count,
+                           state->export_send_fail_count);
+        if (LogRateLimitAllow(&state->last_export_fail_log_ms,
+                              kExportLogRateLimitMs)) {
+          ESP_LOGW(kTag, "mesh export send failed: %s",
+                   esp_err_to_name(send_result));
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+      }
+      continue;
+    }
+
+    const bool should_mqtt =
+      state->mqtt_enabled_active &&
+      state->net_mode_active == APP_NET_MODE_DIRECT_WIFI;
+    EnsureMqttClientState(state, should_mqtt);
+    if (!state->mqtt_client_connected) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    char node_id[32] = { 0 };
+    FormatMacString(item.src_mac, node_id, sizeof(node_id));
+    char topic[128] = { 0 };
+    if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
+                        node_id,
+                        topic,
+                        sizeof(topic))) {
+      state->export_send_fail_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.export_send_fail_count,
+                         state->export_send_fail_count);
+      (void)xQueueReceive(state->export_outbox, &item, 0);
+      continue;
+    }
+
+    size_t payload_len = 0;
+    char payload[256] = { 0 };
+    if (!BuildMqttPayload(&item.record,
+                          node_id,
+                          payload,
+                          sizeof(payload),
+                          &payload_len)) {
+      state->export_send_fail_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.export_send_fail_count,
+                         state->export_send_fail_count);
+      (void)xQueueReceive(state->export_outbox, &item, 0);
+      continue;
+    }
+
+    const esp_err_t publish_result =
+      MqttClientWrapPublish(&state->mqtt_client,
+                            topic,
+                            payload,
+                            (int)payload_len,
+                            state->mqtt_qos_active,
+                            state->mqtt_retain_active ? 1 : 0);
+    if (publish_result == ESP_OK) {
+      (void)xQueueReceive(state->export_outbox, &item, 0);
+    } else {
+      state->export_send_fail_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.export_send_fail_count,
+                         state->export_send_fail_count);
+      if (LogRateLimitAllow(&state->last_export_fail_log_ms,
+                            kExportLogRateLimitMs)) {
+        ESP_LOGW(kTag, "MQTT publish failed");
+      }
+      vTaskDelay(pdMS_TO_TICKS(500));
+    }
+  }
+
+  state->export_network_task = NULL;
+  vTaskDelete(NULL);
+}
+
+static void
+RootBridgeTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+
+  while (!state->stop_requested ||
+         (state->export_outbox != NULL &&
+          uxQueueMessagesWaiting(state->export_outbox) > 0)) {
+    export_record_item_t item;
+    if (state->export_outbox != NULL &&
+        xQueueReceive(state->export_outbox, &item, pdMS_TO_TICKS(500)) ==
+          pdTRUE) {
+      char node_id[32] = { 0 };
+      FormatMacString(item.src_mac, node_id, sizeof(node_id));
+
+      char payload[256] = { 0 };
+      size_t payload_len = 0;
+      if (!BuildMqttPayload(&item.record,
+                            node_id,
+                            payload,
+                            sizeof(payload),
+                            &payload_len)) {
+        state->export_send_fail_count++;
+        UpdateCachedUint32(state,
+                           &state->cached_status.export_send_fail_count,
+                           state->export_send_fail_count);
+        continue;
+      }
+
+      if (BridgeModeUsesSerial(state->mqtt_bridge_mode_active)) {
+        size_t written = 0;
+        const esp_err_t write_result =
+          DataPortWrite(payload, payload_len, &written);
+        if (write_result != ESP_OK || written != payload_len) {
+          state->export_send_fail_count++;
+          UpdateCachedUint32(state,
+                             &state->cached_status.export_send_fail_count,
+                             state->export_send_fail_count);
+          if (LogRateLimitAllow(&state->last_export_fail_log_ms,
+                                kExportLogRateLimitMs)) {
+            ESP_LOGW(kTag, "serial bridge write failed");
+          }
+        }
+      }
+
+      if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active)) {
+        broker_publish_item_t publish_item;
+        memset(&publish_item, 0, sizeof(publish_item));
+        if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
+                            node_id,
+                            publish_item.topic,
+                            sizeof(publish_item.topic))) {
+          state->broker_send_fail_count++;
+          UpdateCachedUint32(state,
+                             &state->cached_status.broker_send_fail_count,
+                             state->broker_send_fail_count);
+          continue;
+        }
+        if (payload_len >= sizeof(publish_item.payload)) {
+          state->broker_send_fail_count++;
+          UpdateCachedUint32(state,
+                             &state->cached_status.broker_send_fail_count,
+                             state->broker_send_fail_count);
+          continue;
+        }
+        memcpy(publish_item.payload, payload, payload_len);
+        publish_item.payload_len = (uint16_t)payload_len;
+
+        if (state->broker_outbox != NULL &&
+            xQueueSend(state->broker_outbox, &publish_item, 0) != pdTRUE) {
+          state->broker_drop_count++;
+          UpdateCachedUint32(state,
+                             &state->cached_status.broker_drop_count,
+                             state->broker_drop_count);
+          if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
+                                kExportLogRateLimitMs)) {
+            ESP_LOGW(kTag, "broker outbox full; dropping publish");
+          }
+        }
+      }
+    }
+  }
+
+  state->bridge_task = NULL;
+  vTaskDelete(NULL);
+}
+
+static void
+BrokerPublishTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+
+  while (!state->stop_requested ||
+         (state->broker_outbox != NULL &&
+          uxQueueMessagesWaiting(state->broker_outbox) > 0)) {
+    if (state->broker_outbox == NULL) {
+      vTaskDelay(pdMS_TO_TICKS(200));
+      continue;
+    }
+
+    broker_publish_item_t item;
+    if (xQueuePeek(state->broker_outbox, &item, pdMS_TO_TICKS(500)) != pdTRUE) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
+    const bool should_mqtt =
+      state->mqtt_enabled_active &&
+      BridgeModeUsesBroker(state->mqtt_bridge_mode_active);
+    EnsureMqttClientState(state, should_mqtt);
+    if (!state->mqtt_client_connected) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    const esp_err_t publish_result =
+      MqttClientWrapPublish(&state->mqtt_client,
+                            item.topic,
+                            item.payload,
+                            (int)item.payload_len,
+                            state->mqtt_qos_active,
+                            state->mqtt_retain_active ? 1 : 0);
+    if (publish_result == ESP_OK) {
+      (void)xQueueReceive(state->broker_outbox, &item, 0);
+    } else {
+      state->broker_send_fail_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.broker_send_fail_count,
+                         state->broker_send_fail_count);
+      if (LogRateLimitAllow(&state->last_broker_fail_log_ms,
+                            kExportLogRateLimitMs)) {
+        ESP_LOGW(kTag, "broker publish failed");
+      }
+      vTaskDelay(pdMS_TO_TICKS(500));
+    }
+  }
+
+  state->broker_task = NULL;
+  vTaskDelete(NULL);
+}
+
+static void
 StorageTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
@@ -1566,6 +2027,16 @@ StorageTask(void* context)
       // }
 
       EnqueueExportRecord(state, state->node_id_string, &record);
+
+      if (state->mqtt_enabled_active) {
+        if (state->node_role_active == APP_NODE_ROLE_ROOT) {
+          if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active)) {
+            EnqueueBrokerPublish(state, state->local_mac, &record);
+          }
+        } else {
+          EnqueueExportOutbox(state, state->local_mac, &record);
+        }
+      }
     }
 
     const TickType_t now_ticks = xTaskGetTickCount();
@@ -1657,8 +2128,7 @@ TimeSyncTask(void* context)
     while (!TimeSyncIsSystemTimeValid() && !state->stop_requested) {
       const bool time_valid = TimeSyncIsSystemTimeValid();
       UpdateTimeHealthState(state, time_valid);
-      const bool mesh_connected =
-        false; // MeshTransportIsConnected(&state->mesh);
+      const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
       UpdateCachedBool(
         state, &state->cached_status.mesh_connected, mesh_connected);
       UpdateCachedInt32(
@@ -1674,8 +2144,7 @@ TimeSyncTask(void* context)
     while (!state->stop_requested) {
       const bool time_valid = TimeSyncIsSystemTimeValid();
       UpdateTimeHealthState(state, time_valid);
-      const bool mesh_connected =
-        false; // MeshTransportIsConnected(&state->mesh);
+      const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
       UpdateCachedBool(
         state, &state->cached_status.mesh_connected, mesh_connected);
       UpdateCachedInt32(
@@ -2186,6 +2655,7 @@ InitializeRuntimeStruct(void)
   memset(&g_runtime, 0, sizeof(g_runtime));
   g_state.last_temp_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
   g_state.request_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+  MqttClientWrapInit(&g_state.mqtt_client);
   RuntimeHealthInit(&g_state.health_cache);
   RuntimeHealthPublisherInit(&g_state);
   g_state.cached_status.mesh_level = -1;
@@ -2206,6 +2676,13 @@ InitializeRuntimeStruct(void)
   g_runtime.fram_full = &g_state.fram_full;
   g_runtime.export_dropped_count = &g_state.export_dropped_count;
   g_runtime.export_write_fail_count = &g_state.export_write_fail_count;
+  g_runtime.export_outbox = &g_state.export_outbox;
+  g_runtime.broker_outbox = &g_state.broker_outbox;
+  g_runtime.export_drop_count = &g_state.export_drop_count;
+  g_runtime.export_send_fail_count = &g_state.export_send_fail_count;
+  g_runtime.broker_drop_count = &g_state.broker_drop_count;
+  g_runtime.broker_send_fail_count = &g_state.broker_send_fail_count;
+  g_runtime.mqtt_client_connected = &g_state.mqtt_client_connected;
 }
 
 const app_runtime_t*
@@ -2234,6 +2711,7 @@ RuntimeManagerInit(void)
     }
     ESP_LOGE(kTag, "esp_read_mac failed: %s", esp_err_to_name(mac_result));
   }
+  memcpy(g_state.local_mac, mac, sizeof(g_state.local_mac));
   FormatMacString(mac, g_state.node_id_string, sizeof(g_state.node_id_string));
 
   esp_err_t settings_result = AppSettingsLoad(&g_state.settings);
@@ -2407,6 +2885,28 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create export queue");
   }
 
+  g_state.export_outbox = xQueueCreateStatic(kExportOutboxDepth,
+                                             sizeof(export_record_item_t),
+                                             g_export_outbox_storage,
+                                             &g_export_outbox_queue_struct);
+  if (g_state.export_outbox == NULL) {
+    if (first_error == ESP_OK) {
+      first_error = ESP_ERR_NO_MEM;
+    }
+    ESP_LOGE(kTag, "Failed to create export outbox");
+  }
+
+  g_state.broker_outbox = xQueueCreateStatic(kBrokerOutboxDepth,
+                                             sizeof(broker_publish_item_t),
+                                             g_broker_outbox_storage,
+                                             &g_broker_outbox_queue_struct);
+  if (g_state.broker_outbox == NULL) {
+    if (first_error == ESP_OK) {
+      first_error = ESP_ERR_NO_MEM;
+    }
+    ESP_LOGE(kTag, "Failed to create broker outbox");
+  }
+
   BaseType_t control_created = xTaskCreate(
     &ControlTask, "control", 3072, &g_state, 3, &g_state.control_task);
   if (control_created != pdPASS) {
@@ -2539,11 +3039,11 @@ RuntimeStart(void)
   (void)DrainFramToSdOnStartBestEffort(&g_state, &drain_stats);
   g_state.sd_was_mounted = g_state.sd_logger.is_mounted;
 
-  const app_node_role_t role = g_state.settings.node_role;
+  SnapshotActiveSettings(&g_state);
+  const app_node_role_t role = g_state.node_role_active;
   const bool is_root = (role == APP_NODE_ROLE_ROOT);
   const bool allow_children = g_state.settings.allow_children;
-  const app_net_mode_t effective_net_mode =
-    is_root ? APP_NET_MODE_MESH : g_state.settings.net_mode;
+  const app_net_mode_t effective_net_mode = g_state.net_mode_active;
 
   if (!g_state.log_quiet) {
     printf("role=%s allow_children=%u net_mode=%s\n",
@@ -2587,6 +3087,8 @@ RuntimeStart(void)
                            router_ssid,
                            router_password,
                            is_root ? &RootRecordRxCallback : NULL,
+                           NULL,
+                           is_root ? &RootPublishRecordRxCallback : NULL,
                            NULL,
                            &g_state.time_sync);
       if (mesh_result == ESP_OK) {
@@ -2664,10 +3166,13 @@ RuntimeStart(void)
   BaseType_t sensor_created = pdPASS;
   BaseType_t storage_created = pdPASS;
   BaseType_t export_created = pdPASS;
+  BaseType_t export_network_created = pdPASS;
   BaseType_t time_created = pdPASS;
   BaseType_t topology_created = pdPASS;
   BaseType_t health_publish_created = pdPASS;
   BaseType_t wifi_direct_created = pdPASS;
+  BaseType_t bridge_created = pdPASS;
+  BaseType_t broker_created = pdPASS;
 
   health_publish_created = xTaskCreate(&HealthPublisherTask,
                                        "health_pub",
@@ -2698,6 +3203,45 @@ RuntimeStart(void)
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     export_created = xTaskCreate(
       &ExportTask, "export", 4096, &g_state, 4, &g_state.export_task);
+  }
+
+  if (role != APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active) {
+    export_network_created = xTaskCreate(&ExportNetworkTask,
+                                         "export_net",
+                                         4096,
+                                         &g_state,
+                                         4,
+                                         &g_state.export_network_task);
+    if (export_network_created != pdPASS) {
+      g_state.export_network_task = NULL;
+    }
+  }
+
+  if (role == APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active &&
+      (BridgeModeUsesSerial(g_state.mqtt_bridge_mode_active) ||
+       BridgeModeUsesBroker(g_state.mqtt_bridge_mode_active))) {
+    bridge_created = xTaskCreate(&RootBridgeTask,
+                                 "bridge",
+                                 4096,
+                                 &g_state,
+                                 4,
+                                 &g_state.bridge_task);
+    if (bridge_created != pdPASS) {
+      g_state.bridge_task = NULL;
+    }
+  }
+
+  if (role == APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active &&
+      BridgeModeUsesBroker(g_state.mqtt_bridge_mode_active)) {
+    broker_created = xTaskCreate(&BrokerPublishTask,
+                                 "broker_pub",
+                                 4096,
+                                 &g_state,
+                                 4,
+                                 &g_state.broker_task);
+    if (broker_created != pdPASS) {
+      g_state.broker_task = NULL;
+    }
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
@@ -2736,9 +3280,11 @@ RuntimeStart(void)
   }
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
-      export_created != pdPASS || time_created != pdPASS ||
+      export_created != pdPASS || export_network_created != pdPASS ||
+      time_created != pdPASS ||
       topology_created != pdPASS || health_publish_created != pdPASS ||
-      wifi_direct_created != pdPASS || alert_monitor_created != pdPASS ||
+      wifi_direct_created != pdPASS || bridge_created != pdPASS ||
+      broker_created != pdPASS || alert_monitor_created != pdPASS ||
       alert_sender_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.is_running = false;
@@ -2746,20 +3292,25 @@ RuntimeStart(void)
     UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-            g_state.export_task != NULL || g_state.time_sync_task != NULL ||
+            g_state.export_task != NULL ||
+            g_state.export_network_task != NULL ||
+            g_state.time_sync_task != NULL ||
             g_state.topology_task != NULL ||
             g_state.health_publisher_task != NULL ||
             g_state.wifi_direct_task != NULL ||
+            g_state.bridge_task != NULL || g_state.broker_task != NULL ||
             g_state.alert_monitor_task != NULL ||
             g_state.alert_sender_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
     if (g_state.sensor_task == NULL && g_state.storage_task == NULL &&
-        g_state.export_task == NULL && g_state.time_sync_task == NULL &&
+        g_state.export_task == NULL && g_state.export_network_task == NULL &&
+        g_state.time_sync_task == NULL &&
         g_state.topology_task == NULL &&
         g_state.health_publisher_task == NULL &&
         g_state.wifi_direct_task == NULL &&
+        g_state.bridge_task == NULL && g_state.broker_task == NULL &&
         g_state.alert_monitor_task == NULL &&
         g_state.alert_sender_task == NULL) {
       g_state.stop_requested = false;
@@ -2790,9 +3341,11 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   const TickType_t wait_start = xTaskGetTickCount();
   while (
     (state->sensor_task != NULL || state->storage_task != NULL ||
-     state->export_task != NULL || state->time_sync_task != NULL ||
+     state->export_task != NULL || state->export_network_task != NULL ||
+     state->time_sync_task != NULL ||
      state->topology_task != NULL || state->health_publisher_task != NULL ||
-     state->wifi_direct_task != NULL || state->alert_monitor_task != NULL ||
+     state->wifi_direct_task != NULL || state->bridge_task != NULL ||
+     state->broker_task != NULL || state->alert_monitor_task != NULL ||
      state->alert_sender_task != NULL) &&
     (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -2825,6 +3378,14 @@ RuntimeStopAllTasks(runtime_state_t* state)
   if (state->export_queue != NULL) {
     (void)xQueueReset(state->export_queue);
   }
+  if (state->export_outbox != NULL) {
+    (void)xQueueReset(state->export_outbox);
+  }
+  if (state->broker_outbox != NULL) {
+    (void)xQueueReset(state->broker_outbox);
+  }
+  MqttClientWrapStop(&state->mqtt_client);
+  UpdateMqttConnectionState(state);
   state->stop_requested = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, false);
   return ESP_OK;

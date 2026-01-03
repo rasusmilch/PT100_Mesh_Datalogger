@@ -15,4 +15,5 @@ dependencies:
   #   # All dependencies of `main` are public by default.
   #   public: true
   espressif/mesh_lite: ">=1.0.2"
+  espressif/mqtt: ">=1.0.0"
   # espressif/iot_bridge: ">=1.0.2"

@@ -280,6 +280,27 @@ config APP_SD_PERIODIC_FLUSH_MS
     Even if the FRAM watermark is not reached, the app will attempt to flush
     buffered records after this many milliseconds to keep latency bounded.
 
+config APP_EXPORT_OUTBOX_DEPTH
+  int "Export outbox depth (leaf)"
+  range 16 1024
+  default 128
+  help
+    Number of records to buffer for mesh/MQTT export on leaf nodes.
+
+config APP_BROKER_OUTBOX_DEPTH
+  int "Broker outbox depth (root)"
+  range 32 2048
+  default 256
+  help
+    Number of publish items to buffer for upstream MQTT on the root.
+
+config APP_EXPORT_RATE_LIMIT_MS
+  int "Export log rate limit (ms)"
+  range 1000 600000
+  default 60000
+  help
+    Minimum interval between repeated export warning logs (outbox full, publish failures).
+
 config APP_STOP_DRAIN_MAX_MS
   int "Stop drain max duration (ms, -1 for no limit)"
   range -1 600000

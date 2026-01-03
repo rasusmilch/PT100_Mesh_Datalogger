@@ -13,6 +13,8 @@
 #define APP_SETTINGS_TZ_POSIX_MAX_LEN 64
 #define APP_SETTINGS_TZ_DEFAULT_POSIX "CST6CDT,M3.2.0/2,M11.1.0/2"
 #define APP_SETTINGS_TZ_DEFAULT_STD "CST6"
+#define APP_SETTINGS_MQTT_BROKER_URI_DEFAULT "mqtt://192.168.1.50"
+#define APP_SETTINGS_MQTT_TOPIC_PREFIX_DEFAULT "pt100"
 
 #ifdef __cplusplus
 extern "C"
@@ -37,6 +39,14 @@ extern "C"
     APP_NET_MODE_MESH = 0,
     APP_NET_MODE_DIRECT_WIFI = 1,
   } app_net_mode_t;
+
+  typedef enum
+  {
+    MQTT_BRIDGE_OFF = 0,
+    MQTT_BRIDGE_SERIAL = 1,
+    MQTT_BRIDGE_BROKER = 2,
+    MQTT_BRIDGE_BOTH = 3,
+  } mqtt_bridge_mode_t;
 
   typedef struct
   {
@@ -74,6 +84,12 @@ extern "C"
     uint32_t display_attention_policy;
     display_attention_mask_t display_attention_mask;
     app_net_mode_t net_mode;
+    bool mqtt_enabled;
+    char mqtt_broker_uri[128];
+    char mqtt_topic_prefix[64];
+    uint8_t mqtt_qos;
+    bool mqtt_retain;
+    mqtt_bridge_mode_t mqtt_bridge_mode;
   } app_settings_t;
 
   // Loads settings from NVS. If keys are missing or invalid, applies defaults.
@@ -127,11 +143,28 @@ extern "C"
   const char* AppSettingsNetModeToString(app_net_mode_t mode);
   bool AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out);
 
+  // MQTT bridge mode helpers.
+  const char* AppSettingsMqttBridgeModeToString(mqtt_bridge_mode_t mode);
+  bool AppSettingsParseMqttBridgeMode(const char* value,
+                                      mqtt_bridge_mode_t* mode_out);
+
   // Persists updated display units.
   esp_err_t AppSettingsSaveDisplayUnits(app_display_units_t units);
 
   // Persists updated network mode.
   esp_err_t AppSettingsSaveNetMode(app_net_mode_t mode);
+
+  esp_err_t AppSettingsSaveMqttEnabled(bool enabled);
+
+  esp_err_t AppSettingsSaveMqttBrokerUri(const char* uri);
+
+  esp_err_t AppSettingsSaveMqttTopicPrefix(const char* prefix);
+
+  esp_err_t AppSettingsSaveMqttQos(uint8_t qos);
+
+  esp_err_t AppSettingsSaveMqttRetain(bool retain);
+
+  esp_err_t AppSettingsSaveMqttBridgeMode(mqtt_bridge_mode_t mode);
 
   // Persists updated display attention mask.
   esp_err_t AppSettingsSaveDisplayAttentionMask(
