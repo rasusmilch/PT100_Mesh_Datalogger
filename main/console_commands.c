@@ -27,6 +27,7 @@
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
 #include "esp_console.h"
+#include "esp_netif.h"
 #include "esp_timer.h"
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
@@ -42,6 +43,7 @@
 #include "console_alerts.h"
 #include "runtime_manager.h"
 #include "time_sync.h"
+#include "wifi_manager.h"
 
 static const char* kTag = "console";
 static void
@@ -246,6 +248,14 @@ CommandStatus(int argc, char** argv)
   printf("sd_batch_target_bytes: %u\n",
          (unsigned)settings->sd_batch_bytes_target);
   printf("node_role: %s\n", AppSettingsRoleToString(settings->node_role));
+  printf("net_mode: %s\n", AppSettingsNetModeToString(settings->net_mode));
+  const app_net_mode_t effective_net_mode =
+    (settings->node_role == APP_NODE_ROLE_ROOT) ? APP_NET_MODE_MESH
+                                                : settings->net_mode;
+  if (effective_net_mode != settings->net_mode) {
+    printf("net_mode_effective: %s\n",
+           AppSettingsNetModeToString(effective_net_mode));
+  }
   printf("allow_children: %s\n", settings->allow_children ? "yes" : "no");
   printf("tz_posix: %s\n", settings->tz_posix);
   printf("dst_enabled: %s\n", settings->dst_enabled ? "yes" : "no");
@@ -341,6 +351,21 @@ CommandStatus(int argc, char** argv)
          SdLoggerLastRecordIdOnSd(g_runtime->sd_logger));
   printf("mesh_connected: %s\n",
          MeshTransportIsConnected(g_runtime->mesh) ? "yes" : "no");
+  const bool wifi_connected = WifiManagerIsConnected();
+  printf("wifi_connected: %s\n", wifi_connected ? "yes" : "no");
+  if (wifi_connected) {
+    esp_netif_ip_info_t ip_info;
+    memset(&ip_info, 0, sizeof(ip_info));
+    if (WifiManagerGetIpInfo(&ip_info) == ESP_OK) {
+      char ip[16] = { 0 };
+      esp_ip4addr_ntoa(&ip_info.ip, ip, sizeof(ip));
+      printf("wifi_ip: %s\n", ip);
+    } else {
+      printf("wifi_ip: n/a\n");
+    }
+  } else {
+    printf("wifi_ip: n/a\n");
+  }
   printf("cal_points: %u\n",
          (unsigned)g_runtime->settings->calibration_points_count);
   return 0;
@@ -943,6 +968,13 @@ static struct
   struct arg_str* role;
   struct arg_end* end;
 } g_role_args;
+
+static struct
+{
+  struct arg_str* action;
+  struct arg_str* mode;
+  struct arg_end* end;
+} g_net_args;
 
 static struct
 {
@@ -1940,6 +1972,55 @@ CommandRole(int argc, char** argv)
 }
 
 static int
+CommandNet(int argc, char** argv)
+{
+  int errors = arg_parse(argc, argv, (void**)&g_net_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_net_args.end, argv[0]);
+    return 1;
+  }
+  if (g_runtime == NULL) {
+    return 1;
+  }
+
+  const char* action = g_net_args.action->sval[0];
+  if (strcmp(action, "show") == 0) {
+    printf("net_mode: %s\n",
+           AppSettingsNetModeToString(g_runtime->settings->net_mode));
+    printf("note: takes effect on next run start (run stop; run start)\n");
+    return 0;
+  }
+
+  if (strcmp(action, "set") == 0) {
+    if (g_net_args.mode->count != 1) {
+      printf("usage: net set mesh|wifi\n");
+      return 1;
+    }
+    const char* mode_value = g_net_args.mode->sval[0];
+    app_net_mode_t mode = APP_NET_MODE_MESH;
+    if (!AppSettingsParseNetMode(mode_value, &mode)) {
+      printf("usage: net set mesh|wifi\n");
+      return 1;
+    }
+    g_runtime->settings->net_mode = mode;
+    esp_err_t result = AppSettingsSaveNetMode(mode);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("OK\n");
+    printf("net_mode set to %s\n", AppSettingsNetModeToString(mode));
+    if (RuntimeIsRunning()) {
+      printf("note: run stop; run start to apply\n");
+    }
+    return 0;
+  }
+
+  printf("unknown action. usage: net show | net set mesh|wifi\n");
+  return 1;
+}
+
+static int
 CommandChildren(int argc, char** argv)
 {
   int errors = arg_parse(argc, argv, (void**)&g_children_args);
@@ -2454,6 +2535,19 @@ RegisterCommands(void)
     .argtable = &g_role_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&role_cmd));
+
+  g_net_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_net_args.mode =
+    arg_str0(NULL, NULL, "<mesh|wifi>", "Network mode (mesh|wifi)");
+  g_net_args.end = arg_end(2);
+  const esp_console_cmd_t net_cmd = {
+    .command = "net",
+    .help = "net show | net set mesh|wifi",
+    .hint = NULL,
+    .func = &CommandNet,
+    .argtable = &g_net_args,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&net_cmd));
 
   g_children_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_children_args.enabled =

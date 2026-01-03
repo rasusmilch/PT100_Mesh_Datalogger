@@ -32,6 +32,8 @@
 #include "runtime_state.h"
 #include "sd_logger.h"
 #include "time_sync.h"
+#include "wifi_credentials.h"
+#include "wifi_manager.h"
 #include "wifi_service.h"
 
 static const char* kTag = "runtime";
@@ -1691,6 +1693,69 @@ TimeSyncTask(void* context)
 }
 
 static void
+DirectWifiTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+  bool last_connected = WifiManagerIsConnected();
+  bool last_time_valid = TimeSyncIsSystemTimeValid();
+  uint32_t retry_delay_ms = 30 * 1000;
+  const uint32_t max_delay_ms = 5 * 60 * 1000;
+
+  while (!state->stop_requested) {
+    wifi_credentials_t creds;
+    WifiCredentialsLoad(&creds);
+
+    bool connected = WifiManagerIsConnected();
+    if (!connected && creds.has_ssid) {
+      const esp_err_t connect_result =
+        WifiManagerConnectSta(creds.ssid, creds.password, 10000);
+      connected = (connect_result == ESP_OK);
+      if (!connected) {
+        retry_delay_ms =
+          (retry_delay_ms < max_delay_ms / 2) ? retry_delay_ms * 2 : max_delay_ms;
+      } else {
+        retry_delay_ms = 30 * 1000;
+      }
+    } else if (!connected) {
+      retry_delay_ms = 30 * 1000;
+    }
+
+    if (connected != last_connected) {
+      if (connected) {
+        ESP_LOGI(kTag, "Wi-Fi connected (direct)");
+      } else {
+        ESP_LOGW(kTag, "Wi-Fi disconnected (direct)");
+      }
+      last_connected = connected;
+    }
+
+    bool time_valid = TimeSyncIsSystemTimeValid();
+    if (connected && !time_valid) {
+      esp_err_t sntp_result =
+        TimeSyncStartSntpAndWait(CONFIG_APP_SNTP_SERVER, 30 * 1000);
+      if (sntp_result == ESP_OK) {
+        (void)TimeSyncSetRtcFromSystem(&state->time_sync);
+      }
+      time_valid = TimeSyncIsSystemTimeValid();
+      UpdateTimeHealthState(state, time_valid);
+    }
+
+    if (time_valid != last_time_valid) {
+      if (time_valid) {
+        state->wifi_direct_time_synced = true;
+        ESP_LOGI(kTag, "Time synchronized (SNTP -> RTC UTC)");
+      }
+      last_time_valid = time_valid;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
+  }
+
+  state->wifi_direct_task = NULL;
+  vTaskDelete(NULL);
+}
+
+static void
 TopologyTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
@@ -2429,7 +2494,8 @@ RuntimeStart(void)
   }
   if (g_state.sensor_task != NULL || g_state.storage_task != NULL ||
       g_state.time_sync_task != NULL || g_state.topology_task != NULL ||
-      g_state.health_publisher_task != NULL) {
+      g_state.health_publisher_task != NULL ||
+      g_state.wifi_direct_task != NULL) {
     return ESP_ERR_INVALID_STATE;
   }
   if (g_state.log_queue == NULL) {
@@ -2459,6 +2525,8 @@ RuntimeStart(void)
   g_state.last_overrun_log_ticks = 0;
   g_state.last_overrun_records_total = 0;
   g_state.last_overrun_logged_total = 0;
+  g_state.wifi_direct_started = false;
+  g_state.wifi_direct_time_synced = false;
   UpdateCachedBool(&g_state, &g_state.cached_status.sd_degraded, false);
   UpdateCachedUint32(&g_state, &g_state.cached_status.sd_fail_count, 0);
   UpdateCachedUint32(
@@ -2474,17 +2542,15 @@ RuntimeStart(void)
   const app_node_role_t role = g_state.settings.node_role;
   const bool is_root = (role == APP_NODE_ROLE_ROOT);
   const bool allow_children = g_state.settings.allow_children;
+  const app_net_mode_t effective_net_mode =
+    is_root ? APP_NET_MODE_MESH : g_state.settings.net_mode;
 
   if (!g_state.log_quiet) {
-    printf("role=%s allow_children=%u\n",
+    printf("role=%s allow_children=%u net_mode=%s\n",
            AppSettingsRoleToString(role),
-           allow_children ? 1u : 0u);
+           allow_children ? 1u : 0u,
+           AppSettingsNetModeToString(effective_net_mode));
   }
-
-  // Only the root should ever be configured with upstream router credentials.
-  // Non-root nodes should focus on joining the Mesh-Lite network.
-  const char* router_ssid = "";
-  const char* router_password = "";
 
   bool router_disabled = false;
 #if defined(CONFIG_APP_MESH_DISABLE_ROUTER)
@@ -2493,40 +2559,85 @@ RuntimeStart(void)
   // expands to 0 or 1.
   router_disabled = (CONFIG_APP_MESH_DISABLE_ROUTER != 0);
 #endif
-  if (is_root && !router_disabled) {
-    router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
-    router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
-  }
 
   RuntimeEnableDataStreaming(true);
 
-  if (!g_state.mesh_started) {
-    esp_err_t wifi_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
+  if (effective_net_mode == APP_NET_MODE_MESH) {
+    // Only the root should ever be configured with upstream router credentials.
+    // Non-root nodes should focus on joining the Mesh-Lite network.
+    const char* router_ssid = "";
+    const char* router_password = "";
+    if (is_root && !router_disabled) {
+      router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
+      router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
+    }
+
+    if (!g_state.mesh_started) {
+      esp_err_t wifi_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
+      if (wifi_result != ESP_OK) {
+        ESP_LOGE(
+          kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
+        return wifi_result;
+      }
+
+      esp_err_t mesh_result =
+        MeshTransportStart(&g_state.mesh,
+                           is_root,
+                           allow_children,
+                           router_ssid,
+                           router_password,
+                           is_root ? &RootRecordRxCallback : NULL,
+                           NULL,
+                           &g_state.time_sync);
+      if (mesh_result == ESP_OK) {
+        g_state.mesh_started = true;
+      } else {
+        ESP_LOGE(kTag, "Mesh start failed: %s", esp_err_to_name(mesh_result));
+        (void)WifiServiceRelease();
+        return mesh_result;
+      }
+    }
+  } else {
+    esp_err_t wifi_result =
+      WifiServiceAcquire(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
     if (wifi_result != ESP_OK) {
       ESP_LOGE(
         kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
       return wifi_result;
     }
+    g_state.wifi_direct_started = true;
 
-    esp_err_t mesh_result =
-      MeshTransportStart(&g_state.mesh,
-                         is_root,
-                         allow_children,
-                         router_ssid,
-                         router_password,
-                         is_root ? &RootRecordRxCallback : NULL,
-                         NULL,
-                         &g_state.time_sync);
-    if (mesh_result == ESP_OK) {
-      g_state.mesh_started = true;
+    wifi_credentials_t creds;
+    WifiCredentialsLoad(&creds);
+    if (!creds.has_ssid) {
+      ESP_LOGW(kTag,
+               "Direct Wi-Fi enabled but no SSID configured (NVS/app wifi_ssid "
+               "or Kconfig). Time sync may be unavailable.");
     } else {
-      ESP_LOGE(kTag, "Mesh start failed: %s", esp_err_to_name(mesh_result));
-      (void)WifiServiceRelease();
-      return mesh_result;
+      esp_err_t connect_result =
+        WifiManagerConnectSta(creds.ssid, creds.password, 15000);
+      if (connect_result == ESP_OK) {
+        esp_err_t sntp_result =
+          TimeSyncStartSntpAndWait(CONFIG_APP_SNTP_SERVER, 30 * 1000);
+        if (sntp_result == ESP_OK) {
+          if (TimeSyncSetRtcFromSystem(&g_state.time_sync) == ESP_OK) {
+            g_state.wifi_direct_time_synced = true;
+          }
+        } else {
+          ESP_LOGW(kTag,
+                   "SNTP sync failed (direct): %s",
+                   esp_err_to_name(sntp_result));
+        }
+        UpdateTimeHealthState(&g_state, TimeSyncIsSystemTimeValid());
+      } else {
+        ESP_LOGW(kTag,
+                 "Wi-Fi connect failed (direct): %s",
+                 esp_err_to_name(connect_result));
+      }
     }
   }
 
-  if (g_state.mesh.is_root) {
+  if (g_state.mesh.is_root && effective_net_mode == APP_NET_MODE_MESH) {
     esp_err_t sntp_result =
       TimeSyncStartSntpAndWait(CONFIG_APP_SNTP_SERVER, 30 * 1000);
     if (sntp_result == ESP_OK) {
@@ -2556,6 +2667,7 @@ RuntimeStart(void)
   BaseType_t time_created = pdPASS;
   BaseType_t topology_created = pdPASS;
   BaseType_t health_publish_created = pdPASS;
+  BaseType_t wifi_direct_created = pdPASS;
 
   health_publish_created = xTaskCreate(&HealthPublisherTask,
                                        "health_pub",
@@ -2563,6 +2675,18 @@ RuntimeStart(void)
                                        &g_state,
                                        3,
                                        &g_state.health_publisher_task);
+
+  if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
+    wifi_direct_created = xTaskCreate(&DirectWifiTask,
+                                      "wifi_direct",
+                                      4096,
+                                      &g_state,
+                                      3,
+                                      &g_state.wifi_direct_task);
+    if (wifi_direct_created != pdPASS) {
+      g_state.wifi_direct_task = NULL;
+    }
+  }
 
   if (role == APP_NODE_ROLE_SENSOR) {
     sensor_created = xTaskCreate(
@@ -2614,7 +2738,8 @@ RuntimeStart(void)
   if (sensor_created != pdPASS || storage_created != pdPASS ||
       export_created != pdPASS || time_created != pdPASS ||
       topology_created != pdPASS || health_publish_created != pdPASS ||
-      alert_monitor_created != pdPASS || alert_sender_created != pdPASS) {
+      wifi_direct_created != pdPASS || alert_monitor_created != pdPASS ||
+      alert_sender_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.is_running = false;
     UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);
@@ -2624,6 +2749,7 @@ RuntimeStart(void)
             g_state.export_task != NULL || g_state.time_sync_task != NULL ||
             g_state.topology_task != NULL ||
             g_state.health_publisher_task != NULL ||
+            g_state.wifi_direct_task != NULL ||
             g_state.alert_monitor_task != NULL ||
             g_state.alert_sender_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
@@ -2633,6 +2759,7 @@ RuntimeStart(void)
         g_state.export_task == NULL && g_state.time_sync_task == NULL &&
         g_state.topology_task == NULL &&
         g_state.health_publisher_task == NULL &&
+        g_state.wifi_direct_task == NULL &&
         g_state.alert_monitor_task == NULL &&
         g_state.alert_sender_task == NULL) {
       g_state.stop_requested = false;
@@ -2665,7 +2792,8 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
     (state->sensor_task != NULL || state->storage_task != NULL ||
      state->export_task != NULL || state->time_sync_task != NULL ||
      state->topology_task != NULL || state->health_publisher_task != NULL ||
-     state->alert_monitor_task != NULL || state->alert_sender_task != NULL) &&
+     state->wifi_direct_task != NULL || state->alert_monitor_task != NULL ||
+     state->alert_sender_task != NULL) &&
     (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
@@ -2684,6 +2812,10 @@ RuntimeStopAllTasks(runtime_state_t* state)
     (void)MeshTransportStop(&state->mesh);
     state->mesh_started = false;
     (void)WifiServiceRelease();
+  }
+  if (state->wifi_direct_started) {
+    (void)WifiServiceRelease();
+    state->wifi_direct_started = false;
   }
 
   SdLoggerClose(&state->sd_logger);

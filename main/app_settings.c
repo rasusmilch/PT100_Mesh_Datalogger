@@ -42,6 +42,7 @@ static const char* kKeyAllowChildrenSet = "allow_child_set";
 static const char* kKeyDisplayUnits = "disp_units";
 static const char* kKeyDisplayAttentionMask = "disp_attn";
 static const char* kKeyDisplayAttentionPolicy = "disp_attn_pol";
+static const char* kKeyNetMode = "net_mode";
 static const uint8_t kCalibrationContextVersion = 1;
 static uint32_t g_display_attention_policy = 0;
 static display_attention_mask_t g_display_attention_mask = 0;
@@ -129,6 +130,37 @@ AppSettingsParseDisplayUnits(const char* value,
   return false;
 }
 
+const char*
+AppSettingsNetModeToString(app_net_mode_t mode)
+{
+  switch (mode) {
+    case APP_NET_MODE_MESH:
+      return "MESH";
+    case APP_NET_MODE_DIRECT_WIFI:
+      return "WIFI";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+bool
+AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out)
+{
+  if (value == NULL || mode_out == NULL) {
+    return false;
+  }
+  if (strcasecmp(value, "mesh") == 0) {
+    *mode_out = APP_NET_MODE_MESH;
+    return true;
+  }
+  if (strcasecmp(value, "wifi") == 0 || strcasecmp(value, "direct") == 0 ||
+      strcasecmp(value, "direct_wifi") == 0) {
+    *mode_out = APP_NET_MODE_DIRECT_WIFI;
+    return true;
+  }
+  return false;
+}
+
 static void
 ApplyDefaults(app_settings_t* settings)
 {
@@ -156,6 +188,7 @@ ApplyDefaults(app_settings_t* settings)
   settings->display_attention_policy = AppSettingsDefaultDisplayAttentionPolicy();
   settings->display_attention_mask =
     AppSettingsDefaultDisplayAttentionMask();
+  settings->net_mode = APP_NET_MODE_MESH;
   g_display_attention_policy = settings->display_attention_policy;
   g_display_attention_mask = settings->display_attention_mask;
 }
@@ -408,6 +441,13 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->display_units = (app_display_units_t)display_units;
   }
 
+  uint8_t net_mode = (uint8_t)settings_out->net_mode;
+  result = nvs_get_u8(handle, kKeyNetMode, &net_mode);
+  if (result == ESP_OK &&
+      net_mode <= (uint8_t)APP_NET_MODE_DIRECT_WIFI) {
+    settings_out->net_mode = (app_net_mode_t)net_mode;
+  }
+
   uint32_t display_attention_policy =
     (uint32_t)settings_out->display_attention_policy;
   esp_err_t policy_result =
@@ -458,7 +498,7 @@ AppSettingsLoad(app_settings_t* settings_out)
   nvs_close(handle);
   ESP_LOGI(
     kTag,
-    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
+    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s net_mode=%s disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
     (unsigned)settings_out->log_period_ms,
     (unsigned)settings_out->fram_flush_watermark_records,
     (unsigned)settings_out->sd_flush_period_ms,
@@ -470,6 +510,7 @@ AppSettingsLoad(app_settings_t* settings_out)
     AppSettingsRoleToString(settings_out->node_role),
     settings_out->allow_children ? 1u : 0u,
     AppSettingsDisplayUnitsToString(settings_out->display_units),
+    AppSettingsNetModeToString(settings_out->net_mode),
     (uint32_t)settings_out->display_attention_policy,
     (uint32_t)settings_out->display_attention_mask);
   return ESP_OK;
@@ -728,6 +769,26 @@ AppSettingsSaveDisplayUnits(app_display_units_t units)
   }
 
   result = nvs_set_u8(handle, kKeyDisplayUnits, (uint8_t)units);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+esp_err_t
+AppSettingsSaveNetMode(app_net_mode_t mode)
+{
+  if (mode != APP_NET_MODE_MESH && mode != APP_NET_MODE_DIRECT_WIFI) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_u8(handle, kKeyNetMode, (uint8_t)mode);
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }

@@ -13,24 +13,10 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
-#include "nvs.h"
 #include "sdkconfig.h"
+#include "wifi_credentials.h"
 #include "wifi_manager.h"
 #include "wifi_service.h"
-
-typedef enum
-{
-  kWifiCredsNone = 0,
-  kWifiCredsNvs,
-  kWifiCredsKconfig,
-} wifi_creds_source_t;
-
-typedef struct
-{
-  char ssid[33];
-  char password[65];
-  wifi_creds_source_t source;
-} wifi_credentials_t;
 
 typedef struct
 {
@@ -162,49 +148,6 @@ PrintHeapSnapshot(const diag_ctx_t* ctx,
 }
 
 static void
-LoadCredentials(wifi_credentials_t* creds)
-{
-  if (creds == NULL) {
-    return;
-  }
-  memset(creds, 0, sizeof(*creds));
-
-  nvs_handle_t handle;
-  esp_err_t result = nvs_open("app", NVS_READONLY, &handle);
-  if (result == ESP_OK) {
-    size_t ssid_len = sizeof(creds->ssid);
-    result = nvs_get_str(handle, "wifi_ssid", creds->ssid, &ssid_len);
-    if (result != ESP_OK || creds->ssid[0] == '\0') {
-      memset(creds->ssid, 0, sizeof(creds->ssid));
-    }
-
-    size_t pass_len = sizeof(creds->password);
-    result = nvs_get_str(handle, "wifi_pass", creds->password, &pass_len);
-    if (result != ESP_OK || creds->password[0] == '\0') {
-      memset(creds->password, 0, sizeof(creds->password));
-    }
-    nvs_close(handle);
-  }
-
-  if (creds->ssid[0] == '\0' && CONFIG_APP_WIFI_ROUTER_SSID[0] != '\0') {
-    strncpy(creds->ssid, CONFIG_APP_WIFI_ROUTER_SSID, sizeof(creds->ssid) - 1);
-    creds->ssid[sizeof(creds->ssid) - 1] = '\0';
-  }
-
-  if (creds->password[0] == '\0' &&
-      CONFIG_APP_WIFI_ROUTER_PASSWORD[0] != '\0') {
-    strncpy(creds->password,
-            CONFIG_APP_WIFI_ROUTER_PASSWORD,
-            sizeof(creds->password) - 1);
-    creds->password[sizeof(creds->password) - 1] = '\0';
-  }
-
-  if (creds->ssid[0] != '\0') {
-    creds->source = (result == ESP_OK) ? kWifiCredsNvs : kWifiCredsKconfig;
-  }
-}
-
-static void
 PrintScanResults(const diag_ctx_t* ctx,
                  const wifi_ap_record_t* records,
                  size_t listed_count,
@@ -232,19 +175,6 @@ PrintScanResults(const diag_ctx_t* ctx,
 }
 
 static const char*
-CredsSourceToString(wifi_creds_source_t source)
-{
-  switch (source) {
-    case kWifiCredsNvs:
-      return "nvs";
-    case kWifiCredsKconfig:
-      return "kconfig";
-    default:
-      return "none";
-  }
-}
-
-static const char*
 PickDnsHost(void)
 {
   return (CONFIG_APP_SNTP_SERVER[0] != '\0') ? CONFIG_APP_SNTP_SERVER
@@ -266,8 +196,8 @@ RunDiagWifi(const app_runtime_t* runtime,
   DiagInitCtx(&ctx, "WiFi", verbosity);
 
   wifi_credentials_t creds;
-  LoadCredentials(&creds);
-  const bool has_ssid = creds.ssid[0] != '\0';
+  WifiCredentialsLoad(&creds);
+  const bool has_ssid = creds.has_ssid;
   const wifi_service_mode_t active_mode = WifiServiceActiveMode();
 
   const int total_steps =
