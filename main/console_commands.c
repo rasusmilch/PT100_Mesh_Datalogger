@@ -351,6 +351,7 @@ CommandStatus(int argc, char** argv)
     (g_runtime->broker_send_fail_count != NULL)
       ? *g_runtime->broker_send_fail_count
       : 0u;
+  const runtime_cached_status_t* cached_status = RuntimeGetCachedStatus();
   const bool mqtt_connected =
     (g_runtime->mqtt_client_connected != NULL)
       ? *g_runtime->mqtt_client_connected
@@ -376,6 +377,12 @@ CommandStatus(int argc, char** argv)
     printf("broker_drop_count: %u\n", (unsigned)broker_drop_count);
     printf("broker_send_fail_count: %u\n",
            (unsigned)broker_send_fail_count);
+    if (cached_status != NULL) {
+      printf("root_publish_consumer_active: %s\n",
+             cached_status->root_publish_consumer_active ? "yes" : "no");
+      printf("root_publish_drop_no_consumer: %u\n",
+             (unsigned)cached_status->root_publish_drop_no_consumer);
+    }
   }
 
   printf("calibration: mode=%s degree=%u coeffs=[%.9g, %.9g, %.9g, %.9g]\n",
