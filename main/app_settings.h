@@ -32,6 +32,12 @@ extern "C"
     APP_DISPLAY_UNITS_F = 1,
   } app_display_units_t;
 
+  typedef enum
+  {
+    APP_NET_MODE_MESH = 0,
+    APP_NET_MODE_DIRECT_WIFI = 1,
+  } app_net_mode_t;
+
   typedef struct
   {
     uint8_t conversion_mode;
@@ -67,6 +73,7 @@ extern "C"
     app_display_units_t display_units;
     uint32_t display_attention_policy;
     display_attention_mask_t display_attention_mask;
+    app_net_mode_t net_mode;
   } app_settings_t;
 
   // Loads settings from NVS. If keys are missing or invalid, applies defaults.
@@ -116,8 +123,15 @@ extern "C"
   bool AppSettingsParseDisplayUnits(const char* value,
                                     app_display_units_t* units_out);
 
+  // Network mode helpers.
+  const char* AppSettingsNetModeToString(app_net_mode_t mode);
+  bool AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out);
+
   // Persists updated display units.
   esp_err_t AppSettingsSaveDisplayUnits(app_display_units_t units);
+
+  // Persists updated network mode.
+  esp_err_t AppSettingsSaveNetMode(app_net_mode_t mode);
 
   // Persists updated display attention mask.
   esp_err_t AppSettingsSaveDisplayAttentionMask(

@@ -134,6 +134,7 @@ extern "C" {
     TaskHandle_t topology_task;
     TaskHandle_t display_task;
     TaskHandle_t health_publisher_task;
+    TaskHandle_t wifi_direct_task;
     TaskHandle_t control_task;
     TaskHandle_t alert_monitor_task;
     TaskHandle_t alert_sender_task;
@@ -145,6 +146,8 @@ extern "C" {
     bool is_running;
     bool stop_requested;
     bool mesh_started;
+    bool wifi_direct_started;
+    bool wifi_direct_time_synced;
     bool data_streaming_enabled;
     bool log_quiet;
 

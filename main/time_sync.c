@@ -182,6 +182,8 @@ TimeSyncSetRtcFromSystem(const time_sync_t* time_sync)
   if (time_sync == NULL || !time_sync->is_ds3231_ready) {
     return ESP_ERR_INVALID_STATE;
   }
+  // The DS3231 is stored as UTC in this firmware. Local TZ/DST is applied only
+  // when rendering timestamps.
   time_t now_seconds = time(NULL);
   struct tm now_utc;
   gmtime_r(&now_seconds, &now_utc);
