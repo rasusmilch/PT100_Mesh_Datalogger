@@ -5,6 +5,10 @@
 #include "nvs.h"
 #include "sdkconfig.h"
 
+/**
+ * @brief Execute WifiCredentialsLoad.
+ * @param out Parameter out.
+ */
 void
 WifiCredentialsLoad(wifi_credentials_t* out)
 {

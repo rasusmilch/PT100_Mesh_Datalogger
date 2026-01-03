@@ -10,6 +10,10 @@ extern "C" {
 // Initializes the ESP net stack (esp_netif + default event loop) exactly once.
 // Subsequent calls are idempotent; ESP_ERR_INVALID_STATE from the underlying
 // calls is treated as success.
+/**
+ * @brief Execute NetStackInitOnce.
+ * @return Return the function result.
+ */
 esp_err_t NetStackInitOnce(void);
 
 #ifdef __cplusplus

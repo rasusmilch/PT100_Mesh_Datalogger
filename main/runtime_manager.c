@@ -50,6 +50,12 @@ static const uint32_t kExportOutboxDepth = CONFIG_APP_EXPORT_OUTBOX_DEPTH;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 
+/**
+ * @brief Execute UpdateCachedBool.
+ * @param state Parameter state.
+ * @param field Parameter field.
+ * @param value Parameter value.
+ */
 static void
 UpdateCachedBool(runtime_state_t* state, bool* field, bool value)
 {
@@ -63,6 +69,12 @@ UpdateCachedBool(runtime_state_t* state, bool* field, bool value)
   RuntimeHealthMarkDirty(state);
 }
 
+/**
+ * @brief Execute UpdateCachedUint32.
+ * @param state Parameter state.
+ * @param field Parameter field.
+ * @param value Parameter value.
+ */
 static void
 UpdateCachedUint32(runtime_state_t* state, uint32_t* field, uint32_t value)
 {
@@ -76,6 +88,12 @@ UpdateCachedUint32(runtime_state_t* state, uint32_t* field, uint32_t value)
   RuntimeHealthMarkDirty(state);
 }
 
+/**
+ * @brief Execute UpdateCachedInt32.
+ * @param state Parameter state.
+ * @param field Parameter field.
+ * @param value Parameter value.
+ */
 static void
 UpdateCachedInt32(runtime_state_t* state, int32_t* field, int32_t value)
 {
@@ -138,6 +156,10 @@ MarkSdFailure(runtime_state_t* state,
               int errno_value,
               bool did_unmount);
 
+/**
+ * @brief Execute SdMaintenanceTick.
+ * @param state Parameter state.
+ */
 static void
 SdMaintenanceTick(runtime_state_t* state)
 {
@@ -184,6 +206,11 @@ SdMaintenanceTick(runtime_state_t* state)
   }
 }
 
+/**
+ * @brief Execute ConversionModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 static const char*
 ConversionModeToString(uint8_t mode)
 {
@@ -197,24 +224,45 @@ ConversionModeToString(uint8_t mode)
   }
 }
 
+/**
+ * @brief Execute BridgeModeUsesSerial.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 static bool
 BridgeModeUsesSerial(mqtt_bridge_mode_t mode)
 {
   return mode == MQTT_BRIDGE_SERIAL || mode == MQTT_BRIDGE_BOTH;
 }
 
+/**
+ * @brief Execute BridgeModeUsesBroker.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 static bool
 BridgeModeUsesBroker(mqtt_bridge_mode_t mode)
 {
   return mode == MQTT_BRIDGE_BROKER || mode == MQTT_BRIDGE_BOTH;
 }
 
+/**
+ * @brief Execute DoubleNear.
+ * @param a Parameter a.
+ * @param b Parameter b.
+ * @return Return the function result.
+ */
 static bool
 DoubleNear(double a, double b)
 {
   return fabs(a - b) <= 1e-6;
 }
 
+/**
+ * @brief Execute IsSdIoOperation.
+ * @param operation Parameter operation.
+ * @return Return the function result.
+ */
 static bool
 IsSdIoOperation(const char* operation)
 {
@@ -225,6 +273,10 @@ IsSdIoOperation(const char* operation)
          strcmp(operation, "fsync") == 0 || strcmp(operation, "verify") == 0;
 }
 
+/**
+ * @brief Execute ClearSdIoError.
+ * @param state Parameter state.
+ */
 static void
 ClearSdIoError(runtime_state_t* state)
 {
@@ -237,6 +289,10 @@ ClearSdIoError(runtime_state_t* state)
   UpdateCachedBool(state, &state->cached_status.sd_io_error_active, false);
 }
 
+/**
+ * @brief Execute UpdateFramFillState.
+ * @param state Parameter state.
+ */
 static void
 UpdateFramFillState(runtime_state_t* state)
 {
@@ -260,6 +316,14 @@ UpdateFramFillState(runtime_state_t* state)
   UpdateCachedBool(state, &state->cached_status.fram_full, fram_full);
 }
 
+/**
+ * @brief Execute LogFramOverrunWarning.
+ * @param state Parameter state.
+ * @param overrun_total Parameter overrun_total.
+ * @param fram_count Parameter fram_count.
+ * @param fram_capacity Parameter fram_capacity.
+ * @param now_ticks Parameter now_ticks.
+ */
 static void
 LogFramOverrunWarning(runtime_state_t* state,
                       uint64_t overrun_total,
@@ -305,6 +369,14 @@ LogFramOverrunWarning(runtime_state_t* state,
   state->last_overrun_logged_total = overrun_total;
 }
 
+/**
+ * @brief Execute CalibrationContextMatches.
+ * @param settings Parameter settings.
+ * @param current Parameter current.
+ * @param reason_out Parameter reason_out.
+ * @param reason_out_len Parameter reason_out_len.
+ * @return Return the function result.
+ */
 static bool
 CalibrationContextMatches(const app_settings_t* settings,
                           const calibration_context_t* current,
@@ -379,6 +451,11 @@ CopyLastSample(runtime_state_t* state,
                uint32_t* flags,
                TickType_t* update_ticks);
 
+/**
+ * @brief Execute ComputeActiveAttentionMaskFromHealth.
+ * @param health Parameter health.
+ * @return Return the function result.
+ */
 static display_attention_mask_t
 ComputeActiveAttentionMaskFromHealth(const runtime_health_snapshot_t* health)
 {
@@ -411,6 +488,11 @@ ComputeActiveAttentionMaskFromHealth(const runtime_health_snapshot_t* health)
   return active;
 }
 
+/**
+ * @brief Execute AttentionBitToCode.
+ * @param bit Parameter bit.
+ * @return Return the function result.
+ */
 static const char*
 AttentionBitToCode(display_attention_bit_t bit)
 {
@@ -432,6 +514,14 @@ AttentionBitToCode(display_attention_bit_t bit)
   }
 }
 
+/**
+ * @brief Execute CopyLastSample.
+ * @param state Parameter state.
+ * @param temp_milli_c Parameter temp_milli_c.
+ * @param valid Parameter valid.
+ * @param flags Parameter flags.
+ * @param update_ticks Parameter update_ticks.
+ */
 static void
 CopyLastSample(runtime_state_t* state,
                int32_t* temp_milli_c,
@@ -458,6 +548,14 @@ CopyLastSample(runtime_state_t* state,
   taskEXIT_CRITICAL(&state->last_temp_lock);
 }
 
+/**
+ * @brief Execute FormatTemperatureText.
+ * @param out Parameter out.
+ * @param out_len Parameter out_len.
+ * @param temp_milli_c Parameter temp_milli_c.
+ * @param units Parameter units.
+ * @param valid Parameter valid.
+ */
 static void
 FormatTemperatureText(char* out,
                       size_t out_len,
@@ -511,6 +609,11 @@ FormatTemperatureText(char* out,
   }
 }
 
+/**
+ * @brief Execute UpdateTimeHealthState.
+ * @param state Parameter state.
+ * @param time_valid Parameter time_valid.
+ */
 static void
 UpdateTimeHealthState(runtime_state_t* state, bool time_valid)
 {
@@ -537,6 +640,12 @@ UpdateTimeHealthState(runtime_state_t* state, bool time_valid)
     state, &state->cached_status.dst_in_effect, (local_time.tm_isdst > 0));
 }
 
+/**
+ * @brief Execute ComputeSdBackoffRemainingMs.
+ * @param state Parameter state.
+ * @param now_ticks Parameter now_ticks.
+ * @return Return the function result.
+ */
 static uint32_t
 ComputeSdBackoffRemainingMs(const runtime_state_t* state, TickType_t now_ticks)
 {
@@ -547,6 +656,12 @@ ComputeSdBackoffRemainingMs(const runtime_state_t* state, TickType_t now_ticks)
   return (uint32_t)pdTICKS_TO_MS(state->sd_backoff_until_ticks - now_ticks);
 }
 
+/**
+ * @brief Execute BuildDisplayTestText.
+ * @param text Parameter text.
+ * @param text_size Parameter text_size.
+ * @param elapsed_ms Parameter elapsed_ms.
+ */
 static void
 BuildDisplayTestText(char* text, size_t text_size, uint32_t elapsed_ms)
 {
@@ -586,6 +701,11 @@ BuildDisplayTestText(char* text, size_t text_size, uint32_t elapsed_ms)
   }
 }
 
+/**
+ * @brief Execute DisplayTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the DisplayTask task.
+ */
 static void
 DisplayTask(void* context)
 {
@@ -769,6 +889,11 @@ DisplayTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute HealthPublisherTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the HealthPublisherTask task.
+ */
 static void
 HealthPublisherTask(void* context)
 {
@@ -784,6 +909,9 @@ HealthPublisherTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute SetRunLogPolicy.
+ */
 static void
 SetRunLogPolicy(void)
 {
@@ -801,6 +929,9 @@ SetRunLogPolicy(void)
   g_state.log_quiet = true;
 }
 
+/**
+ * @brief Execute SetDiagLogPolicy.
+ */
 static void
 SetDiagLogPolicy(void)
 {
@@ -812,6 +943,14 @@ SetDiagLogPolicy(void)
   g_state.log_quiet = false;
 }
 
+/**
+ * @brief Execute FramI2cReadAdapter.
+ * @param context Parameter context.
+ * @param addr Parameter addr.
+ * @param out Parameter out.
+ * @param len Parameter len.
+ * @return Return the function result.
+ */
 static esp_err_t
 FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
 {
@@ -824,6 +963,14 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
   return FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
 }
 
+/**
+ * @brief Execute FramI2cWriteAdapter.
+ * @param context Parameter context.
+ * @param addr Parameter addr.
+ * @param data Parameter data.
+ * @param len Parameter len.
+ * @return Return the function result.
+ */
 static esp_err_t
 FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
 {
@@ -836,6 +983,12 @@ FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
   return FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
 }
 
+/**
+ * @brief Execute FormatMacString.
+ * @param mac Parameter mac.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 static void
 FormatMacString(const uint8_t mac[6], char* out, size_t out_size)
 {
@@ -850,6 +1003,12 @@ FormatMacString(const uint8_t mac[6], char* out, size_t out_size)
            mac[5]);
 }
 
+/**
+ * @brief Execute BuildDateStringFromRecord.
+ * @param record Parameter record.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 static void
 BuildDateStringFromRecord(const log_record_t* record,
                           char* out,
@@ -865,6 +1024,13 @@ BuildDateStringFromRecord(const log_record_t* record,
   strftime(out, out_size, "%Y-%m-%dZ", &time_info);
 }
 
+/**
+ * @brief Execute CsvDataPortWriter.
+ * @param bytes Parameter bytes.
+ * @param len Parameter len.
+ * @param context Parameter context.
+ * @return Return the function result.
+ */
 static bool
 CsvDataPortWriter(const char* bytes, size_t len, void* context)
 {
@@ -873,6 +1039,14 @@ CsvDataPortWriter(const char* bytes, size_t len, void* context)
   return DataPortWrite(bytes, len, &written) == ESP_OK && written == len;
 }
 
+/**
+ * @brief Execute BuildMqttTopic.
+ * @param prefix Parameter prefix.
+ * @param node_id Parameter node_id.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ * @return Return the function result.
+ */
 static bool
 BuildMqttTopic(const char* prefix,
                const char* node_id,
@@ -891,6 +1065,15 @@ BuildMqttTopic(const char* prefix,
   return written > 0 && (size_t)written < out_size;
 }
 
+/**
+ * @brief Execute BuildMqttPayload.
+ * @param record Parameter record.
+ * @param node_id Parameter node_id.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ * @param written_out Parameter written_out.
+ * @return Return the function result.
+ */
 static bool
 BuildMqttPayload(const log_record_t* record,
                  const char* node_id,
@@ -901,6 +1084,11 @@ BuildMqttPayload(const log_record_t* record,
   return CsvFormatRow(record, node_id, out, out_size, written_out);
 }
 
+/**
+ * @brief Execute TryEmitCsvHeader.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
 static bool
 TryEmitCsvHeader(runtime_state_t* state)
 {
@@ -922,6 +1110,11 @@ TryEmitCsvHeader(runtime_state_t* state)
   return true;
 }
 
+/**
+ * @brief Execute TryEmitBridgeCsvHeader.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
 static bool
 TryEmitBridgeCsvHeader(runtime_state_t* state)
 {
@@ -943,6 +1136,10 @@ TryEmitBridgeCsvHeader(runtime_state_t* state)
   return true;
 }
 
+/**
+ * @brief Execute SnapshotActiveSettings.
+ * @param state Parameter state.
+ */
 static void
 SnapshotActiveSettings(runtime_state_t* state)
 {
@@ -965,6 +1162,12 @@ SnapshotActiveSettings(runtime_state_t* state)
   state->mqtt_bridge_mode_active = state->settings.mqtt_bridge_mode;
 }
 
+/**
+ * @brief Execute EnqueueExportRecord.
+ * @param state Parameter state.
+ * @param node_id Parameter node_id.
+ * @param record Parameter record.
+ */
 static void
 EnqueueExportRecord(runtime_state_t* state,
                     const char* node_id,
@@ -989,6 +1192,12 @@ EnqueueExportRecord(runtime_state_t* state,
   }
 }
 
+/**
+ * @brief Execute EnqueueExportOutbox.
+ * @param state Parameter state.
+ * @param src_mac Parameter src_mac.
+ * @param record Parameter record.
+ */
 static void
 EnqueueExportOutbox(runtime_state_t* state,
                     const uint8_t src_mac[6],
@@ -1016,6 +1225,12 @@ EnqueueExportOutbox(runtime_state_t* state,
   }
 }
 
+/**
+ * @brief Execute EnqueueBrokerPublish.
+ * @param state Parameter state.
+ * @param src_mac Parameter src_mac.
+ * @param record Parameter record.
+ */
 static void
 EnqueueBrokerPublish(runtime_state_t* state,
                      const uint8_t src_mac[6],
@@ -1069,6 +1284,12 @@ EnqueueBrokerPublish(runtime_state_t* state,
   }
 }
 
+/**
+ * @brief Execute RootRecordRxCallback.
+ * @param from Parameter from.
+ * @param record Parameter record.
+ * @param context Parameter context.
+ */
 static void
 RootRecordRxCallback(const pt100_mesh_addr_t* from,
                      const log_record_t* record,
@@ -1090,6 +1311,12 @@ RootRecordRxCallback(const pt100_mesh_addr_t* from,
   }
 }
 
+/**
+ * @brief Execute RootPublishRecordRxCallback.
+ * @param src_mac Parameter src_mac.
+ * @param record Parameter record.
+ * @param context Parameter context.
+ */
 static void
 RootPublishRecordRxCallback(const uint8_t src_mac[6],
                             const log_record_t* record,
@@ -1106,6 +1333,10 @@ RootPublishRecordRxCallback(const uint8_t src_mac[6],
   EnqueueExportOutbox(&g_state, src_mac, record);
 }
 
+/**
+ * @brief Execute UpdateMqttConnectionState.
+ * @param state Parameter state.
+ */
 static void
 UpdateMqttConnectionState(runtime_state_t* state)
 {
@@ -1117,6 +1348,11 @@ UpdateMqttConnectionState(runtime_state_t* state)
   UpdateCachedBool(state, &state->cached_status.mqtt_connected, connected);
 }
 
+/**
+ * @brief Execute EnsureMqttClientState.
+ * @param state Parameter state.
+ * @param should_run Parameter should_run.
+ */
 static void
 EnsureMqttClientState(runtime_state_t* state, bool should_run)
 {
@@ -1149,6 +1385,12 @@ EnsureMqttClientState(runtime_state_t* state, bool should_run)
   UpdateMqttConnectionState(state);
 }
 
+/**
+ * @brief Execute EnsureSdSyncedForEpoch.
+ * @param state Parameter state.
+ * @param epoch_for_file Parameter epoch_for_file.
+ * @return Return the function result.
+ */
 static esp_err_t
 EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
 {
@@ -1195,6 +1437,20 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute BuildBatchForDay.
+ * @param state Parameter state.
+ * @param target_date Parameter target_date.
+ * @param buffer Parameter buffer.
+ * @param buffer_size Parameter buffer_size.
+ * @param max_records Parameter max_records.
+ * @param start_ticks Parameter start_ticks.
+ * @param max_ms Parameter max_ms.
+ * @param records_used_out Parameter records_used_out.
+ * @param last_record_id_out Parameter last_record_id_out.
+ * @param bytes_used_out Parameter bytes_used_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 BuildBatchForDay(runtime_state_t* state,
                  const char* target_date,
@@ -1268,6 +1524,12 @@ BuildBatchForDay(runtime_state_t* state,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FlushFramToSd.
+ * @param state Parameter state.
+ * @param flush_all Parameter flush_all.
+ * @return Return the function result.
+ */
 static esp_err_t
 FlushFramToSd(runtime_state_t* state, bool flush_all)
 {
@@ -1411,6 +1673,15 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
   return (total_flushed > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
+/**
+ * @brief Execute MarkSdFailure.
+ * @param state Parameter state.
+ * @param context Parameter context.
+ * @param operation Parameter operation.
+ * @param error Parameter error.
+ * @param errno_value Parameter errno_value.
+ * @param did_unmount Parameter did_unmount.
+ */
 static void
 MarkSdFailure(runtime_state_t* state,
               const char* context,
@@ -1456,6 +1727,16 @@ MarkSdFailure(runtime_state_t* state,
            (unsigned)state->sd_backoff_until_ticks);
 }
 
+/**
+ * @brief Execute SdFlushWorkerTick.
+ * @param state Parameter state.
+ * @param max_records Parameter max_records.
+ * @param max_ms Parameter max_ms.
+ * @param records_flushed_out Parameter records_flushed_out.
+ * @param bytes_flushed_out Parameter bytes_flushed_out.
+ * @param more_pending_out Parameter more_pending_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 SdFlushWorkerTick(runtime_state_t* state,
                   uint32_t max_records,
@@ -1594,6 +1875,11 @@ SdFlushWorkerTick(runtime_state_t* state,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute SensorTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the SensorTask task.
+ */
 static void
 SensorTask(void* context)
 {
@@ -1721,6 +2007,11 @@ SensorTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute ExportTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the ExportTask task.
+ */
 static void
 ExportTask(void* context)
 {
@@ -1754,6 +2045,11 @@ ExportTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute ExportNetworkTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the ExportNetworkTask task.
+ */
 static void
 ExportNetworkTask(void* context)
 {
@@ -1863,6 +2159,11 @@ ExportNetworkTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute RootBridgeTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the RootBridgeTask task.
+ */
 static void
 RootBridgeTask(void* context)
 {
@@ -1955,6 +2256,11 @@ RootBridgeTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute BrokerPublishTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the BrokerPublishTask task.
+ */
 static void
 BrokerPublishTask(void* context)
 {
@@ -2009,6 +2315,11 @@ BrokerPublishTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute StorageTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the StorageTask task.
+ */
 static void
 StorageTask(void* context)
 {
@@ -2152,6 +2463,11 @@ StorageTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute TimeSyncTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the TimeSyncTask task.
+ */
 static void
 TimeSyncTask(void* context)
 {
@@ -2194,6 +2510,11 @@ TimeSyncTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute DirectWifiTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the DirectWifiTask task.
+ */
 static void
 DirectWifiTask(void* context)
 {
@@ -2257,6 +2578,11 @@ DirectWifiTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute TopologyTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the TopologyTask task.
+ */
 static void
 TopologyTask(void* context)
 {
@@ -2320,6 +2646,16 @@ TopologyTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute DrainFramToSd.
+ * @param state Parameter state.
+ * @param unmount_on_exit Parameter unmount_on_exit.
+ * @param max_duration_ms Parameter max_duration_ms.
+ * @param max_records_per_pass Parameter max_records_per_pass.
+ * @param yield_every_records Parameter yield_every_records.
+ * @param out_stats Parameter out_stats.
+ * @return Return the function result.
+ */
 static esp_err_t
 DrainFramToSd(runtime_state_t* state,
               bool unmount_on_exit,
@@ -2472,6 +2808,11 @@ drain_done:
   return result;
 }
 
+/**
+ * @brief Execute UpdateStartDrainCachedStatus.
+ * @param state Parameter state.
+ * @param stats Parameter stats.
+ */
 static void
 UpdateStartDrainCachedStatus(runtime_state_t* state,
                              const sd_drain_stats_t* stats)
@@ -2495,6 +2836,12 @@ UpdateStartDrainCachedStatus(runtime_state_t* state,
                     stats->flushed_bytes);
 }
 
+/**
+ * @brief Execute DrainFramToSdOnStartBestEffort.
+ * @param state Parameter state.
+ * @param out_stats Parameter out_stats.
+ * @return Return the function result.
+ */
 static esp_err_t
 DrainFramToSdOnStartBestEffort(runtime_state_t* state,
                                sd_drain_stats_t* out_stats)
@@ -2612,6 +2959,11 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
   return result;
 }
 
+/**
+ * @brief Execute ControlTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the ControlTask task.
+ */
 static void
 ControlTask(void* context)
 {
@@ -2637,6 +2989,11 @@ ControlTask(void* context)
   }
 }
 
+/**
+ * @brief Execute RuntimeFlushToSd.
+ * @param context Parameter context.
+ * @return Return the function result.
+ */
 static esp_err_t
 RuntimeFlushToSd(void* context)
 {
@@ -2655,6 +3012,11 @@ RuntimeFlushToSd(void* context)
   return result;
 }
 
+/**
+ * @brief Execute InitSpiBus.
+ * @param host Parameter host.
+ * @return Return the function result.
+ */
 static esp_err_t
 InitSpiBus(spi_host_device_t host)
 {
@@ -2669,18 +3031,29 @@ InitSpiBus(spi_host_device_t host)
   return spi_bus_initialize(host, &bus_config, SPI_DMA_CH_AUTO);
 }
 
+/**
+ * @brief Execute GetSpiHost.
+ * @return Return the function result.
+ */
 static spi_host_device_t
 GetSpiHost(void)
 {
   return (CONFIG_APP_SPI_HOST == 3) ? SPI3_HOST : SPI2_HOST;
 }
 
+/**
+ * @brief Execute GetDisplaySpiHost.
+ * @return Return the function result.
+ */
 static spi_host_device_t
 GetDisplaySpiHost(void)
 {
   return (CONFIG_APP_MAX7219_SPI_HOST == 3) ? SPI3_HOST : SPI2_HOST;
 }
 
+/**
+ * @brief Execute InitializeRuntimeStruct.
+ */
 static void
 InitializeRuntimeStruct(void)
 {
@@ -2718,18 +3091,30 @@ InitializeRuntimeStruct(void)
   g_runtime.mqtt_client_connected = &g_state.mqtt_client_connected;
 }
 
+/**
+ * @brief Execute RuntimeGetRuntime.
+ * @return Return the function result.
+ */
 const app_runtime_t*
 RuntimeGetRuntime(void)
 {
   return g_state.initialized ? &g_runtime : NULL;
 }
 
+/**
+ * @brief Execute RuntimeGetCachedStatus.
+ * @return Return the function result.
+ */
 const runtime_cached_status_t*
 RuntimeGetCachedStatus(void)
 {
   return g_state.initialized ? &g_state.cached_status : NULL;
 }
 
+/**
+ * @brief Execute RuntimeManagerInit.
+ * @return Return the function result.
+ */
 esp_err_t
 RuntimeManagerInit(void)
 {
@@ -2954,6 +3339,9 @@ RuntimeManagerInit(void)
   return first_error;
 }
 
+/**
+ * @brief Execute EnsureSdMounted.
+ */
 static void
 EnsureSdMounted(void)
 {
@@ -2972,6 +3360,13 @@ EnsureSdMounted(void)
   }
 }
 
+/**
+ * @brief Execute SdWithTemporaryMount.
+ * @param state Parameter state.
+ * @param op Parameter op.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 static esp_err_t
 SdWithTemporaryMount(runtime_state_t* state, runtime_sd_op_fn_t op, void* ctx)
 {
@@ -3010,12 +3405,22 @@ SdWithTemporaryMount(runtime_state_t* state, runtime_sd_op_fn_t op, void* ctx)
   return result;
 }
 
+/**
+ * @brief Execute RuntimeWithTemporarySdMount.
+ * @param op Parameter op.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 esp_err_t
 RuntimeWithTemporarySdMount(runtime_sd_op_fn_t op, void* ctx)
 {
   return SdWithTemporaryMount(&g_state, op, ctx);
 }
 
+/**
+ * @brief Execute RuntimeStart.
+ * @return Return the function result.
+ */
 esp_err_t
 RuntimeStart(void)
 {
@@ -3406,6 +3811,11 @@ wifi_direct_start_done:
   return ESP_OK;
 }
 
+/**
+ * @brief Execute RuntimeStopSamplingOnly.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
 static esp_err_t
 RuntimeStopSamplingOnly(runtime_state_t* state)
 {
@@ -3436,6 +3846,12 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute RuntimeStopAllTasks.
+ * @param state Parameter state.
+ * @return Return the function result.
+ * @note FreeRTOS task entry for the RuntimeStopAllTasks task.
+ */
 static esp_err_t
 RuntimeStopAllTasks(runtime_state_t* state)
 {
@@ -3473,6 +3889,10 @@ RuntimeStopAllTasks(runtime_state_t* state)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute RuntimeStop.
+ * @return Return the function result.
+ */
 esp_err_t
 RuntimeStop(void)
 {
@@ -3481,12 +3901,20 @@ RuntimeStop(void)
   return (stop_result != ESP_OK) ? stop_result : finalize_result;
 }
 
+/**
+ * @brief Execute RuntimeIsRunning.
+ * @return Return the function result.
+ */
 bool
 RuntimeIsRunning(void)
 {
   return g_state.is_running;
 }
 
+/**
+ * @brief Execute EnterRunMode.
+ * @return Return the function result.
+ */
 esp_err_t
 EnterRunMode(void)
 {
@@ -3499,6 +3927,10 @@ EnterRunMode(void)
   return result;
 }
 
+/**
+ * @brief Execute EnterDiagMode.
+ * @return Return the function result.
+ */
 esp_err_t
 EnterDiagMode(void)
 {
@@ -3537,6 +3969,10 @@ EnterDiagMode(void)
   return finalize_result;
 }
 
+/**
+ * @brief Execute RuntimeEnableDataStreaming.
+ * @param enabled Parameter enabled.
+ */
 void
 RuntimeEnableDataStreaming(bool enabled)
 {
@@ -3553,24 +3989,37 @@ RuntimeEnableDataStreaming(bool enabled)
   g_state.data_streaming_enabled = enabled;
 }
 
+/**
+ * @brief Execute RuntimeIsDataStreamingEnabled.
+ * @return Return the function result.
+ */
 bool
 RuntimeIsDataStreamingEnabled(void)
 {
   return g_state.data_streaming_enabled;
 }
 
+/**
+ * @brief Execute RuntimeSetLogPolicyRun.
+ */
 void
 RuntimeSetLogPolicyRun(void)
 {
   SetRunLogPolicy();
 }
 
+/**
+ * @brief Execute RuntimeSetLogPolicyDiag.
+ */
 void
 RuntimeSetLogPolicyDiag(void)
 {
   SetDiagLogPolicy();
 }
 
+/**
+ * @brief Execute RuntimeRequestRunStart.
+ */
 void
 RuntimeRequestRunStart(void)
 {
@@ -3579,6 +4028,9 @@ RuntimeRequestRunStart(void)
   taskEXIT_CRITICAL(&g_state.request_lock);
 }
 
+/**
+ * @brief Execute RuntimeRequestRunStop.
+ */
 void
 RuntimeRequestRunStop(void)
 {
@@ -3587,6 +4039,10 @@ RuntimeRequestRunStop(void)
   taskEXIT_CRITICAL(&g_state.request_lock);
 }
 
+/**
+ * @brief Execute RuntimeSdUnmountNow.
+ * @return Return the function result.
+ */
 esp_err_t
 RuntimeSdUnmountNow(void)
 {
@@ -3596,30 +4052,51 @@ RuntimeSdUnmountNow(void)
   return result;
 }
 
+/**
+ * @brief Execute RuntimeSetSdAppendFailureOnce.
+ * @param enabled Parameter enabled.
+ */
 void
 RuntimeSetSdAppendFailureOnce(bool enabled)
 {
   g_state.sd_force_unmount_on_append = enabled;
 }
 
+/**
+ * @brief Execute RuntimeSdIsDegraded.
+ * @return Return the function result.
+ */
 bool
 RuntimeSdIsDegraded(void)
 {
   return g_state.sd_degraded;
 }
 
+/**
+ * @brief Execute RuntimeSdFailCount.
+ * @return Return the function result.
+ */
 uint32_t
 RuntimeSdFailCount(void)
 {
   return g_state.sd_fail_count;
 }
 
+/**
+ * @brief Execute RuntimeSdBackoffUntilTicks.
+ * @return Return the function result.
+ */
 uint32_t
 RuntimeSdBackoffUntilTicks(void)
 {
   return (uint32_t)g_state.sd_backoff_until_ticks;
 }
 
+/**
+ * @brief Execute RuntimeAcknowledgeDisplayAttention.
+ * @param item Parameter item.
+ * @return Return the function result.
+ */
 bool
 RuntimeAcknowledgeDisplayAttention(display_attention_item_t item)
 {
@@ -3638,6 +4115,10 @@ RuntimeAcknowledgeDisplayAttention(display_attention_item_t item)
   return true;
 }
 
+/**
+ * @brief Execute RuntimeSetDisplayAttentionPolicy.
+ * @param policy Parameter policy.
+ */
 void
 RuntimeSetDisplayAttentionPolicy(uint32_t policy)
 {
@@ -3651,6 +4132,11 @@ RuntimeSetDisplayAttentionPolicy(uint32_t policy)
                      g_state.settings.display_attention_mask);
 }
 
+/**
+ * @brief Execute RuntimeShowDisplayTestPattern.
+ * @param duration_ms Parameter duration_ms.
+ * @return Return the function result.
+ */
 esp_err_t
 RuntimeShowDisplayTestPattern(uint32_t duration_ms)
 {

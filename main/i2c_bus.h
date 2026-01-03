@@ -22,27 +22,70 @@ extern "C" {
     bool initialized;
   } i2c_bus_t;
 
+/**
+ * @brief Execute I2cBusInit.
+ * @param bus Parameter bus.
+ * @param port Parameter port.
+ * @param sda_gpio Parameter sda_gpio.
+ * @param scl_gpio Parameter scl_gpio.
+ * @param frequency_hz Parameter frequency_hz.
+ * @return Return the function result.
+ */
   esp_err_t I2cBusInit(i2c_bus_t* bus,
                        i2c_port_t port,
                        int sda_gpio,
                        int scl_gpio,
                        uint32_t frequency_hz);
 
+/**
+ * @brief Execute I2cBusAddDevice.
+ * @param bus Parameter bus.
+ * @param address Parameter address.
+ * @param scl_speed_hz Parameter scl_speed_hz.
+ * @param out_device Parameter out_device.
+ * @return Return the function result.
+ */
   esp_err_t I2cBusAddDevice(i2c_bus_t* bus,
                             uint16_t address,
                             uint32_t scl_speed_hz,
                             i2c_master_dev_handle_t* out_device);
 
+/**
+ * @brief Execute I2cBusReadRegister.
+ * @param device Parameter device.
+ * @param start_register Parameter start_register.
+ * @param data_out Parameter data_out.
+ * @param length Parameter length.
+ * @return Return the function result.
+ */
   esp_err_t I2cBusReadRegister(i2c_master_dev_handle_t device,
                                uint8_t start_register,
                                uint8_t* data_out,
                                size_t length);
 
+/**
+ * @brief Execute I2cBusWriteRegister.
+ * @param device Parameter device.
+ * @param start_register Parameter start_register.
+ * @param data Parameter data.
+ * @param length Parameter length.
+ * @return Return the function result.
+ */
   esp_err_t I2cBusWriteRegister(i2c_master_dev_handle_t device,
                                 uint8_t start_register,
                                 const uint8_t* data,
                                 size_t length);
 
+/**
+ * @brief Execute I2cBusScan.
+ * @param bus Parameter bus.
+ * @param start_addr Parameter start_addr.
+ * @param end_addr Parameter end_addr.
+ * @param found_addrs Parameter found_addrs.
+ * @param max_found Parameter max_found.
+ * @param found_count Parameter found_count.
+ * @return Return the function result.
+ */
   esp_err_t I2cBusScan(const i2c_bus_t* bus,
                        uint8_t start_addr,
                        uint8_t end_addr,

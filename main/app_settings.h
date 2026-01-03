@@ -93,95 +93,273 @@ extern "C"
   } app_settings_t;
 
   // Loads settings from NVS. If keys are missing or invalid, applies defaults.
+/**
+ * @brief Execute AppSettingsLoad.
+ * @param settings_out Parameter settings_out.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsLoad(app_settings_t* settings_out);
 
   // Persists updated log interval to NVS.
+/**
+ * @brief Execute AppSettingsSaveLogPeriodMs.
+ * @param log_period_ms Parameter log_period_ms.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveLogPeriodMs(uint32_t log_period_ms);
 
   // Persists updated FRAM flush watermark to NVS.
+/**
+ * @brief Execute AppSettingsSaveFramFlushWatermarkRecords.
+ * @param watermark_records Parameter watermark_records.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveFramFlushWatermarkRecords(
     uint32_t watermark_records);
 
+/**
+ * @brief Execute AppSettingsSaveSdFlushPeriodMs.
+ * @param period_ms Parameter period_ms.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveSdFlushPeriodMs(uint32_t period_ms);
+/**
+ * @brief Execute AppSettingsSaveSdBatchBytes.
+ * @param batch_bytes Parameter batch_bytes.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveSdBatchBytes(uint32_t batch_bytes);
 
   // Persists updated calibration model to NVS.
+/**
+ * @brief Execute AppSettingsSaveCalibrationWithContext.
+ * @param model Parameter model.
+ * @param context Parameter context.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveCalibrationWithContext(
     const calibration_model_t* model,
     const calibration_context_t* context);
 
+/**
+ * @brief Execute AppSettingsBuildCalibrationContextFromReader.
+ * @param context Parameter context.
+ * @param reader Parameter reader.
+ */
   void AppSettingsBuildCalibrationContextFromReader(
     calibration_context_t* context,
     const max31865_reader_t* reader);
 
   // Persists updated calibration points to NVS.
+/**
+ * @brief Execute AppSettingsSaveCalibrationPoints.
+ * @param points Parameter points.
+ * @param points_count Parameter points_count.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveCalibrationPoints(
     const calibration_point_t* points,
     size_t points_count);
 
   // Persists updated timezone string + DST toggle.
+/**
+ * @brief Execute AppSettingsSaveTimeZone.
+ * @param tz_posix Parameter tz_posix.
+ * @param dst_enabled Parameter dst_enabled.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled);
 
   // Persists updated node role.
+/**
+ * @brief Execute AppSettingsSaveNodeRole.
+ * @param node_role Parameter node_role.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveNodeRole(app_node_role_t node_role);
 
   // Persists updated allow_children setting.
+/**
+ * @brief Execute AppSettingsSaveAllowChildren.
+ * @param allow_children Parameter allow_children.
+ * @param explicit_setting Parameter explicit_setting.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveAllowChildren(bool allow_children,
                                          bool explicit_setting);
 
   // Role helpers.
+/**
+ * @brief Execute AppSettingsRoleToString.
+ * @param role Parameter role.
+ * @return Return the function result.
+ */
   const char* AppSettingsRoleToString(app_node_role_t role);
+/**
+ * @brief Execute AppSettingsParseRole.
+ * @param value Parameter value.
+ * @param role_out Parameter role_out.
+ * @return Return the function result.
+ */
   bool AppSettingsParseRole(const char* value, app_node_role_t* role_out);
+/**
+ * @brief Execute AppSettingsRoleDefaultAllowsChildren.
+ * @param role Parameter role.
+ * @return Return the function result.
+ */
   bool AppSettingsRoleDefaultAllowsChildren(app_node_role_t role);
 
   // Display units helpers.
+/**
+ * @brief Execute AppSettingsDisplayUnitsToString.
+ * @param units Parameter units.
+ * @return Return the function result.
+ */
   const char* AppSettingsDisplayUnitsToString(app_display_units_t units);
+/**
+ * @brief Execute AppSettingsParseDisplayUnits.
+ * @param value Parameter value.
+ * @param units_out Parameter units_out.
+ * @return Return the function result.
+ */
   bool AppSettingsParseDisplayUnits(const char* value,
                                     app_display_units_t* units_out);
 
   // Network mode helpers.
+/**
+ * @brief Execute AppSettingsNetModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
   const char* AppSettingsNetModeToString(app_net_mode_t mode);
+/**
+ * @brief Execute AppSettingsParseNetMode.
+ * @param value Parameter value.
+ * @param mode_out Parameter mode_out.
+ * @return Return the function result.
+ */
   bool AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out);
 
   // MQTT bridge mode helpers.
+/**
+ * @brief Execute AppSettingsMqttBridgeModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
   const char* AppSettingsMqttBridgeModeToString(mqtt_bridge_mode_t mode);
+/**
+ * @brief Execute AppSettingsParseMqttBridgeMode.
+ * @param value Parameter value.
+ * @param mode_out Parameter mode_out.
+ * @return Return the function result.
+ */
   bool AppSettingsParseMqttBridgeMode(const char* value,
                                       mqtt_bridge_mode_t* mode_out);
 
   // Persists updated display units.
+/**
+ * @brief Execute AppSettingsSaveDisplayUnits.
+ * @param units Parameter units.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveDisplayUnits(app_display_units_t units);
 
   // Persists updated network mode.
+/**
+ * @brief Execute AppSettingsSaveNetMode.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveNetMode(app_net_mode_t mode);
 
+/**
+ * @brief Execute AppSettingsSaveMqttEnabled.
+ * @param enabled Parameter enabled.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveMqttEnabled(bool enabled);
 
+/**
+ * @brief Execute AppSettingsSaveMqttBrokerUri.
+ * @param uri Parameter uri.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveMqttBrokerUri(const char* uri);
 
+/**
+ * @brief Execute AppSettingsSaveMqttTopicPrefix.
+ * @param prefix Parameter prefix.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveMqttTopicPrefix(const char* prefix);
 
+/**
+ * @brief Execute AppSettingsSaveMqttQos.
+ * @param qos Parameter qos.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveMqttQos(uint8_t qos);
 
+/**
+ * @brief Execute AppSettingsSaveMqttRetain.
+ * @param retain Parameter retain.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveMqttRetain(bool retain);
 
+/**
+ * @brief Execute AppSettingsSaveMqttBridgeMode.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveMqttBridgeMode(mqtt_bridge_mode_t mode);
 
   // Persists updated display attention mask.
+/**
+ * @brief Execute AppSettingsSaveDisplayAttentionMask.
+ * @param mask Parameter mask.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveDisplayAttentionMask(
     display_attention_mask_t mask);
 
+/**
+ * @brief Execute AppSettingsGetDisplayAttentionMask.
+ * @return Return the function result.
+ */
   display_attention_mask_t AppSettingsGetDisplayAttentionMask(void);
 
+/**
+ * @brief Execute AppSettingsDefaultDisplayAttentionMask.
+ * @return Return the function result.
+ */
   display_attention_mask_t AppSettingsDefaultDisplayAttentionMask(void);
 
   // Persists updated display attention policy.
+/**
+ * @brief Execute AppSettingsSaveDisplayAttentionPolicy.
+ * @param policy Parameter policy.
+ * @return Return the function result.
+ */
   esp_err_t AppSettingsSaveDisplayAttentionPolicy(uint32_t policy);
 
+/**
+ * @brief Execute AppSettingsGetDisplayAttentionPolicy.
+ * @return Return the function result.
+ */
   uint32_t AppSettingsGetDisplayAttentionPolicy(void);
 
+/**
+ * @brief Execute AppSettingsDefaultDisplayAttentionPolicy.
+ * @return Return the function result.
+ */
   uint32_t AppSettingsDefaultDisplayAttentionPolicy(void);
 
   // Applies TZ to the runtime environment.
+/**
+ * @brief Execute AppSettingsApplyTimeZone.
+ * @param settings Parameter settings.
+ */
   void AppSettingsApplyTimeZone(const app_settings_t* settings);
 
 #ifdef __cplusplus

@@ -10,6 +10,12 @@
 
 static const char* kTag = "alert_ntfy";
 
+/**
+ * @brief Execute FormatEpoch.
+ * @param epoch_seconds Parameter epoch_seconds.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 static void
 FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size)
 {
@@ -26,6 +32,11 @@ FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size)
   strftime(out, out_size, "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
 }
 
+/**
+ * @brief Execute SeverityToPriority.
+ * @param severity Parameter severity.
+ * @return Return the function result.
+ */
 static const char*
 SeverityToPriority(int severity)
 {
@@ -39,6 +50,12 @@ SeverityToPriority(int severity)
   }
 }
 
+/**
+ * @brief Execute FormatLeafId.
+ * @param leaf_id Parameter leaf_id.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 static void
 FormatLeafId(uint64_t leaf_id, char* out, size_t out_size)
 {
@@ -61,6 +78,12 @@ FormatLeafId(uint64_t leaf_id, char* out, size_t out_size)
            mac[5]);
 }
 
+/**
+ * @brief Execute AppendTimeLine.
+ * @param payload Parameter payload.
+ * @param body Parameter body.
+ * @param body_size Parameter body_size.
+ */
 static void
 AppendTimeLine(const alert_notification_payload_t* payload,
                char* body,
@@ -84,6 +107,10 @@ AppendTimeLine(const alert_notification_payload_t* payload,
   }
 }
 
+/**
+ * @brief Execute AlertNtfyInit.
+ * @param ntfy Parameter ntfy.
+ */
 void
 AlertNtfyInit(alert_ntfy_t* ntfy)
 {
@@ -97,6 +124,12 @@ AlertNtfyInit(alert_ntfy_t* ntfy)
                                    &ntfy->queue_buffer);
 }
 
+/**
+ * @brief Execute AlertNtfyEnqueue.
+ * @param ntfy Parameter ntfy.
+ * @param note Parameter note.
+ * @return Return the function result.
+ */
 bool
 AlertNtfyEnqueue(alert_ntfy_t* ntfy, const alert_notification_t* note)
 {
@@ -117,6 +150,15 @@ AlertNtfyEnqueue(alert_ntfy_t* ntfy, const alert_notification_t* note)
   return false;
 }
 
+/**
+ * @brief Execute AlertNtfySend.
+ * @param ntfy Parameter ntfy.
+ * @param cfg Parameter cfg.
+ * @param note Parameter note.
+ * @param out_status Parameter out_status.
+ * @param out_err Parameter out_err.
+ * @return Return the function result.
+ */
 alert_ntfy_result_t
 AlertNtfySend(const alert_ntfy_t* ntfy,
               const alert_ntfy_config_t* cfg,

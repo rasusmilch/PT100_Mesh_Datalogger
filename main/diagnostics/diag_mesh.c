@@ -64,12 +64,22 @@ typedef struct
   bool mesh_ap_password_valid;
 } mesh_diag_config_t;
 
+/**
+ * @brief Execute YesNo.
+ * @param value Parameter value.
+ * @return Return the function result.
+ */
 static const char*
 YesNo(bool value)
 {
   return value ? "yes" : "no";
 }
 
+/**
+ * @brief Execute MeshDiagHeapCheck.
+ * @param ctx Parameter ctx.
+ * @param label Parameter label.
+ */
 static void
 MeshDiagHeapCheck(const diag_ctx_t* ctx, const char* label)
 {
@@ -81,6 +91,10 @@ MeshDiagHeapCheck(const diag_ctx_t* ctx, const char* label)
 #endif
 }
 
+/**
+ * @brief Execute CaptureHeapSnapshot.
+ * @return Return the function result.
+ */
 static heap_snapshot_t
 CaptureHeapSnapshot(void)
 {
@@ -94,6 +108,12 @@ CaptureHeapSnapshot(void)
   return snapshot;
 }
 
+/**
+ * @brief Execute PrintHeapSnapshot.
+ * @param ctx Parameter ctx.
+ * @param label Parameter label.
+ * @param snapshot Parameter snapshot.
+ */
 static void
 PrintHeapSnapshot(const diag_ctx_t* ctx,
                   const char* label,
@@ -109,6 +129,12 @@ PrintHeapSnapshot(const diag_ctx_t* ctx,
          (unsigned)snapshot->min_free);
 }
 
+/**
+ * @brief Execute FormatMac.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ * @param mac Parameter mac.
+ */
 static void
 FormatMac(char* out, size_t out_size, const uint8_t mac[6])
 {
@@ -118,6 +144,11 @@ FormatMac(char* out, size_t out_size, const uint8_t mac[6])
   snprintf(out, out_size, MACSTR, MAC2STR(mac));
 }
 
+/**
+ * @brief Execute WifiModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 static const char*
 WifiModeToString(wifi_service_mode_t mode)
 {
@@ -133,6 +164,10 @@ WifiModeToString(wifi_service_mode_t mode)
   }
 }
 
+/**
+ * @brief Execute PrintStackSizeWarning.
+ * @param ctx Parameter ctx.
+ */
 static void
 PrintStackSizeWarning(const diag_ctx_t* ctx)
 {
@@ -146,6 +181,12 @@ PrintStackSizeWarning(const diag_ctx_t* ctx)
 #endif
 }
 
+/**
+ * @brief Execute ParseMeshId.
+ * @param mesh_id_string Parameter mesh_id_string.
+ * @param mesh_id_out Parameter mesh_id_out.
+ * @return Return the function result.
+ */
 static bool
 ParseMeshId(const char* mesh_id_string, pt100_mesh_addr_t* mesh_id_out)
 {
@@ -171,6 +212,12 @@ ParseMeshId(const char* mesh_id_string, pt100_mesh_addr_t* mesh_id_out)
   return true;
 }
 
+/**
+ * @brief Execute ValidateMeshConfig.
+ * @param start_as_root Parameter start_as_root.
+ * @param config Parameter config.
+ * @return Return the function result.
+ */
 static esp_err_t
 ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
 {
@@ -228,6 +275,13 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute MeshReady.
+ * @param expect_root Parameter expect_root.
+ * @param mesh Parameter mesh.
+ * @param layer_out Parameter layer_out.
+ * @return Return the function result.
+ */
 static bool
 MeshReady(bool expect_root, const mesh_transport_t* mesh, int* layer_out)
 {
@@ -249,6 +303,16 @@ MeshReady(bool expect_root, const mesh_transport_t* mesh, int* layer_out)
   return layer >= 2;
 }
 
+/**
+ * @brief Execute WaitForMeshReady.
+ * @param mesh Parameter mesh.
+ * @param expect_root Parameter expect_root.
+ * @param timeout_ms Parameter timeout_ms.
+ * @param ready_out Parameter ready_out.
+ * @param waited_ms_out Parameter waited_ms_out.
+ * @param layer_out Parameter layer_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 WaitForMeshReady(const mesh_transport_t* mesh,
                  bool expect_root,
@@ -290,6 +354,11 @@ WaitForMeshReady(const mesh_transport_t* mesh,
   return ready ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
+/**
+ * @brief Execute CaptureMeshStatus.
+ * @param status Parameter status.
+ * @param mesh Parameter mesh.
+ */
 static void
 CaptureMeshStatus(mesh_status_t* status, const mesh_transport_t* mesh)
 {
@@ -339,6 +408,10 @@ CaptureMeshStatus(mesh_status_t* status, const mesh_transport_t* mesh)
   status->routing_table_size = (int)esp_mesh_lite_get_mesh_node_number();
 }
 
+/**
+ * @brief Execute PrintRoutingTable.
+ * @param ctx Parameter ctx.
+ */
 static void
 PrintRoutingTable(const diag_ctx_t* ctx)
 {
@@ -382,6 +455,17 @@ PrintRoutingTable(const diag_ctx_t* ctx)
 #endif
 }
 
+/**
+ * @brief Execute RunDiagMesh.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param start Parameter start.
+ * @param stop Parameter stop.
+ * @param force_root Parameter force_root.
+ * @param timeout_ms Parameter timeout_ms.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int
 RunDiagMesh(const app_runtime_t* runtime,
             bool full,

@@ -33,6 +33,13 @@ typedef struct
 //   comma, and include record_id as the second field.
 // - Header line should be "schema_ver,record_id,..." and will be ignored.
 // - Comment lines beginning with '#' are ignored.
+/**
+ * @brief Execute SdCsvFindLastRecordIdAndRepairTail.
+ * @param file_handle Parameter file_handle.
+ * @param tail_scan_max_bytes Parameter tail_scan_max_bytes.
+ * @param resume_info_out Parameter resume_info_out.
+ * @return Return the function result.
+ */
 esp_err_t SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
                                              size_t tail_scan_max_bytes,
                                              SdCsvResumeInfo* resume_info_out);
@@ -42,6 +49,14 @@ esp_err_t SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
 //
 // On verification failure, the function truncates the file back to its original
 // size and returns an error. FRAM must NOT be consumed unless this returns OK.
+/**
+ * @brief Execute SdCsvAppendBatchWithReadbackVerify.
+ * @param file_handle Parameter file_handle.
+ * @param batch_bytes Parameter batch_bytes.
+ * @param batch_length_bytes Parameter batch_length_bytes.
+ * @param diag_out Parameter diag_out.
+ * @return Return the function result.
+ */
 esp_err_t SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
                                              const uint8_t* batch_bytes,
                                              size_t batch_length_bytes,

@@ -7,6 +7,10 @@
 static const char* kTag = "net_stack";
 static bool s_initialized = false;
 
+/**
+ * @brief Execute NetStackInitOnce.
+ * @return Return the function result.
+ */
 esp_err_t
 NetStackInitOnce(void)
 {

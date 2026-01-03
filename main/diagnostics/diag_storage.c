@@ -19,6 +19,13 @@
 static const char* kNvsNamespace = "pt100_logger";
 static const char* kRecordIdKey = "diag_recid";
 
+/**
+ * @brief Execute BuildDailyCsvPath.
+ * @param logger Parameter logger.
+ * @param epoch_seconds Parameter epoch_seconds.
+ * @param path_out Parameter path_out.
+ * @param path_out_size Parameter path_out_size.
+ */
 static void
 BuildDailyCsvPath(const sd_logger_t* logger,
                   int64_t epoch_seconds,
@@ -41,6 +48,11 @@ BuildDailyCsvPath(const sd_logger_t* logger,
            date_string);
 }
 
+/**
+ * @brief Execute BuildDiagRecord.
+ * @param epoch_seconds Parameter epoch_seconds.
+ * @return Return the function result.
+ */
 static log_record_t
 BuildDiagRecord(int64_t epoch_seconds)
 {
@@ -55,6 +67,12 @@ BuildDiagRecord(int64_t epoch_seconds)
   return record;
 }
 
+/**
+ * @brief Execute AppendRecordToFram.
+ * @param fram Parameter fram.
+ * @param record Parameter record.
+ * @return Return the function result.
+ */
 static esp_err_t
 AppendRecordToFram(fram_log_t* fram, log_record_t* record)
 {
@@ -68,6 +86,14 @@ AppendRecordToFram(fram_log_t* fram, log_record_t* record)
   return FramLogAppend(fram, record);
 }
 
+/**
+ * @brief Execute WritePartialCsvLine.
+ * @param logger Parameter logger.
+ * @param record Parameter record.
+ * @param node_id Parameter node_id.
+ * @param full_len_out Parameter full_len_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 WritePartialCsvLine(sd_logger_t* logger,
                     const log_record_t* record,
@@ -116,6 +142,14 @@ WritePartialCsvLine(sd_logger_t* logger,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute RunPowerLossTailTest.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param details Parameter details.
+ * @param details_len Parameter details_len.
+ * @return Return the function result.
+ */
 static bool
 RunPowerLossTailTest(const app_runtime_t* runtime,
                      bool full,
@@ -229,6 +263,14 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
   return tail_ok && replay_ok;
 }
 
+/**
+ * @brief Execute RunSdPullTest.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param details Parameter details.
+ * @param details_len Parameter details_len.
+ * @return Return the function result.
+ */
 static bool
 RunSdPullTest(const app_runtime_t* runtime,
               bool full,
@@ -300,6 +342,14 @@ RunSdPullTest(const app_runtime_t* runtime,
   return expected_fail && backoff_active && buffered_ok && replay_ok;
 }
 
+/**
+ * @brief Execute ReadLastRecordId.
+ * @param path Parameter path.
+ * @param tail_scan_bytes Parameter tail_scan_bytes.
+ * @param found_out Parameter found_out.
+ * @param record_id_out Parameter record_id_out.
+ * @return Return the function result.
+ */
 static bool
 ReadLastRecordId(const char* path,
                  size_t tail_scan_bytes,
@@ -329,6 +379,13 @@ ReadLastRecordId(const char* path,
   return true;
 }
 
+/**
+ * @brief Execute RunMidnightSplitTest.
+ * @param runtime Parameter runtime.
+ * @param details Parameter details.
+ * @param details_len Parameter details_len.
+ * @return Return the function result.
+ */
 static bool
 RunMidnightSplitTest(const app_runtime_t* runtime,
                      char* details,
@@ -405,6 +462,13 @@ RunMidnightSplitTest(const app_runtime_t* runtime,
   return distinct_files && day1_ok && day2_ok;
 }
 
+/**
+ * @brief Execute RunRecordIdContinuityTest.
+ * @param runtime Parameter runtime.
+ * @param details Parameter details.
+ * @param details_len Parameter details_len.
+ * @return Return the function result.
+ */
 static bool
 RunRecordIdContinuityTest(const app_runtime_t* runtime,
                           char* details,
@@ -457,6 +521,13 @@ RunRecordIdContinuityTest(const app_runtime_t* runtime,
   return monotonic && commit_result == ESP_OK;
 }
 
+/**
+ * @brief Execute RunDiagStorageImpl.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 static int
 RunDiagStorageImpl(const app_runtime_t* runtime,
                    bool full,
@@ -538,6 +609,12 @@ typedef struct
   int result;
 } diag_storage_ctx_t;
 
+/**
+ * @brief Execute RunDiagStorageWithMount.
+ * @param runtime Parameter runtime.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 static esp_err_t
 RunDiagStorageWithMount(app_runtime_t* runtime, void* ctx)
 {
@@ -546,6 +623,13 @@ RunDiagStorageWithMount(app_runtime_t* runtime, void* ctx)
   return (args->result == 0) ? ESP_OK : ESP_FAIL;
 }
 
+/**
+ * @brief Execute RunDiagStorage.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int
 RunDiagStorage(const app_runtime_t* runtime, bool full, diag_verbosity_t verbosity)
 {

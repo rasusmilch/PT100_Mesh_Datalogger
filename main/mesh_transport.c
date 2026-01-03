@@ -57,12 +57,21 @@ static const uint32_t kRawMsgIdPublishRecord = 0x00000004u;
 static const uint32_t kRawMsgMaxRetry = 3u;
 static const uint16_t kRawMsgRetryIntervalMs = 300u;
 
+/**
+ * @brief Execute MeshMessageHeaderSize.
+ * @return Return the function result.
+ */
 static size_t
 MeshMessageHeaderSize(void)
 {
   return offsetof(mesh_message_t, payload);
 }
 
+/**
+ * @brief Execute PopulateMeshMessageSrc.
+ * @param msg Parameter msg.
+ * @return Return the function result.
+ */
 static esp_err_t
 PopulateMeshMessageSrc(mesh_message_t* msg)
 {
@@ -79,6 +88,15 @@ PopulateMeshMessageSrc(mesh_message_t* msg)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute SendRawMessage.
+ * @param msg_id Parameter msg_id.
+ * @param data Parameter data.
+ * @param size Parameter size.
+ * @param data Parameter data.
+ * @param size Parameter size.
+ * @return Return the function result.
+ */
 static esp_err_t
 SendRawMessage(uint32_t msg_id,
                const uint8_t* data,
@@ -100,6 +118,11 @@ SendRawMessage(uint32_t msg_id,
   return esp_mesh_lite_send_msg(ESP_MESH_LITE_RAW_MSG, &config);
 }
 
+/**
+ * @brief Execute ResetRawMessageOutput.
+ * @param out_data Parameter out_data.
+ * @param out_len Parameter out_len.
+ */
 static void
 ResetRawMessageOutput(uint8_t** out_data, uint32_t* out_len)
 {
@@ -111,6 +134,15 @@ ResetRawMessageOutput(uint8_t** out_data, uint32_t* out_len)
   }
 }
 
+/**
+ * @brief Execute OnRawRecord.
+ * @param data Parameter data.
+ * @param len Parameter len.
+ * @param out_data Parameter out_data.
+ * @param out_len Parameter out_len.
+ * @param seq Parameter seq.
+ * @return Return the function result.
+ */
 static esp_err_t
 OnRawRecord(uint8_t* data,
             uint32_t len,
@@ -146,6 +178,15 @@ OnRawRecord(uint8_t* data,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute OnRawPublishRecord.
+ * @param data Parameter data.
+ * @param len Parameter len.
+ * @param out_data Parameter out_data.
+ * @param out_len Parameter out_len.
+ * @param seq Parameter seq.
+ * @return Return the function result.
+ */
 static esp_err_t
 OnRawPublishRecord(uint8_t* data,
                    uint32_t len,
@@ -174,6 +215,15 @@ OnRawPublishRecord(uint8_t* data,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute OnRawTimeRequest.
+ * @param data Parameter data.
+ * @param len Parameter len.
+ * @param out_data Parameter out_data.
+ * @param out_len Parameter out_len.
+ * @param seq Parameter seq.
+ * @return Return the function result.
+ */
 static esp_err_t
 OnRawTimeRequest(uint8_t* data,
                  uint32_t len,
@@ -219,6 +269,15 @@ OnRawTimeRequest(uint8_t* data,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute OnRawTimeSync.
+ * @param data Parameter data.
+ * @param len Parameter len.
+ * @param out_data Parameter out_data.
+ * @param out_len Parameter out_len.
+ * @param seq Parameter seq.
+ * @return Return the function result.
+ */
 static esp_err_t
 OnRawTimeSync(uint8_t* data,
               uint32_t len,
@@ -265,12 +324,20 @@ static const esp_mesh_lite_raw_msg_action_t kMeshRawActions[] = {
 };
 
 esp_err_t __attribute__((weak))
+/**
+ * @brief Execute esp_mesh_lite_stop.
+ * @return Return the function result.
+ */
 esp_mesh_lite_stop(void)
 {
   return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t __attribute__((weak))
+/**
+ * @brief Execute esp_mesh_lite_deinit.
+ * @return Return the function result.
+ */
 esp_mesh_lite_deinit(void)
 {
   return ESP_ERR_NOT_SUPPORTED;
@@ -282,36 +349,60 @@ esp_mesh_lite_deinit(void)
 //
 // We provide weak fallbacks so the app still builds if the symbol set changes.
 void __attribute__((weak))
+/**
+ * @brief Execute esp_mesh_lite_comm_stop_reconnect.
+ */
 esp_mesh_lite_comm_stop_reconnect(void)
 {
 }
 
 void __attribute__((weak))
+/**
+ * @brief Execute esp_mesh_lite_stop_resend_raw_msg.
+ */
 esp_mesh_lite_stop_resend_raw_msg(void)
 {
 }
 
 void __attribute__((weak))
+/**
+ * @brief Execute esp_mesh_lite_stop_resend_json_msg.
+ */
 esp_mesh_lite_stop_resend_json_msg(void)
 {
 }
 
 void __attribute__((weak))
+/**
+ * @brief Execute esp_mesh_lite_clear_scan_status.
+ */
 esp_mesh_lite_clear_scan_status(void)
 {
 }
 
 void __attribute__((weak))
+/**
+ * @brief Execute esp_mesh_lite_comm_clear_scan_status.
+ */
 esp_mesh_lite_comm_clear_scan_status(void)
 {
 }
 
+/**
+ * @brief Execute IsValidWifiChannel.
+ * @param channel Parameter channel.
+ * @return Return the function result.
+ */
 static bool
 IsValidWifiChannel(int channel)
 {
   return (channel >= 1) && (channel <= 14);
 }
 
+/**
+ * @brief Execute ApplyMeshSoftApChannelBestEffort.
+ * @param channel Parameter channel.
+ */
 static void
 ApplyMeshSoftApChannelBestEffort(int channel)
 {
@@ -379,6 +470,9 @@ ApplyMeshSoftApChannelBestEffort(int channel)
   ESP_LOGI(kTag, "mesh SoftAP channel set to %d", channel);
 }
 
+/**
+ * @brief Execute StopMeshLiteBackgroundWorkBestEffort.
+ */
 static void
 StopMeshLiteBackgroundWorkBestEffort(void)
 {
@@ -406,6 +500,10 @@ StopMeshLiteBackgroundWorkBestEffort(void)
   (void)esp_wifi_scan_stop();
 }
 
+/**
+ * @brief Execute CacheMeshLevel.
+ * @param mesh Parameter mesh.
+ */
 static void
 CacheMeshLevel(mesh_transport_t* mesh)
 {
@@ -416,18 +514,41 @@ CacheMeshLevel(mesh_transport_t* mesh)
   mesh->is_connected = (mesh->last_level > 0);
 }
 
+/**
+ * @brief Execute MeshTransportIsStarted.
+ * @param mesh Parameter mesh.
+ * @return Return the function result.
+ */
 bool
 MeshTransportIsStarted(const mesh_transport_t* mesh)
 {
   return mesh != NULL && mesh->mesh_lite_started;
 }
 
+/**
+ * @brief Execute MeshTransportMeshLiteIsActive.
+ * @return Return the function result.
+ */
 bool
 MeshTransportMeshLiteIsActive(void)
 {
   return g_mesh != NULL && g_mesh->mesh_lite_started;
 }
 
+/**
+ * @brief Execute MeshTransportStart.
+ * @param mesh Parameter mesh.
+ * @param is_root Parameter is_root.
+ * @param allow_children Parameter allow_children.
+ * @param router_ssid Parameter router_ssid.
+ * @param router_password Parameter router_password.
+ * @param record_rx_callback Parameter record_rx_callback.
+ * @param record_rx_context Parameter record_rx_context.
+ * @param publish_record_rx_callback Parameter publish_record_rx_callback.
+ * @param publish_record_rx_context Parameter publish_record_rx_context.
+ * @param time_sync Parameter time_sync.
+ * @return Return the function result.
+ */
 esp_err_t
 MeshTransportStart(mesh_transport_t* mesh,
                    bool is_root,
@@ -557,6 +678,11 @@ MeshTransportStart(mesh_transport_t* mesh,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute MeshTransportIsConnected.
+ * @param mesh Parameter mesh.
+ * @return Return the function result.
+ */
 bool
 MeshTransportIsConnected(const mesh_transport_t* mesh)
 {
@@ -568,6 +694,12 @@ MeshTransportIsConnected(const mesh_transport_t* mesh)
   return mesh->is_connected;
 }
 
+/**
+ * @brief Execute MeshTransportGetRootAddress.
+ * @param mesh Parameter mesh.
+ * @param root_out Parameter root_out.
+ * @return Return the function result.
+ */
 esp_err_t
 MeshTransportGetRootAddress(const mesh_transport_t* mesh,
                             pt100_mesh_addr_t* root_out)
@@ -584,6 +716,12 @@ MeshTransportGetRootAddress(const mesh_transport_t* mesh,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute MeshTransportSendRecord.
+ * @param mesh Parameter mesh.
+ * @param record Parameter record.
+ * @return Return the function result.
+ */
 esp_err_t
 MeshTransportSendRecord(const mesh_transport_t* mesh,
                         const log_record_t* record)
@@ -609,6 +747,13 @@ MeshTransportSendRecord(const mesh_transport_t* mesh,
                         esp_mesh_lite_send_raw_msg_to_root);
 }
 
+/**
+ * @brief Execute MeshTransportSendPublishRecord.
+ * @param mesh Parameter mesh.
+ * @param src_mac Parameter src_mac.
+ * @param record Parameter record.
+ * @return Return the function result.
+ */
 esp_err_t
 MeshTransportSendPublishRecord(const mesh_transport_t* mesh,
                                const uint8_t src_mac[6],
@@ -630,6 +775,12 @@ MeshTransportSendPublishRecord(const mesh_transport_t* mesh,
                         esp_mesh_lite_send_raw_msg_to_root);
 }
 
+/**
+ * @brief Execute MeshTransportBroadcastTime.
+ * @param mesh Parameter mesh.
+ * @param epoch_seconds Parameter epoch_seconds.
+ * @return Return the function result.
+ */
 esp_err_t
 MeshTransportBroadcastTime(const mesh_transport_t* mesh, int64_t epoch_seconds)
 {
@@ -655,6 +806,11 @@ MeshTransportBroadcastTime(const mesh_transport_t* mesh, int64_t epoch_seconds)
                         esp_mesh_lite_send_broadcast_raw_msg_to_child);
 }
 
+/**
+ * @brief Execute MeshTransportRequestTime.
+ * @param mesh Parameter mesh.
+ * @return Return the function result.
+ */
 esp_err_t
 MeshTransportRequestTime(const mesh_transport_t* mesh)
 {
@@ -678,6 +834,11 @@ MeshTransportRequestTime(const mesh_transport_t* mesh)
                         esp_mesh_lite_send_raw_msg_to_root);
 }
 
+/**
+ * @brief Execute MeshTransportStop.
+ * @param mesh Parameter mesh.
+ * @return Return the function result.
+ */
 esp_err_t
 MeshTransportStop(mesh_transport_t* mesh)
 {

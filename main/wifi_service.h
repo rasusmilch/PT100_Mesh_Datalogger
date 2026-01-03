@@ -16,17 +16,34 @@ extern "C" {
 
 // Initializes shared Wi-Fi service state and the underlying network stack.
 // Safe to call multiple times.
+/**
+ * @brief Execute WifiServiceInitOnce.
+ * @return Return the function result.
+ */
 esp_err_t WifiServiceInitOnce(void);
 
 // Acquires the Wi-Fi service for the requested mode, initializing and starting
 // esp_wifi on first use. Returns ESP_ERR_INVALID_STATE if a different mode is
 // already active.
+/**
+ * @brief Execute WifiServiceAcquire.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 esp_err_t WifiServiceAcquire(wifi_service_mode_t mode);
 
 // Releases the Wi-Fi service. Stops esp_wifi when the last user releases.
+/**
+ * @brief Execute WifiServiceRelease.
+ * @return Return the function result.
+ */
 esp_err_t WifiServiceRelease(void);
 
 // Returns the currently active service mode.
+/**
+ * @brief Execute WifiServiceActiveMode.
+ * @return Return the function result.
+ */
 wifi_service_mode_t WifiServiceActiveMode(void);
 
 #ifdef __cplusplus

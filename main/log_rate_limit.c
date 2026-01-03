@@ -2,6 +2,12 @@
 
 #include "esp_timer.h"
 
+/**
+ * @brief Execute LogRateLimitAllow.
+ * @param last_ms Parameter last_ms.
+ * @param period_ms Parameter period_ms.
+ * @return Return the function result.
+ */
 bool
 LogRateLimitAllow(uint32_t* last_ms, uint32_t period_ms)
 {

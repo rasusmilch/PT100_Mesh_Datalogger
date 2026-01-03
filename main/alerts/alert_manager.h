@@ -109,86 +109,249 @@ typedef struct
   TaskHandle_t* task_handle;
 } alert_task_context_t;
 
+/**
+ * @brief Execute AlertManagerInit.
+ * @param manager Parameter manager.
+ * @param root_id_string Parameter root_id_string.
+ */
 void AlertManagerInit(alert_manager_t* manager, const char* root_id_string);
 
+/**
+ * @brief Execute AlertManagerLoadConfig.
+ * @param manager Parameter manager.
+ * @return Return the function result.
+ */
 esp_err_t AlertManagerLoadConfig(alert_manager_t* manager);
 
+/**
+ * @brief Execute AlertManagerSaveConfig.
+ * @param manager Parameter manager.
+ * @return Return the function result.
+ */
 esp_err_t AlertManagerSaveConfig(alert_manager_t* manager);
 
+/**
+ * @brief Execute AlertManagerOnSample.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param record Parameter record.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
 void AlertManagerOnSample(alert_manager_t* manager,
                           uint64_t leaf_id,
                           const log_record_t* record,
                           int64_t now_ms,
                           int64_t now_epoch);
 
+/**
+ * @brief Execute AlertManagerOnLeafOnline.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param online Parameter online.
+ * @param now_ms Parameter now_ms.
+ */
 void AlertManagerOnLeafOnline(alert_manager_t* manager,
                               uint64_t leaf_id,
                               bool online,
                               int64_t now_ms);
 
+/**
+ * @brief Execute AlertManagerTick.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
 void AlertManagerTick(alert_manager_t* manager,
                       int64_t now_ms,
                       int64_t now_epoch);
 
+/**
+ * @brief Execute AlertManagerIsConfigured.
+ * @param manager Parameter manager.
+ * @return Return the function result.
+ */
 bool AlertManagerIsConfigured(const alert_manager_t* manager);
 
+/**
+ * @brief Execute AlertManagerEnableType.
+ * @param manager Parameter manager.
+ * @param type Parameter type.
+ * @param enabled Parameter enabled.
+ * @param leaf_id Parameter leaf_id.
+ * @param per_leaf Parameter per_leaf.
+ * @return Return the function result.
+ */
 bool AlertManagerEnableType(alert_manager_t* manager,
                             alert_type_t type,
                             bool enabled,
                             uint64_t leaf_id,
                             bool per_leaf);
 
+/**
+ * @brief Execute AlertManagerSetDefaultLimit.
+ * @param manager Parameter manager.
+ * @param is_high Parameter is_high.
+ * @param limit_milli_c Parameter limit_milli_c.
+ * @return Return the function result.
+ */
 bool AlertManagerSetDefaultLimit(alert_manager_t* manager,
                                  bool is_high,
                                  int32_t limit_milli_c);
 
+/**
+ * @brief Execute AlertManagerSetLeafLimit.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param is_high Parameter is_high.
+ * @param limit_milli_c Parameter limit_milli_c.
+ * @return Return the function result.
+ */
 bool AlertManagerSetLeafLimit(alert_manager_t* manager,
                               uint64_t leaf_id,
                               bool is_high,
                               int32_t limit_milli_c);
 
+/**
+ * @brief Execute AlertManagerSetMissingGap.
+ * @param manager Parameter manager.
+ * @param gap_ms Parameter gap_ms.
+ * @return Return the function result.
+ */
 bool AlertManagerSetMissingGap(alert_manager_t* manager, uint32_t gap_ms);
 
+/**
+ * @brief Execute AlertManagerSetOfflineMs.
+ * @param manager Parameter manager.
+ * @param offline_ms Parameter offline_ms.
+ * @return Return the function result.
+ */
 bool AlertManagerSetOfflineMs(alert_manager_t* manager, uint32_t offline_ms);
 
+/**
+ * @brief Execute AlertManagerSetHoldMs.
+ * @param manager Parameter manager.
+ * @param hold_ms Parameter hold_ms.
+ * @return Return the function result.
+ */
 bool AlertManagerSetHoldMs(alert_manager_t* manager, uint32_t hold_ms);
 
+/**
+ * @brief Execute AlertManagerSetHysteresis.
+ * @param manager Parameter manager.
+ * @param hysteresis_milli_c Parameter hysteresis_milli_c.
+ * @return Return the function result.
+ */
 bool AlertManagerSetHysteresis(alert_manager_t* manager,
                                int32_t hysteresis_milli_c);
 
+/**
+ * @brief Execute AlertManagerSetRateLimit.
+ * @param manager Parameter manager.
+ * @param per_key_ms Parameter per_key_ms.
+ * @param per_minute Parameter per_minute.
+ * @return Return the function result.
+ */
 bool AlertManagerSetRateLimit(alert_manager_t* manager,
                               uint32_t per_key_ms,
                               uint32_t per_minute);
 
+/**
+ * @brief Execute AlertManagerSetNtfyUrl.
+ * @param manager Parameter manager.
+ * @param url Parameter url.
+ * @return Return the function result.
+ */
 bool AlertManagerSetNtfyUrl(alert_manager_t* manager, const char* url);
 
+/**
+ * @brief Execute AlertManagerSetNtfyTopic.
+ * @param manager Parameter manager.
+ * @param topic Parameter topic.
+ * @return Return the function result.
+ */
 bool AlertManagerSetNtfyTopic(alert_manager_t* manager, const char* topic);
 
+/**
+ * @brief Execute AlertManagerSetNtfyToken.
+ * @param manager Parameter manager.
+ * @param token Parameter token.
+ * @return Return the function result.
+ */
 bool AlertManagerSetNtfyToken(alert_manager_t* manager, const char* token);
 
+/**
+ * @brief Execute AlertManagerClear.
+ * @param manager Parameter manager.
+ * @param type Parameter type.
+ * @param leaf_id Parameter leaf_id.
+ * @param all_leaves Parameter all_leaves.
+ */
 void AlertManagerClear(alert_manager_t* manager,
                        alert_type_t type,
                        uint64_t leaf_id,
                        bool all_leaves);
 
+/**
+ * @brief Execute AlertManagerSendTest.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ */
 void AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms);
 
+/**
+ * @brief Execute AlertManagerEmitRootRestart.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ */
 void AlertManagerEmitRootRestart(alert_manager_t* manager, int64_t now_ms);
 
+/**
+ * @brief Execute AlertManagerCopyLeaves.
+ * @param manager Parameter manager.
+ * @param out Parameter out.
+ * @param max_items Parameter max_items.
+ * @return Return the function result.
+ */
 size_t AlertManagerCopyLeaves(const alert_manager_t* manager,
                               alert_leaf_state_t* out,
                               size_t max_items);
 
+/**
+ * @brief Execute AlertManagerCopyActiveAlerts.
+ * @param manager Parameter manager.
+ * @param out_states Parameter out_states.
+ * @param out_types Parameter out_types.
+ * @param out_leaf_ids Parameter out_leaf_ids.
+ * @param max_items Parameter max_items.
+ * @return Return the function result.
+ */
 size_t AlertManagerCopyActiveAlerts(const alert_manager_t* manager,
                                     alert_state_t* out_states,
                                     alert_type_t* out_types,
                                     uint64_t* out_leaf_ids,
                                     size_t max_items);
 
+/**
+ * @brief Execute AlertManagerFormatLeafId.
+ * @param leaf_id Parameter leaf_id.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 void AlertManagerFormatLeafId(uint64_t leaf_id, char* out, size_t out_size);
 
+/**
+ * @brief Execute AlertManagerMonitorTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the AlertManagerMonitorTask task.
+ */
 void AlertManagerMonitorTask(void* context);
 
+/**
+ * @brief Execute AlertManagerSenderTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the AlertManagerSenderTask task.
+ */
 void AlertManagerSenderTask(void* context);
 
 #ifdef __cplusplus

@@ -55,6 +55,11 @@ static const font_glyph_t kFont5x7[] = {
   { ' ', { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 };
 
+/**
+ * @brief Execute FindGlyph.
+ * @param c Parameter c.
+ * @return Return the function result.
+ */
 static const font_glyph_t*
 FindGlyph(char c)
 {
@@ -66,6 +71,11 @@ FindGlyph(char c)
   return NULL;
 }
 
+/**
+ * @brief Execute TransformCoords.
+ * @param x Parameter x.
+ * @param y Parameter y.
+ */
 static void
 TransformCoords(int* x, int* y)
 {
@@ -89,6 +99,13 @@ TransformCoords(int* x, int* y)
   *y = ty;
 }
 
+/**
+ * @brief Execute SetPixel.
+ * @param disp Parameter disp.
+ * @param x Parameter x.
+ * @param y Parameter y.
+ * @param on Parameter on.
+ */
 static void
 SetPixel(max7219_display_t* disp, int x, int y, bool on)
 {
@@ -112,6 +129,13 @@ SetPixel(max7219_display_t* disp, int x, int y, bool on)
   }
 }
 
+/**
+ * @brief Execute WriteRegisterAll.
+ * @param disp Parameter disp.
+ * @param reg Parameter reg.
+ * @param value Parameter value.
+ * @return Return the function result.
+ */
 static esp_err_t
 WriteRegisterAll(max7219_display_t* disp, uint8_t reg, uint8_t value)
 {
@@ -143,6 +167,11 @@ WriteRegisterAll(max7219_display_t* disp, uint8_t reg, uint8_t value)
   return spi_device_transmit(disp->device, &t);
 }
 
+/**
+ * @brief Execute FlushFramebuffer.
+ * @param disp Parameter disp.
+ * @return Return the function result.
+ */
 static esp_err_t
 FlushFramebuffer(max7219_display_t* disp)
 {
@@ -194,6 +223,12 @@ FlushFramebuffer(max7219_display_t* disp)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Max7219DisplayInit.
+ * @param disp Parameter disp.
+ * @param config Parameter config.
+ * @return Return the function result.
+ */
 esp_err_t
 Max7219DisplayInit(max7219_display_t* disp,
                    const max7219_display_config_t* config)
@@ -251,6 +286,11 @@ Max7219DisplayInit(max7219_display_t* disp,
   return FlushFramebuffer(disp);
 }
 
+/**
+ * @brief Execute Max7219DisplaySetText.
+ * @param disp Parameter disp.
+ * @param text Parameter text.
+ */
 void
 Max7219DisplaySetText(max7219_display_t* disp, const char* text)
 {
@@ -293,12 +333,20 @@ Max7219DisplaySetText(max7219_display_t* disp, const char* text)
   (void)FlushFramebuffer(disp);
 }
 
+/**
+ * @brief Execute Max7219DisplayShowTestPattern.
+ * @param disp Parameter disp.
+ */
 void
 Max7219DisplayShowTestPattern(max7219_display_t* disp)
 {
   Max7219DisplaySetText(disp, "ABCDE");
 }
 
+/**
+ * @brief Execute Max7219DisplayClear.
+ * @param disp Parameter disp.
+ */
 void
 Max7219DisplayClear(max7219_display_t* disp)
 {
@@ -309,6 +357,11 @@ Max7219DisplayClear(max7219_display_t* disp)
   (void)FlushFramebuffer(disp);
 }
 
+/**
+ * @brief Execute Max7219DisplaySetIntensity.
+ * @param disp Parameter disp.
+ * @param level_0_to_15 Parameter level_0_to_15.
+ */
 void
 Max7219DisplaySetIntensity(max7219_display_t* disp, uint8_t level_0_to_15)
 {

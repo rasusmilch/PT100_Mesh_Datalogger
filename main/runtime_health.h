@@ -64,11 +64,25 @@ extern "C" {
     runtime_health_snapshot_t snapshot;
   } runtime_health_cache_t;
 
+/**
+ * @brief Execute RuntimeHealthInit.
+ * @param cache Parameter cache.
+ */
   void RuntimeHealthInit(runtime_health_cache_t* cache);
 
+/**
+ * @brief Execute RuntimeHealthPublish.
+ * @param cache Parameter cache.
+ * @param new_snapshot Parameter new_snapshot.
+ */
   void RuntimeHealthPublish(runtime_health_cache_t* cache,
                             const runtime_health_snapshot_t* new_snapshot);
 
+/**
+ * @brief Execute RuntimeHealthRead.
+ * @param cache Parameter cache.
+ * @param out_snapshot Parameter out_snapshot.
+ */
   void RuntimeHealthRead(const runtime_health_cache_t* cache,
                          runtime_health_snapshot_t* out_snapshot);
 

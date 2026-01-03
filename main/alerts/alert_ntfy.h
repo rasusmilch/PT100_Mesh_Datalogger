@@ -65,10 +65,29 @@ typedef struct
   const char* root_id;
 } alert_ntfy_config_t;
 
+/**
+ * @brief Execute AlertNtfyInit.
+ * @param ntfy Parameter ntfy.
+ */
 void AlertNtfyInit(alert_ntfy_t* ntfy);
 
+/**
+ * @brief Execute AlertNtfyEnqueue.
+ * @param ntfy Parameter ntfy.
+ * @param note Parameter note.
+ * @return Return the function result.
+ */
 bool AlertNtfyEnqueue(alert_ntfy_t* ntfy, const alert_notification_t* note);
 
+/**
+ * @brief Execute AlertNtfySend.
+ * @param ntfy Parameter ntfy.
+ * @param cfg Parameter cfg.
+ * @param note Parameter note.
+ * @param out_status Parameter out_status.
+ * @param out_err Parameter out_err.
+ * @return Return the function result.
+ */
 alert_ntfy_result_t AlertNtfySend(const alert_ntfy_t* ntfy,
                                   const alert_ntfy_config_t* cfg,
                                   const alert_notification_t* note,

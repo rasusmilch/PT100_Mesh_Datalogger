@@ -48,6 +48,9 @@
 static const char* kTag = "console";
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
+/**
+ * @brief Execute MaybePushCalRawSampleFromSensor.
+ */
 static void
 MaybePushCalRawSampleFromSensor(void)
 {
@@ -77,12 +80,22 @@ MaybePushCalRawSampleFromSensor(void)
 static app_runtime_t* g_runtime = NULL;
 static app_boot_mode_t g_boot_mode = APP_BOOT_MODE_DIAGNOSTICS;
 
+/**
+ * @brief Execute BootModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 static const char*
 BootModeToString(app_boot_mode_t mode)
 {
   return (mode == APP_BOOT_MODE_RUN) ? "run" : "diagnostics";
 }
 
+/**
+ * @brief Execute DisplayAttentionItemToName.
+ * @param item Parameter item.
+ * @return Return the function result.
+ */
 static const char*
 DisplayAttentionItemToName(display_attention_item_t item)
 {
@@ -104,6 +117,12 @@ DisplayAttentionItemToName(display_attention_item_t item)
   }
 }
 
+/**
+ * @brief Execute ParseDisplayAttentionName.
+ * @param value Parameter value.
+ * @param item_out Parameter item_out.
+ * @return Return the function result.
+ */
 static bool
 ParseDisplayAttentionName(const char* value, display_attention_item_t* item_out)
 {
@@ -137,6 +156,10 @@ ParseDisplayAttentionName(const char* value, display_attention_item_t* item_out)
   return false;
 }
 
+/**
+ * @brief Execute PrintDisplayAttentionPolicy.
+ * @param policy Parameter policy.
+ */
 static void
 PrintDisplayAttentionPolicy(uint32_t policy)
 {
@@ -159,6 +182,11 @@ PrintDisplayAttentionPolicy(uint32_t policy)
   }
 }
 
+/**
+ * @brief Execute SaveDisplayAttentionPolicy.
+ * @param policy Parameter policy.
+ * @return Return the function result.
+ */
 static int
 SaveDisplayAttentionPolicy(uint32_t policy)
 {
@@ -181,6 +209,12 @@ SaveDisplayAttentionPolicy(uint32_t policy)
   return 0;
 }
 
+/**
+ * @brief Execute ParseDisplayAttentionSeverity.
+ * @param value Parameter value.
+ * @param severity_out Parameter severity_out.
+ * @return Return the function result.
+ */
 static bool
 ParseDisplayAttentionSeverity(const char* value,
                               display_attention_severity_t* severity_out)
@@ -203,6 +237,11 @@ ParseDisplayAttentionSeverity(const char* value,
   return false;
 }
 
+/**
+ * @brief Execute CalibrationModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 static const char*
 CalibrationModeToString(calibration_fit_mode_t mode)
 {
@@ -218,6 +257,11 @@ CalibrationModeToString(calibration_fit_mode_t mode)
   }
 }
 
+/**
+ * @brief Execute SaveCalibrationWithContext.
+ * @param model Parameter model.
+ * @return Return the function result.
+ */
 static esp_err_t
 SaveCalibrationWithContext(const calibration_model_t* model)
 {
@@ -229,6 +273,12 @@ SaveCalibrationWithContext(const calibration_model_t* model)
   return AppSettingsSaveCalibrationWithContext(model, &context);
 }
 
+/**
+ * @brief Execute CommandStatus.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandStatus(int argc, char** argv)
 {
@@ -431,6 +481,12 @@ CommandStatus(int argc, char** argv)
   return 0;
 }
 
+/**
+ * @brief Execute CommandDisplay.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandDisplay(int argc, char** argv)
 {
@@ -550,6 +606,12 @@ CommandDisplay(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute CommandRaw.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandRaw(int argc, char** argv)
 {
@@ -582,6 +644,11 @@ CommandRaw(int argc, char** argv)
   return 0;
 }
 
+/**
+ * @brief Execute FlushAllRecordsToSd.
+ * @param runtime Parameter runtime.
+ * @return Return the function result.
+ */
 static esp_err_t
 FlushAllRecordsToSd(app_runtime_t* runtime)
 {
@@ -591,6 +658,12 @@ FlushAllRecordsToSd(app_runtime_t* runtime)
   return runtime->flush_callback(runtime->flush_context);
 }
 
+/**
+ * @brief Execute FlushOp.
+ * @param runtime Parameter runtime.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 static esp_err_t
 FlushOp(app_runtime_t* runtime, void* ctx)
 {
@@ -598,6 +671,12 @@ FlushOp(app_runtime_t* runtime, void* ctx)
   return FlushAllRecordsToSd(runtime);
 }
 
+/**
+ * @brief Execute FormatRecordFlags.
+ * @param flags Parameter flags.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 static void
 FormatRecordFlags(uint16_t flags, char* out, size_t out_size)
 {
@@ -640,6 +719,12 @@ FormatRecordFlags(uint16_t flags, char* out, size_t out_size)
   }
 }
 
+/**
+ * @brief Execute CommandFlush.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandFlush(int argc, char** argv)
 {
@@ -662,6 +747,12 @@ CommandFlush(int argc, char** argv)
   return 0;
 }
 
+/**
+ * @brief Execute CommandFram.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandFram(int argc, char** argv)
 {
@@ -766,6 +857,10 @@ CommandFram(int argc, char** argv)
   return 0;
 }
 
+/**
+ * @brief Execute PrintSdStatus.
+ * @param runtime Parameter runtime.
+ */
 static void
 PrintSdStatus(const app_runtime_t* runtime)
 {
@@ -798,6 +893,12 @@ PrintSdStatus(const app_runtime_t* runtime)
   }
 }
 
+/**
+ * @brief Execute FormatFileTime.
+ * @param timestamp Parameter timestamp.
+ * @param buffer Parameter buffer.
+ * @param buffer_size Parameter buffer_size.
+ */
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size)
 {
@@ -812,6 +913,11 @@ FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size)
   strftime(buffer, buffer_size, "%Y-%m-%d %H:%M:%SZ", &time_info);
 }
 
+/**
+ * @brief Execute CommandSdView.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
 static int
 CommandSdView(const sd_logger_t* logger)
 {
@@ -862,6 +968,12 @@ CommandSdView(const sd_logger_t* logger)
   return 0;
 }
 
+/**
+ * @brief Execute SdStatusOp.
+ * @param runtime Parameter runtime.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 static esp_err_t
 SdStatusOp(app_runtime_t* runtime, void* ctx)
 {
@@ -870,6 +982,12 @@ SdStatusOp(app_runtime_t* runtime, void* ctx)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute SdViewOp.
+ * @param runtime Parameter runtime.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 static esp_err_t
 SdViewOp(app_runtime_t* runtime, void* ctx)
 {
@@ -877,6 +995,12 @@ SdViewOp(app_runtime_t* runtime, void* ctx)
   return (CommandSdView(runtime->sd_logger) == 0) ? ESP_OK : ESP_FAIL;
 }
 
+/**
+ * @brief Execute SdFormatOp.
+ * @param runtime Parameter runtime.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 static esp_err_t
 SdFormatOp(app_runtime_t* runtime, void* ctx)
 {
@@ -884,6 +1008,12 @@ SdFormatOp(app_runtime_t* runtime, void* ctx)
   return SdLoggerFormatDestructive(runtime->sd_logger);
 }
 
+/**
+ * @brief Execute SdMountOp.
+ * @param runtime Parameter runtime.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 static esp_err_t
 SdMountOp(app_runtime_t* runtime, void* ctx)
 {
@@ -892,6 +1022,12 @@ SdMountOp(app_runtime_t* runtime, void* ctx)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute CommandSd.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandSd(int argc, char** argv)
 {
@@ -1043,6 +1179,12 @@ static struct
   struct arg_end* end;
 } g_children_args;
 
+/**
+ * @brief Execute CommandLog.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandLog(int argc, char** argv)
 {
@@ -1197,6 +1339,12 @@ static struct
   struct arg_end* end;
 } g_cal_args;
 
+/**
+ * @brief Execute CommandCal.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandCal(int argc, char** argv)
 {
@@ -1497,6 +1645,12 @@ CommandCal(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute CommandMode.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandMode(int argc, char** argv)
 {
@@ -1557,6 +1711,12 @@ CommandMode(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute CommandData.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandData(int argc, char** argv)
 {
@@ -1589,6 +1749,12 @@ CommandData(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute CommandRun.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandRun(int argc, char** argv)
 {
@@ -1661,6 +1827,12 @@ CommandRun(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute CommandTz.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandTz(int argc, char** argv)
 {
@@ -1712,6 +1884,9 @@ CommandTz(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute PrintTimeUsage.
+ */
 static void
 PrintTimeUsage(void)
 {
@@ -1721,6 +1896,12 @@ PrintTimeUsage(void)
   printf("  use --is_dst to disambiguate fall-back hour\n");
 }
 
+/**
+ * @brief Execute CommandTime.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandTime(int argc, char** argv)
 {
@@ -1816,6 +1997,12 @@ CommandTime(int argc, char** argv)
 // setting and is converted to station pressure via a simple ISA troposphere
 // approximation. If elev_ft is omitted, <inHg> is treated as station pressure.
 //
+/**
+ * @brief Execute StationPressureFromSlpInHg.
+ * @param slp_inHg Parameter slp_inHg.
+ * @param elev_ft Parameter elev_ft.
+ * @return Return the function result.
+ */
 static float
 StationPressureFromSlpInHg(float slp_inHg, float elev_ft)
 {
@@ -1832,6 +2019,11 @@ StationPressureFromSlpInHg(float slp_inHg, float elev_ft)
 
 // Antoine equation (water), pressure in mmHg -> boiling point in °C.
 // Validity is approximate; this is intended for quick calibration reference.
+/**
+ * @brief Execute BoilingPointCFromStationInHg.
+ * @param station_inHg Parameter station_inHg.
+ * @return Return the function result.
+ */
 static float
 BoilingPointCFromStationInHg(float station_inHg)
 {
@@ -1855,6 +2047,12 @@ BoilingPointCFromStationInHg(float station_inHg)
   return B / denom - C;
 }
 
+/**
+ * @brief Execute CommandBoilPt.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandBoilPt(int argc, char** argv)
 {
@@ -1912,6 +2110,12 @@ CommandBoilPt(int argc, char** argv)
   return 0;
 }
 
+/**
+ * @brief Execute CommandDst.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandDst(int argc, char** argv)
 {
@@ -1975,6 +2179,12 @@ CommandDst(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute CommandRole.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandRole(int argc, char** argv)
 {
@@ -2031,6 +2241,12 @@ CommandRole(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute CommandNet.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandNet(int argc, char** argv)
 {
@@ -2080,6 +2296,9 @@ CommandNet(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute PrintMqttRestartNote.
+ */
 static void
 PrintMqttRestartNote(void)
 {
@@ -2088,6 +2307,12 @@ PrintMqttRestartNote(void)
   }
 }
 
+/**
+ * @brief Execute CommandMqtt.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandMqtt(int argc, char** argv)
 {
@@ -2258,6 +2483,12 @@ CommandMqtt(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute CommandChildren.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandChildren(int argc, char** argv)
 {
@@ -2302,6 +2533,9 @@ CommandChildren(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute PrintDiagUsage.
+ */
 static void
 PrintDiagUsage(void)
 {
@@ -2319,6 +2553,12 @@ PrintDiagUsage(void)
          "  note: if you use --start without --stop, the mesh stays running\n");
 }
 
+/**
+ * @brief Execute ParseVerbose.
+ * @param value Parameter value.
+ * @param verbosity_out Parameter verbosity_out.
+ * @return Return the function result.
+ */
 static bool
 ParseVerbose(const char* value, int* verbosity_out)
 {
@@ -2334,6 +2574,14 @@ ParseVerbose(const char* value, int* verbosity_out)
   return true;
 }
 
+/**
+ * @brief Execute ParseOptionalBool.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @param index Parameter index.
+ * @param target Parameter target.
+ * @return Return the function result.
+ */
 static int
 ParseOptionalBool(int argc, char** argv, int* index, bool* target)
 {
@@ -2351,6 +2599,12 @@ ParseOptionalBool(int argc, char** argv, int* index, bool* target)
   return 1;
 }
 
+/**
+ * @brief Execute CommandDiagnostics.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandDiagnostics(int argc, char** argv)
 {
@@ -2556,6 +2810,12 @@ CommandDiagnostics(int argc, char** argv)
   return 2;
 }
 
+/**
+ * @brief Execute CommandReboot.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandReboot(int argc, char** argv)
 {
@@ -2566,6 +2826,9 @@ CommandReboot(int argc, char** argv)
   return 0;
 }
 
+/**
+ * @brief Execute RegisterCommands.
+ */
 static void
 RegisterCommands(void)
 {
@@ -2831,6 +3094,11 @@ RegisterCommands(void)
   ConsoleAlertsRegister(g_runtime);
 }
 
+/**
+ * @brief Execute ConsoleTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the ConsoleTask task.
+ */
 static void
 ConsoleTask(void* context)
 {
@@ -2868,6 +3136,12 @@ ConsoleTask(void* context)
   }
 }
 
+/**
+ * @brief Execute ConsoleCommandsStart.
+ * @param runtime Parameter runtime.
+ * @param boot_mode Parameter boot_mode.
+ * @return Return the function result.
+ */
 esp_err_t
 ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
 {

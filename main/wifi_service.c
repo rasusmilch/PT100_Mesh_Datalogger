@@ -17,6 +17,10 @@ static bool s_wifi_initialized = false;
 static bool s_wifi_started = false;
 static SemaphoreHandle_t s_mutex = NULL;
 
+/**
+ * @brief Execute EnsureMutex.
+ * @return Return the function result.
+ */
 static esp_err_t
 EnsureMutex(void)
 {
@@ -26,6 +30,11 @@ EnsureMutex(void)
   return (s_mutex != NULL) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+/**
+ * @brief Execute Lock.
+ * @param timeout Parameter timeout.
+ * @return Return the function result.
+ */
 static esp_err_t
 Lock(TickType_t timeout)
 {
@@ -39,6 +48,9 @@ Lock(TickType_t timeout)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Unlock.
+ */
 static void
 Unlock(void)
 {
@@ -47,6 +59,10 @@ Unlock(void)
   }
 }
 
+/**
+ * @brief Execute WifiServiceInitOnce.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiServiceInitOnce(void)
 {
@@ -65,6 +81,11 @@ WifiServiceInitOnce(void)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute WifiServiceAcquire.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiServiceAcquire(wifi_service_mode_t mode)
 {
@@ -151,6 +172,10 @@ WifiServiceAcquire(wifi_service_mode_t mode)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute WifiServiceRelease.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiServiceRelease(void)
 {
@@ -190,6 +215,10 @@ WifiServiceRelease(void)
   return (result == ESP_OK) ? stop_result : result;
 }
 
+/**
+ * @brief Execute WifiServiceActiveMode.
+ * @return Return the function result.
+ */
 wifi_service_mode_t
 WifiServiceActiveMode(void)
 {

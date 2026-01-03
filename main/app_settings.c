@@ -53,6 +53,10 @@ static const uint8_t kCalibrationContextVersion = 1;
 static uint32_t g_display_attention_policy = 0;
 static display_attention_mask_t g_display_attention_mask = 0;
 
+/**
+ * @brief Execute DefaultNodeRole.
+ * @return Return the function result.
+ */
 static app_node_role_t
 DefaultNodeRole(void)
 {
@@ -63,12 +67,22 @@ DefaultNodeRole(void)
 #endif
 }
 
+/**
+ * @brief Execute AppSettingsRoleDefaultAllowsChildren.
+ * @param role Parameter role.
+ * @return Return the function result.
+ */
 bool
 AppSettingsRoleDefaultAllowsChildren(app_node_role_t role)
 {
   return role != APP_NODE_ROLE_SENSOR;
 }
 
+/**
+ * @brief Execute AppSettingsRoleToString.
+ * @param role Parameter role.
+ * @return Return the function result.
+ */
 const char*
 AppSettingsRoleToString(app_node_role_t role)
 {
@@ -84,6 +98,12 @@ AppSettingsRoleToString(app_node_role_t role)
   }
 }
 
+/**
+ * @brief Execute AppSettingsParseRole.
+ * @param value Parameter value.
+ * @param role_out Parameter role_out.
+ * @return Return the function result.
+ */
 bool
 AppSettingsParseRole(const char* value, app_node_role_t* role_out)
 {
@@ -105,6 +125,11 @@ AppSettingsParseRole(const char* value, app_node_role_t* role_out)
   return false;
 }
 
+/**
+ * @brief Execute AppSettingsDisplayUnitsToString.
+ * @param units Parameter units.
+ * @return Return the function result.
+ */
 const char*
 AppSettingsDisplayUnitsToString(app_display_units_t units)
 {
@@ -118,6 +143,12 @@ AppSettingsDisplayUnitsToString(app_display_units_t units)
   }
 }
 
+/**
+ * @brief Execute AppSettingsParseDisplayUnits.
+ * @param value Parameter value.
+ * @param units_out Parameter units_out.
+ * @return Return the function result.
+ */
 bool
 AppSettingsParseDisplayUnits(const char* value,
                              app_display_units_t* units_out)
@@ -136,6 +167,11 @@ AppSettingsParseDisplayUnits(const char* value,
   return false;
 }
 
+/**
+ * @brief Execute AppSettingsNetModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 const char*
 AppSettingsNetModeToString(app_net_mode_t mode)
 {
@@ -149,6 +185,12 @@ AppSettingsNetModeToString(app_net_mode_t mode)
   }
 }
 
+/**
+ * @brief Execute AppSettingsParseNetMode.
+ * @param value Parameter value.
+ * @param mode_out Parameter mode_out.
+ * @return Return the function result.
+ */
 bool
 AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out)
 {
@@ -167,6 +209,11 @@ AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out)
   return false;
 }
 
+/**
+ * @brief Execute AppSettingsMqttBridgeModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 const char*
 AppSettingsMqttBridgeModeToString(mqtt_bridge_mode_t mode)
 {
@@ -184,6 +231,12 @@ AppSettingsMqttBridgeModeToString(mqtt_bridge_mode_t mode)
   }
 }
 
+/**
+ * @brief Execute AppSettingsParseMqttBridgeMode.
+ * @param value Parameter value.
+ * @param mode_out Parameter mode_out.
+ * @return Return the function result.
+ */
 bool
 AppSettingsParseMqttBridgeMode(const char* value, mqtt_bridge_mode_t* mode_out)
 {
@@ -209,6 +262,10 @@ AppSettingsParseMqttBridgeMode(const char* value, mqtt_bridge_mode_t* mode_out)
   return false;
 }
 
+/**
+ * @brief Execute ApplyDefaults.
+ * @param settings Parameter settings.
+ */
 static void
 ApplyDefaults(app_settings_t* settings)
 {
@@ -253,6 +310,11 @@ ApplyDefaults(app_settings_t* settings)
   g_display_attention_mask = settings->display_attention_mask;
 }
 
+/**
+ * @brief Execute DisplayAttentionMaskFromPolicy.
+ * @param policy Parameter policy.
+ * @return Return the function result.
+ */
 static display_attention_mask_t
 DisplayAttentionMaskFromPolicy(uint32_t policy)
 {
@@ -267,6 +329,11 @@ DisplayAttentionMaskFromPolicy(uint32_t policy)
   return mask;
 }
 
+/**
+ * @brief Execute DisplayAttentionPolicyFromMask.
+ * @param mask Parameter mask.
+ * @return Return the function result.
+ */
 static uint32_t
 DisplayAttentionPolicyFromMask(display_attention_mask_t mask)
 {
@@ -283,6 +350,13 @@ DisplayAttentionPolicyFromMask(display_attention_mask_t mask)
   return policy;
 }
 
+/**
+ * @brief Execute ReadDouble.
+ * @param handle Parameter handle.
+ * @param key Parameter key.
+ * @param value_out Parameter value_out.
+ * @return Return the function result.
+ */
 static bool
 ReadDouble(nvs_handle_t handle, const char* key, double* value_out)
 {
@@ -291,6 +365,12 @@ ReadDouble(nvs_handle_t handle, const char* key, double* value_out)
   return (result == ESP_OK && data_size == sizeof(double));
 }
 
+/**
+ * @brief Execute LoadCalibrationContext.
+ * @param handle Parameter handle.
+ * @param context_out Parameter context_out.
+ * @return Return the function result.
+ */
 static bool
 LoadCalibrationContext(nvs_handle_t handle, calibration_context_t* context_out)
 {
@@ -336,12 +416,22 @@ LoadCalibrationContext(nvs_handle_t handle, calibration_context_t* context_out)
   return true;
 }
 
+/**
+ * @brief Execute OpenNvs.
+ * @param handle_out Parameter handle_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 OpenNvs(nvs_handle_t* handle_out)
 {
   return nvs_open(kNvsNamespace, NVS_READWRITE, handle_out);
 }
 
+/**
+ * @brief Execute AppSettingsLoad.
+ * @param settings_out Parameter settings_out.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsLoad(app_settings_t* settings_out)
 {
@@ -632,6 +722,11 @@ AppSettingsLoad(app_settings_t* settings_out)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute AppSettingsSaveLogPeriodMs.
+ * @param log_period_ms Parameter log_period_ms.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveLogPeriodMs(uint32_t log_period_ms)
 {
@@ -648,6 +743,11 @@ AppSettingsSaveLogPeriodMs(uint32_t log_period_ms)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveFramFlushWatermarkRecords.
+ * @param watermark_records Parameter watermark_records.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveFramFlushWatermarkRecords(uint32_t watermark_records)
 {
@@ -664,6 +764,11 @@ AppSettingsSaveFramFlushWatermarkRecords(uint32_t watermark_records)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveSdFlushPeriodMs.
+ * @param period_ms Parameter period_ms.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveSdFlushPeriodMs(uint32_t period_ms)
 {
@@ -680,6 +785,11 @@ AppSettingsSaveSdFlushPeriodMs(uint32_t period_ms)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveSdBatchBytes.
+ * @param batch_bytes Parameter batch_bytes.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
 {
@@ -696,6 +806,12 @@ AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveCalibrationWithContext.
+ * @param model Parameter model.
+ * @param context Parameter context.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveCalibrationWithContext(const calibration_model_t* model,
                                       const calibration_context_t* context)
@@ -753,6 +869,11 @@ AppSettingsSaveCalibrationWithContext(const calibration_model_t* model,
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsBuildCalibrationContextFromReader.
+ * @param context Parameter context.
+ * @param reader Parameter reader.
+ */
 void
 AppSettingsBuildCalibrationContextFromReader(calibration_context_t* context,
                                              const max31865_reader_t* reader)
@@ -771,6 +892,12 @@ AppSettingsBuildCalibrationContextFromReader(calibration_context_t* context,
       : 0u;
 }
 
+/**
+ * @brief Execute AppSettingsSaveCalibrationPoints.
+ * @param points Parameter points.
+ * @param points_count Parameter points_count.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveCalibrationPoints(const calibration_point_t* points,
                                  size_t points_count)
@@ -809,6 +936,12 @@ AppSettingsSaveCalibrationPoints(const calibration_point_t* points,
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveTimeZone.
+ * @param tz_posix Parameter tz_posix.
+ * @param dst_enabled Parameter dst_enabled.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
 {
@@ -834,6 +967,11 @@ AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveNodeRole.
+ * @param node_role Parameter node_role.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveNodeRole(app_node_role_t node_role)
 {
@@ -851,6 +989,12 @@ AppSettingsSaveNodeRole(app_node_role_t node_role)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveAllowChildren.
+ * @param allow_children Parameter allow_children.
+ * @param explicit_setting Parameter explicit_setting.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveAllowChildren(bool allow_children, bool explicit_setting)
 {
@@ -872,6 +1016,11 @@ AppSettingsSaveAllowChildren(bool allow_children, bool explicit_setting)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveDisplayUnits.
+ * @param units Parameter units.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveDisplayUnits(app_display_units_t units)
 {
@@ -892,6 +1041,11 @@ AppSettingsSaveDisplayUnits(app_display_units_t units)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveNetMode.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveNetMode(app_net_mode_t mode)
 {
@@ -912,6 +1066,11 @@ AppSettingsSaveNetMode(app_net_mode_t mode)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveMqttEnabled.
+ * @param enabled Parameter enabled.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveMqttEnabled(bool enabled)
 {
@@ -928,6 +1087,11 @@ AppSettingsSaveMqttEnabled(bool enabled)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveMqttBrokerUri.
+ * @param uri Parameter uri.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveMqttBrokerUri(const char* uri)
 {
@@ -948,6 +1112,11 @@ AppSettingsSaveMqttBrokerUri(const char* uri)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveMqttTopicPrefix.
+ * @param prefix Parameter prefix.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveMqttTopicPrefix(const char* prefix)
 {
@@ -968,6 +1137,11 @@ AppSettingsSaveMqttTopicPrefix(const char* prefix)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveMqttQos.
+ * @param qos Parameter qos.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveMqttQos(uint8_t qos)
 {
@@ -987,6 +1161,11 @@ AppSettingsSaveMqttQos(uint8_t qos)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveMqttRetain.
+ * @param retain Parameter retain.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveMqttRetain(bool retain)
 {
@@ -1003,6 +1182,11 @@ AppSettingsSaveMqttRetain(bool retain)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsSaveMqttBridgeMode.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveMqttBridgeMode(mqtt_bridge_mode_t mode)
 {
@@ -1022,6 +1206,10 @@ AppSettingsSaveMqttBridgeMode(mqtt_bridge_mode_t mode)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsDefaultDisplayAttentionMask.
+ * @return Return the function result.
+ */
 display_attention_mask_t
 AppSettingsDefaultDisplayAttentionMask(void)
 {
@@ -1029,6 +1217,11 @@ AppSettingsDefaultDisplayAttentionMask(void)
     AppSettingsDefaultDisplayAttentionPolicy());
 }
 
+/**
+ * @brief Execute AppSettingsSaveDisplayAttentionMask.
+ * @param mask Parameter mask.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveDisplayAttentionMask(display_attention_mask_t mask)
 {
@@ -1036,12 +1229,20 @@ AppSettingsSaveDisplayAttentionMask(display_attention_mask_t mask)
   return AppSettingsSaveDisplayAttentionPolicy(policy);
 }
 
+/**
+ * @brief Execute AppSettingsGetDisplayAttentionMask.
+ * @return Return the function result.
+ */
 display_attention_mask_t
 AppSettingsGetDisplayAttentionMask(void)
 {
   return g_display_attention_mask;
 }
 
+/**
+ * @brief Execute AppSettingsDefaultDisplayAttentionPolicy.
+ * @return Return the function result.
+ */
 uint32_t
 AppSettingsDefaultDisplayAttentionPolicy(void)
 {
@@ -1059,6 +1260,11 @@ AppSettingsDefaultDisplayAttentionPolicy(void)
   return policy;
 }
 
+/**
+ * @brief Execute AppSettingsSaveDisplayAttentionPolicy.
+ * @param policy Parameter policy.
+ * @return Return the function result.
+ */
 esp_err_t
 AppSettingsSaveDisplayAttentionPolicy(uint32_t policy)
 {
@@ -1079,12 +1285,20 @@ AppSettingsSaveDisplayAttentionPolicy(uint32_t policy)
   return result;
 }
 
+/**
+ * @brief Execute AppSettingsGetDisplayAttentionPolicy.
+ * @return Return the function result.
+ */
 uint32_t
 AppSettingsGetDisplayAttentionPolicy(void)
 {
   return g_display_attention_policy;
 }
 
+/**
+ * @brief Execute AppSettingsApplyTimeZone.
+ * @param settings Parameter settings.
+ */
 void
 AppSettingsApplyTimeZone(const app_settings_t* settings)
 {

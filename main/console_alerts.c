@@ -15,6 +15,12 @@
 static const char* kTag = "console_alerts";
 static app_runtime_t* g_runtime = NULL;
 
+/**
+ * @brief Execute FindLeafOverride.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @return Return the function result.
+ */
 static const alert_leaf_config_t*
 FindLeafOverride(const alert_manager_t* manager, uint64_t leaf_id)
 {
@@ -29,6 +35,12 @@ FindLeafOverride(const alert_manager_t* manager, uint64_t leaf_id)
   return NULL;
 }
 
+/**
+ * @brief Execute ParseLeafId.
+ * @param text Parameter text.
+ * @param out Parameter out.
+ * @return Return the function result.
+ */
 static int
 ParseLeafId(const char* text, uint64_t* out)
 {
@@ -54,6 +66,12 @@ ParseLeafId(const char* text, uint64_t* out)
   return 1;
 }
 
+/**
+ * @brief Execute ParseTemp.
+ * @param text Parameter text.
+ * @param out_milli_c Parameter out_milli_c.
+ * @return Return the function result.
+ */
 static bool
 ParseTemp(const char* text, int32_t* out_milli_c)
 {
@@ -74,6 +92,12 @@ ParseTemp(const char* text, int32_t* out_milli_c)
   return true;
 }
 
+/**
+ * @brief Execute ParseAlertType.
+ * @param text Parameter text.
+ * @param out Parameter out.
+ * @return Return the function result.
+ */
 static bool
 ParseAlertType(const char* text, alert_type_t* out)
 {
@@ -107,6 +131,11 @@ ParseAlertType(const char* text, alert_type_t* out)
   return false;
 }
 
+/**
+ * @brief Execute AlertTypeToName.
+ * @param type Parameter type.
+ * @return Return the function result.
+ */
 static const char*
 AlertTypeToName(alert_type_t type)
 {
@@ -128,6 +157,10 @@ AlertTypeToName(alert_type_t type)
   }
 }
 
+/**
+ * @brief Execute PrintStatus.
+ * @param manager Parameter manager.
+ */
 static void
 PrintStatus(const alert_manager_t* manager)
 {
@@ -177,6 +210,10 @@ PrintStatus(const alert_manager_t* manager)
   }
 }
 
+/**
+ * @brief Execute PrintLeafList.
+ * @param manager Parameter manager.
+ */
 static void
 PrintLeafList(const alert_manager_t* manager)
 {
@@ -208,6 +245,12 @@ PrintLeafList(const alert_manager_t* manager)
   }
 }
 
+/**
+ * @brief Execute CommandAlert.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
 static int
 CommandAlert(int argc, char** argv)
 {
@@ -462,6 +505,10 @@ CommandAlert(int argc, char** argv)
   return 1;
 }
 
+/**
+ * @brief Execute ConsoleAlertsRegister.
+ * @param runtime Parameter runtime.
+ */
 void
 ConsoleAlertsRegister(app_runtime_t* runtime)
 {

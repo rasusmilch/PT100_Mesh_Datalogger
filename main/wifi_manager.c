@@ -39,6 +39,13 @@ static SemaphoreHandle_t s_mutex = NULL;
 static esp_err_t
 CleanupLocked(bool release_resources);
 
+/**
+ * @brief Execute WifiEventHandler.
+ * @param arg Parameter arg.
+ * @param event_base Parameter event_base.
+ * @param event_id Parameter event_id.
+ * @param event_data Parameter event_data.
+ */
 static void
 WifiEventHandler(void* arg,
                  esp_event_base_t event_base,
@@ -78,6 +85,13 @@ WifiEventHandler(void* arg,
   }
 }
 
+/**
+ * @brief Execute IpEventHandler.
+ * @param arg Parameter arg.
+ * @param event_base Parameter event_base.
+ * @param event_id Parameter event_id.
+ * @param event_data Parameter event_data.
+ */
 static void
 IpEventHandler(void* arg,
                esp_event_base_t event_base,
@@ -99,6 +113,10 @@ IpEventHandler(void* arg,
   }
 }
 
+/**
+ * @brief Execute EnsureMutex.
+ * @return Return the function result.
+ */
 static esp_err_t
 EnsureMutex(void)
 {
@@ -108,6 +126,11 @@ EnsureMutex(void)
   return (s_mutex != NULL) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+/**
+ * @brief Execute Lock.
+ * @param timeout Parameter timeout.
+ * @return Return the function result.
+ */
 static esp_err_t
 Lock(TickType_t timeout)
 {
@@ -121,6 +144,9 @@ Lock(TickType_t timeout)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Unlock.
+ */
 static void
 Unlock(void)
 {
@@ -129,6 +155,10 @@ Unlock(void)
   }
 }
 
+/**
+ * @brief Execute EnsureEventGroup.
+ * @return Return the function result.
+ */
 static esp_err_t
 EnsureEventGroup(void)
 {
@@ -142,18 +172,31 @@ EnsureEventGroup(void)
 static esp_err_t
 CleanupLocked(bool release_resources);
 
+/**
+ * @brief Execute CleanupKeepResourcesLocked.
+ * @return Return the function result.
+ */
 static esp_err_t
 CleanupKeepResourcesLocked(void)
 {
   return CleanupLocked(/*release_resources=*/false);
 }
 
+/**
+ * @brief Execute CleanupReleaseResourcesLocked.
+ * @return Return the function result.
+ */
 static esp_err_t
 CleanupReleaseResourcesLocked(void)
 {
   return CleanupLocked(/*release_resources=*/true);
 }
 
+/**
+ * @brief Execute CleanupLocked.
+ * @param release_resources Parameter release_resources.
+ * @return Return the function result.
+ */
 static esp_err_t
 CleanupLocked(bool release_resources)
 {
@@ -216,6 +259,10 @@ CleanupLocked(bool release_resources)
   return result;
 }
 
+/**
+ * @brief Execute WifiManagerInit.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiManagerInit(void)
 {
@@ -296,6 +343,10 @@ WifiManagerInit(void)
   return result;
 }
 
+/**
+ * @brief Execute WifiManagerDeinit.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiManagerDeinit(void)
 {
@@ -319,6 +370,10 @@ WifiManagerDeinit(void)
 // implement and call this explicitly from controlled contexts only.
 // esp_err_t WifiManagerHardDeinit(void) { lock;
 // CleanupReleaseResourcesLocked(); unlock; }
+/**
+ * @brief Execute WifiManagerStop.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiManagerStop(void)
 {
@@ -333,6 +388,13 @@ WifiManagerStop(void)
   return result;
 }
 
+/**
+ * @brief Execute WifiManagerScan.
+ * @param out_records Parameter out_records.
+ * @param max_records Parameter max_records.
+ * @param out_count Parameter out_count.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiManagerScan(wifi_ap_record_t* out_records,
                 size_t max_records,
@@ -406,6 +468,13 @@ exit:
   return result;
 }
 
+/**
+ * @brief Execute WifiManagerConnectSta.
+ * @param ssid Parameter ssid.
+ * @param password Parameter password.
+ * @param timeout_ms Parameter timeout_ms.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiManagerConnectSta(const char* ssid, const char* password, int timeout_ms)
 {
@@ -498,6 +567,10 @@ exit:
   return result;
 }
 
+/**
+ * @brief Execute WifiManagerDisconnectSta.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiManagerDisconnectSta(void)
 {
@@ -527,6 +600,10 @@ exit:
   return result;
 }
 
+/**
+ * @brief Execute WifiManagerGetStatus.
+ * @param out_status Parameter out_status.
+ */
 void
 WifiManagerGetStatus(wifi_manager_status_t* out_status)
 {
@@ -551,18 +628,29 @@ WifiManagerGetStatus(wifi_manager_status_t* out_status)
   Unlock();
 }
 
+/**
+ * @brief Execute WifiManagerIsStarted.
+ * @return Return the function result.
+ */
 bool
 WifiManagerIsStarted(void)
 {
   return s_wifi_started;
 }
 
+/**
+ * @brief Execute WifiManagerIsConnected.
+ * @return Return the function result.
+ */
 bool
 WifiManagerIsConnected(void)
 {
   return s_wifi_connected;
 }
 
+/**
+ * @brief Execute WifiManagerNotifyWifiStarted.
+ */
 void
 WifiManagerNotifyWifiStarted(void)
 {
@@ -576,6 +664,11 @@ WifiManagerNotifyWifiStarted(void)
   Unlock();
 }
 
+/**
+ * @brief Execute WifiManagerGetIpInfo.
+ * @param out_ip Parameter out_ip.
+ * @return Return the function result.
+ */
 esp_err_t
 WifiManagerGetIpInfo(esp_netif_ip_info_t* out_ip)
 {
@@ -599,12 +692,20 @@ WifiManagerGetIpInfo(esp_netif_ip_info_t* out_ip)
   return result;
 }
 
+/**
+ * @brief Execute WifiManagerLastDisconnectReason.
+ * @return Return the function result.
+ */
 wifi_err_reason_t
 WifiManagerLastDisconnectReason(void)
 {
   return s_last_disconnect_reason;
 }
 
+/**
+ * @brief Execute WifiManagerLastConnectAttempts.
+ * @return Return the function result.
+ */
 int
 WifiManagerLastConnectAttempts(void)
 {

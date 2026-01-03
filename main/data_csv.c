@@ -8,6 +8,12 @@
 static const char* kCsvHeader =
   "schema_ver,record_id,seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id\n";
 
+/**
+ * @brief Execute FormatIso8601Offset.
+ * @param time_info Parameter time_info.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 static void
 FormatIso8601Offset(const struct tm* time_info, char* out, size_t out_size)
 {
@@ -31,6 +37,13 @@ FormatIso8601Offset(const struct tm* time_info, char* out, size_t out_size)
   }
 }
 
+/**
+ * @brief Execute BuildIso8601LocalWithMillis.
+ * @param epoch_seconds Parameter epoch_seconds.
+ * @param millis Parameter millis.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 static void
 BuildIso8601LocalWithMillis(int64_t epoch_seconds,
                             int32_t millis,
@@ -71,6 +84,13 @@ BuildIso8601LocalWithMillis(int64_t epoch_seconds,
            offset);
 }
 
+/**
+ * @brief Execute CsvFormatHeader.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ * @param written_out Parameter written_out.
+ * @return Return the function result.
+ */
 bool
 CsvFormatHeader(char* out, size_t out_size, size_t* written_out)
 {
@@ -88,6 +108,15 @@ CsvFormatHeader(char* out, size_t out_size, size_t* written_out)
   return true;
 }
 
+/**
+ * @brief Execute CsvFormatRow.
+ * @param record Parameter record.
+ * @param node_id Parameter node_id.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ * @param written_out Parameter written_out.
+ * @return Return the function result.
+ */
 bool
 CsvFormatRow(const log_record_t* record,
              const char* node_id,
@@ -133,6 +162,12 @@ CsvFormatRow(const log_record_t* record,
   return true;
 }
 
+/**
+ * @brief Execute CsvWriteHeader.
+ * @param writer Parameter writer.
+ * @param context Parameter context.
+ * @return Return the function result.
+ */
 bool
 CsvWriteHeader(csv_write_fn_t writer, void* context)
 {
@@ -142,6 +177,14 @@ CsvWriteHeader(csv_write_fn_t writer, void* context)
   return writer(kCsvHeader, strlen(kCsvHeader), context);
 }
 
+/**
+ * @brief Execute CsvWriteRow.
+ * @param writer Parameter writer.
+ * @param context Parameter context.
+ * @param record Parameter record.
+ * @param node_id Parameter node_id.
+ * @return Return the function result.
+ */
 bool
 CsvWriteRow(csv_write_fn_t writer,
             void* context,

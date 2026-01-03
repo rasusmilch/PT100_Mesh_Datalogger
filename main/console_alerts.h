@@ -7,6 +7,10 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute ConsoleAlertsRegister.
+ * @param runtime Parameter runtime.
+ */
 void ConsoleAlertsRegister(app_runtime_t* runtime);
 
 #ifdef __cplusplus

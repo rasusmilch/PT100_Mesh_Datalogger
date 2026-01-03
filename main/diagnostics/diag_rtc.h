@@ -10,6 +10,14 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute RunDiagRtc.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param set_known Parameter set_known.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int RunDiagRtc(const app_runtime_t* runtime,
                bool full,
                bool set_known,
