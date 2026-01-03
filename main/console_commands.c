@@ -265,8 +265,14 @@ CommandStatus(int argc, char** argv)
   printf("mqtt_qos: %u\n", (unsigned)settings->mqtt_qos);
   printf("mqtt_retain: %s\n", settings->mqtt_retain ? "yes" : "no");
   if (settings->node_role == APP_NODE_ROLE_ROOT) {
-    printf("mqtt_bridge_mode: %s\n",
+    printf("bridge_mode: %s\n",
            AppSettingsMqttBridgeModeToString(settings->mqtt_bridge_mode));
+    const bool broker_bridge_active =
+      settings->mqtt_enabled &&
+      (settings->mqtt_bridge_mode == MQTT_BRIDGE_BROKER ||
+       settings->mqtt_bridge_mode == MQTT_BRIDGE_BOTH);
+    printf("broker_bridge_active: %s\n",
+           broker_bridge_active ? "yes" : "no");
   }
 
   // Ensure the TZ rules are loaded before formatting local time.
@@ -2619,7 +2625,8 @@ RegisterCommands(void)
     .command = "mqtt",
     .help = "MQTT settings: mqtt show | mqtt enable on|off | mqtt broker set "
             "<uri> | mqtt prefix set <prefix> | mqtt qos set 0|1 | mqtt "
-            "retain set on|off | mqtt bridge set off|serial|broker|both",
+            "retain set on|off | mqtt bridge set off|serial|broker|both\n"
+            "Note: broker bridge requires mqtt enabled; serial bridge does not.",
     .hint = NULL,
     .func = &CommandMqtt,
   };

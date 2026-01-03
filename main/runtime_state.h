@@ -209,10 +209,12 @@ extern "C" {
     alert_manager_t alert_manager;
     mqtt_client_wrap_t mqtt_client;
     bool mqtt_client_connected;
+    bool broker_bridge_requested_without_mqtt;
     uint32_t last_export_drop_log_ms;
     uint32_t last_export_fail_log_ms;
     uint32_t last_broker_drop_log_ms;
     uint32_t last_broker_fail_log_ms;
+    uint32_t last_broker_bridge_disabled_log_ms;
     uint32_t last_mqtt_fail_log_ms;
   } runtime_state_t;
 

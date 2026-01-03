@@ -1905,7 +1905,8 @@ RootBridgeTask(void* context)
         }
       }
 
-      if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active)) {
+      if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active) &&
+          state->mqtt_enabled_active) {
         broker_publish_item_t publish_item;
         memset(&publish_item, 0, sizeof(publish_item));
         if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
@@ -3054,6 +3055,7 @@ RuntimeStart(void)
   g_state.wifi_direct_time_synced = false;
   g_state.csv_header_emitted = false;
   g_state.root_bridge_header_emitted = false;
+  g_state.broker_bridge_requested_without_mqtt = false;
   UpdateCachedBool(&g_state, &g_state.cached_status.sd_degraded, false);
   UpdateCachedUint32(&g_state, &g_state.cached_status.sd_fail_count, 0);
   UpdateCachedUint32(
@@ -3071,12 +3073,26 @@ RuntimeStart(void)
   const bool is_root = (role == APP_NODE_ROLE_ROOT);
   const bool allow_children = g_state.settings.allow_children;
   const app_net_mode_t effective_net_mode = g_state.net_mode_active;
+  const bool bridge_uses_serial =
+    BridgeModeUsesSerial(g_state.mqtt_bridge_mode_active);
+  const bool bridge_uses_broker =
+    BridgeModeUsesBroker(g_state.mqtt_bridge_mode_active);
 
   if (!g_state.log_quiet) {
     printf("role=%s allow_children=%u net_mode=%s\n",
            AppSettingsRoleToString(role),
            allow_children ? 1u : 0u,
            AppSettingsNetModeToString(effective_net_mode));
+  }
+
+  if (is_root && bridge_uses_broker && !g_state.mqtt_enabled_active) {
+    g_state.broker_bridge_requested_without_mqtt = true;
+    if (LogRateLimitAllow(&g_state.last_broker_bridge_disabled_log_ms,
+                          kExportLogRateLimitMs)) {
+      ESP_LOGW(kTag,
+               "Bridge mode includes broker but mqtt is disabled; broker "
+               "publish will be inactive.");
+    }
   }
 
   bool router_disabled = false;
@@ -3257,9 +3273,9 @@ wifi_direct_start_done:
     }
   }
 
-  if (role == APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active &&
-      (BridgeModeUsesSerial(g_state.mqtt_bridge_mode_active) ||
-       BridgeModeUsesBroker(g_state.mqtt_bridge_mode_active))) {
+  if (role == APP_NODE_ROLE_ROOT &&
+      (bridge_uses_serial ||
+       (bridge_uses_broker && g_state.mqtt_enabled_active))) {
     bridge_created = xTaskCreate(&RootBridgeTask,
                                  "bridge",
                                  4096,
@@ -3272,7 +3288,7 @@ wifi_direct_start_done:
   }
 
   if (role == APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active &&
-      BridgeModeUsesBroker(g_state.mqtt_bridge_mode_active)) {
+      bridge_uses_broker) {
     broker_created = xTaskCreate(&BrokerPublishTask,
                                  "broker_pub",
                                  4096,
