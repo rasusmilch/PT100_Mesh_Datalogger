@@ -64,6 +64,8 @@ extern "C" {
     uint32_t broker_drop_count;
     uint32_t broker_send_fail_count;
     bool mqtt_connected;
+    bool root_publish_consumer_active;
+    uint32_t root_publish_drop_no_consumer;
 
     // runtime
     bool runtime_running;
@@ -210,6 +212,8 @@ extern "C" {
     mqtt_client_wrap_t mqtt_client;
     bool mqtt_client_connected;
     bool broker_bridge_requested_without_mqtt;
+    bool root_publish_consumer_active;
+    uint32_t root_publish_drop_no_consumer;
     uint32_t last_export_drop_log_ms;
     uint32_t last_export_fail_log_ms;
     uint32_t last_broker_drop_log_ms;

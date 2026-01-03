@@ -1096,6 +1096,13 @@ RootPublishRecordRxCallback(const uint8_t src_mac[6],
                             void* context)
 {
   (void)context;
+  if (!g_state.root_publish_consumer_active) {
+    g_state.root_publish_drop_no_consumer++;
+    UpdateCachedUint32(&g_state,
+                       &g_state.cached_status.root_publish_drop_no_consumer,
+                       g_state.root_publish_drop_no_consumer);
+    return;
+  }
   EnqueueExportOutbox(&g_state, src_mac, record);
 }
 
@@ -3077,6 +3084,21 @@ RuntimeStart(void)
     BridgeModeUsesSerial(g_state.mqtt_bridge_mode_active);
   const bool bridge_uses_broker =
     BridgeModeUsesBroker(g_state.mqtt_bridge_mode_active);
+  g_state.root_publish_consumer_active =
+    is_root &&
+    (bridge_uses_serial ||
+     (bridge_uses_broker && g_state.mqtt_enabled_active));
+  UpdateCachedBool(&g_state,
+                   &g_state.cached_status.root_publish_consumer_active,
+                   g_state.root_publish_consumer_active);
+  g_state.root_publish_drop_no_consumer = 0;
+  UpdateCachedUint32(&g_state,
+                     &g_state.cached_status.root_publish_drop_no_consumer,
+                     g_state.root_publish_drop_no_consumer);
+  if (is_root && !g_state.root_publish_consumer_active &&
+      g_state.export_outbox != NULL) {
+    (void)xQueueReset(g_state.export_outbox);
+  }
 
   if (!g_state.log_quiet) {
     printf("role=%s allow_children=%u net_mode=%s\n",
@@ -3139,7 +3161,9 @@ RuntimeStart(void)
                            router_password,
                            is_root ? &RootRecordRxCallback : NULL,
                            NULL,
-                           is_root ? &RootPublishRecordRxCallback : NULL,
+                           (is_root && g_state.root_publish_consumer_active)
+                             ? &RootPublishRecordRxCallback
+                             : NULL,
                            NULL,
                            &g_state.time_sync);
       if (mesh_result == ESP_OK) {
