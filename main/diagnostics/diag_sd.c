@@ -10,6 +10,15 @@
 
 #include "sd_logger.h"
 
+/**
+ * @brief Execute RunDiagSdImpl.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param format_if_needed Parameter format_if_needed.
+ * @param mount Parameter mount.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 static int
 RunDiagSdImpl(const app_runtime_t* runtime,
               bool full,
@@ -135,6 +144,12 @@ typedef struct
   int result;
 } diag_sd_ctx_t;
 
+/**
+ * @brief Execute RunDiagSdWithMount.
+ * @param runtime Parameter runtime.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
 static esp_err_t
 RunDiagSdWithMount(app_runtime_t* runtime, void* ctx)
 {
@@ -147,6 +162,15 @@ RunDiagSdWithMount(app_runtime_t* runtime, void* ctx)
   return (args->result == 0) ? ESP_OK : ESP_FAIL;
 }
 
+/**
+ * @brief Execute RunDiagSd.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param format_if_needed Parameter format_if_needed.
+ * @param mount Parameter mount.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int
 RunDiagSd(const app_runtime_t* runtime,
           bool full,

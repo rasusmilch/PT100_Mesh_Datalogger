@@ -17,6 +17,14 @@ static const uint32_t kHeaderCopy0Address = 0;
 static const uint32_t kHeaderCopy1Address = 128;
 static const uint32_t kRecordRegionOffset = 256;
 
+/**
+ * @brief Execute IoRead.
+ * @param log Parameter log.
+ * @param address Parameter address.
+ * @param out Parameter out.
+ * @param len Parameter len.
+ * @return Return the function result.
+ */
 static esp_err_t
 IoRead(const fram_log_t* log, uint32_t address, void* out, size_t len)
 {
@@ -26,6 +34,14 @@ IoRead(const fram_log_t* log, uint32_t address, void* out, size_t len)
   return log->io.read(log->io.context, address, out, len);
 }
 
+/**
+ * @brief Execute IoWrite.
+ * @param log Parameter log.
+ * @param address Parameter address.
+ * @param data Parameter data.
+ * @param len Parameter len.
+ * @return Return the function result.
+ */
 static esp_err_t
 IoWrite(const fram_log_t* log, uint32_t address, const void* data, size_t len)
 {
@@ -50,6 +66,11 @@ typedef struct
 } fram_log_header_t;
 #pragma pack(pop)
 
+/**
+ * @brief Execute ComputeHeaderCrc32.
+ * @param header Parameter header.
+ * @return Return the function result.
+ */
 static uint32_t
 ComputeHeaderCrc32(const fram_log_header_t* header)
 {
@@ -60,6 +81,11 @@ ComputeHeaderCrc32(const fram_log_header_t* header)
   return esp_rom_crc32_le(0, (const uint8_t*)&temp, sizeof(temp));
 }
 
+/**
+ * @brief Execute HeaderLooksValid.
+ * @param header Parameter header.
+ * @return Return the function result.
+ */
 static bool
 HeaderLooksValid(const fram_log_header_t* header)
 {
@@ -73,6 +99,13 @@ HeaderLooksValid(const fram_log_header_t* header)
   return crc == header->crc32_le;
 }
 
+/**
+ * @brief Execute ReadHeaderAt.
+ * @param log Parameter log.
+ * @param address Parameter address.
+ * @param header_out Parameter header_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 ReadHeaderAt(const fram_log_t* log,
              uint32_t address,
@@ -81,6 +114,13 @@ ReadHeaderAt(const fram_log_t* log,
   return IoRead(log, address, header_out, sizeof(*header_out));
 }
 
+/**
+ * @brief Execute WriteHeaderAt.
+ * @param log Parameter log.
+ * @param address Parameter address.
+ * @param header Parameter header.
+ * @return Return the function result.
+ */
 static esp_err_t
 WriteHeaderAt(const fram_log_t* log,
               uint32_t address,
@@ -89,6 +129,11 @@ WriteHeaderAt(const fram_log_t* log,
   return IoWrite(log, address, header, sizeof(*header));
 }
 
+/**
+ * @brief Execute ApplyHeaderToState.
+ * @param header Parameter header.
+ * @param log Parameter log.
+ */
 static void
 ApplyHeaderToState(const fram_log_header_t* header, fram_log_t* log)
 {
@@ -100,6 +145,12 @@ ApplyHeaderToState(const fram_log_header_t* header, fram_log_t* log)
   log->next_record_id = header->next_record_id;
 }
 
+/**
+ * @brief Execute BuildHeaderFromState.
+ * @param log Parameter log.
+ * @param generation_counter Parameter generation_counter.
+ * @param header_out Parameter header_out.
+ */
 static void
 BuildHeaderFromState(const fram_log_t* log,
                      uint32_t generation_counter,
@@ -117,6 +168,12 @@ BuildHeaderFromState(const fram_log_t* log,
   header_out->crc32_le = ComputeHeaderCrc32(header_out);
 }
 
+/**
+ * @brief Execute RecordAddressForIndex.
+ * @param log Parameter log.
+ * @param record_index Parameter record_index.
+ * @return Return the function result.
+ */
 static uint32_t
 RecordAddressForIndex(const fram_log_t* log, uint32_t record_index)
 {
@@ -132,6 +189,11 @@ typedef enum
   RECORD_VALIDATE_BAD_CRC,
 } record_validate_result_t;
 
+/**
+ * @brief Execute RecordValidateResultToString.
+ * @param result Parameter result.
+ * @return Return the function result.
+ */
 static const char*
 RecordValidateResultToString(record_validate_result_t result)
 {
@@ -149,6 +211,12 @@ RecordValidateResultToString(record_validate_result_t result)
   }
 }
 
+/**
+ * @brief Execute ValidateRecord.
+ * @param record Parameter record.
+ * @param actual_crc_out Parameter actual_crc_out.
+ * @return Return the function result.
+ */
 static record_validate_result_t
 ValidateRecord(log_record_t* record, uint16_t* actual_crc_out)
 {
@@ -177,6 +245,13 @@ ValidateRecord(log_record_t* record, uint16_t* actual_crc_out)
   return RECORD_VALIDATE_OK;
 }
 
+/**
+ * @brief Execute WriteRecord.
+ * @param log Parameter log.
+ * @param record_index Parameter record_index.
+ * @param record Parameter record.
+ * @return Return the function result.
+ */
 static esp_err_t
 WriteRecord(const fram_log_t* log, uint32_t record_index, log_record_t record)
 {
@@ -226,6 +301,13 @@ WriteRecord(const fram_log_t* log, uint32_t record_index, log_record_t record)
   return last_error;
 }
 
+/**
+ * @brief Execute ReadRecord.
+ * @param log Parameter log.
+ * @param record_index Parameter record_index.
+ * @param record_out Parameter record_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 ReadRecord(const fram_log_t* log,
            uint32_t record_index,
@@ -256,6 +338,13 @@ ReadRecord(const fram_log_t* log,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogInit.
+ * @param log Parameter log.
+ * @param io Parameter io.
+ * @param fram_size_bytes Parameter fram_size_bytes.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
 {
@@ -402,48 +491,89 @@ FramLogInit(fram_log_t* log, fram_io_t io, uint32_t fram_size_bytes)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogGetCapacityRecords.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 size_t
 FramLogGetCapacityRecords(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : (size_t)log->capacity_records;
 }
 
+/**
+ * @brief Execute FramLogGetBufferedRecords.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 uint32_t
 FramLogGetBufferedRecords(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : log->record_count;
 }
 
+/**
+ * @brief Execute FramLogGetCountRecords.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 size_t
 FramLogGetCountRecords(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : (size_t)log->record_count;
 }
 
+/**
+ * @brief Execute FramLogGetOverrunRecordsTotal.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 uint64_t
 FramLogGetOverrunRecordsTotal(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : log->overrun_records_total;
 }
 
+/**
+ * @brief Execute FramLogIsOverwriting.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 bool
 FramLogIsOverwriting(const fram_log_t* log)
 {
   return (log != NULL) && (log->overrun_records_total > 0);
 }
 
+/**
+ * @brief Execute FramLogNextSequence.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 uint32_t
 FramLogNextSequence(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : log->next_sequence;
 }
 
+/**
+ * @brief Execute FramLogNextRecordId.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 uint64_t
 FramLogNextRecordId(const fram_log_t* log)
 {
   return (log == NULL) ? 0 : log->next_record_id;
 }
 
+/**
+ * @brief Execute FramLogGetStatus.
+ * @param log Parameter log.
+ * @param out_status Parameter out_status.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogGetStatus(const fram_log_t* log, fram_log_status_t* out_status)
 {
@@ -467,6 +597,11 @@ FramLogGetStatus(const fram_log_t* log, fram_log_status_t* out_status)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogReset.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogReset(fram_log_t* log)
 {
@@ -490,6 +625,12 @@ FramLogReset(fram_log_t* log)
   return FramLogPersistHeader(log);
 }
 
+/**
+ * @brief Execute FramLogAssignRecordIds.
+ * @param log Parameter log.
+ * @param record Parameter record.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogAssignRecordIds(fram_log_t* log, log_record_t* record)
 {
@@ -511,6 +652,11 @@ FramLogAssignRecordIds(fram_log_t* log, log_record_t* record)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogPersistHeader.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogPersistHeader(fram_log_t* log)
 {
@@ -548,6 +694,12 @@ FramLogPersistHeader(fram_log_t* log)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogAppend.
+ * @param log Parameter log.
+ * @param record Parameter record.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogAppend(fram_log_t* log, const log_record_t* record)
 {
@@ -583,6 +735,12 @@ FramLogAppend(fram_log_t* log, const log_record_t* record)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogPeekOldest.
+ * @param log Parameter log.
+ * @param record_out Parameter record_out.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogPeekOldest(const fram_log_t* log, log_record_t* record_out)
 {
@@ -615,6 +773,13 @@ FramLogPeekOldest(const fram_log_t* log, log_record_t* record_out)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogPeekOffset.
+ * @param log Parameter log.
+ * @param offset Parameter offset.
+ * @param record_out Parameter record_out.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogPeekOffset(const fram_log_t* log,
                   uint32_t offset,
@@ -652,6 +817,11 @@ FramLogPeekOffset(const fram_log_t* log,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogDiscardOldest.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogDiscardOldest(fram_log_t* log)
 {
@@ -669,6 +839,12 @@ FramLogDiscardOldest(fram_log_t* log)
   return FramLogPersistHeader(log);
 }
 
+/**
+ * @brief Execute FramLogPopOldest.
+ * @param log Parameter log.
+ * @param record_out Parameter record_out.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogPopOldest(fram_log_t* log, log_record_t* record_out)
 {
@@ -700,6 +876,11 @@ FramLogPopOldest(fram_log_t* log, log_record_t* record_out)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramLogSkipCorruptedRecord.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogSkipCorruptedRecord(fram_log_t* log)
 {
@@ -748,6 +929,13 @@ FramLogSkipCorruptedRecord(fram_log_t* log)
   return FramLogPersistHeader(log);
 }
 
+/**
+ * @brief Execute FramLogConsumeUpToRecordId.
+ * @param log Parameter log.
+ * @param max_record_id_inclusive Parameter max_record_id_inclusive.
+ * @param consumed_out Parameter consumed_out.
+ * @return Return the function result.
+ */
 esp_err_t
 FramLogConsumeUpToRecordId(fram_log_t* log,
                            uint64_t max_record_id_inclusive,

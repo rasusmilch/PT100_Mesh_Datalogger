@@ -23,18 +23,33 @@
 
 static const char* kTag = "time_sync";
 
+/**
+ * @brief Execute BcdToBinary.
+ * @param bcd Parameter bcd.
+ * @return Return the function result.
+ */
 static uint8_t
 BcdToBinary(uint8_t bcd)
 {
   return (uint8_t)(((bcd >> 4) * 10) + (bcd & 0x0F));
 }
 
+/**
+ * @brief Execute BinaryToBcd.
+ * @param value Parameter value.
+ * @return Return the function result.
+ */
 static uint8_t
 BinaryToBcd(uint8_t value)
 {
   return (uint8_t)(((value / 10) << 4) | (value % 10));
 }
 
+/**
+ * @brief Execute YearLooksValid.
+ * @param year_since_1900 Parameter year_since_1900.
+ * @return Return the function result.
+ */
 static bool
 YearLooksValid(int year_since_1900)
 {
@@ -42,6 +57,11 @@ YearLooksValid(int year_since_1900)
   return year >= 2023 && year <= 2100;
 }
 
+/**
+ * @brief Execute UtcTmToEpochSeconds.
+ * @param tm_utc Parameter tm_utc.
+ * @return Return the function result.
+ */
 static time_t
 UtcTmToEpochSeconds(struct tm* tm_utc)
 {
@@ -75,6 +95,13 @@ UtcTmToEpochSeconds(struct tm* tm_utc)
   return epoch_seconds;
 }
 
+/**
+ * @brief Execute TimeSyncInit.
+ * @param time_sync Parameter time_sync.
+ * @param i2c_bus Parameter i2c_bus.
+ * @param ds3231_addr Parameter ds3231_addr.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeSyncInit(time_sync_t* time_sync,
              i2c_bus_t* i2c_bus,
@@ -97,6 +124,12 @@ TimeSyncInit(time_sync_t* time_sync,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Ds3231ReadTime.
+ * @param time_sync Parameter time_sync.
+ * @param time_out Parameter time_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 Ds3231ReadTime(const time_sync_t* time_sync, struct tm* time_out)
 {
@@ -120,6 +153,12 @@ Ds3231ReadTime(const time_sync_t* time_sync, struct tm* time_out)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Ds3231WriteTime.
+ * @param time_sync Parameter time_sync.
+ * @param time_value Parameter time_value.
+ * @return Return the function result.
+ */
 static esp_err_t
 Ds3231WriteTime(const time_sync_t* time_sync, const struct tm* time_value)
 {
@@ -136,6 +175,11 @@ Ds3231WriteTime(const time_sync_t* time_sync, const struct tm* time_value)
     time_sync->ds3231_device, 0x00, regs, sizeof(regs));
 }
 
+/**
+ * @brief Execute TimeSyncSetSystemFromRtc.
+ * @param time_sync Parameter time_sync.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeSyncSetSystemFromRtc(const time_sync_t* time_sync)
 {
@@ -176,6 +220,11 @@ TimeSyncSetSystemFromRtc(const time_sync_t* time_sync)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute TimeSyncSetRtcFromSystem.
+ * @param time_sync Parameter time_sync.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeSyncSetRtcFromSystem(const time_sync_t* time_sync)
 {
@@ -199,6 +248,10 @@ TimeSyncSetRtcFromSystem(const time_sync_t* time_sync)
   return result;
 }
 
+/**
+ * @brief Execute TimeSyncIsSystemTimeValid.
+ * @return Return the function result.
+ */
 bool
 TimeSyncIsSystemTimeValid(void)
 {
@@ -208,6 +261,11 @@ TimeSyncIsSystemTimeValid(void)
   return YearLooksValid(now_utc.tm_year);
 }
 
+/**
+ * @brief Execute TimeSyncGetNow.
+ * @param epoch_seconds_out Parameter epoch_seconds_out.
+ * @param millis_out Parameter millis_out.
+ */
 void
 TimeSyncGetNow(int64_t* epoch_seconds_out, int32_t* millis_out)
 {
@@ -221,6 +279,12 @@ TimeSyncGetNow(int64_t* epoch_seconds_out, int32_t* millis_out)
   }
 }
 
+/**
+ * @brief Execute LocalTmFieldsMatch.
+ * @param left Parameter left.
+ * @param right Parameter right.
+ * @return Return the function result.
+ */
 static bool
 LocalTmFieldsMatch(const struct tm* left, const struct tm* right)
 {
@@ -230,6 +294,12 @@ LocalTmFieldsMatch(const struct tm* left, const struct tm* right)
          left->tm_sec == right->tm_sec;
 }
 
+/**
+ * @brief Execute TimeParseLocalIso.
+ * @param iso Parameter iso.
+ * @param out_tm_local Parameter out_tm_local.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeParseLocalIso(const char* iso, struct tm* out_tm_local)
 {
@@ -287,6 +357,13 @@ TimeParseLocalIso(const char* iso, struct tm* out_tm_local)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute TimeLocalTmToEpochUtc.
+ * @param tm_local Parameter tm_local.
+ * @param out_epoch_utc Parameter out_epoch_utc.
+ * @param out_ambiguous Parameter out_ambiguous.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeLocalTmToEpochUtc(const struct tm* tm_local,
                       time_t* out_epoch_utc,
@@ -352,6 +429,12 @@ TimeLocalTmToEpochUtc(const struct tm* tm_local,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute TimeSyncStartSntpAndWait.
+ * @param sntp_server Parameter sntp_server.
+ * @param timeout_ms Parameter timeout_ms.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
 {
@@ -420,6 +503,13 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute TimeSyncSetSystemEpoch.
+ * @param epoch_seconds Parameter epoch_seconds.
+ * @param update_rtc Parameter update_rtc.
+ * @param time_sync Parameter time_sync.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeSyncSetSystemEpoch(int64_t epoch_seconds,
                        bool update_rtc,
@@ -437,6 +527,14 @@ TimeSyncSetSystemEpoch(int64_t epoch_seconds,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute TimeSyncReadRtcRegisters.
+ * @param time_sync Parameter time_sync.
+ * @param start_reg Parameter start_reg.
+ * @param data_out Parameter data_out.
+ * @param length Parameter length.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeSyncReadRtcRegisters(const time_sync_t* time_sync,
                          uint8_t start_reg,
@@ -449,6 +547,12 @@ TimeSyncReadRtcRegisters(const time_sync_t* time_sync,
   return I2cBusReadRegister(time_sync->ds3231_device, start_reg, data_out, length);
 }
 
+/**
+ * @brief Execute TimeSyncReadRtcTime.
+ * @param time_sync Parameter time_sync.
+ * @param time_out Parameter time_out.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeSyncReadRtcTime(const time_sync_t* time_sync, struct tm* time_out)
 {
@@ -458,6 +562,12 @@ TimeSyncReadRtcTime(const time_sync_t* time_sync, struct tm* time_out)
   return Ds3231ReadTime(time_sync, time_out);
 }
 
+/**
+ * @brief Execute TimeSyncWriteRtcTime.
+ * @param time_sync Parameter time_sync.
+ * @param time_value Parameter time_value.
+ * @return Return the function result.
+ */
 esp_err_t
 TimeSyncWriteRtcTime(const time_sync_t* time_sync, const struct tm* time_value)
 {

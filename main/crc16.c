@@ -1,5 +1,11 @@
 #include "crc16.h"
 
+/**
+ * @brief Execute Crc16CcittFalse.
+ * @param data Parameter data.
+ * @param length_bytes Parameter length_bytes.
+ * @return Return the function result.
+ */
 uint16_t
 Crc16CcittFalse(const void* data, size_t length_bytes)
 {

@@ -9,6 +9,14 @@
 #include "fram_log.h"
 #include "i2c_bus.h"
 
+/**
+ * @brief Execute FormatAddrList.
+ * @param out Parameter out.
+ * @param out_len Parameter out_len.
+ * @param addrs Parameter addrs.
+ * @param count Parameter count.
+ * @param max_count Parameter max_count.
+ */
 static void
 FormatAddrList(char* out,
                size_t out_len,
@@ -30,6 +38,12 @@ FormatAddrList(char* out,
   }
 }
 
+/**
+ * @brief Execute FillPattern.
+ * @param buffer Parameter buffer.
+ * @param len Parameter len.
+ * @param seed Parameter seed.
+ */
 static void
 FillPattern(uint8_t* buffer, size_t len, uint32_t seed)
 {
@@ -41,6 +55,11 @@ FillPattern(uint8_t* buffer, size_t len, uint32_t seed)
   }
 }
 
+/**
+ * @brief Execute SelectFramIo.
+ * @param runtime Parameter runtime.
+ * @return Return the function result.
+ */
 static const fram_io_t*
 SelectFramIo(const app_runtime_t* runtime)
 {
@@ -56,6 +75,14 @@ SelectFramIo(const app_runtime_t* runtime)
   return NULL;
 }
 
+/**
+ * @brief Execute RunDiagFram.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param bytes Parameter bytes.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int
 RunDiagFram(const app_runtime_t* runtime,
             bool full,

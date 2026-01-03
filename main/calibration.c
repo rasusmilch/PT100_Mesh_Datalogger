@@ -19,6 +19,13 @@ typedef struct
 
 static cal_window_state_t g_cal_window;
 
+/**
+ * @brief Execute InterpolateResidual.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @param raw_c Parameter raw_c.
+ * @return Return the function result.
+ */
 static double
 InterpolateResidual(const calibration_point_t* points,
                     size_t num_points,
@@ -78,6 +85,14 @@ InterpolateResidual(const calibration_point_t* points,
   return lower_residual + t * (upper_residual - lower_residual);
 }
 
+/**
+ * @brief Execute SolveLinearSystemGauss.
+ * @param dimension Parameter dimension.
+ * @param matrix_a Parameter matrix_a.
+ * @param vector_b Parameter vector_b.
+ * @param vector_x_out Parameter vector_x_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 SolveLinearSystemGauss(
   int dimension,
@@ -145,6 +160,12 @@ SolveLinearSystemGauss(
   return ESP_OK;
 }
 
+/**
+ * @brief Execute HasDuplicateRawValues.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @return Return the function result.
+ */
 static bool
 HasDuplicateRawValues(const calibration_point_t* points, size_t num_points)
 {
@@ -158,6 +179,14 @@ HasDuplicateRawValues(const calibration_point_t* points, size_t num_points)
   return false;
 }
 
+/**
+ * @brief Execute FitLeastSquaresPolynomial.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @param degree Parameter degree.
+ * @param model_out Parameter model_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 FitLeastSquaresPolynomial(const calibration_point_t* points,
                           size_t num_points,
@@ -201,6 +230,14 @@ FitLeastSquaresPolynomial(const calibration_point_t* points,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute ComputeDiagnostics.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @param model Parameter model.
+ * @param diagnostics_out Parameter diagnostics_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 ComputeDiagnostics(const calibration_point_t* points,
                    size_t num_points,
@@ -232,6 +269,12 @@ ComputeDiagnostics(const calibration_point_t* points,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute IsSlopeReasonable.
+ * @param options Parameter options.
+ * @param model Parameter model.
+ * @return Return the function result.
+ */
 static bool
 IsSlopeReasonable(const calibration_fit_options_t* options,
                   const calibration_model_t* model)
@@ -246,6 +289,15 @@ IsSlopeReasonable(const calibration_fit_options_t* options,
   return slope >= options->min_slope && slope <= options->max_slope;
 }
 
+/**
+ * @brief Execute IsCorrectionReasonable.
+ * @param options Parameter options.
+ * @param model Parameter model.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @param diagnostics_out Parameter diagnostics_out.
+ * @return Return the function result.
+ */
 static bool
 IsCorrectionReasonable(const calibration_fit_options_t* options,
                        const calibration_model_t* model,
@@ -272,6 +324,10 @@ IsCorrectionReasonable(const calibration_fit_options_t* options,
   return max_abs_correction <= options->max_abs_correction_c;
 }
 
+/**
+ * @brief Execute CalibrationModelInitIdentity.
+ * @param model Parameter model.
+ */
 void
 CalibrationModelInitIdentity(calibration_model_t* model)
 {
@@ -287,6 +343,12 @@ CalibrationModelInitIdentity(calibration_model_t* model)
   model->is_valid = true;
 }
 
+/**
+ * @brief Execute CalibrationModelEvaluate.
+ * @param model Parameter model.
+ * @param raw_c Parameter raw_c.
+ * @return Return the function result.
+ */
 double
 CalibrationModelEvaluate(const calibration_model_t* model, double raw_c)
 {
@@ -307,6 +369,14 @@ CalibrationModelEvaluate(const calibration_model_t* model, double raw_c)
   return sum;
 }
 
+/**
+ * @brief Execute CalibrationModelEvaluateWithPoints.
+ * @param model Parameter model.
+ * @param raw_c Parameter raw_c.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @return Return the function result.
+ */
 double
 CalibrationModelEvaluateWithPoints(const calibration_model_t* model,
                                    double raw_c,
@@ -323,6 +393,13 @@ CalibrationModelEvaluateWithPoints(const calibration_model_t* model,
   return raw_c + residual;
 }
 
+/**
+ * @brief Execute CalibrationModelFitFromPoints.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @param model_out Parameter model_out.
+ * @return Return the function result.
+ */
 esp_err_t
 CalibrationModelFitFromPoints(const calibration_point_t* points,
                               size_t num_points,
@@ -334,6 +411,10 @@ CalibrationModelFitFromPoints(const calibration_point_t* points,
     points, num_points, &options, model_out, NULL);
 }
 
+/**
+ * @brief Execute CalibrationFitOptionsInitDefault.
+ * @param options Parameter options.
+ */
 void
 CalibrationFitOptionsInitDefault(calibration_fit_options_t* options)
 {
@@ -350,6 +431,15 @@ CalibrationFitOptionsInitDefault(calibration_fit_options_t* options)
   options->max_abs_correction_c = CALIBRATION_MAX_CORRECTION_C;
 }
 
+/**
+ * @brief Execute CalibrationModelFitFromPointsWithOptions.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @param options Parameter options.
+ * @param model_out Parameter model_out.
+ * @param diagnostics_out Parameter diagnostics_out.
+ * @return Return the function result.
+ */
 esp_err_t
 CalibrationModelFitFromPointsWithOptions(
   const calibration_point_t* points,
@@ -458,6 +548,10 @@ CalibrationModelFitFromPointsWithOptions(
   return ESP_OK;
 }
 
+/**
+ * @brief Execute CalWindowPushRawSample.
+ * @param raw_milli_c Parameter raw_milli_c.
+ */
 void
 CalWindowPushRawSample(int32_t raw_milli_c)
 {
@@ -489,18 +583,32 @@ CalWindowPushRawSample(int32_t raw_milli_c)
   g_cal_window.stddev_raw_milli_c = (int32_t)llround(stddev);
 }
 
+/**
+ * @brief Execute CalWindowIsReady.
+ * @return Return the function result.
+ */
 bool
 CalWindowIsReady(void)
 {
   return g_cal_window.count >= CAL_WINDOW_SIZE;
 }
 
+/**
+ * @brief Execute CalWindowGetSampleCount.
+ * @return Return the function result.
+ */
 size_t
 CalWindowGetSampleCount(void)
 {
   return g_cal_window.count;
 }
 
+/**
+ * @brief Execute CalWindowGetStats.
+ * @param out_last_raw_mC Parameter out_last_raw_mC.
+ * @param out_mean_raw_mC Parameter out_mean_raw_mC.
+ * @param out_stddev_mC Parameter out_stddev_mC.
+ */
 void
 CalWindowGetStats(int32_t* out_last_raw_mC,
                   int32_t* out_mean_raw_mC,

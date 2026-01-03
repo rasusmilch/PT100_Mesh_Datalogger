@@ -22,6 +22,12 @@ typedef struct
   uint8_t bytes[32];
 } sha256_digest_t;
 
+/**
+ * @brief Execute SetAppendDiagnostics.
+ * @param diag_out Parameter diag_out.
+ * @param operation Parameter operation.
+ * @param errno_value Parameter errno_value.
+ */
 static void
 SetAppendDiagnostics(SdCsvAppendDiagnostics* diag_out,
                      const char* operation,
@@ -34,6 +40,12 @@ SetAppendDiagnostics(SdCsvAppendDiagnostics* diag_out,
   diag_out->errno_value = errno_value;
 }
 
+/**
+ * @brief Execute ComputeSha256.
+ * @param data Parameter data.
+ * @param length_bytes Parameter length_bytes.
+ * @return Return the function result.
+ */
 static sha256_digest_t
 ComputeSha256(const uint8_t* data, size_t length_bytes)
 {
@@ -66,12 +78,24 @@ ComputeSha256(const uint8_t* data, size_t length_bytes)
   return digest;
 }
 
+/**
+ * @brief Execute DigestsEqual.
+ * @param a Parameter a.
+ * @param b Parameter b.
+ * @return Return the function result.
+ */
 static bool
 DigestsEqual(const sha256_digest_t* a, const sha256_digest_t* b)
 {
   return memcmp(a->bytes, b->bytes, sizeof(a->bytes)) == 0;
 }
 
+/**
+ * @brief Execute GetFileSizeBytes.
+ * @param file_descriptor Parameter file_descriptor.
+ * @param size_out Parameter size_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 GetFileSizeBytes(int file_descriptor, off_t* size_out)
 {
@@ -84,6 +108,14 @@ GetFileSizeBytes(int file_descriptor, off_t* size_out)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute ReadExactly.
+ * @param file_descriptor Parameter file_descriptor.
+ * @param offset Parameter offset.
+ * @param buffer Parameter buffer.
+ * @param length_bytes Parameter length_bytes.
+ * @return Return the function result.
+ */
 static esp_err_t
 ReadExactly(int file_descriptor,
             off_t offset,
@@ -118,6 +150,12 @@ ReadExactly(int file_descriptor,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute ParseRecordIdFromCsvLine.
+ * @param line Parameter line.
+ * @param record_id_out Parameter record_id_out.
+ * @return Return the function result.
+ */
 static bool
 ParseRecordIdFromCsvLine(const char* line, uint64_t* record_id_out)
 {
@@ -175,6 +213,14 @@ ParseRecordIdFromCsvLine(const char* line, uint64_t* record_id_out)
 
 // Finds the last '\n' in the file and truncates to that point+1 if needed.
 // If there is no '\n' at all, truncates to 0.
+/**
+ * @brief Execute RepairTailToLastNewline.
+ * @param file_descriptor Parameter file_descriptor.
+ * @param file_size Parameter file_size.
+ * @param tail_scan_max_bytes Parameter tail_scan_max_bytes.
+ * @param truncated_out Parameter truncated_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 RepairTailToLastNewline(int file_descriptor,
                         off_t file_size,
@@ -251,6 +297,15 @@ RepairTailToLastNewline(int file_descriptor,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FindLastRecordIdInFile.
+ * @param file_descriptor Parameter file_descriptor.
+ * @param file_size Parameter file_size.
+ * @param tail_scan_max_bytes Parameter tail_scan_max_bytes.
+ * @param found_out Parameter found_out.
+ * @param last_record_id_out Parameter last_record_id_out.
+ * @return Return the function result.
+ */
 static esp_err_t
 FindLastRecordIdInFile(int file_descriptor,
                        off_t file_size,
@@ -323,6 +378,13 @@ FindLastRecordIdInFile(int file_descriptor,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute SdCsvFindLastRecordIdAndRepairTail.
+ * @param file_handle Parameter file_handle.
+ * @param tail_scan_max_bytes Parameter tail_scan_max_bytes.
+ * @param resume_info_out Parameter resume_info_out.
+ * @return Return the function result.
+ */
 esp_err_t
 SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
                                    size_t tail_scan_max_bytes,
@@ -370,6 +432,14 @@ SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute SdCsvAppendBatchWithReadbackVerify.
+ * @param file_handle Parameter file_handle.
+ * @param batch_bytes Parameter batch_bytes.
+ * @param batch_length_bytes Parameter batch_length_bytes.
+ * @param diag_out Parameter diag_out.
+ * @return Return the function result.
+ */
 esp_err_t
 SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
                                    const uint8_t* batch_bytes,

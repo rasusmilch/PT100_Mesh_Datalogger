@@ -10,6 +10,14 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute RunDiagFram.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param bytes Parameter bytes.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int RunDiagFram(const app_runtime_t* runtime,
                 bool full,
                 int bytes,

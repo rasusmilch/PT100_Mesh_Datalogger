@@ -7,6 +7,12 @@
 
 #include "esp_heap_caps.h"
 
+/**
+ * @brief Execute DiagInitCtx.
+ * @param ctx Parameter ctx.
+ * @param name Parameter name.
+ * @param verbosity Parameter verbosity.
+ */
 void
 DiagInitCtx(diag_ctx_t* ctx, const char* name, diag_verbosity_t verbosity)
 {
@@ -19,6 +25,16 @@ DiagInitCtx(diag_ctx_t* ctx, const char* name, diag_verbosity_t verbosity)
   ctx->verbosity = verbosity;
 }
 
+/**
+ * @brief Execute DiagReportStep.
+ * @param ctx Parameter ctx.
+ * @param step_index Parameter step_index.
+ * @param total_steps Parameter total_steps.
+ * @param step Parameter step.
+ * @param result Parameter result.
+ * @param details_fmt Parameter details_fmt.
+ * @param ... Parameter ....
+ */
 void
 DiagReportStep(diag_ctx_t* ctx,
                int step_index,
@@ -53,6 +69,11 @@ DiagReportStep(diag_ctx_t* ctx,
   }
 }
 
+/**
+ * @brief Execute DiagPrintSummary.
+ * @param ctx Parameter ctx.
+ * @param total_steps Parameter total_steps.
+ */
 void
 DiagPrintSummary(const diag_ctx_t* ctx, int total_steps)
 {
@@ -68,6 +89,13 @@ DiagPrintSummary(const diag_ctx_t* ctx, int total_steps)
          pass ? "PASS" : "FAIL");
 }
 
+/**
+ * @brief Execute DiagHexdump.
+ * @param ctx Parameter ctx.
+ * @param label Parameter label.
+ * @param bytes Parameter bytes.
+ * @param len Parameter len.
+ */
 void
 DiagHexdump(const diag_ctx_t* ctx,
             const char* label,
@@ -90,12 +118,20 @@ DiagHexdump(const diag_ctx_t* ctx,
   printf("\n");
 }
 
+/**
+ * @brief Execute DiagPrintErr.
+ * @param err Parameter err.
+ */
 void
 DiagPrintErr(esp_err_t err)
 {
   printf("%s", esp_err_to_name(err));
 }
 
+/**
+ * @brief Execute DiagPrintErrno.
+ * @param prefix Parameter prefix.
+ */
 void
 DiagPrintErrno(const char* prefix)
 {
@@ -105,6 +141,11 @@ DiagPrintErrno(const char* prefix)
   printf("errno=%d (%s)", errno, strerror(errno));
 }
 
+/**
+ * @brief Execute DiagHeapCheck.
+ * @param ctx Parameter ctx.
+ * @param label Parameter label.
+ */
 void
 DiagHeapCheck(const diag_ctx_t* ctx, const char* label)
 {

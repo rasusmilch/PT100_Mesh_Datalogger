@@ -57,54 +57,146 @@ extern "C" {
     esp_err_t result;
   } sd_drain_stats_t;
 
+/**
+ * @brief Execute RuntimeManagerInit.
+ * @return Return the function result.
+ */
   esp_err_t RuntimeManagerInit(void);
 
+/**
+ * @brief Execute RuntimeGetRuntime.
+ * @return Return the function result.
+ */
   const app_runtime_t* RuntimeGetRuntime(void);
 
+/**
+ * @brief Execute RuntimeGetCachedStatus.
+ * @return Return the function result.
+ */
   const runtime_cached_status_t* RuntimeGetCachedStatus(void);
 
+/**
+ * @brief Execute RuntimeStart.
+ * @return Return the function result.
+ */
   esp_err_t RuntimeStart(void);
 
+/**
+ * @brief Execute RuntimeStop.
+ * @return Return the function result.
+ */
   esp_err_t RuntimeStop(void);
 
+/**
+ * @brief Execute RuntimeIsRunning.
+ * @return Return the function result.
+ */
   bool RuntimeIsRunning(void);
 
+/**
+ * @brief Execute EnterRunMode.
+ * @return Return the function result.
+ */
   esp_err_t EnterRunMode(void);
 
+/**
+ * @brief Execute EnterDiagMode.
+ * @return Return the function result.
+ */
   esp_err_t EnterDiagMode(void);
 
   typedef esp_err_t (*runtime_sd_op_fn_t)(app_runtime_t* runtime, void* ctx);
 
+/**
+ * @brief Execute RuntimeWithTemporarySdMount.
+ * @param op Parameter op.
+ * @param ctx Parameter ctx.
+ * @return Return the function result.
+ */
   esp_err_t RuntimeWithTemporarySdMount(runtime_sd_op_fn_t op, void* ctx);
 
+/**
+ * @brief Execute RuntimeRequestRunStart.
+ */
   void RuntimeRequestRunStart(void);
 
+/**
+ * @brief Execute RuntimeRequestRunStop.
+ */
   void RuntimeRequestRunStop(void);
 
+/**
+ * @brief Execute RuntimeSdUnmountNow.
+ * @return Return the function result.
+ */
   esp_err_t RuntimeSdUnmountNow(void);
 
+/**
+ * @brief Execute RuntimeEnableDataStreaming.
+ * @param enabled Parameter enabled.
+ */
   void RuntimeEnableDataStreaming(bool enabled);
 
+/**
+ * @brief Execute RuntimeIsDataStreamingEnabled.
+ * @return Return the function result.
+ */
   bool RuntimeIsDataStreamingEnabled(void);
 
+/**
+ * @brief Execute RuntimeSetLogPolicyRun.
+ */
   void RuntimeSetLogPolicyRun(void);
 
+/**
+ * @brief Execute RuntimeSetLogPolicyDiag.
+ */
   void RuntimeSetLogPolicyDiag(void);
 
+/**
+ * @brief Execute RuntimeSetSdAppendFailureOnce.
+ * @param enabled Parameter enabled.
+ */
   void RuntimeSetSdAppendFailureOnce(bool enabled);
 
+/**
+ * @brief Execute RuntimeSdIsDegraded.
+ * @return Return the function result.
+ */
   bool RuntimeSdIsDegraded(void);
 
+/**
+ * @brief Execute RuntimeSdFailCount.
+ * @return Return the function result.
+ */
   uint32_t RuntimeSdFailCount(void);
 
+/**
+ * @brief Execute RuntimeSdBackoffUntilTicks.
+ * @return Return the function result.
+ */
   uint32_t RuntimeSdBackoffUntilTicks(void);
 
+/**
+ * @brief Execute RuntimeAcknowledgeDisplayAttention.
+ * @param item Parameter item.
+ * @return Return the function result.
+ */
   bool RuntimeAcknowledgeDisplayAttention(display_attention_item_t item);
 
 // Updates the in-memory/cached display attention policy immediately so the
 // display task reflects changes without requiring a reboot.
+/**
+ * @brief Execute RuntimeSetDisplayAttentionPolicy.
+ * @param policy Parameter policy.
+ */
 void RuntimeSetDisplayAttentionPolicy(uint32_t policy);
 
+/**
+ * @brief Execute RuntimeShowDisplayTestPattern.
+ * @param duration_ms Parameter duration_ms.
+ * @return Return the function result.
+ */
   esp_err_t RuntimeShowDisplayTestPattern(uint32_t duration_ms);
 
 #ifdef __cplusplus

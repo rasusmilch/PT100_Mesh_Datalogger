@@ -8,6 +8,10 @@ static bool g_initialized = false;
 static const int kRxBufferLen = 256;
 static const int kTxBufferLen = 2048;
 
+/**
+ * @brief Execute DataPortInit.
+ * @return Return the function result.
+ */
 esp_err_t
 DataPortInit(void)
 {
@@ -55,6 +59,13 @@ DataPortInit(void)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute DataPortWrite.
+ * @param bytes Parameter bytes.
+ * @param len Parameter len.
+ * @param bytes_written Parameter bytes_written.
+ * @return Return the function result.
+ */
 esp_err_t
 DataPortWrite(const char* bytes, size_t len, size_t* bytes_written)
 {

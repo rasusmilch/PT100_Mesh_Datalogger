@@ -42,20 +42,43 @@ extern "C"
     bool slot_config_valid;
   } sd_logger_t;
 
+/**
+ * @brief Execute SdLoggerInit.
+ * @param logger Parameter logger.
+ * @param config Parameter config.
+ */
   void SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config);
 
   // Mount SD card over SPI (FATFS).
   // Assumes SPI bus is already initialized.
+/**
+ * @brief Execute SdLoggerMount.
+ * @param logger Parameter logger.
+ * @param host Parameter host.
+ * @param cs_gpio Parameter cs_gpio.
+ * @return Return the function result.
+ */
   esp_err_t SdLoggerMount(sd_logger_t* logger,
                           spi_host_device_t host,
                           int cs_gpio);
 
   // Retry mount using the last host/cs passed to SdLoggerMount().
   // If format_if_mount_failed is true, the card may be formatted (destructive).
+/**
+ * @brief Execute SdLoggerTryRemount.
+ * @param logger Parameter logger.
+ * @param format_if_mount_failed Parameter format_if_mount_failed.
+ * @return Return the function result.
+ */
   esp_err_t SdLoggerTryRemount(sd_logger_t* logger,
                                bool format_if_mount_failed);
 
   // Close any open file and unmount the SD card.
+/**
+ * @brief Execute SdLoggerUnmount.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
   esp_err_t SdLoggerUnmount(sd_logger_t* logger);
 
   // Destructively format the SD card (create a fresh FAT filesystem) and leave
@@ -66,22 +89,51 @@ extern "C"
   //
   // NOTE: This recreates filesystem structures (FAT tables, root dir, boot
   // sector). It is not a secure erase of all flash blocks (SD wear leveling).
+/**
+ * @brief Execute SdLoggerFormatDestructive.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
   esp_err_t SdLoggerFormatDestructive(sd_logger_t* logger);
 
   // Open/create the UTC daily CSV for the provided epoch. Repairs tail and
   // updates last_record_id_on_sd.
+/**
+ * @brief Execute SdLoggerEnsureDailyFile.
+ * @param logger Parameter logger.
+ * @param epoch_utc Parameter epoch_utc.
+ * @return Return the function result.
+ */
   esp_err_t SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc);
 
   // Append a verified batch (already formatted CSV) and update
   // last_record_id_on_sd.
+/**
+ * @brief Execute SdLoggerAppendVerifiedBatch.
+ * @param logger Parameter logger.
+ * @param batch_bytes Parameter batch_bytes.
+ * @param batch_length_bytes Parameter batch_length_bytes.
+ * @param last_record_id_in_batch Parameter last_record_id_in_batch.
+ * @param diag_out Parameter diag_out.
+ * @return Return the function result.
+ */
   esp_err_t SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
                                         const uint8_t* batch_bytes,
                                         size_t batch_length_bytes,
                                         uint64_t last_record_id_in_batch,
                                         SdCsvAppendDiagnostics* diag_out);
 
+/**
+ * @brief Execute SdLoggerClose.
+ * @param logger Parameter logger.
+ */
   void SdLoggerClose(sd_logger_t* logger);
 
+/**
+ * @brief Execute SdLoggerLastRecordIdOnSd.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
   static inline uint64_t SdLoggerLastRecordIdOnSd(const sd_logger_t* logger)
   {
     return (logger == NULL) ? 0 : logger->last_record_id_on_sd;

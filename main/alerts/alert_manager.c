@@ -18,6 +18,11 @@ static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
 
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
+/**
+ * @brief Execute PackMacToId.
+ * @param mac Parameter mac.
+ * @return Return the function result.
+ */
 static uint64_t
 PackMacToId(const uint8_t mac[6])
 {
@@ -29,6 +34,12 @@ PackMacToId(const uint8_t mac[6])
 }
 #endif
 
+/**
+ * @brief Execute FindLeaf.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @return Return the function result.
+ */
 static alert_leaf_state_t*
 FindLeaf(alert_manager_t* manager, uint64_t leaf_id)
 {
@@ -43,6 +54,12 @@ FindLeaf(alert_manager_t* manager, uint64_t leaf_id)
   return NULL;
 }
 
+/**
+ * @brief Execute FindOrAllocateLeaf.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @return Return the function result.
+ */
 static alert_leaf_state_t*
 FindOrAllocateLeaf(alert_manager_t* manager, uint64_t leaf_id)
 {
@@ -75,6 +92,13 @@ FindOrAllocateLeaf(alert_manager_t* manager, uint64_t leaf_id)
   return &manager->leaves[oldest];
 }
 
+/**
+ * @brief Execute GetLeafConfig.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param out Parameter out.
+ * @return Return the function result.
+ */
 static bool
 GetLeafConfig(const alert_manager_t* manager,
               uint64_t leaf_id,
@@ -92,6 +116,12 @@ GetLeafConfig(const alert_manager_t* manager,
   return false;
 }
 
+/**
+ * @brief Execute GetOrCreateLeafConfig.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @return Return the function result.
+ */
 static alert_leaf_config_t*
 GetOrCreateLeafConfig(alert_manager_t* manager, uint64_t leaf_id)
 {
@@ -113,6 +143,12 @@ GetOrCreateLeafConfig(alert_manager_t* manager, uint64_t leaf_id)
   return entry;
 }
 
+/**
+ * @brief Execute EffectiveEnableMask.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @return Return the function result.
+ */
 static uint32_t
 EffectiveEnableMask(const alert_manager_t* manager, uint64_t leaf_id)
 {
@@ -124,6 +160,12 @@ EffectiveEnableMask(const alert_manager_t* manager, uint64_t leaf_id)
   return manager->config.enable_mask;
 }
 
+/**
+ * @brief Execute AlertStateTransition.
+ * @param state Parameter state.
+ * @param active Parameter active.
+ * @param now_ms Parameter now_ms.
+ */
 static void
 AlertStateTransition(alert_state_t* state, bool active, int64_t now_ms)
 {
@@ -141,6 +183,18 @@ AlertStateTransition(alert_state_t* state, bool active, int64_t now_ms)
   }
 }
 
+/**
+ * @brief Execute AlertManagerQueueNotification.
+ * @param manager Parameter manager.
+ * @param state Parameter state.
+ * @param type Parameter type.
+ * @param severity Parameter severity.
+ * @param resolved Parameter resolved.
+ * @param leaf_id Parameter leaf_id.
+ * @param payload Parameter payload.
+ * @param now_ms Parameter now_ms.
+ * @return Return the function result.
+ */
 static bool
 AlertManagerQueueNotification(alert_manager_t* manager,
                               alert_state_t* state,
@@ -193,6 +247,13 @@ AlertManagerQueueNotification(alert_manager_t* manager,
   return true;
 }
 
+/**
+ * @brief Execute FillPayloadBase.
+ * @param payload Parameter payload.
+ * @param leaf Parameter leaf.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
 static void
 FillPayloadBase(alert_notification_payload_t* payload,
                 const alert_leaf_state_t* leaf,
@@ -209,6 +270,16 @@ FillPayloadBase(alert_notification_payload_t* payload,
   }
 }
 
+/**
+ * @brief Execute ProcessAlert.
+ * @param manager Parameter manager.
+ * @param leaf_index Parameter leaf_index.
+ * @param type Parameter type.
+ * @param severity Parameter severity.
+ * @param condition_active Parameter condition_active.
+ * @param payload Parameter payload.
+ * @param now_ms Parameter now_ms.
+ */
 static void
 ProcessAlert(alert_manager_t* manager,
              size_t leaf_index,
@@ -273,6 +344,14 @@ ProcessAlert(alert_manager_t* manager,
   }
 }
 
+/**
+ * @brief Execute GetLimits.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param high_out Parameter high_out.
+ * @param low_out Parameter low_out.
+ * @return Return the function result.
+ */
 static bool
 GetLimits(const alert_manager_t* manager,
           uint64_t leaf_id,
@@ -293,6 +372,11 @@ GetLimits(const alert_manager_t* manager,
   return true;
 }
 
+/**
+ * @brief Execute RefreshMeshOnline.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ */
 static void
 RefreshMeshOnline(alert_manager_t* manager, int64_t now_ms)
 {
@@ -342,6 +426,10 @@ RefreshMeshOnline(alert_manager_t* manager, int64_t now_ms)
   }
 }
 
+/**
+ * @brief Execute ApplyDefaults.
+ * @param manager Parameter manager.
+ */
 static void
 ApplyDefaults(alert_manager_t* manager)
 {
@@ -367,6 +455,11 @@ ApplyDefaults(alert_manager_t* manager)
     manager->config.leaf_overrides, 0, sizeof(manager->config.leaf_overrides));
 }
 
+/**
+ * @brief Execute AlertManagerInit.
+ * @param manager Parameter manager.
+ * @param root_id_string Parameter root_id_string.
+ */
 void
 AlertManagerInit(alert_manager_t* manager, const char* root_id_string)
 {
@@ -379,6 +472,11 @@ AlertManagerInit(alert_manager_t* manager, const char* root_id_string)
   AlertNtfyInit(&manager->ntfy);
 }
 
+/**
+ * @brief Execute AlertManagerLoadConfig.
+ * @param manager Parameter manager.
+ * @return Return the function result.
+ */
 esp_err_t
 AlertManagerLoadConfig(alert_manager_t* manager)
 {
@@ -405,6 +503,11 @@ AlertManagerLoadConfig(alert_manager_t* manager)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSaveConfig.
+ * @param manager Parameter manager.
+ * @return Return the function result.
+ */
 esp_err_t
 AlertManagerSaveConfig(alert_manager_t* manager)
 {
@@ -426,6 +529,11 @@ AlertManagerSaveConfig(alert_manager_t* manager)
   return result;
 }
 
+/**
+ * @brief Execute AlertManagerIsConfigured.
+ * @param manager Parameter manager.
+ * @return Return the function result.
+ */
 bool
 AlertManagerIsConfigured(const alert_manager_t* manager)
 {
@@ -436,6 +544,14 @@ AlertManagerIsConfigured(const alert_manager_t* manager)
          manager->config.ntfy_topic[0] != '\0';
 }
 
+/**
+ * @brief Execute AlertManagerOnSample.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param record Parameter record.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
 void
 AlertManagerOnSample(alert_manager_t* manager,
                      uint64_t leaf_id,
@@ -478,6 +594,13 @@ AlertManagerOnSample(alert_manager_t* manager,
   leaf->last_online_ms = now_ms;
 }
 
+/**
+ * @brief Execute AlertManagerOnLeafOnline.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param online Parameter online.
+ * @param now_ms Parameter now_ms.
+ */
 void
 AlertManagerOnLeafOnline(alert_manager_t* manager,
                          uint64_t leaf_id,
@@ -497,6 +620,12 @@ AlertManagerOnLeafOnline(alert_manager_t* manager,
   }
 }
 
+/**
+ * @brief Execute AlertManagerTick.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
 void
 AlertManagerTick(alert_manager_t* manager, int64_t now_ms, int64_t now_epoch)
 {
@@ -619,6 +748,15 @@ AlertManagerTick(alert_manager_t* manager, int64_t now_ms, int64_t now_epoch)
   }
 }
 
+/**
+ * @brief Execute AlertManagerEnableType.
+ * @param manager Parameter manager.
+ * @param type Parameter type.
+ * @param enabled Parameter enabled.
+ * @param leaf_id Parameter leaf_id.
+ * @param per_leaf Parameter per_leaf.
+ * @return Return the function result.
+ */
 bool
 AlertManagerEnableType(alert_manager_t* manager,
                        alert_type_t type,
@@ -653,6 +791,13 @@ AlertManagerEnableType(alert_manager_t* manager,
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetDefaultLimit.
+ * @param manager Parameter manager.
+ * @param is_high Parameter is_high.
+ * @param limit_milli_c Parameter limit_milli_c.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetDefaultLimit(alert_manager_t* manager,
                             bool is_high,
@@ -675,6 +820,14 @@ AlertManagerSetDefaultLimit(alert_manager_t* manager,
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetLeafLimit.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param is_high Parameter is_high.
+ * @param limit_milli_c Parameter limit_milli_c.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetLeafLimit(alert_manager_t* manager,
                          uint64_t leaf_id,
@@ -709,6 +862,12 @@ AlertManagerSetLeafLimit(alert_manager_t* manager,
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetMissingGap.
+ * @param manager Parameter manager.
+ * @param gap_ms Parameter gap_ms.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetMissingGap(alert_manager_t* manager, uint32_t gap_ms)
 {
@@ -719,6 +878,12 @@ AlertManagerSetMissingGap(alert_manager_t* manager, uint32_t gap_ms)
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetOfflineMs.
+ * @param manager Parameter manager.
+ * @param offline_ms Parameter offline_ms.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetOfflineMs(alert_manager_t* manager, uint32_t offline_ms)
 {
@@ -729,6 +894,12 @@ AlertManagerSetOfflineMs(alert_manager_t* manager, uint32_t offline_ms)
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetHoldMs.
+ * @param manager Parameter manager.
+ * @param hold_ms Parameter hold_ms.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetHoldMs(alert_manager_t* manager, uint32_t hold_ms)
 {
@@ -739,6 +910,12 @@ AlertManagerSetHoldMs(alert_manager_t* manager, uint32_t hold_ms)
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetHysteresis.
+ * @param manager Parameter manager.
+ * @param hysteresis_milli_c Parameter hysteresis_milli_c.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetHysteresis(alert_manager_t* manager, int32_t hysteresis_milli_c)
 {
@@ -749,6 +926,13 @@ AlertManagerSetHysteresis(alert_manager_t* manager, int32_t hysteresis_milli_c)
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetRateLimit.
+ * @param manager Parameter manager.
+ * @param per_key_ms Parameter per_key_ms.
+ * @param per_minute Parameter per_minute.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetRateLimit(alert_manager_t* manager,
                          uint32_t per_key_ms,
@@ -762,6 +946,12 @@ AlertManagerSetRateLimit(alert_manager_t* manager,
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetNtfyUrl.
+ * @param manager Parameter manager.
+ * @param url Parameter url.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetNtfyUrl(alert_manager_t* manager, const char* url)
 {
@@ -773,6 +963,12 @@ AlertManagerSetNtfyUrl(alert_manager_t* manager, const char* url)
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetNtfyTopic.
+ * @param manager Parameter manager.
+ * @param topic Parameter topic.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetNtfyTopic(alert_manager_t* manager, const char* topic)
 {
@@ -786,6 +982,12 @@ AlertManagerSetNtfyTopic(alert_manager_t* manager, const char* topic)
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerSetNtfyToken.
+ * @param manager Parameter manager.
+ * @param token Parameter token.
+ * @return Return the function result.
+ */
 bool
 AlertManagerSetNtfyToken(alert_manager_t* manager, const char* token)
 {
@@ -799,6 +1001,13 @@ AlertManagerSetNtfyToken(alert_manager_t* manager, const char* token)
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
+/**
+ * @brief Execute AlertManagerClear.
+ * @param manager Parameter manager.
+ * @param type Parameter type.
+ * @param leaf_id Parameter leaf_id.
+ * @param all_leaves Parameter all_leaves.
+ */
 void
 AlertManagerClear(alert_manager_t* manager,
                   alert_type_t type,
@@ -825,6 +1034,11 @@ AlertManagerClear(alert_manager_t* manager,
   }
 }
 
+/**
+ * @brief Execute AlertManagerSendTest.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ */
 void
 AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms)
 {
@@ -845,6 +1059,11 @@ AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms)
   (void)AlertNtfyEnqueue(&manager->ntfy, &note);
 }
 
+/**
+ * @brief Execute AlertManagerEmitRootRestart.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ */
 void
 AlertManagerEmitRootRestart(alert_manager_t* manager, int64_t now_ms)
 {
@@ -868,6 +1087,13 @@ AlertManagerEmitRootRestart(alert_manager_t* manager, int64_t now_ms)
   (void)AlertNtfyEnqueue(&manager->ntfy, &note);
 }
 
+/**
+ * @brief Execute AlertManagerCopyLeaves.
+ * @param manager Parameter manager.
+ * @param out Parameter out.
+ * @param max_items Parameter max_items.
+ * @return Return the function result.
+ */
 size_t
 AlertManagerCopyLeaves(const alert_manager_t* manager,
                        alert_leaf_state_t* out,
@@ -886,6 +1112,15 @@ AlertManagerCopyLeaves(const alert_manager_t* manager,
   return count;
 }
 
+/**
+ * @brief Execute AlertManagerCopyActiveAlerts.
+ * @param manager Parameter manager.
+ * @param out_states Parameter out_states.
+ * @param out_types Parameter out_types.
+ * @param out_leaf_ids Parameter out_leaf_ids.
+ * @param max_items Parameter max_items.
+ * @return Return the function result.
+ */
 size_t
 AlertManagerCopyActiveAlerts(const alert_manager_t* manager,
                              alert_state_t* out_states,
@@ -914,6 +1149,12 @@ AlertManagerCopyActiveAlerts(const alert_manager_t* manager,
   return count;
 }
 
+/**
+ * @brief Execute AlertManagerFormatLeafId.
+ * @param leaf_id Parameter leaf_id.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
 void
 AlertManagerFormatLeafId(uint64_t leaf_id, char* out, size_t out_size)
 {
@@ -936,6 +1177,11 @@ AlertManagerFormatLeafId(uint64_t leaf_id, char* out, size_t out_size)
            mac[5]);
 }
 
+/**
+ * @brief Execute AlertManagerMonitorTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the AlertManagerMonitorTask task.
+ */
 void
 AlertManagerMonitorTask(void* context)
 {
@@ -956,6 +1202,11 @@ AlertManagerMonitorTask(void* context)
   vTaskDelete(NULL);
 }
 
+/**
+ * @brief Execute AlertManagerSenderTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the AlertManagerSenderTask task.
+ */
 void
 AlertManagerSenderTask(void* context)
 {

@@ -12,6 +12,11 @@
 #include "i2c_bus.h"
 #include "time_sync.h"
 
+/**
+ * @brief Execute TmToEpochUtc.
+ * @param tm_value Parameter tm_value.
+ * @return Return the function result.
+ */
 static int64_t
 TmToEpochUtc(struct tm* tm_value)
 {
@@ -23,6 +28,12 @@ TmToEpochUtc(struct tm* tm_value)
   return (epoch >= 0) ? (int64_t)epoch : -1;
 }
 
+/**
+ * @brief Execute FormatTmUtc.
+ * @param tm_value Parameter tm_value.
+ * @param out Parameter out.
+ * @param out_len Parameter out_len.
+ */
 static void
 FormatTmUtc(const struct tm* tm_value, char* out, size_t out_len)
 {
@@ -44,6 +55,14 @@ FormatTmUtc(const struct tm* tm_value, char* out, size_t out_len)
            tm_value->tm_sec);
 }
 
+/**
+ * @brief Execute RunDiagRtc.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param set_known Parameter set_known.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int
 RunDiagRtc(const app_runtime_t* runtime,
            bool full,

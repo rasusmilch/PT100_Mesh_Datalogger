@@ -2,6 +2,10 @@
 
 #include <string.h>
 
+/**
+ * @brief Execute RuntimeHealthInit.
+ * @param cache Parameter cache.
+ */
 void
 RuntimeHealthInit(runtime_health_cache_t* cache)
 {
@@ -12,6 +16,11 @@ RuntimeHealthInit(runtime_health_cache_t* cache)
   memset(&cache->snapshot, 0, sizeof(cache->snapshot));
 }
 
+/**
+ * @brief Execute RuntimeHealthPublish.
+ * @param cache Parameter cache.
+ * @param new_snapshot Parameter new_snapshot.
+ */
 void
 RuntimeHealthPublish(runtime_health_cache_t* cache,
                      const runtime_health_snapshot_t* new_snapshot)
@@ -25,6 +34,11 @@ RuntimeHealthPublish(runtime_health_cache_t* cache,
   cache->version++;
 }
 
+/**
+ * @brief Execute RuntimeHealthRead.
+ * @param cache Parameter cache.
+ * @param out_snapshot Parameter out_snapshot.
+ */
 void
 RuntimeHealthRead(const runtime_health_cache_t* cache,
                   runtime_health_snapshot_t* out_snapshot)

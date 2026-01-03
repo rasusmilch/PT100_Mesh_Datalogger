@@ -6,6 +6,11 @@
 
 static const char* kTag = "mqtt";
 
+/**
+ * @brief Execute MqttEventHandler.
+ * @param event Parameter event.
+ * @return Return the function result.
+ */
 static esp_err_t
 MqttEventHandler(esp_mqtt_event_handle_t event)
 {
@@ -33,6 +38,10 @@ MqttEventHandler(esp_mqtt_event_handle_t event)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute MqttClientWrapInit.
+ * @param wrap Parameter wrap.
+ */
 void
 MqttClientWrapInit(mqtt_client_wrap_t* wrap)
 {
@@ -42,6 +51,12 @@ MqttClientWrapInit(mqtt_client_wrap_t* wrap)
   memset(wrap, 0, sizeof(*wrap));
 }
 
+/**
+ * @brief Execute MqttClientWrapStart.
+ * @param wrap Parameter wrap.
+ * @param broker_uri Parameter broker_uri.
+ * @return Return the function result.
+ */
 esp_err_t
 MqttClientWrapStart(mqtt_client_wrap_t* wrap, const char* broker_uri)
 {
@@ -77,6 +92,10 @@ MqttClientWrapStart(mqtt_client_wrap_t* wrap, const char* broker_uri)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute MqttClientWrapStop.
+ * @param wrap Parameter wrap.
+ */
 void
 MqttClientWrapStop(mqtt_client_wrap_t* wrap)
 {
@@ -91,6 +110,11 @@ MqttClientWrapStop(mqtt_client_wrap_t* wrap)
   wrap->broker_uri[0] = '\0';
 }
 
+/**
+ * @brief Execute MqttClientWrapIsConnected.
+ * @param wrap Parameter wrap.
+ * @return Return the function result.
+ */
 bool
 MqttClientWrapIsConnected(const mqtt_client_wrap_t* wrap)
 {
@@ -100,6 +124,16 @@ MqttClientWrapIsConnected(const mqtt_client_wrap_t* wrap)
   return wrap->connected;
 }
 
+/**
+ * @brief Execute MqttClientWrapPublish.
+ * @param wrap Parameter wrap.
+ * @param topic Parameter topic.
+ * @param payload Parameter payload.
+ * @param len Parameter len.
+ * @param qos Parameter qos.
+ * @param retain Parameter retain.
+ * @return Return the function result.
+ */
 esp_err_t
 MqttClientWrapPublish(mqtt_client_wrap_t* wrap,
                       const char* topic,

@@ -10,6 +10,11 @@ static const char* kTag = "boot_mode";
 static const char* kNvsNamespace = "app";
 static const char* kBootModeKey = "boot_mode";
 
+/**
+ * @brief Execute ValidateOrDefault.
+ * @param raw Parameter raw.
+ * @return Return the function result.
+ */
 static app_boot_mode_t
 ValidateOrDefault(uint8_t raw)
 {
@@ -17,6 +22,10 @@ ValidateOrDefault(uint8_t raw)
                                             : APP_BOOT_MODE_DIAGNOSTICS;
 }
 
+/**
+ * @brief Execute BootModeReadFromNvsOrDefault.
+ * @return Return the function result.
+ */
 app_boot_mode_t
 BootModeReadFromNvsOrDefault(void)
 {
@@ -41,6 +50,11 @@ BootModeReadFromNvsOrDefault(void)
   return APP_BOOT_MODE_DIAGNOSTICS;
 }
 
+/**
+ * @brief Execute BootModeWriteToNvs.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 esp_err_t
 BootModeWriteToNvs(app_boot_mode_t mode)
 {
@@ -59,6 +73,10 @@ BootModeWriteToNvs(app_boot_mode_t mode)
   return result;
 }
 
+/**
+ * @brief Execute DiagnosticsOverrideRequested.
+ * @return Return the function result.
+ */
 static bool
 DiagnosticsOverrideRequested(void)
 {
@@ -80,6 +98,10 @@ DiagnosticsOverrideRequested(void)
 #endif
 }
 
+/**
+ * @brief Execute RunOverrideRequested.
+ * @return Return the function result.
+ */
 static bool
 RunOverrideRequested(void)
 {
@@ -101,6 +123,10 @@ RunOverrideRequested(void)
 #endif
 }
 
+/**
+ * @brief Execute BootModeDetermineAtStartup.
+ * @return Return the function result.
+ */
 app_boot_mode_t
 BootModeDetermineAtStartup(void)
 {

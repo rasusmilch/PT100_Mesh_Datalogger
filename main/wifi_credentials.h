@@ -15,6 +15,10 @@ extern "C" {
     bool from_nvs;
   } wifi_credentials_t;
 
+/**
+ * @brief Execute WifiCredentialsLoad.
+ * @param out Parameter out.
+ */
   void WifiCredentialsLoad(wifi_credentials_t* out);
 
 #ifdef __cplusplus

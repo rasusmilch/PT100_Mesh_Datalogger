@@ -43,6 +43,15 @@ static const double kCvdA = 3.9083e-3;
 static const double kCvdB = -5.775e-7;
 static const double kCvdC = -4.183e-12;
 
+/**
+ * @brief Execute SpiTransfer.
+ * @param device Parameter device.
+ * @param tx Parameter tx.
+ * @param tx_len Parameter tx_len.
+ * @param rx Parameter rx.
+ * @param rx_len Parameter rx_len.
+ * @return Return the function result.
+ */
 static esp_err_t
 SpiTransfer(spi_device_handle_t device,
             const uint8_t* tx,
@@ -63,6 +72,13 @@ SpiTransfer(spi_device_handle_t device,
   return spi_device_transmit(device, &transaction);
 }
 
+/**
+ * @brief Execute Max31865WriteReg.
+ * @param reader Parameter reader.
+ * @param reg Parameter reg.
+ * @param value Parameter value.
+ * @return Return the function result.
+ */
 esp_err_t
 Max31865WriteReg(max31865_reader_t* reader, uint8_t reg, uint8_t value)
 {
@@ -73,6 +89,14 @@ Max31865WriteReg(max31865_reader_t* reader, uint8_t reg, uint8_t value)
   return SpiTransfer(reader->spi_device, tx, sizeof(tx), NULL, 0);
 }
 
+/**
+ * @brief Execute Max31865ReadRegs.
+ * @param reader Parameter reader.
+ * @param reg Parameter reg.
+ * @param data_out Parameter data_out.
+ * @param len Parameter len.
+ * @return Return the function result.
+ */
 esp_err_t
 Max31865ReadRegs(max31865_reader_t* reader,
                  uint8_t reg,
@@ -101,6 +125,13 @@ Max31865ReadRegs(max31865_reader_t* reader,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Max31865ReadReg.
+ * @param reader Parameter reader.
+ * @param reg Parameter reg.
+ * @param value_out Parameter value_out.
+ * @return Return the function result.
+ */
 esp_err_t
 Max31865ReadReg(max31865_reader_t* reader, uint8_t reg, uint8_t* value_out)
 {
@@ -110,6 +141,11 @@ Max31865ReadReg(max31865_reader_t* reader, uint8_t reg, uint8_t* value_out)
   return Max31865ReadRegs(reader, reg, value_out, 1);
 }
 
+/**
+ * @brief Execute BuildBaseConfig.
+ * @param reader Parameter reader.
+ * @return Return the function result.
+ */
 static uint8_t
 BuildBaseConfig(const max31865_reader_t* reader)
 {
@@ -123,18 +159,35 @@ BuildBaseConfig(const max31865_reader_t* reader)
   return cfg;
 }
 
+/**
+ * @brief Execute ConversionDelayMs.
+ * @param reader Parameter reader.
+ * @return Return the function result.
+ */
 static int
 ConversionDelayMs(const max31865_reader_t* reader)
 {
   return (reader->filter_hz <= 50) ? 65 : 55;
 }
 
+/**
+ * @brief Execute Max31865AdcCodeToResistance.
+ * @param adc_code Parameter adc_code.
+ * @param rref_ohm Parameter rref_ohm.
+ * @return Return the function result.
+ */
 double
 Max31865AdcCodeToResistance(uint16_t adc_code, double rref_ohm)
 {
   return ((double)adc_code * rref_ohm) / 32768.0;
 }
 
+/**
+ * @brief Execute ClearFaults.
+ * @param reader Parameter reader.
+ * @param base_config Parameter base_config.
+ * @return Return the function result.
+ */
 static esp_err_t
 ClearFaults(max31865_reader_t* reader, uint8_t base_config)
 {
@@ -142,6 +195,12 @@ ClearFaults(max31865_reader_t* reader, uint8_t base_config)
     reader, kRegConfig, (uint8_t)(base_config | kCfgFaultStatusClear));
 }
 
+/**
+ * @brief Execute WaitForConversionComplete.
+ * @param reader Parameter reader.
+ * @param timeout_ms Parameter timeout_ms.
+ * @return Return the function result.
+ */
 static esp_err_t
 WaitForConversionComplete(max31865_reader_t* reader, int timeout_ms)
 {
@@ -161,6 +220,12 @@ WaitForConversionComplete(max31865_reader_t* reader, int timeout_ms)
   return ESP_ERR_TIMEOUT;
 }
 
+/**
+ * @brief Execute ConvertTablePt100.
+ * @param resistance_ohm Parameter resistance_ohm.
+ * @param r0_ohm Parameter r0_ohm.
+ * @return Return the function result.
+ */
 static double
 ConvertTablePt100(double resistance_ohm, double r0_ohm)
 {
@@ -198,6 +263,12 @@ ConvertTablePt100(double resistance_ohm, double r0_ohm)
   return lower_temp + fraction;
 }
 
+/**
+ * @brief Execute ConvertCvdIterative.
+ * @param resistance_ohm Parameter resistance_ohm.
+ * @param r0_ohm Parameter r0_ohm.
+ * @return Return the function result.
+ */
 static double
 ConvertCvdIterative(double resistance_ohm, double r0_ohm)
 {
@@ -239,6 +310,12 @@ ConvertCvdIterative(double resistance_ohm, double r0_ohm)
   return t;
 }
 
+/**
+ * @brief Execute ResistanceToTemperature.
+ * @param reader Parameter reader.
+ * @param resistance_ohm Parameter resistance_ohm.
+ * @return Return the function result.
+ */
 static double
 ResistanceToTemperature(const max31865_reader_t* reader, double resistance_ohm)
 {
@@ -247,6 +324,12 @@ ResistanceToTemperature(const max31865_reader_t* reader, double resistance_ohm)
            : ConvertTablePt100(resistance_ohm, reader->rtd_nominal_ohm);
 }
 
+/**
+ * @brief Execute Max31865FormatFault.
+ * @param fault_status Parameter fault_status.
+ * @param out Parameter out.
+ * @param out_len Parameter out_len.
+ */
 void
 Max31865FormatFault(uint8_t fault_status, char* out, size_t out_len)
 {
@@ -288,6 +371,10 @@ Max31865FormatFault(uint8_t fault_status, char* out, size_t out_len)
   }
 }
 
+/**
+ * @brief Execute InitializeFaultThresholds.
+ * @param reader Parameter reader.
+ */
 static void
 InitializeFaultThresholds(max31865_reader_t* reader)
 {
@@ -298,6 +385,13 @@ InitializeFaultThresholds(max31865_reader_t* reader)
   (void)Max31865WriteReg(reader, kRegLowFaultLsb, 0x00);
 }
 
+/**
+ * @brief Execute Max31865ReaderInit.
+ * @param reader Parameter reader.
+ * @param host Parameter host.
+ * @param cs_gpio Parameter cs_gpio.
+ * @return Return the function result.
+ */
 esp_err_t
 Max31865ReaderInit(max31865_reader_t* reader,
                    spi_host_device_t host,
@@ -374,6 +468,14 @@ Max31865ReaderInit(max31865_reader_t* reader,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FillSample.
+ * @param sample Parameter sample.
+ * @param adc_code Parameter adc_code.
+ * @param resistance Parameter resistance.
+ * @param temp_c Parameter temp_c.
+ * @param fault_status Parameter fault_status.
+ */
 static void
 FillSample(max31865_sample_t* sample,
            uint16_t adc_code,
@@ -391,6 +493,12 @@ FillSample(max31865_sample_t* sample,
   sample->fault_present = (fault_status != 0);
 }
 
+/**
+ * @brief Execute Max31865ReadOnce.
+ * @param reader Parameter reader.
+ * @param sample_out Parameter sample_out.
+ * @return Return the function result.
+ */
 esp_err_t
 Max31865ReadOnce(max31865_reader_t* reader, max31865_sample_t* sample_out)
 {
@@ -465,6 +573,15 @@ Max31865ReadOnce(max31865_reader_t* reader, max31865_sample_t* sample_out)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Max31865ReadAveraged.
+ * @param reader Parameter reader.
+ * @param sample_count Parameter sample_count.
+ * @param sample_delay_ms Parameter sample_delay_ms.
+ * @param averaged_out Parameter averaged_out.
+ * @param stats_out Parameter stats_out.
+ * @return Return the function result.
+ */
 esp_err_t
 Max31865ReadAveraged(max31865_reader_t* reader,
                      int sample_count,
@@ -544,6 +661,14 @@ Max31865ReadAveraged(max31865_reader_t* reader,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Max31865ReadEmaUpdate.
+ * @param reader Parameter reader.
+ * @param alpha Parameter alpha.
+ * @param sample_out Parameter sample_out.
+ * @param ema_temp_out Parameter ema_temp_out.
+ * @return Return the function result.
+ */
 esp_err_t
 Max31865ReadEmaUpdate(max31865_reader_t* reader,
                       double alpha,
@@ -594,6 +719,13 @@ Max31865ReadEmaUpdate(max31865_reader_t* reader,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute Max31865ReaderRead.
+ * @param reader Parameter reader.
+ * @param raw_temp_c Parameter raw_temp_c.
+ * @param resistance_ohm Parameter resistance_ohm.
+ * @return Return the function result.
+ */
 esp_err_t
 Max31865ReaderRead(max31865_reader_t* reader,
                    float* raw_temp_c,

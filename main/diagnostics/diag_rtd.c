@@ -13,6 +13,11 @@ static const uint8_t kCfg3Wire = 0x10;
 static const uint8_t kCfgFilter50Hz = 0x01;
 static const uint8_t kCfgFaultStatusClear = 0x02;
 
+/**
+ * @brief Execute BuildBaseConfig.
+ * @param reader Parameter reader.
+ * @return Return the function result.
+ */
 static uint8_t
 BuildBaseConfig(const max31865_reader_t* reader)
 {
@@ -26,6 +31,15 @@ BuildBaseConfig(const max31865_reader_t* reader)
   return cfg;
 }
 
+/**
+ * @brief Execute RunDiagRtd.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param samples Parameter samples.
+ * @param delay_ms Parameter delay_ms.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int
 RunDiagRtd(const app_runtime_t* runtime,
            bool full,

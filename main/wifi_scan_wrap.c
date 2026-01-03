@@ -24,6 +24,12 @@ esp_err_t
 __real_esp_wifi_scan_start(const wifi_scan_config_t* config, bool block);
 
 // NOLINTNEXTLINE(readability-identifier-naming)
+/**
+ * @brief Execute __wrap_esp_wifi_scan_start.
+ * @param config Parameter config.
+ * @param block Parameter block.
+ * @return Return the function result.
+ */
 esp_err_t
 __wrap_esp_wifi_scan_start(const wifi_scan_config_t* config, bool block)
 {

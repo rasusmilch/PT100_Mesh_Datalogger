@@ -17,12 +17,25 @@
 
 static const char* kTag = "sd_logger";
 
+/**
+ * @brief Execute DefaultOr.
+ * @param value Parameter value.
+ * @param fallback Parameter fallback.
+ * @return Return the function result.
+ */
 static size_t
 DefaultOr(const size_t value, const size_t fallback)
 {
   return (value == 0) ? fallback : value;
 }
 
+/**
+ * @brief Execute CsvFileWriter.
+ * @param bytes Parameter bytes.
+ * @param len Parameter len.
+ * @param context Parameter context.
+ * @return Return the function result.
+ */
 static bool
 CsvFileWriter(const char* bytes, size_t len, void* context)
 {
@@ -31,6 +44,11 @@ CsvFileWriter(const char* bytes, size_t len, void* context)
            file, (const uint8_t*)bytes, len, NULL) == ESP_OK;
 }
 
+/**
+ * @brief Execute SdLoggerInit.
+ * @param logger Parameter logger.
+ * @param config Parameter config.
+ */
 void
 SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
 {
@@ -56,6 +74,15 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
   logger->slot_config_valid = false;
 }
 
+/**
+ * @brief Execute BuildDailyCsvPath.
+ * @param logger Parameter logger.
+ * @param epoch_seconds Parameter epoch_seconds.
+ * @param date_out Parameter date_out.
+ * @param date_out_size Parameter date_out_size.
+ * @param path_out Parameter path_out.
+ * @param path_out_size Parameter path_out_size.
+ */
 static void
 BuildDailyCsvPath(const sd_logger_t* logger,
                   int64_t epoch_seconds,
@@ -73,6 +100,11 @@ BuildDailyCsvPath(const sd_logger_t* logger,
   snprintf(path_out, path_out_size, "%s/%s.csv", logger->mount_point, date_out);
 }
 
+/**
+ * @brief Execute WriteHeaderIfEmpty.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
 static esp_err_t
 WriteHeaderIfEmpty(sd_logger_t* logger)
 {
@@ -88,6 +120,14 @@ WriteHeaderIfEmpty(sd_logger_t* logger)
   return wrote_header ? ESP_OK : ESP_FAIL;
 }
 
+/**
+ * @brief Execute SdLoggerMountInternal.
+ * @param logger Parameter logger.
+ * @param host Parameter host.
+ * @param cs_gpio Parameter cs_gpio.
+ * @param format_if_mount_failed Parameter format_if_mount_failed.
+ * @return Return the function result.
+ */
 static esp_err_t
 SdLoggerMountInternal(sd_logger_t* logger,
                       spi_host_device_t host,
@@ -130,6 +170,13 @@ SdLoggerMountInternal(sd_logger_t* logger,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute SdLoggerMount.
+ * @param logger Parameter logger.
+ * @param host Parameter host.
+ * @param cs_gpio Parameter cs_gpio.
+ * @return Return the function result.
+ */
 esp_err_t
 SdLoggerMount(sd_logger_t* logger, spi_host_device_t host, int cs_gpio)
 {
@@ -144,6 +191,12 @@ SdLoggerMount(sd_logger_t* logger, spi_host_device_t host, int cs_gpio)
   return SdLoggerMountInternal(logger, host, cs_gpio, false);
 }
 
+/**
+ * @brief Execute SdLoggerTryRemount.
+ * @param logger Parameter logger.
+ * @param format_if_mount_failed Parameter format_if_mount_failed.
+ * @return Return the function result.
+ */
 esp_err_t
 SdLoggerTryRemount(sd_logger_t* logger, bool format_if_mount_failed)
 {
@@ -160,6 +213,11 @@ SdLoggerTryRemount(sd_logger_t* logger, bool format_if_mount_failed)
     logger, logger->host_id, logger->cs_gpio, format_if_mount_failed);
 }
 
+/**
+ * @brief Execute SdLoggerUnmount.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
 esp_err_t
 SdLoggerUnmount(sd_logger_t* logger)
 {
@@ -186,6 +244,13 @@ SdLoggerUnmount(sd_logger_t* logger)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute ApplyResumeInfo.
+ * @param logger Parameter logger.
+ * @param file Parameter file.
+ * @param path Parameter path.
+ * @return Return the function result.
+ */
 static esp_err_t
 ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
 {
@@ -212,6 +277,12 @@ ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute SdLoggerEnsureDailyFile.
+ * @param logger Parameter logger.
+ * @param epoch_utc Parameter epoch_utc.
+ * @return Return the function result.
+ */
 esp_err_t
 SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
 {
@@ -269,6 +340,15 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute SdLoggerAppendVerifiedBatch.
+ * @param logger Parameter logger.
+ * @param batch_bytes Parameter batch_bytes.
+ * @param batch_length_bytes Parameter batch_length_bytes.
+ * @param last_record_id_in_batch Parameter last_record_id_in_batch.
+ * @param diag_out Parameter diag_out.
+ * @return Return the function result.
+ */
 esp_err_t
 SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
                             const uint8_t* batch_bytes,
@@ -292,6 +372,10 @@ SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
   return result;
 }
 
+/**
+ * @brief Execute SdLoggerClose.
+ * @param logger Parameter logger.
+ */
 void
 SdLoggerClose(sd_logger_t* logger)
 {
@@ -309,6 +393,11 @@ SdLoggerClose(sd_logger_t* logger)
   logger->current_date[0] = '\0';
 }
 
+/**
+ * @brief Execute SdLoggerFormatDestructive.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
 esp_err_t
 SdLoggerFormatDestructive(sd_logger_t* logger)
 {

@@ -7,10 +7,22 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute RuntimeHealthPublisherInit.
+ * @param state Parameter state.
+ */
   void RuntimeHealthPublisherInit(runtime_state_t* state);
 
+/**
+ * @brief Execute RuntimeHealthPublisherTick.
+ * @param state Parameter state.
+ */
   void RuntimeHealthPublisherTick(runtime_state_t* state);
 
+/**
+ * @brief Execute RuntimeHealthMarkDirty.
+ * @param state Parameter state.
+ */
   static inline void RuntimeHealthMarkDirty(runtime_state_t* state)
   {
     if (state == NULL) {

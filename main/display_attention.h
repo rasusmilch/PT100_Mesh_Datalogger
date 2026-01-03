@@ -41,6 +41,12 @@ typedef uint32_t display_attention_mask_t;
 #define DISPLAY_ATTENTION_POLICY_BITS_PER_ITEM 2u
 #define DISPLAY_ATTENTION_POLICY_MASK 0x03u
 
+/**
+ * @brief Execute DisplayAttentionPolicyGet.
+ * @param policy Parameter policy.
+ * @param item Parameter item.
+ * @return Return the function result.
+ */
 static inline display_attention_severity_t
 DisplayAttentionPolicyGet(uint32_t policy, display_attention_item_t item)
 {
@@ -50,6 +56,13 @@ DisplayAttentionPolicyGet(uint32_t policy, display_attention_item_t item)
     (policy >> shift) & DISPLAY_ATTENTION_POLICY_MASK);
 }
 
+/**
+ * @brief Execute DisplayAttentionPolicySet.
+ * @param policy Parameter policy.
+ * @param item Parameter item.
+ * @param severity Parameter severity.
+ * @return Return the function result.
+ */
 static inline uint32_t
 DisplayAttentionPolicySet(uint32_t policy,
                           display_attention_item_t item,

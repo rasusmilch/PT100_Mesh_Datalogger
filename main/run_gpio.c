@@ -31,6 +31,12 @@ typedef struct
 
 static run_gpio_state_t g_run_gpio;
 
+/**
+ * @brief Execute ConfigureInput.
+ * @param input Parameter input.
+ * @param gpio_num Parameter gpio_num.
+ * @return Return the function result.
+ */
 static bool
 ConfigureInput(run_gpio_input_t* input, int gpio_num)
 {
@@ -65,6 +71,14 @@ ConfigureInput(run_gpio_input_t* input, int gpio_num)
   return true;
 }
 
+/**
+ * @brief Execute UpdateInput.
+ * @param input Parameter input.
+ * @param now_ticks Parameter now_ticks.
+ * @param debounce_ms Parameter debounce_ms.
+ * @param hold_ms Parameter hold_ms.
+ * @return Return the function result.
+ */
 static bool
 UpdateInput(run_gpio_input_t* input,
             TickType_t now_ticks,
@@ -101,6 +115,11 @@ UpdateInput(run_gpio_input_t* input,
   return false;
 }
 
+/**
+ * @brief Execute RunGpioTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the RunGpioTask task.
+ */
 static void
 RunGpioTask(void* context)
 {
@@ -127,6 +146,9 @@ RunGpioTask(void* context)
   }
 }
 
+/**
+ * @brief Execute RunGpioInit.
+ */
 void
 RunGpioInit(void)
 {

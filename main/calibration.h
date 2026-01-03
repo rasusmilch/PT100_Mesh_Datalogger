@@ -66,11 +66,29 @@ extern "C"
   } calibration_fit_diagnostics_t;
 
   // Identity mapping (y = x).
+/**
+ * @brief Execute CalibrationModelInitIdentity.
+ * @param model Parameter model.
+ */
   void CalibrationModelInitIdentity(calibration_model_t* model);
 
   // y = sum_{i=0..degree} c[i] * x^i
+/**
+ * @brief Execute CalibrationModelEvaluate.
+ * @param model Parameter model.
+ * @param raw_c Parameter raw_c.
+ * @return Return the function result.
+ */
   double CalibrationModelEvaluate(const calibration_model_t* model,
                                   double raw_c);
+/**
+ * @brief Execute CalibrationModelEvaluateWithPoints.
+ * @param model Parameter model.
+ * @param raw_c Parameter raw_c.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @return Return the function result.
+ */
   double CalibrationModelEvaluateWithPoints(const calibration_model_t* model,
                                             double raw_c,
                                             const calibration_point_t* points,
@@ -79,12 +97,32 @@ extern "C"
   // Fit a calibration model using default options.
   // - N=1 => offset-only correction with slope=1 (y=x+offset)
   // - N>=2 => linear least-squares fit (y=a+b*x)
+/**
+ * @brief Execute CalibrationModelFitFromPoints.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @param model_out Parameter model_out.
+ * @return Return the function result.
+ */
   esp_err_t CalibrationModelFitFromPoints(const calibration_point_t* points,
                                           size_t num_points,
                                           calibration_model_t* model_out);
 
+/**
+ * @brief Execute CalibrationFitOptionsInitDefault.
+ * @param options Parameter options.
+ */
   void CalibrationFitOptionsInitDefault(calibration_fit_options_t* options);
 
+/**
+ * @brief Execute CalibrationModelFitFromPointsWithOptions.
+ * @param points Parameter points.
+ * @param num_points Parameter num_points.
+ * @param options Parameter options.
+ * @param model_out Parameter model_out.
+ * @param diagnostics_out Parameter diagnostics_out.
+ * @return Return the function result.
+ */
   esp_err_t CalibrationModelFitFromPointsWithOptions(
     const calibration_point_t* points,
     size_t num_points,
@@ -92,9 +130,27 @@ extern "C"
     calibration_model_t* model_out,
     calibration_fit_diagnostics_t* diagnostics_out);
 
+/**
+ * @brief Execute CalWindowPushRawSample.
+ * @param raw_milli_c Parameter raw_milli_c.
+ */
   void CalWindowPushRawSample(int32_t raw_milli_c);
+/**
+ * @brief Execute CalWindowIsReady.
+ * @return Return the function result.
+ */
   bool CalWindowIsReady(void);
+/**
+ * @brief Execute CalWindowGetSampleCount.
+ * @return Return the function result.
+ */
   size_t CalWindowGetSampleCount(void);
+/**
+ * @brief Execute CalWindowGetStats.
+ * @param out_last_raw_mC Parameter out_last_raw_mC.
+ * @param out_mean_raw_mC Parameter out_mean_raw_mC.
+ * @param out_stddev_mC Parameter out_stddev_mC.
+ */
   void CalWindowGetStats(int32_t* out_last_raw_mC,
                          int32_t* out_mean_raw_mC,
                          int32_t* out_stddev_mC);

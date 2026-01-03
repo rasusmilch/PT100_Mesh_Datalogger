@@ -13,6 +13,12 @@ extern "C"
   // - poly 0x1021
   // - init 0xFFFF
   // - xorout 0x0000
+/**
+ * @brief Execute Crc16CcittFalse.
+ * @param data Parameter data.
+ * @param length_bytes Parameter length_bytes.
+ * @return Return the function result.
+ */
   uint16_t Crc16CcittFalse(const void* data, size_t length_bytes);
 
 #ifdef __cplusplus

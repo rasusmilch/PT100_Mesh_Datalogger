@@ -13,6 +13,9 @@ static const app_runtime_t* g_runtime = NULL;
 
 static void AppInitTask(void* context);
 
+/**
+ * @brief Execute InitNvs.
+ */
 static void
 InitNvs(void)
 {
@@ -32,6 +35,9 @@ InitNvs(void)
   }
 }
 
+/**
+ * @brief Execute app_main.
+ */
 void
 app_main(void)
 {
@@ -55,6 +61,11 @@ app_main(void)
   // Return so the ESP-IDF main task can delete itself.
 }
 
+/**
+ * @brief Execute AppInitTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the AppInitTask task.
+ */
 static void
 AppInitTask(void* context)
 {

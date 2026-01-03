@@ -10,6 +10,13 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute RunDiagStorage.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int RunDiagStorage(const app_runtime_t* runtime,
                    bool full,
                    diag_verbosity_t verbosity);

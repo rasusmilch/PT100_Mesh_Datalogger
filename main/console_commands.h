@@ -11,6 +11,12 @@ extern "C"
 #endif
 
   // Initializes and starts the serial console.
+/**
+ * @brief Execute ConsoleCommandsStart.
+ * @param runtime Parameter runtime.
+ * @param boot_mode Parameter boot_mode.
+ * @return Return the function result.
+ */
   esp_err_t ConsoleCommandsStart(app_runtime_t* runtime,
                                  app_boot_mode_t boot_mode);
 

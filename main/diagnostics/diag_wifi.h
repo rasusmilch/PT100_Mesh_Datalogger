@@ -10,6 +10,17 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute RunDiagWifi.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param scan Parameter scan.
+ * @param connect Parameter connect.
+ * @param dns_lookup Parameter dns_lookup.
+ * @param keep_connected Parameter keep_connected.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int RunDiagWifi(const app_runtime_t* runtime,
                 bool full,
                 bool scan,

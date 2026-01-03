@@ -10,6 +10,15 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute RunDiagRtd.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param samples Parameter samples.
+ * @param delay_ms Parameter delay_ms.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int RunDiagRtd(const app_runtime_t* runtime,
                bool full,
                int samples,

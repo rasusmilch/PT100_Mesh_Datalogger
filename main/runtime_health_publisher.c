@@ -4,6 +4,10 @@
 #include "freertos/task.h"
 #include "runtime_health.h"
 
+/**
+ * @brief Execute RuntimeHealthPublisherInit.
+ * @param state Parameter state.
+ */
 void
 RuntimeHealthPublisherInit(runtime_state_t* state)
 {
@@ -15,6 +19,10 @@ RuntimeHealthPublisherInit(runtime_state_t* state)
   state->health_publisher.dirty = true;
 }
 
+/**
+ * @brief Execute RuntimeHealthPublisherTick.
+ * @param state Parameter state.
+ */
 void
 RuntimeHealthPublisherTick(runtime_state_t* state)
 {

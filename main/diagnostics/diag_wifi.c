@@ -25,6 +25,11 @@ typedef struct
   size_t min_free;
 } heap_snapshot_t;
 
+/**
+ * @brief Execute AuthModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
 static const char*
 AuthModeToString(wifi_auth_mode_t mode)
 {
@@ -52,6 +57,11 @@ AuthModeToString(wifi_auth_mode_t mode)
   }
 }
 
+/**
+ * @brief Execute ReasonToString.
+ * @param reason Parameter reason.
+ * @return Return the function result.
+ */
 static const char*
 ReasonToString(wifi_err_reason_t reason)
 {
@@ -115,12 +125,21 @@ ReasonToString(wifi_err_reason_t reason)
   }
 }
 
+/**
+ * @brief Execute YesNo.
+ * @param value Parameter value.
+ * @return Return the function result.
+ */
 static const char*
 YesNo(bool value)
 {
   return value ? "yes" : "no";
 }
 
+/**
+ * @brief Execute CaptureHeapSnapshot.
+ * @return Return the function result.
+ */
 static heap_snapshot_t
 CaptureHeapSnapshot(void)
 {
@@ -132,6 +151,12 @@ CaptureHeapSnapshot(void)
   return snapshot;
 }
 
+/**
+ * @brief Execute PrintHeapSnapshot.
+ * @param ctx Parameter ctx.
+ * @param label Parameter label.
+ * @param snapshot Parameter snapshot.
+ */
 static void
 PrintHeapSnapshot(const diag_ctx_t* ctx,
                   const char* label,
@@ -147,6 +172,13 @@ PrintHeapSnapshot(const diag_ctx_t* ctx,
          (unsigned)snapshot->min_free);
 }
 
+/**
+ * @brief Execute PrintScanResults.
+ * @param ctx Parameter ctx.
+ * @param records Parameter records.
+ * @param listed_count Parameter listed_count.
+ * @param total_count Parameter total_count.
+ */
 static void
 PrintScanResults(const diag_ctx_t* ctx,
                  const wifi_ap_record_t* records,
@@ -174,6 +206,10 @@ PrintScanResults(const diag_ctx_t* ctx,
   }
 }
 
+/**
+ * @brief Execute PickDnsHost.
+ * @return Return the function result.
+ */
 static const char*
 PickDnsHost(void)
 {
@@ -181,6 +217,17 @@ PickDnsHost(void)
                                              : "pool.ntp.org";
 }
 
+/**
+ * @brief Execute RunDiagWifi.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param scan Parameter scan.
+ * @param connect Parameter connect.
+ * @param dns_lookup Parameter dns_lookup.
+ * @param keep_connected Parameter keep_connected.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int
 RunDiagWifi(const app_runtime_t* runtime,
             bool full,

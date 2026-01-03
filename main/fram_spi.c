@@ -12,6 +12,15 @@ static const uint8_t kOpcodeWren = 0x06;
 static const uint8_t kOpcodeRead = 0x03;
 static const uint8_t kOpcodeWrite = 0x02;
 
+/**
+ * @brief Execute SpiTx.
+ * @param fram Parameter fram.
+ * @param tx_data Parameter tx_data.
+ * @param tx_len Parameter tx_len.
+ * @param rx_data Parameter rx_data.
+ * @param rx_len Parameter rx_len.
+ * @return Return the function result.
+ */
 static esp_err_t
 SpiTx(const fram_spi_t* fram,
       const void* tx_data,
@@ -31,6 +40,11 @@ SpiTx(const fram_spi_t* fram,
   return spi_device_transmit(fram->device, &transaction);
 }
 
+/**
+ * @brief Execute WriteEnable.
+ * @param fram Parameter fram.
+ * @return Return the function result.
+ */
 static esp_err_t
 WriteEnable(const fram_spi_t* fram)
 {
@@ -38,6 +52,12 @@ WriteEnable(const fram_spi_t* fram)
   return SpiTx(fram, &opcode, 1, NULL, 0);
 }
 
+/**
+ * @brief Execute EncodeAddress.
+ * @param out Parameter out.
+ * @param address_bytes Parameter address_bytes.
+ * @param address Parameter address.
+ */
 static void
 EncodeAddress(uint8_t* out, int address_bytes, uint32_t address)
 {
@@ -48,6 +68,14 @@ EncodeAddress(uint8_t* out, int address_bytes, uint32_t address)
   }
 }
 
+/**
+ * @brief Execute FramSpiInit.
+ * @param fram Parameter fram.
+ * @param host Parameter host.
+ * @param cs_gpio Parameter cs_gpio.
+ * @param address_bytes Parameter address_bytes.
+ * @return Return the function result.
+ */
 esp_err_t
 FramSpiInit(fram_spi_t* fram,
             spi_host_device_t host,
@@ -78,6 +106,14 @@ FramSpiInit(fram_spi_t* fram,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramSpiRead.
+ * @param fram Parameter fram.
+ * @param address Parameter address.
+ * @param data_out Parameter data_out.
+ * @param length_bytes Parameter length_bytes.
+ * @return Return the function result.
+ */
 esp_err_t
 FramSpiRead(const fram_spi_t* fram,
             uint32_t address,
@@ -116,6 +152,14 @@ FramSpiRead(const fram_spi_t* fram,
   return result;
 }
 
+/**
+ * @brief Execute FramSpiWrite.
+ * @param fram Parameter fram.
+ * @param address Parameter address.
+ * @param data Parameter data.
+ * @param length_bytes Parameter length_bytes.
+ * @return Return the function result.
+ */
 esp_err_t
 FramSpiWrite(const fram_spi_t* fram,
              uint32_t address,

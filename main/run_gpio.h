@@ -5,6 +5,9 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute RunGpioInit.
+ */
   void RunGpioInit(void);
 
 #ifdef __cplusplus

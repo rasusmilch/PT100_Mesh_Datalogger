@@ -9,6 +9,11 @@ static const int kI2cTimeoutMs = 100;
 static const size_t kMaxChunk = 96;
 static const uint8_t kReservedIdAddr7bit = 0x7C; // 0xF8/0xF9 in 8-bit form.
 
+/**
+ * @brief Execute EncodeAddress.
+ * @param addr Parameter addr.
+ * @param out Parameter out.
+ */
 static void
 EncodeAddress(uint16_t addr, uint8_t out[2])
 {
@@ -16,6 +21,13 @@ EncodeAddress(uint16_t addr, uint8_t out[2])
   out[1] = (uint8_t)(addr & 0xFFu);
 }
 
+/**
+ * @brief Execute BoundsOk.
+ * @param fram Parameter fram.
+ * @param addr Parameter addr.
+ * @param len Parameter len.
+ * @return Return the function result.
+ */
 static bool
 BoundsOk(const fram_i2c_t* fram, uint16_t addr, size_t len)
 {
@@ -32,6 +44,15 @@ BoundsOk(const fram_i2c_t* fram, uint16_t addr, size_t len)
   return (addr < 0x8000u) && (end <= 0x8000u);
 }
 
+/**
+ * @brief Execute FramI2cInit.
+ * @param fram Parameter fram.
+ * @param bus Parameter bus.
+ * @param i2c_addr_7bit Parameter i2c_addr_7bit.
+ * @param fram_size_bytes Parameter fram_size_bytes.
+ * @param scl_speed_hz Parameter scl_speed_hz.
+ * @return Return the function result.
+ */
 esp_err_t
 FramI2cInit(fram_i2c_t* fram,
             i2c_master_bus_handle_t bus,
@@ -72,6 +93,14 @@ FramI2cInit(fram_i2c_t* fram,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramI2cRead.
+ * @param fram Parameter fram.
+ * @param addr Parameter addr.
+ * @param out Parameter out.
+ * @param len Parameter len.
+ * @return Return the function result.
+ */
 esp_err_t
 FramI2cRead(const fram_i2c_t* fram, uint16_t addr, void* out, size_t len)
 {
@@ -105,6 +134,14 @@ FramI2cRead(const fram_i2c_t* fram, uint16_t addr, void* out, size_t len)
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramI2cWrite.
+ * @param fram Parameter fram.
+ * @param addr Parameter addr.
+ * @param data Parameter data.
+ * @param len Parameter len.
+ * @return Return the function result.
+ */
 esp_err_t
 FramI2cWrite(const fram_i2c_t* fram,
              uint16_t addr,
@@ -143,6 +180,12 @@ FramI2cWrite(const fram_i2c_t* fram,
   return ESP_OK;
 }
 
+/**
+ * @brief Execute FramI2cReadDeviceId.
+ * @param fram Parameter fram.
+ * @param out Parameter out.
+ * @return Return the function result.
+ */
 esp_err_t
 FramI2cReadDeviceId(const fram_i2c_t* fram, fram_device_id_t* out)
 {

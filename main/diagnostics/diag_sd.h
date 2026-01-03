@@ -10,6 +10,15 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Execute RunDiagSd.
+ * @param runtime Parameter runtime.
+ * @param full Parameter full.
+ * @param format_if_needed Parameter format_if_needed.
+ * @param mount Parameter mount.
+ * @param verbosity Parameter verbosity.
+ * @return Return the function result.
+ */
 int RunDiagSd(const app_runtime_t* runtime,
               bool full,
               bool format_if_needed,
