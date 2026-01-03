@@ -189,6 +189,7 @@ extern "C" {
     uint32_t broker_drop_count;
     uint32_t broker_send_fail_count;
     bool csv_header_emitted;
+    bool root_bridge_header_emitted;
 
     max7219_display_t display;
     bool display_initialized;
