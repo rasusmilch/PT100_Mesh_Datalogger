@@ -43,7 +43,7 @@ sdkconfig.*.tmp
 # IDF Component Manager (recommended for multi-machine)
 # ============================================================
 # Generated dependency directory (recreated automatically by CMake)
-# managed_components/
+managed_components/
 
 # Lock file ensures reproducible dependency versions (commit it)
 !dependencies.lock
@@ -89,11 +89,9 @@ main/logger_1.zip
 main.zip
 main.tar.gz
 build/CMakeFiles/CMakeConfigureLog.yaml
-dependencies.lock
 build/CMakeFiles/git-data/grabRef.cmake
 *.patch
 *.tar.gz
 *.zip
-managed_components/espressif__esp_modem/port/linux/esp_netif_linux/CMakeLists.txt
-build/CMakeFiles/git-data/HEAD
+dependencies.yml
 build/CMakeFiles/git-data/HEAD

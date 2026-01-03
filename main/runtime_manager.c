@@ -922,6 +922,27 @@ TryEmitCsvHeader(runtime_state_t* state)
   return true;
 }
 
+static bool
+TryEmitBridgeCsvHeader(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return false;
+  }
+  if (state->root_bridge_header_emitted) {
+    return true;
+  }
+  state->root_bridge_header_emitted = true;
+  if (!CsvWriteHeader(CsvDataPortWriter, NULL)) {
+    state->root_bridge_header_emitted = false;
+    state->export_write_fail_count++;
+    UpdateCachedUint32(state,
+                       &state->cached_status.export_write_fail_count,
+                       state->export_write_fail_count);
+    return false;
+  }
+  return true;
+}
+
 static void
 SnapshotActiveSettings(runtime_state_t* state)
 {
@@ -1865,6 +1886,10 @@ RootBridgeTask(void* context)
       }
 
       if (BridgeModeUsesSerial(state->mqtt_bridge_mode_active)) {
+        if (!TryEmitBridgeCsvHeader(state)) {
+          vTaskDelay(pdMS_TO_TICKS(50));
+          continue;
+        }
         size_t written = 0;
         const esp_err_t write_result =
           DataPortWrite(payload, payload_len, &written);
@@ -3027,6 +3052,8 @@ RuntimeStart(void)
   g_state.last_overrun_logged_total = 0;
   g_state.wifi_direct_started = false;
   g_state.wifi_direct_time_synced = false;
+  g_state.csv_header_emitted = false;
+  g_state.root_bridge_header_emitted = false;
   UpdateCachedBool(&g_state, &g_state.cached_status.sd_degraded, false);
   UpdateCachedUint32(&g_state, &g_state.cached_status.sd_fail_count, 0);
   UpdateCachedUint32(
@@ -3068,8 +3095,15 @@ RuntimeStart(void)
     const char* router_ssid = "";
     const char* router_password = "";
     if (is_root && !router_disabled) {
-      router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
-      router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
+      wifi_credentials_t creds;
+      WifiCredentialsLoad(&creds);
+      if (creds.has_ssid) {
+        router_ssid = creds.ssid;
+        router_password = creds.password;
+      } else {
+        router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
+        router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
+      }
     }
 
     if (!g_state.mesh_started) {
@@ -3077,7 +3111,8 @@ RuntimeStart(void)
       if (wifi_result != ESP_OK) {
         ESP_LOGE(
           kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
-        return wifi_result;
+        g_state.mesh_started = false;
+        goto mesh_start_done;
       }
 
       esp_err_t mesh_result =
@@ -3096,16 +3131,19 @@ RuntimeStart(void)
       } else {
         ESP_LOGE(kTag, "Mesh start failed: %s", esp_err_to_name(mesh_result));
         (void)WifiServiceRelease();
-        return mesh_result;
+        g_state.mesh_started = false;
       }
     }
-  } else {
+  }
+mesh_start_done:
+  if (effective_net_mode != APP_NET_MODE_MESH) {
     esp_err_t wifi_result =
       WifiServiceAcquire(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
     if (wifi_result != ESP_OK) {
       ESP_LOGE(
         kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
-      return wifi_result;
+      g_state.wifi_direct_started = false;
+      goto wifi_direct_start_done;
     }
     g_state.wifi_direct_started = true;
 
@@ -3138,8 +3176,10 @@ RuntimeStart(void)
       }
     }
   }
+wifi_direct_start_done:
 
-  if (g_state.mesh.is_root && effective_net_mode == APP_NET_MODE_MESH) {
+  if (g_state.mesh_started && g_state.mesh.is_root &&
+      effective_net_mode == APP_NET_MODE_MESH) {
     esp_err_t sntp_result =
       TimeSyncStartSntpAndWait(CONFIG_APP_SNTP_SERVER, 30 * 1000);
     if (sntp_result == ESP_OK) {
@@ -3333,6 +3373,8 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
     return ESP_OK;
   }
 
+  state->csv_header_emitted = false;
+  state->root_bridge_header_emitted = false;
   state->stop_requested = true;
   state->is_running = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, true);

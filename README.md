@@ -31,7 +31,7 @@ idf.py build flash monitor
   4. On mismatch: truncates to the original size and leaves FRAM untouched.
   5. On success: consumes the matching FRAM records.
 - CSV header (written once per day):  
-  `seq,epoch_utc,iso8601_utc,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id`
+  `schema_ver,record_id,seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id`
 - FRAM is limited (default 32 KB); when it fills, logging pauses (no overwrite) until a flush frees space. A `fram_full` flag surfaces via `status`.
 
 ### Resume / crash safety
@@ -67,8 +67,27 @@ All configuration changes persist to NVS.
 
 ## Mesh / host streaming
 
+### Mesh mode (leaf → root → broker/serial)
+
+- Leaf nodes publish samples into the mesh; logging to FRAM continues if the
+  mesh or upstream network is down.
+- The root bridges mesh records to the MQTT broker and/or the DATA UART (CSV),
+  and these exports are best-effort only.
+
+### Direct Wi-Fi leaf mode (leaf → broker)
+
+- Leaves can bypass the mesh and publish directly to the broker when configured
+  for direct Wi-Fi.
+
+FRAM/SD logging plus the DATA UART output never depend on network availability.
+
 - Leaf nodes send samples upstream; logging to FRAM continues if mesh is down.
-- Root node prints one JSON object per line over UART including `seq`, `epoch_utc`, `temps`, `resistance`, and `flags`.
+- Root node prints one CSV row per record over UART (after the CSV header).
+
+Root upstream router credentials can be provided via the `wifi_ssid` /
+`wifi_pass` NVS settings (from your console tooling or provisioning flow). If
+those are not set, the root falls back to
+`CONFIG_APP_WIFI_ROUTER_SSID` / `CONFIG_APP_WIFI_ROUTER_PASSWORD` in Kconfig.
 
 ## Test plan
 
