@@ -20,6 +20,7 @@
 #include "mesh_transport.h"
 #include "mqtt_client_wrap.h"
 #include "runtime_health.h"
+#include "sd_card_detect.h"
 #include "sd_logger.h"
 #include "time_sync.h"
 
@@ -45,6 +46,7 @@ extern "C" {
     uint32_t sd_fail_count;
     uint32_t sd_backoff_remaining_ms;
     bool sd_io_error_active;
+    bool sd_card_present;
 
     // fram (written by fram_log or storage task when it updates counters)
     uint32_t fram_count;
@@ -111,6 +113,7 @@ extern "C" {
     fram_io_t fram_io;
     fram_log_t fram_log;
     sd_logger_t sd_logger;
+    sd_card_detect_t sd_card_detect;
     max31865_reader_t sensor;
     mesh_transport_t mesh;
     time_sync_t time_sync;

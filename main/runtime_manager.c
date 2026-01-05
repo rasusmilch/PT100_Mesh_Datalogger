@@ -45,6 +45,7 @@ static const uint32_t kSdFlushTimeSliceMs = 50;
 static const uint32_t kSdFlushWarnIntervalMs = 10000;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kSdFlushMinIntervalMs = 200;
+static const uint32_t kSdDetectPollIntervalMs = 250;
 static const uint32_t kExportQueueDepth = 64;
 static const uint32_t kExportOutboxDepth = CONFIG_APP_EXPORT_OUTBOX_DEPTH;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
@@ -86,6 +87,15 @@ UpdateCachedUint32(runtime_state_t* state, uint32_t* field, uint32_t value)
   }
   *field = value;
   RuntimeHealthMarkDirty(state);
+}
+
+static bool
+SdCardPresent(const runtime_state_t* state)
+{
+  if (state == NULL) {
+    return true;
+  }
+  return SdCardDetectIsPresent(&state->sd_card_detect);
 }
 
 /**
@@ -164,6 +174,9 @@ static void
 SdMaintenanceTick(runtime_state_t* state)
 {
   if (state == NULL || state->sd_logger.is_mounted) {
+    return;
+  }
+  if (!SdCardPresent(state)) {
     return;
   }
 
@@ -466,7 +479,8 @@ ComputeActiveAttentionMaskFromHealth(const runtime_health_snapshot_t* health)
   display_attention_mask_t active = 0;
   const display_attention_mask_t mask = health->disp_attn_mask;
 
-  if ((mask & kDispAttnSdOut) != 0u && !health->sd_mounted) {
+  if ((mask & kDispAttnSdOut) != 0u &&
+      (!health->sd_card_present || !health->sd_mounted)) {
     active |= kDispAttnSdOut;
   }
   if ((mask & kDispAttnSdIo) != 0u && health->sd_io_error_active) {
@@ -2326,6 +2340,7 @@ StorageTask(void* context)
   runtime_state_t* state = (runtime_state_t*)context;
   state->last_flush_ticks = xTaskGetTickCount();
   state->sd_next_flush_allowed_ticks = state->last_flush_ticks;
+  TickType_t last_sd_detect_poll_ticks = 0;
 
   while (!state->stop_requested ||
          uxQueueMessagesWaiting(state->log_queue) > 0) {
@@ -2384,6 +2399,36 @@ StorageTask(void* context)
     }
 
     const TickType_t now_ticks = xTaskGetTickCount();
+    if (state->sd_card_detect.initialized &&
+        (last_sd_detect_poll_ticks == 0 ||
+         pdTICKS_TO_MS(now_ticks - last_sd_detect_poll_ticks) >=
+           kSdDetectPollIntervalMs)) {
+      last_sd_detect_poll_ticks = now_ticks;
+      bool detect_changed = false;
+      const bool present =
+        SdCardDetectPoll(&state->sd_card_detect, &detect_changed);
+      UpdateCachedBool(
+        state, &state->cached_status.sd_card_present, present);
+      if (detect_changed) {
+        if (present) {
+          ESP_LOGI(kTag, "SD card inserted");
+        } else {
+          ESP_LOGW(kTag, "SD card removed");
+          if (state->sd_logger.is_mounted) {
+            SdLoggerClose(&state->sd_logger);
+            (void)SdLoggerUnmount(&state->sd_logger);
+            UpdateCachedBool(state,
+                             &state->cached_status.sd_mounted,
+                             state->sd_logger.is_mounted);
+            ClearSdIoError(state);
+            state->sd_was_mounted = false;
+            state->sd_backoff_until_ticks = 0;
+            UpdateCachedUint32(
+              state, &state->cached_status.sd_backoff_remaining_ms, 0u);
+          }
+        }
+      }
+    }
     UpdateCachedUint32(state,
                        &state->cached_status.sd_backoff_remaining_ms,
                        ComputeSdBackoffRemainingMs(state, now_ticks));
@@ -2686,6 +2731,11 @@ DrainFramToSd(runtime_state_t* state,
 
   if (state->batch_buffer == NULL || state->batch_buffer_size == 0) {
     result = ESP_ERR_NO_MEM;
+    goto drain_done;
+  }
+
+  if (!SdCardPresent(state)) {
+    result = ESP_ERR_NOT_FOUND;
     goto drain_done;
   }
 
@@ -3152,6 +3202,11 @@ RuntimeManagerInit(void)
                      g_state.settings.fram_flush_watermark_records);
   UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
+  SdCardDetectInit(&g_state.sd_card_detect);
+  const bool sd_card_present =
+    SdCardDetectPoll(&g_state.sd_card_detect, NULL);
+  UpdateCachedBool(
+    &g_state, &g_state.cached_status.sd_card_present, sd_card_present);
   RuntimeHealthPublisherTick(&g_state);
 
   AlertManagerInit(&g_state.alert_manager, g_state.node_id_string);
@@ -3261,7 +3316,9 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "FramLogInit failed: %s", esp_err_to_name(fram_log_result));
   }
 
-  (void)SdLoggerMount(&g_state.sd_logger, spi_host, CONFIG_APP_SD_CS_GPIO);
+  if (SdCardPresent(&g_state)) {
+    (void)SdLoggerMount(&g_state.sd_logger, spi_host, CONFIG_APP_SD_CS_GPIO);
+  }
   UpdateCachedBool(
     &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
 
@@ -3346,6 +3403,9 @@ static void
 EnsureSdMounted(void)
 {
   if (!g_state.sd_logger.is_mounted) {
+    if (!SdCardPresent(&g_state)) {
+      return;
+    }
     esp_err_t mount_result =
       SdLoggerMount(&g_state.sd_logger, GetSpiHost(), CONFIG_APP_SD_CS_GPIO);
     if (mount_result != ESP_OK) {
@@ -3372,6 +3432,11 @@ SdWithTemporaryMount(runtime_state_t* state, runtime_sd_op_fn_t op, void* ctx)
 {
   if (state == NULL || op == NULL) {
     return ESP_ERR_INVALID_ARG;
+  }
+  if (!SdCardPresent(state)) {
+    UpdateCachedBool(
+      state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+    return ESP_ERR_NOT_FOUND;
   }
 
   bool mounted_here = false;
