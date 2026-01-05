@@ -26,6 +26,7 @@ extern "C" {
     uint32_t sd_fail_count;
     uint32_t sd_backoff_remaining_ms;
     bool sd_io_error_active;
+    bool sd_card_present;
 
     // fram
     uint32_t fram_count;

@@ -198,6 +198,37 @@ config APP_SD_CS_GPIO
   range -1 48
   default 15
 
+config APP_SD_CARD_DETECT_GPIO
+  int "SD card detect GPIO (-1 disables)"
+  range -1 48
+  default -1
+  help
+    GPIO input that indicates SD card presence. Set to -1 to disable.
+
+choice APP_SD_CARD_DETECT_PRESENT_LEVEL
+  prompt "SD card detect polarity (card present when level is...)"
+  depends on APP_SD_CARD_DETECT_GPIO != -1
+  default APP_SD_CARD_DETECT_PRESENT_LOW
+
+config APP_SD_CARD_DETECT_PRESENT_LOW
+  bool "LOW"
+
+config APP_SD_CARD_DETECT_PRESENT_HIGH
+  bool "HIGH"
+
+endchoice
+
+config APP_SD_CARD_DETECT_DEBOUNCE_MS
+  int "SD card detect debounce (ms)"
+  range 0 500
+  default 50
+  depends on APP_SD_CARD_DETECT_GPIO != -1
+
+config APP_SD_CARD_DETECT_USE_INTERNAL_PULL
+  bool "Enable internal pull resistor for SD detect"
+  default y
+  depends on APP_SD_CARD_DETECT_GPIO != -1
+
 config APP_RUN_STOP_GPIO_ENABLE
   bool "Enable run stop GPIO input"
   default n

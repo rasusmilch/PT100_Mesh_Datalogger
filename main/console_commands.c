@@ -453,7 +453,20 @@ CommandStatus(int argc, char** argv)
     sd_backoff_remaining_ms =
       (uint32_t)pdTICKS_TO_MS((TickType_t)sd_backoff_until - now_ticks);
   }
+  const char* sd_card_present = "unknown";
+  if (cached_status != NULL) {
+    sd_card_present = cached_status->sd_card_present ? "yes" : "no";
+  }
   printf("sd_mounted: %s\n", sd_mounted ? "yes" : "no");
+  printf("sd_card_present: %s\n", sd_card_present);
+  printf("sd_card_detect_gpio: %d\n", CONFIG_APP_SD_CARD_DETECT_GPIO);
+  printf("sd_card_detect_present_level: %s\n",
+#if CONFIG_APP_SD_CARD_DETECT_PRESENT_HIGH
+         "high"
+#else
+         "low"
+#endif
+  );
   printf("sd_degraded: %s\n", sd_degraded ? "yes" : "no");
   printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
   printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
