@@ -1229,9 +1229,8 @@ EnqueueExportOutbox(runtime_state_t* state,
 
   if (xQueueSend(state->export_outbox, &item, 0) != pdTRUE) {
     state->export_drop_count++;
-    UpdateCachedUint32(state,
-                       &state->cached_status.export_drop_count,
-                       state->export_drop_count);
+    UpdateCachedUint32(
+      state, &state->cached_status.export_drop_count, state->export_drop_count);
     if (LogRateLimitAllow(&state->last_export_drop_log_ms,
                           kExportLogRateLimitMs)) {
       ESP_LOGW(kTag, "export outbox full; dropping network export");
@@ -1288,9 +1287,8 @@ EnqueueBrokerPublish(runtime_state_t* state,
 
   if (xQueueSend(state->broker_outbox, &publish_item, 0) != pdTRUE) {
     state->broker_drop_count++;
-    UpdateCachedUint32(state,
-                       &state->cached_status.broker_drop_count,
-                       state->broker_drop_count);
+    UpdateCachedUint32(
+      state, &state->cached_status.broker_drop_count, state->broker_drop_count);
     if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
                           kExportLogRateLimitMs)) {
       ESP_LOGW(kTag, "broker outbox full; dropping publish");
@@ -1391,9 +1389,7 @@ EnsureMqttClientState(runtime_state_t* state, bool should_run)
   if (start_result != ESP_OK) {
     if (LogRateLimitAllow(&state->last_mqtt_fail_log_ms,
                           kExportLogRateLimitMs)) {
-      ESP_LOGW(kTag,
-               "MQTT start failed: %s",
-               esp_err_to_name(start_result));
+      ESP_LOGW(kTag, "MQTT start failed: %s", esp_err_to_name(start_result));
     }
   }
   UpdateMqttConnectionState(state);
@@ -2087,10 +2083,8 @@ ExportNetworkTask(void* context)
         vTaskDelay(pdMS_TO_TICKS(500));
         continue;
       }
-      const esp_err_t send_result =
-        MeshTransportSendPublishRecord(&state->mesh,
-                                       item.src_mac,
-                                       &item.record);
+      const esp_err_t send_result = MeshTransportSendPublishRecord(
+        &state->mesh, item.src_mac, &item.record);
       if (send_result == ESP_OK) {
         (void)xQueueReceive(state->export_outbox, &item, 0);
       } else {
@@ -2100,17 +2094,16 @@ ExportNetworkTask(void* context)
                            state->export_send_fail_count);
         if (LogRateLimitAllow(&state->last_export_fail_log_ms,
                               kExportLogRateLimitMs)) {
-          ESP_LOGW(kTag, "mesh export send failed: %s",
-                   esp_err_to_name(send_result));
+          ESP_LOGW(
+            kTag, "mesh export send failed: %s", esp_err_to_name(send_result));
         }
         vTaskDelay(pdMS_TO_TICKS(500));
       }
       continue;
     }
 
-    const bool should_mqtt =
-      state->mqtt_enabled_active &&
-      state->net_mode_active == APP_NET_MODE_DIRECT_WIFI;
+    const bool should_mqtt = state->mqtt_enabled_active &&
+                             state->net_mode_active == APP_NET_MODE_DIRECT_WIFI;
     EnsureMqttClientState(state, should_mqtt);
     if (!state->mqtt_client_connected) {
       vTaskDelay(pdMS_TO_TICKS(500));
@@ -2120,10 +2113,8 @@ ExportNetworkTask(void* context)
     char node_id[32] = { 0 };
     FormatMacString(item.src_mac, node_id, sizeof(node_id));
     char topic[128] = { 0 };
-    if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
-                        node_id,
-                        topic,
-                        sizeof(topic))) {
+    if (!BuildMqttTopic(
+          state->mqtt_topic_prefix_active, node_id, topic, sizeof(topic))) {
       state->export_send_fail_count++;
       UpdateCachedUint32(state,
                          &state->cached_status.export_send_fail_count,
@@ -2134,11 +2125,8 @@ ExportNetworkTask(void* context)
 
     size_t payload_len = 0;
     char payload[256] = { 0 };
-    if (!BuildMqttPayload(&item.record,
-                          node_id,
-                          payload,
-                          sizeof(payload),
-                          &payload_len)) {
+    if (!BuildMqttPayload(
+          &item.record, node_id, payload, sizeof(payload), &payload_len)) {
       state->export_send_fail_count++;
       UpdateCachedUint32(state,
                          &state->cached_status.export_send_fail_count,
@@ -2195,11 +2183,8 @@ RootBridgeTask(void* context)
 
       char payload[256] = { 0 };
       size_t payload_len = 0;
-      if (!BuildMqttPayload(&item.record,
-                            node_id,
-                            payload,
-                            sizeof(payload),
-                            &payload_len)) {
+      if (!BuildMqttPayload(
+            &item.record, node_id, payload, sizeof(payload), &payload_len)) {
         state->export_send_fail_count++;
         UpdateCachedUint32(state,
                            &state->cached_status.export_send_fail_count,
@@ -2407,8 +2392,7 @@ StorageTask(void* context)
       bool detect_changed = false;
       const bool present =
         SdCardDetectPoll(&state->sd_card_detect, &detect_changed);
-      UpdateCachedBool(
-        state, &state->cached_status.sd_card_present, present);
+      UpdateCachedBool(state, &state->cached_status.sd_card_present, present);
       if (detect_changed) {
         if (present) {
           ESP_LOGI(kTag, "SD card inserted");
@@ -2579,8 +2563,9 @@ DirectWifiTask(void* context)
         WifiManagerConnectSta(creds.ssid, creds.password, 10000);
       connected = (connect_result == ESP_OK);
       if (!connected) {
-        retry_delay_ms =
-          (retry_delay_ms < max_delay_ms / 2) ? retry_delay_ms * 2 : max_delay_ms;
+        retry_delay_ms = (retry_delay_ms < max_delay_ms / 2)
+                           ? retry_delay_ms * 2
+                           : max_delay_ms;
       } else {
         retry_delay_ms = 30 * 1000;
       }
@@ -3203,8 +3188,7 @@ RuntimeManagerInit(void)
   UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
   SdCardDetectInit(&g_state.sd_card_detect);
-  const bool sd_card_present =
-    SdCardDetectPoll(&g_state.sd_card_detect, NULL);
+  const bool sd_card_present = SdCardDetectPoll(&g_state.sd_card_detect, NULL);
   UpdateCachedBool(
     &g_state, &g_state.cached_status.sd_card_present, sd_card_present);
   RuntimeHealthPublisherTick(&g_state);
@@ -3556,8 +3540,7 @@ RuntimeStart(void)
     BridgeModeUsesBroker(g_state.mqtt_bridge_mode_active);
   g_state.root_publish_consumer_active =
     is_root &&
-    (bridge_uses_serial ||
-     (bridge_uses_broker && g_state.mqtt_enabled_active));
+    (bridge_uses_serial || (bridge_uses_broker && g_state.mqtt_enabled_active));
   UpdateCachedBool(&g_state,
                    &g_state.cached_status.root_publish_consumer_active,
                    g_state.root_publish_consumer_active);
@@ -3656,35 +3639,6 @@ mesh_start_done:
       goto wifi_direct_start_done;
     }
     g_state.wifi_direct_started = true;
-
-    wifi_credentials_t creds;
-    WifiCredentialsLoad(&creds);
-    if (!creds.has_ssid) {
-      ESP_LOGW(kTag,
-               "Direct Wi-Fi enabled but no SSID configured (NVS/app wifi_ssid "
-               "or Kconfig). Time sync may be unavailable.");
-    } else {
-      esp_err_t connect_result =
-        WifiManagerConnectSta(creds.ssid, creds.password, 15000);
-      if (connect_result == ESP_OK) {
-        esp_err_t sntp_result =
-          TimeSyncStartSntpAndWait(CONFIG_APP_SNTP_SERVER, 30 * 1000);
-        if (sntp_result == ESP_OK) {
-          if (TimeSyncSetRtcFromSystem(&g_state.time_sync) == ESP_OK) {
-            g_state.wifi_direct_time_synced = true;
-          }
-        } else {
-          ESP_LOGW(kTag,
-                   "SNTP sync failed (direct): %s",
-                   esp_err_to_name(sntp_result));
-        }
-        UpdateTimeHealthState(&g_state, TimeSyncIsSystemTimeValid());
-      } else {
-        ESP_LOGW(kTag,
-                 "Wi-Fi connect failed (direct): %s",
-                 esp_err_to_name(connect_result));
-      }
-    }
   }
 wifi_direct_start_done:
 
@@ -3726,58 +3680,75 @@ wifi_direct_start_done:
 
   health_publish_created = xTaskCreate(&HealthPublisherTask,
                                        "health_pub",
-                                       2048,
+
+                                       1024,
                                        &g_state,
                                        3,
                                        &g_state.health_publisher_task);
+  if (health_publish_created != pdPASS) {
+    g_state.health_publisher_task = NULL;
+    ESP_LOGE(kTag, "Failed to create task health_pub");
+  }
 
   if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
     wifi_direct_created = xTaskCreate(&DirectWifiTask,
                                       "wifi_direct",
-                                      4096,
+
+                                      2048,
                                       &g_state,
                                       3,
                                       &g_state.wifi_direct_task);
     if (wifi_direct_created != pdPASS) {
       g_state.wifi_direct_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task wifi_direct");
     }
   }
 
   if (role == APP_NODE_ROLE_SENSOR) {
     sensor_created = xTaskCreate(
-      &SensorTask, "sensor", 4096, &g_state, 5, &g_state.sensor_task);
+      &SensorTask, "sensor", 2048, &g_state, 5, &g_state.sensor_task);
+    if (sensor_created != pdPASS) {
+      g_state.sensor_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task sensor");
+    }
     storage_created = xTaskCreate(
-      &StorageTask, "storage", 6144, &g_state, 6, &g_state.storage_task);
+      &StorageTask, "storage", 3072, &g_state, 6, &g_state.storage_task);
+    if (storage_created != pdPASS) {
+      g_state.storage_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task storage");
+    }
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     export_created = xTaskCreate(
-      &ExportTask, "export", 4096, &g_state, 4, &g_state.export_task);
+      &ExportTask, "export", 2048, &g_state, 4, &g_state.export_task);
+    if (export_created != pdPASS) {
+      g_state.export_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task export");
+    }
   }
 
   if (role != APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active) {
     export_network_created = xTaskCreate(&ExportNetworkTask,
                                          "export_net",
-                                         4096,
+                                         2048,
                                          &g_state,
                                          4,
                                          &g_state.export_network_task);
     if (export_network_created != pdPASS) {
       g_state.export_network_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task export_net");
     }
   }
 
   if (role == APP_NODE_ROLE_ROOT &&
       (bridge_uses_serial ||
        (bridge_uses_broker && g_state.mqtt_enabled_active))) {
-    bridge_created = xTaskCreate(&RootBridgeTask,
-                                 "bridge",
-                                 4096,
-                                 &g_state,
-                                 4,
-                                 &g_state.bridge_task);
+    bridge_created = xTaskCreate(
+      &RootBridgeTask, "bridge", 2048, &g_state, 4, &g_state.bridge_task);
     if (bridge_created != pdPASS) {
       g_state.bridge_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task bridge");
     }
   }
 
@@ -3785,22 +3756,31 @@ wifi_direct_start_done:
       bridge_uses_broker) {
     broker_created = xTaskCreate(&BrokerPublishTask,
                                  "broker_pub",
-                                 4096,
+                                 2048,
                                  &g_state,
                                  4,
                                  &g_state.broker_task);
     if (broker_created != pdPASS) {
       g_state.broker_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task broker_pub");
     }
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     time_created = xTaskCreate(
-      &TimeSyncTask, "time_sync", 4096, &g_state, 4, &g_state.time_sync_task);
+      &TimeSyncTask, "time_sync", 2048, &g_state, 4, &g_state.time_sync_task);
+    if (time_created != pdPASS) {
+      g_state.time_sync_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task time_sync");
+    }
   }
 
   topology_created = xTaskCreate(
-    &TopologyTask, "topology", 3072, &g_state, 3, &g_state.topology_task);
+    &TopologyTask, "topology", 1536, &g_state, 3, &g_state.topology_task);
+  if (topology_created != pdPASS) {
+    g_state.topology_task = NULL;
+    ESP_LOGE(kTag, "Failed to create task topology");
+  }
 
   BaseType_t alert_monitor_created = pdPASS;
   BaseType_t alert_sender_created = pdPASS;
@@ -3815,27 +3795,34 @@ wifi_direct_start_done:
                               .task_handle = &g_state.alert_sender_task };
     alert_monitor_created = xTaskCreate(&AlertManagerMonitorTask,
                                         "alert_mon",
-                                        4096,
+                                        2048,
                                         &g_state.alert_monitor_context,
                                         3,
                                         &g_state.alert_monitor_task);
+    if (alert_monitor_created != pdPASS) {
+      g_state.alert_monitor_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task alert_mon");
+    }
     alert_sender_created = xTaskCreate(&AlertManagerSenderTask,
                                        "alert_send",
-                                       4096,
+                                       2048,
                                        &g_state.alert_sender_context,
                                        3,
                                        &g_state.alert_sender_task);
+    if (alert_sender_created != pdPASS) {
+      g_state.alert_sender_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task alert_send");
+    }
     AlertManagerEmitRootRestart(&g_state.alert_manager,
                                 esp_timer_get_time() / 1000);
   }
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
       export_created != pdPASS || export_network_created != pdPASS ||
-      time_created != pdPASS ||
-      topology_created != pdPASS || health_publish_created != pdPASS ||
-      wifi_direct_created != pdPASS || bridge_created != pdPASS ||
-      broker_created != pdPASS || alert_monitor_created != pdPASS ||
-      alert_sender_created != pdPASS) {
+      time_created != pdPASS || topology_created != pdPASS ||
+      health_publish_created != pdPASS || wifi_direct_created != pdPASS ||
+      bridge_created != pdPASS || broker_created != pdPASS ||
+      alert_monitor_created != pdPASS || alert_sender_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.is_running = false;
     UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);
@@ -3844,24 +3831,20 @@ wifi_direct_start_done:
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
             g_state.export_task != NULL ||
             g_state.export_network_task != NULL ||
-            g_state.time_sync_task != NULL ||
-            g_state.topology_task != NULL ||
+            g_state.time_sync_task != NULL || g_state.topology_task != NULL ||
             g_state.health_publisher_task != NULL ||
-            g_state.wifi_direct_task != NULL ||
-            g_state.bridge_task != NULL || g_state.broker_task != NULL ||
-            g_state.alert_monitor_task != NULL ||
+            g_state.wifi_direct_task != NULL || g_state.bridge_task != NULL ||
+            g_state.broker_task != NULL || g_state.alert_monitor_task != NULL ||
             g_state.alert_sender_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
     if (g_state.sensor_task == NULL && g_state.storage_task == NULL &&
         g_state.export_task == NULL && g_state.export_network_task == NULL &&
-        g_state.time_sync_task == NULL &&
-        g_state.topology_task == NULL &&
+        g_state.time_sync_task == NULL && g_state.topology_task == NULL &&
         g_state.health_publisher_task == NULL &&
-        g_state.wifi_direct_task == NULL &&
-        g_state.bridge_task == NULL && g_state.broker_task == NULL &&
-        g_state.alert_monitor_task == NULL &&
+        g_state.wifi_direct_task == NULL && g_state.bridge_task == NULL &&
+        g_state.broker_task == NULL && g_state.alert_monitor_task == NULL &&
         g_state.alert_sender_task == NULL) {
       g_state.stop_requested = false;
       UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
@@ -3896,15 +3879,14 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   UpdateCachedBool(state, &state->cached_status.runtime_running, false);
 
   const TickType_t wait_start = xTaskGetTickCount();
-  while (
-    (state->sensor_task != NULL || state->storage_task != NULL ||
-     state->export_task != NULL || state->export_network_task != NULL ||
-     state->time_sync_task != NULL ||
-     state->topology_task != NULL || state->health_publisher_task != NULL ||
-     state->wifi_direct_task != NULL || state->bridge_task != NULL ||
-     state->broker_task != NULL || state->alert_monitor_task != NULL ||
-     state->alert_sender_task != NULL) &&
-    (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
+  while ((state->sensor_task != NULL || state->storage_task != NULL ||
+          state->export_task != NULL || state->export_network_task != NULL ||
+          state->time_sync_task != NULL || state->topology_task != NULL ||
+          state->health_publisher_task != NULL ||
+          state->wifi_direct_task != NULL || state->bridge_task != NULL ||
+          state->broker_task != NULL || state->alert_monitor_task != NULL ||
+          state->alert_sender_task != NULL) &&
+         (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 

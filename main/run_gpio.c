@@ -54,10 +54,8 @@ ConfigureInput(run_gpio_input_t* input, int gpio_num)
 
   esp_err_t result = gpio_config(&config);
   if (result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "GPIO %d config failed: %s",
-             gpio_num,
-             esp_err_to_name(result));
+    ESP_LOGW(
+      kTag, "GPIO %d config failed: %s", gpio_num, esp_err_to_name(result));
     return false;
   }
 
@@ -65,6 +63,8 @@ ConfigureInput(run_gpio_input_t* input, int gpio_num)
   input->enabled = true;
   input->gpio = (gpio_num_t)gpio_num;
   input->last_level = gpio_get_level(input->gpio);
+  ESP_LOGI(
+    kTag, "GPIO %d initial=%s", gpio_num, input->last_level ? "HIGH" : "LOW");
   input->last_change_ticks = now_ticks;
   input->low_start_ticks = input->last_level ? 0 : now_ticks;
   input->waiting_release = false;
@@ -127,14 +127,10 @@ RunGpioTask(void* context)
 
   while (true) {
     const TickType_t now_ticks = xTaskGetTickCount();
-    const bool stop_triggered = UpdateInput(&state->stop,
-                                            now_ticks,
-                                            state->debounce_ms,
-                                            state->hold_ms);
-    const bool start_triggered = UpdateInput(&state->start,
-                                             now_ticks,
-                                             state->debounce_ms,
-                                             state->hold_ms);
+    const bool stop_triggered =
+      UpdateInput(&state->stop, now_ticks, state->debounce_ms, state->hold_ms);
+    const bool start_triggered =
+      UpdateInput(&state->start, now_ticks, state->debounce_ms, state->hold_ms);
 
     if (stop_triggered) {
       RuntimeRequestRunStop();
@@ -168,7 +164,8 @@ RunGpioInit(void)
 
 #if CONFIG_APP_RUN_START_GPIO_ENABLE
   if (ConfigureInput(&g_run_gpio.start, CONFIG_APP_RUN_START_GPIO_NUM)) {
-    ESP_LOGI(kTag, "Run start GPIO enabled on %d", CONFIG_APP_RUN_START_GPIO_NUM);
+    ESP_LOGI(
+      kTag, "Run start GPIO enabled on %d", CONFIG_APP_RUN_START_GPIO_NUM);
     any_enabled = true;
   } else {
     ESP_LOGW(kTag, "Run start GPIO enabled but invalid config");
