@@ -7,8 +7,8 @@
 #include <string.h>
 #include <time.h>
 
-#include "app_net_config.h"
 #include "alerts/alert_manager.h"
+#include "app_net_config.h"
 #include "calibration.h"
 #include "data_csv.h"
 #include "data_port.h"
@@ -148,7 +148,8 @@ static uint8_t* g_export_queue_storage = NULL;
 static void*
 AllocatePreferPsram(size_t bytes)
 {
-  // Prefer PSRAM to preserve internal heap for Wi-Fi/COEX and internal-only DMA.
+  // Prefer PSRAM to preserve internal heap for Wi-Fi/COEX and internal-only
+  // DMA.
   void* buffer = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (buffer != NULL) {
     return buffer;
@@ -931,8 +932,20 @@ HealthPublisherTask(void* context)
   runtime_state_t* state = (runtime_state_t*)context;
   const TickType_t tick_delay = pdMS_TO_TICKS(50);
 
+  uint32_t last_watermark_log_ms = 0;
+
   while (!state->stop_requested) {
     RuntimeHealthPublisherTick(state);
+
+    // Debug: periodically log stack watermark to catch regressions.
+    const uint32_t now_ms = (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount());
+    if ((now_ms - last_watermark_log_ms) >= 5000u) {
+      const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
+      const uint32_t watermark_bytes = (uint32_t)watermark_words * (uint32_t)sizeof(StackType_t);
+      ESP_LOGI("runtime", "health_pub stack watermark: %u words (%u bytes) free",
+              (unsigned)watermark_words, (unsigned)watermark_bytes);
+      last_watermark_log_ms = now_ms;
+    }
     vTaskDelay(tick_delay);
   }
 
@@ -1959,11 +1972,18 @@ SensorTask(void* context)
         (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
          5000u);
       if (changed || rate_ok) {
+        // Avoid float formatting in logs. newlib's %f formatting is
+        // stack-heavy.
+        const int32_t res_milli_ohm =
+          (int32_t)llround(sample.resistance_ohm * 1000.0);
+        const int32_t temp_milli_c =
+          (int32_t)llround(sample.temperature_c * 1000.0);
         ESP_LOGW(kTag,
-                 "MAX31865 fault: status=0x%02X res=%.3f ohm temp_c=%.2f",
+                 "MAX31865 fault: status=0x%02X res_mohm=%" PRId32
+                 " temp_mC=%" PRId32,
                  sample.fault_status,
-                 sample.resistance_ohm,
-                 sample.temperature_c);
+                 res_milli_ohm,
+                 temp_milli_c);
         state->last_sensor_fault_log_ticks = now_ticks;
       }
       state->last_sensor_fault_present = true;
@@ -2548,8 +2568,7 @@ TimeSyncTask(void* context)
         const int64_t now_seconds = (int64_t)time(NULL);
         (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
       }
-      vTaskDelay(pdMS_TO_TICKS(
-        AppNetConfigGetTimeSyncPeriodSeconds() * 1000));
+      vTaskDelay(pdMS_TO_TICKS(AppNetConfigGetTimeSyncPeriodSeconds() * 1000));
     }
   }
 
@@ -2571,10 +2590,9 @@ DirectWifiTask(void* context)
   uint32_t retry_delay_ms = 30 * 1000;
   const uint32_t max_delay_ms = 5 * 60 * 1000;
 
-  // Track minimum stack high-water mark to confirm stack sizing under real workloads.
-  // uxTaskGetStackHighWaterMark() returns words, not bytes.
+  // Track minimum stack high-water mark to confirm stack sizing under real
+  // workloads. uxTaskGetStackHighWaterMark() returns words, not bytes.
   UBaseType_t min_stack_hwm_words = UINT32_MAX;
-
 
   while (!state->stop_requested) {
     const UBaseType_t hwm_words = uxTaskGetStackHighWaterMark(NULL);
@@ -3212,9 +3230,8 @@ RuntimeManagerInit(void)
     if (first_error == ESP_OK) {
       first_error = net_config_result;
     }
-    ESP_LOGE(kTag,
-             "AppNetConfigInit failed: %s",
-             esp_err_to_name(net_config_result));
+    ESP_LOGE(
+      kTag, "AppNetConfigInit failed: %s", esp_err_to_name(net_config_result));
   }
   UpdateCachedUint32(&g_state,
                      &g_state.cached_status.disp_attn_mask,
@@ -3300,11 +3317,13 @@ RuntimeManagerInit(void)
     }
 
     g_state.batch_buffer_size = desired_bytes;
-    g_state.batch_buffer = (uint8_t*)AllocatePreferPsram(g_state.batch_buffer_size);
+    g_state.batch_buffer =
+      (uint8_t*)AllocatePreferPsram(g_state.batch_buffer_size);
     if (g_state.batch_buffer == NULL) {
       // As a last resort, try a smaller buffer rather than failing init.
       g_state.batch_buffer_size = kMinBatchBytes;
-      g_state.batch_buffer = (uint8_t*)AllocatePreferPsram(g_state.batch_buffer_size);
+      g_state.batch_buffer =
+        (uint8_t*)AllocatePreferPsram(g_state.batch_buffer_size);
     }
   }
 
@@ -3387,9 +3406,8 @@ RuntimeManagerInit(void)
     g_log_queue_storage =
       (uint8_t*)AllocatePreferPsram(64 * sizeof(log_record_t));
   }
-  g_state.log_queue =
-    xQueueCreateStatic(64, sizeof(log_record_t), g_log_queue_storage,
-                       &g_log_queue_struct);
+  g_state.log_queue = xQueueCreateStatic(
+    64, sizeof(log_record_t), g_log_queue_storage, &g_log_queue_struct);
   if (g_state.log_queue == NULL) {
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
@@ -3398,12 +3416,13 @@ RuntimeManagerInit(void)
   }
 
   if (g_export_queue_storage == NULL) {
-    g_export_queue_storage = (uint8_t*)AllocatePreferPsram(
-      kExportQueueDepth * sizeof(export_item_t));
+    g_export_queue_storage =
+      (uint8_t*)AllocatePreferPsram(kExportQueueDepth * sizeof(export_item_t));
   }
-  g_state.export_queue = xQueueCreateStatic(
-    kExportQueueDepth, sizeof(export_item_t), g_export_queue_storage,
-    &g_export_queue_struct);
+  g_state.export_queue = xQueueCreateStatic(kExportQueueDepth,
+                                            sizeof(export_item_t),
+                                            g_export_queue_storage,
+                                            &g_export_queue_struct);
   if (g_state.export_queue == NULL) {
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
@@ -3747,7 +3766,7 @@ wifi_direct_start_done:
   health_publish_created = xTaskCreate(&HealthPublisherTask,
                                        "health_pub",
 
-                                       1024,
+                                       4096,
                                        &g_state,
                                        3,
                                        &g_state.health_publisher_task);
@@ -3772,7 +3791,7 @@ wifi_direct_start_done:
 
   if (role == APP_NODE_ROLE_SENSOR) {
     sensor_created = xTaskCreate(
-      &SensorTask, "sensor", 2048, &g_state, 5, &g_state.sensor_task);
+      &SensorTask, "sensor", 6144, &g_state, 5, &g_state.sensor_task);
     if (sensor_created != pdPASS) {
       g_state.sensor_task = NULL;
       ESP_LOGE(kTag, "Failed to create task sensor");
@@ -3787,7 +3806,7 @@ wifi_direct_start_done:
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     export_created = xTaskCreate(
-      &ExportTask, "export", 2048, &g_state, 4, &g_state.export_task);
+      &ExportTask, "export", 4096, &g_state, 4, &g_state.export_task);
     if (export_created != pdPASS) {
       g_state.export_task = NULL;
       ESP_LOGE(kTag, "Failed to create task export");

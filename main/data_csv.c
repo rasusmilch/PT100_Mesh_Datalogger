@@ -2,11 +2,40 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 static const char* kCsvHeader =
-  "schema_ver,record_id,seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,cal_temp_c,flags,node_id\n";
+  "schema_ver,record_id,seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,"
+  "cal_temp_c,flags,node_id\n";
+
+/**
+ * @brief Format a signed milli-unit value as fixed-point with 3 decimals.
+ *
+ * Example: -1 -> "-0.001", 12345 -> "12.345"
+ */
+static void
+FormatSignedMilliFixed3(int64_t milli_value, char* out, size_t out_size)
+{
+  if (out == NULL || out_size == 0) {
+    return;
+  }
+
+  const bool negative = (milli_value < 0);
+  // Avoid overflow for INT64_MIN (not expected in practice, but safe).
+  const uint64_t abs_milli =
+    negative ? (uint64_t)(-(milli_value + 1)) + 1 : (uint64_t)milli_value;
+
+  const uint64_t whole = abs_milli / 1000ULL;
+  const uint64_t frac = abs_milli % 1000ULL;
+
+  if (negative) {
+    (void)snprintf(out, out_size, "-%" PRIu64 ".%03" PRIu64, whole, frac);
+  } else {
+    (void)snprintf(out, out_size, "%" PRIu64 ".%03" PRIu64, whole, frac);
+  }
+}
 
 /**
  * @brief Execute FormatIso8601Offset.
@@ -135,22 +164,31 @@ CsvFormatRow(const log_record_t* record,
                               iso8601,
                               sizeof(iso8601));
 
-  const double raw_c = record->raw_temp_milli_c / 1000.0;
-  const double temp_c = record->temp_milli_c / 1000.0;
-  const double resistance_ohm = record->resistance_milli_ohm / 1000.0;
+  // Avoid floating-point formatting in snprintf; it is stack-heavy and can
+  // overflow small task stacks. Format fixed-point using integer math instead.
+  char raw_c_str[24] = { 0 };
+  char temp_c_str[24] = { 0 };
+  char resistance_ohm_str[24] = { 0 };
+  FormatSignedMilliFixed3(
+    (int64_t)record->raw_temp_milli_c, raw_c_str, sizeof(raw_c_str));
+  FormatSignedMilliFixed3(
+    (int64_t)record->temp_milli_c, temp_c_str, sizeof(temp_c_str));
+  FormatSignedMilliFixed3((int64_t)record->resistance_milli_ohm,
+                          resistance_ohm_str,
+                          sizeof(resistance_ohm_str));
 
   const int length =
     snprintf(out,
              out_size,
-             "%u,%" PRIu64 ",%u,%" PRId64 ",%s,%.3f,%.3f,%.3f,0x%04x,%s\n",
+             "%u,%" PRIu64 ",%u,%" PRId64 ",%s,%s,%s,%s,0x%04x,%s\n",
              CSV_SCHEMA_VERSION,
              record->record_id,
              (unsigned)record->sequence,
              record->timestamp_epoch_sec,
              iso8601,
-             resistance_ohm,
-             raw_c,
-             temp_c,
+             resistance_ohm_str,
+             raw_c_str,
+             temp_c_str,
              (unsigned)record->flags,
              node);
   if (length < 0 || (size_t)length >= out_size) {

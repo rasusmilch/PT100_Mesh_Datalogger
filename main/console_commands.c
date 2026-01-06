@@ -30,6 +30,7 @@
 #include "esp_console.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "esp_wifi.h"
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
@@ -1298,6 +1299,11 @@ CommandSd(int argc, char** argv)
 
   const char* action = argv[1];
   if (strcmp(action, "status") == 0) {
+    if (!heap_caps_check_integrity_all(true)) {
+      printf("heap integrity check failed (heap corrupted)\r\n");
+      return 1;
+    }
+
     if (!RuntimeIsRunning()) {
       esp_err_t result = RuntimeWithTemporarySdMount(&SdStatusOp, NULL);
       if (result != ESP_OK) {

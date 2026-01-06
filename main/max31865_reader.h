@@ -54,6 +54,14 @@ extern "C"
     double ema_temp_c;
     double ema_resistance_ohm;
     bool ema_valid;
+
+    // DMA-safe staging buffers (internal RAM) used to avoid per-transaction
+    // bounce-buffer allocations when the calling task stack lives in PSRAM.
+    // These are allocated during Max31865ReaderInit() and reused for all
+    // transfers.
+    uint8_t* dma_tx_buf;
+    uint8_t* dma_rx_buf;
+    size_t dma_buf_len;
   } max31865_reader_t;
 
   // Initialize MAX31865 on an already-initialized SPI bus.

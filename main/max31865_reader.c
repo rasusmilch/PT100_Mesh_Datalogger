@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -45,7 +46,7 @@ static const double kCvdC = -4.183e-12;
 
 /**
  * @brief Execute SpiTransfer.
- * @param device Parameter device.
+ * @param reader Parameter reader.
  * @param tx Parameter tx.
  * @param tx_len Parameter tx_len.
  * @param rx Parameter rx.
@@ -53,23 +54,55 @@ static const double kCvdC = -4.183e-12;
  * @return Return the function result.
  */
 static esp_err_t
-SpiTransfer(spi_device_handle_t device,
+SpiTransfer(max31865_reader_t* reader,
             const uint8_t* tx,
             size_t tx_len,
             uint8_t* rx,
             size_t rx_len)
 {
+  if (reader == NULL || reader->spi_device == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
   spi_transaction_t transaction;
   memset(&transaction, 0, sizeof(transaction));
 
   const size_t total_len = (tx_len > rx_len) ? tx_len : rx_len;
+  if (total_len == 0) {
+    return ESP_OK;
+  }
+
+  // If the calling task stack lives in PSRAM, stack-local tx/rx buffers are not
+  // DMA-capable. The SPI master driver will then allocate internal bounce
+  // buffers per transaction. Avoid that allocation path by staging transfers
+  // into internal DMA-capable buffers owned by the reader.
+  if (reader->dma_tx_buf == NULL || reader->dma_rx_buf == NULL ||
+      reader->dma_buf_len < total_len) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  memset(reader->dma_tx_buf, 0, total_len);
+  if (tx != NULL && tx_len > 0) {
+    memcpy(reader->dma_tx_buf, tx, tx_len);
+  }
+
   transaction.length = total_len * 8;
-  transaction.tx_buffer = tx;
+  transaction.tx_buffer = reader->dma_tx_buf;
+
   if (rx != NULL && rx_len > 0) {
     transaction.rxlength = total_len * 8;
-    transaction.rx_buffer = rx;
+    transaction.rx_buffer = reader->dma_rx_buf;
   }
-  return spi_device_transmit(device, &transaction);
+
+  esp_err_t result = spi_device_transmit(reader->spi_device, &transaction);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  if (rx != NULL && rx_len > 0) {
+    memcpy(rx, reader->dma_rx_buf, rx_len);
+  }
+  return ESP_OK;
 }
 
 /**
@@ -86,7 +119,7 @@ Max31865WriteReg(max31865_reader_t* reader, uint8_t reg, uint8_t value)
     return ESP_ERR_INVALID_STATE;
   }
   uint8_t tx[2] = { (uint8_t)(reg | 0x80u), value };
-  return SpiTransfer(reader->spi_device, tx, sizeof(tx), NULL, 0);
+  return SpiTransfer(reader, tx, sizeof(tx), NULL, 0);
 }
 
 /**
@@ -116,8 +149,7 @@ Max31865ReadRegs(max31865_reader_t* reader,
   tx[0] = (uint8_t)(reg & 0x7Fu);
 
   const size_t total_len = 1 + len;
-  esp_err_t result =
-    SpiTransfer(reader->spi_device, tx, total_len, rx, total_len);
+  esp_err_t result = SpiTransfer(reader, tx, total_len, rx, total_len);
   if (result != ESP_OK) {
     return result;
   }
@@ -415,6 +447,31 @@ Max31865ReaderInit(max31865_reader_t* reader,
   if (result != ESP_OK) {
     ESP_LOGE(kTag, "spi_bus_add_device failed: %s", esp_err_to_name(result));
     return result;
+  }
+
+  // Allocate small DMA-capable staging buffers in internal RAM. This prevents
+  // per-transaction bounce-buffer allocations when the calling task stack is in
+  // PSRAM (common once we move larger task stacks to external memory).
+  reader->dma_buf_len =
+    16; // Plenty for MAX31865 register ops (<= 1 + 8 bytes).
+  reader->dma_tx_buf = (uint8_t*)heap_caps_aligned_alloc(
+    4, reader->dma_buf_len, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  reader->dma_rx_buf = (uint8_t*)heap_caps_aligned_alloc(
+    4, reader->dma_buf_len, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  if (reader->dma_tx_buf == NULL || reader->dma_rx_buf == NULL) {
+    ESP_LOGE(kTag, "DMA staging buffer alloc failed");
+    if (reader->dma_tx_buf != NULL) {
+      heap_caps_free(reader->dma_tx_buf);
+      reader->dma_tx_buf = NULL;
+    }
+    if (reader->dma_rx_buf != NULL) {
+      heap_caps_free(reader->dma_rx_buf);
+      reader->dma_rx_buf = NULL;
+    }
+    reader->dma_buf_len = 0;
+    (void)spi_bus_remove_device(reader->spi_device);
+    reader->spi_device = NULL;
+    return ESP_ERR_NO_MEM;
   }
 
   reader->rtd_nominal_ohm = (double)CONFIG_APP_RTD_R0_OHMS;
