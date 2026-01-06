@@ -4,11 +4,20 @@
 #include "freertos/semphr.h"
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_wifi.h"
 #include "net_stack.h"
 #include "wifi_manager.h"
 
 static const char* kTag = "wifi_svc";
+
+// Wi-Fi/COEX uses esp_timer and other internal-only allocations. When internal
+// heap is extremely low/fragmented, esp_wifi_start() may abort inside IDF
+// (ESP_ERROR_CHECK) before returning an error to the application.
+//
+// To keep "run start" fail-safe (logging continues even when Wi-Fi cannot be
+// started), do a conservative preflight check and fail gracefully.
+static const size_t kMinInternalFreeForWifiStartBytes = 12u * 1024u;
 
 static bool s_initialized = false;
 static wifi_service_mode_t s_active_mode = WIFI_SERVICE_MODE_NONE;
@@ -147,6 +156,27 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     if (mode_result != ESP_OK) {
       Unlock();
       return mode_result;
+    }
+
+    const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t min_internal =
+      heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    const size_t largest_internal =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(kTag,
+             "internal heap before wifi_start: free=%u min=%u largest=%u",
+             (unsigned)free_internal,
+             (unsigned)min_internal,
+             (unsigned)largest_internal);
+
+    if (free_internal < kMinInternalFreeForWifiStartBytes ||
+        largest_internal < 512u) {
+      Unlock();
+      ESP_LOGE(kTag,
+               "insufficient internal heap for Wi-Fi start (free=%u, largest=%u)",
+               (unsigned)free_internal,
+               (unsigned)largest_internal);
+      return ESP_ERR_NO_MEM;
     }
 
     esp_err_t start_result = esp_wifi_start();

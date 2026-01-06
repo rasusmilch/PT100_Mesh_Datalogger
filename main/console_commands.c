@@ -309,6 +309,44 @@ PrintWifiUsage(void)
     "  wifi ntp sync [--server host] [--timeout_ms T] [--update-rtc 0|1]\n");
 }
 
+// In diagnostics/console mode, Wi-Fi may not be initialized yet. Most Wi-Fi
+// manager operations (scan/connect/disconnect) require the Wi-Fi service to be
+// acquired so the netif/event loop/Wi-Fi driver are ready.
+//
+// This helper acquires the diagnostic STA mode if Wi-Fi is currently idle.
+// If the system is running Wi-Fi for another mode (e.g., mesh), we refuse to
+// mutate it from the console.
+static esp_err_t
+AcquireWifiForConsole(bool* did_acquire)
+{
+  if (did_acquire != NULL) {
+    *did_acquire = false;
+  }
+
+  (void)WifiServiceInitOnce();
+
+  const wifi_service_mode_t active_mode = WifiServiceActiveMode();
+  if (active_mode != WIFI_SERVICE_MODE_NONE &&
+      active_mode != WIFI_SERVICE_MODE_DIAGNOSTIC_STA) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const esp_err_t result =
+    WifiServiceAcquire(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
+  if (result == ESP_OK && did_acquire != NULL) {
+    *did_acquire = true;
+  }
+  return result;
+}
+
+static void
+ReleaseWifiForConsoleIfNeeded(bool did_acquire)
+{
+  if (did_acquire) {
+    (void)WifiServiceRelease();
+  }
+}
+
 /**
  * @brief Execute PrintWifiConfig.
  */
@@ -2610,10 +2648,22 @@ CommandWifi(int argc, char** argv)
       printf("note: max capped at %u\n", (unsigned)kMaxScanRecords);
     }
 
+    bool did_acquire = false;
+    esp_err_t wifi_result = AcquireWifiForConsole(&did_acquire);
+    if (wifi_result != ESP_OK) {
+      printf("scan failed: %s\n", esp_err_to_name(wifi_result));
+      if (wifi_result == ESP_ERR_INVALID_STATE) {
+        printf("note: Wi-Fi is active in another mode (%s).\n",
+               WifiServiceModeToString(WifiServiceActiveMode()));
+      }
+      return 1;
+    }
+
     wifi_ap_record_t* records =
       (wifi_ap_record_t*)calloc(record_cap, sizeof(*records));
     if (records == NULL) {
       printf("out of memory\n");
+      ReleaseWifiForConsoleIfNeeded(did_acquire);
       return 1;
     }
 
@@ -2622,6 +2672,7 @@ CommandWifi(int argc, char** argv)
     if (result != ESP_OK) {
       printf("scan failed: %s\n", esp_err_to_name(result));
       free(records);
+      ReleaseWifiForConsoleIfNeeded(did_acquire);
       return 1;
     }
 
@@ -2643,6 +2694,7 @@ CommandWifi(int argc, char** argv)
     }
 
     free(records);
+    ReleaseWifiForConsoleIfNeeded(did_acquire);
     return 0;
   }
 
@@ -2733,6 +2785,17 @@ CommandWifi(int argc, char** argv)
       return 1;
     }
 
+    bool did_acquire = false;
+    esp_err_t wifi_result = AcquireWifiForConsole(&did_acquire);
+    if (wifi_result != ESP_OK) {
+      printf("connect failed: %s\n", esp_err_to_name(wifi_result));
+      if (wifi_result == ESP_ERR_INVALID_STATE) {
+        printf("note: Wi-Fi is active in another mode (%s).\n",
+               WifiServiceModeToString(WifiServiceActiveMode()));
+      }
+      return 1;
+    }
+
     esp_err_t result =
       WifiManagerConnectSta(creds.ssid, creds.password, timeout_ms);
     if (result != ESP_OK) {
@@ -2742,19 +2805,34 @@ CommandWifi(int argc, char** argv)
              WifiManagerLastConnectAttempts(),
              WifiDisconnectReasonToString(reason),
              (int)reason);
+      ReleaseWifiForConsoleIfNeeded(did_acquire);
       return 1;
     }
     printf("connected\n");
+    ReleaseWifiForConsoleIfNeeded(did_acquire);
     return 0;
   }
 
   if (strcmp(action, "disconnect") == 0) {
+    bool did_acquire = false;
+    esp_err_t wifi_result = AcquireWifiForConsole(&did_acquire);
+    if (wifi_result != ESP_OK) {
+      printf("disconnect failed: %s\n", esp_err_to_name(wifi_result));
+      if (wifi_result == ESP_ERR_INVALID_STATE) {
+        printf("note: Wi-Fi is active in another mode (%s).\n",
+               WifiServiceModeToString(WifiServiceActiveMode()));
+      }
+      return 1;
+    }
+
     esp_err_t result = WifiManagerDisconnectSta();
     if (result != ESP_OK) {
       printf("disconnect failed: %s\n", esp_err_to_name(result));
+      ReleaseWifiForConsoleIfNeeded(did_acquire);
       return 1;
     }
     printf("OK\n");
+    ReleaseWifiForConsoleIfNeeded(did_acquire);
     return 0;
   }
 

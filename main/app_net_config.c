@@ -22,9 +22,20 @@ static const uint8_t kMeshChannelMin = 1;
 static const uint8_t kMeshChannelMax = 13;
 static const uint32_t kTimeSyncMinSeconds = 5;
 static const uint32_t kTimeSyncMaxSeconds = 3600;
-static const size_t kMeshIdStringMaxLen = 18;
-static const size_t kMeshApPasswordMaxLen = 63;
-static const size_t kSntpServerMaxLen = 63;
+
+// Compile-time constants (C-friendly). Avoid file-scope VLAs and "+1" scatter.
+// "AA:BB:CC:DD:EE:FF" is 17 chars, plus NUL => 18 bytes.
+#define APP_NET_MESH_ID_STRING_MAX_CHARS (17U)
+#define APP_NET_MESH_ID_STRING_BUF_LEN (APP_NET_MESH_ID_STRING_MAX_CHARS + 1U)
+
+// WPA2 PSK max is 63 characters (not including NUL).
+#define APP_NET_MESH_AP_PASSWORD_MAX_CHARS (63U)
+#define APP_NET_MESH_AP_PASSWORD_BUF_LEN                                       \
+  (APP_NET_MESH_AP_PASSWORD_MAX_CHARS + 1U)
+
+// Hostname/IP string cap (not including NUL).
+#define APP_NET_SNTP_SERVER_MAX_CHARS (63U)
+#define APP_NET_SNTP_SERVER_BUF_LEN (APP_NET_SNTP_SERVER_MAX_CHARS + 1U)
 
 typedef struct
 {
@@ -33,12 +44,12 @@ typedef struct
   pt100_mesh_addr_t mesh_id;
   bool mesh_id_valid;
   bool mesh_id_from_nvs;
-  char mesh_id_string[kMeshIdStringMaxLen];
-  char mesh_ap_password[kMeshApPasswordMaxLen + 1];
+  char mesh_id_string[APP_NET_MESH_ID_STRING_BUF_LEN];
+  char mesh_ap_password[APP_NET_MESH_AP_PASSWORD_BUF_LEN];
   bool mesh_ap_password_from_nvs;
   bool mesh_disable_router;
   bool mesh_disable_router_from_nvs;
-  char sntp_server[kSntpServerMaxLen + 1];
+  char sntp_server[APP_NET_SNTP_SERVER_BUF_LEN];
   bool sntp_server_from_nvs;
   uint32_t time_sync_period_s;
   bool time_sync_period_from_nvs;
@@ -81,10 +92,7 @@ FormatMeshIdString(char* out, size_t out_size, const pt100_mesh_addr_t* mesh_id)
   if (out == NULL || out_size == 0 || mesh_id == NULL) {
     return;
   }
-  snprintf(out,
-           out_size,
-           MACSTR,
-           MAC2STR(mesh_id->addr));
+  snprintf(out, out_size, MACSTR, MAC2STR(mesh_id->addr));
 }
 
 static uint32_t
@@ -113,7 +121,8 @@ IsValidMeshApPassword(const char* password)
     return false;
   }
   const size_t length = strlen(password);
-  return (length == 0) || (length >= 8 && length <= kMeshApPasswordMaxLen);
+  return (length == 0) ||
+         (length >= 8 && length <= APP_NET_MESH_AP_PASSWORD_MAX_CHARS);
 }
 
 static bool
@@ -123,7 +132,7 @@ IsValidSntpServer(const char* server)
     return false;
   }
   const size_t length = strlen(server);
-  return (length > 0 && length <= kSntpServerMaxLen);
+  return (length > 0) && (length <= APP_NET_SNTP_SERVER_MAX_CHARS);
 }
 
 static void
@@ -143,9 +152,8 @@ LoadDefaults(app_net_config_t* config)
 
   if (ParseMeshIdString(CONFIG_APP_MESH_ID_HEX, &config->mesh_id)) {
     config->mesh_id_valid = true;
-    FormatMeshIdString(config->mesh_id_string,
-                       sizeof(config->mesh_id_string),
-                       &config->mesh_id);
+    FormatMeshIdString(
+      config->mesh_id_string, sizeof(config->mesh_id_string), &config->mesh_id);
   } else {
     config->mesh_id_valid = false;
     config->mesh_id_string[0] = '\0';
@@ -166,9 +174,8 @@ LoadDefaults(app_net_config_t* config)
   config->mesh_disable_router = false;
 #endif
 
-  strlcpy(config->sntp_server,
-          CONFIG_APP_SNTP_SERVER,
-          sizeof(config->sntp_server));
+  strlcpy(
+    config->sntp_server, CONFIG_APP_SNTP_SERVER, sizeof(config->sntp_server));
   if (!IsValidSntpServer(config->sntp_server)) {
     ESP_LOGW(kTag, "Default SNTP server invalid; using empty");
     config->sntp_server[0] = '\0';
@@ -222,25 +229,23 @@ ApplyNvsOverrides(app_net_config_t* config)
       config->mesh_channel = mesh_channel;
       config->mesh_channel_from_nvs = true;
     } else {
-      ESP_LOGW(kTag, "Invalid mesh channel override %u; clearing", mesh_channel);
+      ESP_LOGW(
+        kTag, "Invalid mesh channel override %u; clearing", mesh_channel);
       (void)nvs_erase_key(handle, kKeyMeshChannel);
       needs_commit = true;
     }
   }
 
-  char mesh_id_string[kMeshIdStringMaxLen] = { 0 };
-  if (ReadNvsString(handle,
-                    kKeyMeshId,
-                    mesh_id_string,
-                    sizeof(mesh_id_string),
-                    false)) {
+  char mesh_id_string[APP_NET_MESH_ID_STRING_BUF_LEN] = { 0 };
+
+  if (ReadNvsString(
+        handle, kKeyMeshId, mesh_id_string, sizeof(mesh_id_string), false)) {
     pt100_mesh_addr_t mesh_id;
     if (ParseMeshIdString(mesh_id_string, &mesh_id)) {
       config->mesh_id = mesh_id;
       config->mesh_id_valid = true;
-      FormatMeshIdString(config->mesh_id_string,
-                         sizeof(config->mesh_id_string),
-                         &mesh_id);
+      FormatMeshIdString(
+        config->mesh_id_string, sizeof(config->mesh_id_string), &mesh_id);
       config->mesh_id_from_nvs = true;
     } else {
       ESP_LOGW(kTag, "Invalid mesh ID override: %s; clearing", mesh_id_string);
@@ -249,7 +254,7 @@ ApplyNvsOverrides(app_net_config_t* config)
     }
   }
 
-  char mesh_ap_password[kMeshApPasswordMaxLen + 1] = { 0 };
+  char mesh_ap_password[APP_NET_MESH_AP_PASSWORD_BUF_LEN] = { 0 };
   if (ReadNvsString(handle,
                     kKeyMeshApPassword,
                     mesh_ap_password,
@@ -274,16 +279,11 @@ ApplyNvsOverrides(app_net_config_t* config)
     config->mesh_disable_router_from_nvs = true;
   }
 
-  char sntp_server[kSntpServerMaxLen + 1] = { 0 };
-  if (ReadNvsString(handle,
-                    kKeySntpServer,
-                    sntp_server,
-                    sizeof(sntp_server),
-                    false)) {
+  char sntp_server[APP_NET_SNTP_SERVER_BUF_LEN] = { 0 };
+  if (ReadNvsString(
+        handle, kKeySntpServer, sntp_server, sizeof(sntp_server), false)) {
     if (IsValidSntpServer(sntp_server)) {
-      strlcpy(config->sntp_server,
-              sntp_server,
-              sizeof(config->sntp_server));
+      strlcpy(config->sntp_server, sntp_server, sizeof(config->sntp_server));
       config->sntp_server_from_nvs = true;
     } else {
       ESP_LOGW(kTag, "Invalid SNTP server override; clearing");
@@ -462,7 +462,7 @@ AppNetConfigSetMeshIdString(const char* id_str)
     return ESP_ERR_INVALID_ARG;
   }
 
-  char formatted[kMeshIdStringMaxLen] = { 0 };
+  char formatted[APP_NET_MESH_ID_STRING_BUF_LEN] = { 0 };
   FormatMeshIdString(formatted, sizeof(formatted), &mesh_id);
 
   nvs_handle_t handle;
@@ -481,9 +481,8 @@ AppNetConfigSetMeshIdString(const char* id_str)
     EnsureInitialized();
     g_config.mesh_id = mesh_id;
     g_config.mesh_id_valid = true;
-    strlcpy(g_config.mesh_id_string,
-            formatted,
-            sizeof(g_config.mesh_id_string));
+    strlcpy(
+      g_config.mesh_id_string, formatted, sizeof(g_config.mesh_id_string));
     g_config.mesh_id_from_nvs = true;
   }
   return result;
@@ -510,9 +509,8 @@ AppNetConfigSetMeshApPassword(const char* password)
 
   if (result == ESP_OK) {
     EnsureInitialized();
-    strlcpy(g_config.mesh_ap_password,
-            password,
-            sizeof(g_config.mesh_ap_password));
+    strlcpy(
+      g_config.mesh_ap_password, password, sizeof(g_config.mesh_ap_password));
     g_config.mesh_ap_password_from_nvs = true;
   }
   return result;
@@ -604,12 +602,8 @@ AppNetConfigClearAllOverrides(void)
   }
 
   const char* keys[] = {
-    kKeyMeshChannel,
-    kKeyMeshId,
-    kKeyMeshApPassword,
-    kKeyMeshNoRouter,
-    kKeySntpServer,
-    kKeyTimeSync,
+    kKeyMeshChannel,  kKeyMeshId,     kKeyMeshApPassword,
+    kKeyMeshNoRouter, kKeySntpServer, kKeyTimeSync,
   };
 
   for (size_t idx = 0; idx < sizeof(keys) / sizeof(keys[0]); ++idx) {
