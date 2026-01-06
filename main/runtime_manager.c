@@ -13,6 +13,7 @@
 #include "data_csv.h"
 #include "data_port.h"
 #include "display_attention.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_mesh_lite.h"
@@ -135,10 +136,25 @@ static runtime_state_t g_state;
 static app_runtime_t g_runtime;
 static StaticQueue_t g_export_outbox_queue_struct;
 static StaticQueue_t g_broker_outbox_queue_struct;
-static uint8_t g_export_outbox_storage[CONFIG_APP_EXPORT_OUTBOX_DEPTH *
-                                       sizeof(export_record_item_t)];
-static uint8_t g_broker_outbox_storage[CONFIG_APP_BROKER_OUTBOX_DEPTH *
-                                       sizeof(broker_publish_item_t)];
+static uint8_t* g_export_outbox_storage = NULL;
+static uint8_t* g_broker_outbox_storage = NULL;
+
+static StaticQueue_t g_log_queue_struct;
+static uint8_t* g_log_queue_storage = NULL;
+
+static StaticQueue_t g_export_queue_struct;
+static uint8_t* g_export_queue_storage = NULL;
+
+static void*
+AllocatePreferPsram(size_t bytes)
+{
+  // Prefer PSRAM to preserve internal heap for Wi-Fi/COEX and internal-only DMA.
+  void* buffer = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (buffer != NULL) {
+    return buffer;
+  }
+  return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
 static esp_err_t
 RuntimeFlushToSd(void* context);
 static void
@@ -2555,7 +2571,21 @@ DirectWifiTask(void* context)
   uint32_t retry_delay_ms = 30 * 1000;
   const uint32_t max_delay_ms = 5 * 60 * 1000;
 
+  // Track minimum stack high-water mark to confirm stack sizing under real workloads.
+  // uxTaskGetStackHighWaterMark() returns words, not bytes.
+  UBaseType_t min_stack_hwm_words = UINT32_MAX;
+
+
   while (!state->stop_requested) {
+    const UBaseType_t hwm_words = uxTaskGetStackHighWaterMark(NULL);
+    if (hwm_words < min_stack_hwm_words) {
+      min_stack_hwm_words = hwm_words;
+      ESP_LOGI(kTag,
+               "wifi_direct stack watermark: %u words (%u bytes) free",
+               (unsigned)min_stack_hwm_words,
+               (unsigned)(min_stack_hwm_words * sizeof(StackType_t)));
+    }
+
     wifi_credentials_t creds;
     WifiCredentialsLoad(&creds);
 
@@ -2622,7 +2652,6 @@ TopologyTask(void* context)
   const TickType_t interval_ticks = pdMS_TO_TICKS(30 * 1000);
   const TickType_t warn_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
   TickType_t last_disconnected_warn_ticks = 0;
-  bool was_connected = false;
 
   while (!state->stop_requested) {
     const char* role = AppSettingsRoleToString(state->settings.node_role);
@@ -2646,7 +2675,6 @@ TopologyTask(void* context)
     // Replace the vendor/wifi spam with a single rate-limited warning.
     const bool connected_now = (layer > 0);
     if (connected_now) {
-      was_connected = true;
       last_disconnected_warn_ticks = 0;
     } else if (MeshTransportIsStarted(&state->mesh)) {
       const TickType_t now_ticks = xTaskGetTickCount();
@@ -3258,11 +3286,26 @@ RuntimeManagerInit(void)
   };
   SdLoggerInit(&g_state.sd_logger, &sd_config);
 
-  g_state.batch_buffer_size = g_state.sd_logger.config.batch_target_bytes;
-  g_state.batch_buffer = (uint8_t*)malloc(g_state.batch_buffer_size);
-  if (g_state.batch_buffer == NULL) {
-    g_state.batch_buffer_size = 64 * 1024;
-    g_state.batch_buffer = (uint8_t*)malloc(g_state.batch_buffer_size);
+  // Batch buffer is purely a staging buffer for file I/O; it is safe to place
+  // in PSRAM and doing so preserves scarce internal heap for Wi-Fi/COEX.
+  {
+    size_t desired_bytes = g_state.sd_logger.config.batch_target_bytes;
+    const size_t kMinBatchBytes = 4096;
+    const size_t kMaxBatchBytes = 64 * 1024;
+    if (desired_bytes < kMinBatchBytes) {
+      desired_bytes = kMinBatchBytes;
+    }
+    if (desired_bytes > kMaxBatchBytes) {
+      desired_bytes = kMaxBatchBytes;
+    }
+
+    g_state.batch_buffer_size = desired_bytes;
+    g_state.batch_buffer = (uint8_t*)AllocatePreferPsram(g_state.batch_buffer_size);
+    if (g_state.batch_buffer == NULL) {
+      // As a last resort, try a smaller buffer rather than failing init.
+      g_state.batch_buffer_size = kMinBatchBytes;
+      g_state.batch_buffer = (uint8_t*)AllocatePreferPsram(g_state.batch_buffer_size);
+    }
   }
 
   esp_err_t time_result = TimeSyncInit(
@@ -3340,7 +3383,13 @@ RuntimeManagerInit(void)
     }
   }
 
-  g_state.log_queue = xQueueCreate(64, sizeof(log_record_t));
+  if (g_log_queue_storage == NULL) {
+    g_log_queue_storage =
+      (uint8_t*)AllocatePreferPsram(64 * sizeof(log_record_t));
+  }
+  g_state.log_queue =
+    xQueueCreateStatic(64, sizeof(log_record_t), g_log_queue_storage,
+                       &g_log_queue_struct);
   if (g_state.log_queue == NULL) {
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
@@ -3348,7 +3397,13 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create log queue");
   }
 
-  g_state.export_queue = xQueueCreate(kExportQueueDepth, sizeof(export_item_t));
+  if (g_export_queue_storage == NULL) {
+    g_export_queue_storage = (uint8_t*)AllocatePreferPsram(
+      kExportQueueDepth * sizeof(export_item_t));
+  }
+  g_state.export_queue = xQueueCreateStatic(
+    kExportQueueDepth, sizeof(export_item_t), g_export_queue_storage,
+    &g_export_queue_struct);
   if (g_state.export_queue == NULL) {
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
@@ -3356,6 +3411,10 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create export queue");
   }
 
+  if (g_export_outbox_storage == NULL) {
+    g_export_outbox_storage = (uint8_t*)AllocatePreferPsram(
+      kExportOutboxDepth * sizeof(export_record_item_t));
+  }
   g_state.export_outbox = xQueueCreateStatic(kExportOutboxDepth,
                                              sizeof(export_record_item_t),
                                              g_export_outbox_storage,
@@ -3367,6 +3426,10 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create export outbox");
   }
 
+  if (g_broker_outbox_storage == NULL) {
+    g_broker_outbox_storage = (uint8_t*)AllocatePreferPsram(
+      kBrokerOutboxDepth * sizeof(broker_publish_item_t));
+  }
   g_state.broker_outbox = xQueueCreateStatic(kBrokerOutboxDepth,
                                              sizeof(broker_publish_item_t),
                                              g_broker_outbox_storage,
@@ -3697,7 +3760,7 @@ wifi_direct_start_done:
     wifi_direct_created = xTaskCreate(&DirectWifiTask,
                                       "wifi_direct",
 
-                                      2048,
+                                      4096,
                                       &g_state,
                                       3,
                                       &g_state.wifi_direct_task);

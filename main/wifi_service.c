@@ -17,7 +17,10 @@ static const char* kTag = "wifi_svc";
 //
 // To keep "run start" fail-safe (logging continues even when Wi-Fi cannot be
 // started), do a conservative preflight check and fail gracefully.
-static const size_t kMinInternalFreeForWifiStartBytes = 12u * 1024u;
+// Wi-Fi start allocates additional internal heap (driver/task plumbing). If we
+// start too close to the edge, we can fail later in hard-to-debug ways.
+static const size_t kMinInternalFreeForWifiStartBytes = 20u * 1024u;
+static const size_t kMinInternalLargestForWifiStartBytes = 2048u;
 
 static bool s_initialized = false;
 static wifi_service_mode_t s_active_mode = WIFI_SERVICE_MODE_NONE;
@@ -119,6 +122,19 @@ WifiServiceAcquire(wifi_service_mode_t mode)
   }
 
   if (!s_wifi_initialized) {
+    const size_t free_internal_pre_init =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t min_internal_pre_init =
+      heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    const size_t largest_internal_pre_init =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    ESP_LOGI(kTag,
+             "pre-init heap (internal): free=%u min=%u largest=%u",
+             (unsigned)free_internal_pre_init,
+             (unsigned)min_internal_pre_init,
+             (unsigned)largest_internal_pre_init);
+
     wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t init_result = esp_wifi_init(&wifi_config);
     if (init_result == ESP_ERR_WIFI_INIT_STATE ||
@@ -128,6 +144,17 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     if (init_result != ESP_OK) {
       Unlock();
       ESP_LOGE(kTag, "esp_wifi_init failed: %s", esp_err_to_name(init_result));
+      const size_t free_internal_post_fail =
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      const size_t min_internal_post_fail =
+        heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+      const size_t largest_internal_post_fail =
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+      ESP_LOGE(kTag,
+               "wifi init heap after failure (internal): free=%u min=%u largest=%u",
+               (unsigned)free_internal_post_fail,
+               (unsigned)min_internal_post_fail,
+               (unsigned)largest_internal_post_fail);
       return init_result;
     }
     s_wifi_initialized = true;
@@ -170,12 +197,25 @@ WifiServiceAcquire(wifi_service_mode_t mode)
              (unsigned)largest_internal);
 
     if (free_internal < kMinInternalFreeForWifiStartBytes ||
-        largest_internal < 512u) {
-      Unlock();
+        largest_internal < kMinInternalLargestForWifiStartBytes) {
       ESP_LOGE(kTag,
                "insufficient internal heap for Wi-Fi start (free=%u, largest=%u)",
                (unsigned)free_internal,
                (unsigned)largest_internal);
+
+      // Unwind driver allocations so the rest of the system can continue.
+      // Without this, a failed Wi-Fi start can strand the system in a low-heap
+      // state, causing unrelated task/queue creation to fail.
+      if (mode == WIFI_SERVICE_MODE_DIAGNOSTIC_STA) {
+        (void)WifiManagerStop();
+      }
+      if (s_wifi_initialized) {
+        (void)esp_wifi_deinit();
+        s_wifi_initialized = false;
+      }
+      s_wifi_started = false;
+      s_active_mode = WIFI_SERVICE_MODE_NONE;
+      Unlock();
       return ESP_ERR_NO_MEM;
     }
 

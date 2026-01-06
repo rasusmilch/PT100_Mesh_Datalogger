@@ -2,16 +2,17 @@
 #include "console_commands.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs_flash.h"
 #include "run_gpio.h"
 #include "runtime_manager.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 static const char* kTag = "app";
 static const app_runtime_t* g_runtime = NULL;
 
-static void AppInitTask(void* context);
+static void
+AppInitTask(void* context);
 
 /**
  * @brief Execute InitNvs.
@@ -25,7 +26,8 @@ InitNvs(void)
     ESP_LOGW(kTag, "NVS partition full or version mismatch; erasing");
     esp_err_t erase_result = nvs_flash_erase();
     if (erase_result != ESP_OK) {
-      ESP_LOGE(kTag, "nvs_flash_erase failed: %s", esp_err_to_name(erase_result));
+      ESP_LOGE(
+        kTag, "nvs_flash_erase failed: %s", esp_err_to_name(erase_result));
       return;
     }
     result = nvs_flash_init();
@@ -44,17 +46,14 @@ app_main(void)
   // Keep the ESP-IDF "main" task lightweight. Initialization can be stack-heavy
   // (console, SD/FAT, Wi-Fi), and the default main task stack can be small.
   // Run init on a dedicated task with an explicit stack size.
+
   InitNvs();
 
-  static const uint32_t kAppInitStackWords = 4096;  // 16 KB
+  static const uint32_t kAppInitStackWords = 4096; // 16 KB
   static const UBaseType_t kAppInitPriority = 5;
 
-  BaseType_t created = xTaskCreate(&AppInitTask,
-                                  "app_init",
-                                  kAppInitStackWords,
-                                  NULL,
-                                  kAppInitPriority,
-                                  NULL);
+  BaseType_t created = xTaskCreate(
+    &AppInitTask, "app_init", kAppInitStackWords, NULL, kAppInitPriority, NULL);
   if (created != pdPASS) {
     ESP_LOGE(kTag, "Failed to create app_init task");
   }
@@ -75,9 +74,8 @@ AppInitTask(void* context)
 
   esp_err_t runtime_result = RuntimeManagerInit();
   if (runtime_result != ESP_OK) {
-    ESP_LOGE(kTag,
-             "Runtime init reported error: %s",
-             esp_err_to_name(runtime_result));
+    ESP_LOGE(
+      kTag, "Runtime init reported error: %s", esp_err_to_name(runtime_result));
   }
 
   g_runtime = RuntimeGetRuntime();
@@ -93,7 +91,8 @@ AppInitTask(void* context)
   if (boot_mode == APP_BOOT_MODE_RUN) {
     esp_err_t start_result = EnterRunMode();
     if (start_result != ESP_OK) {
-      ESP_LOGE(kTag, "Failed to start runtime: %s", esp_err_to_name(start_result));
+      ESP_LOGE(
+        kTag, "Failed to start runtime: %s", esp_err_to_name(start_result));
     }
   } else {
     (void)EnterDiagMode();

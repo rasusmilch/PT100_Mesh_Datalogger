@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "data_csv.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -247,7 +248,13 @@ RepairTailToLastNewline(int file_descriptor,
                              : 0;
   const size_t scan_length = (size_t)(file_size - scan_start);
 
-  uint8_t* tail_bytes = (uint8_t*)malloc(scan_length);
+  // Tail scan can be large (e.g., hundreds of KiB). Place it in PSRAM.
+  uint8_t* tail_bytes = (uint8_t*)heap_caps_malloc(
+    scan_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (tail_bytes == NULL) {
+    tail_bytes = (uint8_t*)heap_caps_malloc(
+      scan_length, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
   if (tail_bytes == NULL) {
     return ESP_ERR_NO_MEM;
   }
@@ -325,7 +332,13 @@ FindLastRecordIdInFile(int file_descriptor,
                              : 0;
   const size_t scan_length = (size_t)(file_size - scan_start);
 
-  uint8_t* tail_bytes = (uint8_t*)malloc(scan_length + 1);
+  // Tail scan can be large (e.g., hundreds of KiB). Place it in PSRAM.
+  uint8_t* tail_bytes = (uint8_t*)heap_caps_malloc(
+    scan_length + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (tail_bytes == NULL) {
+    tail_bytes = (uint8_t*)heap_caps_malloc(
+      scan_length + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
   if (tail_bytes == NULL) {
     return ESP_ERR_NO_MEM;
   }
@@ -498,7 +511,13 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
     return ESP_FAIL;
   }
 
-  uint8_t* readback_bytes = (uint8_t*)malloc(batch_length_bytes);
+  // Read-back buffer is used for file I/O only; PSRAM is safe.
+  uint8_t* readback_bytes = (uint8_t*)heap_caps_malloc(
+    batch_length_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (readback_bytes == NULL) {
+    readback_bytes = (uint8_t*)heap_caps_malloc(
+      batch_length_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
   if (readback_bytes == NULL) {
     return ESP_ERR_NO_MEM;
   }

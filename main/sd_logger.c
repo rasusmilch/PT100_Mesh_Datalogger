@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 
 #include "data_csv.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 
@@ -316,7 +317,14 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
     free(logger->file_buffer);
     logger->file_buffer = NULL;
   }
-  logger->file_buffer = (uint8_t*)malloc(logger->config.file_buffer_bytes);
+  // File buffer is used only for VFS I/O (no DMA); PSRAM is safe here.
+  logger->file_buffer = (uint8_t*)heap_caps_malloc(
+    logger->config.file_buffer_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (logger->file_buffer == NULL) {
+    logger->file_buffer = (uint8_t*)heap_caps_malloc(
+      logger->config.file_buffer_bytes,
+      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
   if (logger->file_buffer != NULL) {
     setvbuf((FILE*)logger->file,
             (char*)logger->file_buffer,
