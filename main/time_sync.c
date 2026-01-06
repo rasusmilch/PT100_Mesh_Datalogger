@@ -22,6 +22,10 @@
 #include "esp_system.h"
 
 static const char* kTag = "time_sync";
+static char s_last_sntp_server[64] = "";
+static int64_t s_last_sntp_attempt_epoch = 0;
+static esp_err_t s_last_sntp_result = ESP_ERR_INVALID_STATE;
+static int64_t s_last_sntp_success_epoch = 0;
 
 /**
  * @brief Execute BcdToBinary.
@@ -280,6 +284,24 @@ TimeSyncGetNow(int64_t* epoch_seconds_out, int32_t* millis_out)
 }
 
 /**
+ * @brief Execute TimeSyncGetSntpStatus.
+ * @param out Parameter out.
+ */
+void
+TimeSyncGetSntpStatus(time_sntp_status_t* out)
+{
+  if (out == NULL) {
+    return;
+  }
+  memset(out, 0, sizeof(*out));
+  strncpy(out->last_server, s_last_sntp_server, sizeof(out->last_server) - 1);
+  out->last_server[sizeof(out->last_server) - 1] = '\0';
+  out->last_attempt_epoch = s_last_sntp_attempt_epoch;
+  out->last_result = s_last_sntp_result;
+  out->last_success_epoch = s_last_sntp_success_epoch;
+}
+
+/**
  * @brief Execute LocalTmFieldsMatch.
  * @param left Parameter left.
  * @param right Parameter right.
@@ -442,6 +464,12 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
     return ESP_ERR_INVALID_ARG;
   }
 
+  strncpy(
+    s_last_sntp_server, sntp_server, sizeof(s_last_sntp_server) - 1);
+  s_last_sntp_server[sizeof(s_last_sntp_server) - 1] = '\0';
+  s_last_sntp_attempt_epoch = (int64_t)time(NULL);
+  s_last_sntp_result = ESP_ERR_INVALID_STATE;
+
 #if APP_USE_ESP_NETIF_SNTP
   esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(sntp_server);
   config.smooth_sync = false;
@@ -474,6 +502,7 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
 
   if (wait_result != ESP_OK) {
     ESP_LOGW(kTag, "SNTP timeout/failure: %s", esp_err_to_name(wait_result));
+    s_last_sntp_result = wait_result;
     return wait_result;
   }
 #else
@@ -489,6 +518,7 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
       (int)pdTICKS_TO_MS(xTaskGetTickCount() - start_ticks);
     if (elapsed_ms >= timeout_ms) {
       ESP_LOGW(kTag, "SNTP timeout after %dms", elapsed_ms);
+      s_last_sntp_result = ESP_ERR_TIMEOUT;
       return ESP_ERR_TIMEOUT;
     }
   }
@@ -496,10 +526,13 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
 
   if (!TimeSyncIsSystemTimeValid()) {
     ESP_LOGW(kTag, "SNTP completed, but system time still not plausible");
+    s_last_sntp_result = ESP_ERR_INVALID_STATE;
     return ESP_ERR_INVALID_STATE;
   }
 
   ESP_LOGI(kTag, "SNTP synced");
+  s_last_sntp_result = ESP_OK;
+  s_last_sntp_success_epoch = (int64_t)time(NULL);
   return ESP_OK;
 }
 

@@ -29,6 +29,7 @@
 #include "esp_console.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"
@@ -42,8 +43,11 @@
 #include "linenoise/linenoise.h"
 #include "console_alerts.h"
 #include "runtime_manager.h"
+#include "sdkconfig.h"
 #include "time_sync.h"
+#include "wifi_credentials.h"
 #include "wifi_manager.h"
+#include "wifi_service.h"
 
 static const char* kTag = "console";
 static void
@@ -154,6 +158,157 @@ ParseDisplayAttentionName(const char* value, display_attention_item_t* item_out)
     return true;
   }
   return false;
+}
+
+/**
+ * @brief Execute WifiServiceModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
+static const char*
+WifiServiceModeToString(wifi_service_mode_t mode)
+{
+  switch (mode) {
+    case WIFI_SERVICE_MODE_NONE:
+      return "none";
+    case WIFI_SERVICE_MODE_DIAGNOSTIC_STA:
+      return "diagnostic_sta";
+    case WIFI_SERVICE_MODE_MESH:
+      return "mesh";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * @brief Execute WifiAuthModeToString.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
+static const char*
+WifiAuthModeToString(wifi_auth_mode_t mode)
+{
+  switch (mode) {
+    case WIFI_AUTH_OPEN:
+      return "open";
+    case WIFI_AUTH_WEP:
+      return "wep";
+    case WIFI_AUTH_WPA_PSK:
+      return "wpa_psk";
+    case WIFI_AUTH_WPA2_PSK:
+      return "wpa2_psk";
+    case WIFI_AUTH_WPA_WPA2_PSK:
+      return "wpa_wpa2";
+    case WIFI_AUTH_WPA2_ENTERPRISE:
+      return "wpa2_ent";
+    case WIFI_AUTH_WPA3_PSK:
+      return "wpa3_psk";
+    case WIFI_AUTH_WPA2_WPA3_PSK:
+      return "wpa2_wpa3";
+    case WIFI_AUTH_WAPI_PSK:
+      return "wapi_psk";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * @brief Execute WifiDisconnectReasonToString.
+ * @param reason Parameter reason.
+ * @return Return the function result.
+ */
+static const char*
+WifiDisconnectReasonToString(wifi_err_reason_t reason)
+{
+  switch (reason) {
+    case WIFI_REASON_AUTH_EXPIRE:
+      return "auth_expire";
+    case WIFI_REASON_AUTH_LEAVE:
+      return "auth_leave";
+    case WIFI_REASON_ASSOC_EXPIRE:
+      return "assoc_expire";
+    case WIFI_REASON_ASSOC_TOOMANY:
+      return "assoc_toomany";
+    case WIFI_REASON_NOT_AUTHED:
+      return "not_authed";
+    case WIFI_REASON_NOT_ASSOCED:
+      return "not_assoc";
+    case WIFI_REASON_ASSOC_LEAVE:
+      return "assoc_leave";
+    case WIFI_REASON_ASSOC_NOT_AUTHED:
+      return "assoc_not_authed";
+    case WIFI_REASON_DISASSOC_PWRCAP_BAD:
+      return "disassoc_pwrcap";
+    case WIFI_REASON_DISASSOC_SUPCHAN_BAD:
+      return "disassoc_supchan";
+    case WIFI_REASON_IE_INVALID:
+      return "ie_invalid";
+    case WIFI_REASON_MIC_FAILURE:
+      return "mic_failure";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+      return "4way_timeout";
+    case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
+      return "gk_timeout";
+    case WIFI_REASON_IE_IN_4WAY_DIFFERS:
+      return "ie_4way_diff";
+    case WIFI_REASON_GROUP_CIPHER_INVALID:
+      return "group_cipher";
+    case WIFI_REASON_PAIRWISE_CIPHER_INVALID:
+      return "pairwise_cipher";
+    case WIFI_REASON_AKMP_INVALID:
+      return "akmp_invalid";
+    case WIFI_REASON_UNSUPP_RSN_IE_VERSION:
+      return "rsn_ver";
+    case WIFI_REASON_INVALID_RSN_IE_CAP:
+      return "rsn_cap";
+    case WIFI_REASON_802_1X_AUTH_FAILED:
+      return "8021x_failed";
+    case WIFI_REASON_BEACON_TIMEOUT:
+      return "beacon_timeout";
+    case WIFI_REASON_AUTH_FAIL:
+      return "auth_fail";
+    case WIFI_REASON_NO_AP_FOUND:
+      return "no_ap";
+    case WIFI_REASON_CONNECTION_FAIL:
+      return "conn_fail";
+    case WIFI_REASON_ASSOC_FAIL:
+      return "assoc_fail";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+      return "handshake_timeout";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * @brief Execute PrintWifiUsage.
+ */
+static void
+PrintWifiUsage(void)
+{
+  printf(
+    "usage:\n"
+    "  wifi help\n"
+    "  wifi show\n"
+    "  wifi set <ssid> [password]\n"
+    "  wifi clear\n"
+    "  wifi scan [--max N]\n"
+    "  wifi status\n"
+    "  wifi connect [--timeout_ms T]\n"
+    "  wifi disconnect\n"
+    "  wifi ntp status\n"
+    "  wifi ntp sync [--server host] [--timeout_ms T] [--update-rtc 0|1]\n");
+}
+
+/**
+ * @brief Execute PickDefaultSntpServer.
+ * @return Return the function result.
+ */
+static const char*
+PickDefaultSntpServer(void)
+{
+  return (CONFIG_APP_SNTP_SERVER[0] != '\0') ? CONFIG_APP_SNTP_SERVER
+                                             : "pool.ntp.org";
 }
 
 /**
@@ -2310,6 +2465,359 @@ CommandNet(int argc, char** argv)
 }
 
 /**
+ * @brief Execute CommandWifi.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandWifi(int argc, char** argv)
+{
+  if (argc < 2) {
+    PrintWifiUsage();
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "help") == 0) {
+    PrintWifiUsage();
+    return 0;
+  }
+
+  if (strcmp(action, "show") == 0) {
+    wifi_credentials_t creds;
+    WifiCredentialsLoad(&creds);
+    printf("configured: %s\n", creds.has_ssid ? "yes" : "no");
+    printf("ssid: %s\n", creds.has_ssid ? creds.ssid : "<unset>");
+    if (creds.has_ssid) {
+      printf("ssid_source: %s\n", creds.from_nvs ? "nvs" : "kconfig");
+    } else {
+      printf("ssid_source: none\n");
+    }
+    if (!creds.has_ssid) {
+      printf("password: n/a\n");
+    } else if (creds.password[0] == '\0') {
+      printf("password: <empty>\n");
+    } else {
+      char masked[65] = { 0 };
+      WifiCredentialsMaskPassword(creds.password, masked, sizeof(masked));
+      printf("password: %s\n", masked);
+    }
+    return 0;
+  }
+
+  if (strcmp(action, "set") == 0) {
+    if (argc < 3) {
+      printf("usage: wifi set <ssid> [password]\n");
+      return 1;
+    }
+    const char* ssid = argv[2];
+    const char* password = (argc >= 4) ? argv[3] : "";
+    esp_err_t result = WifiCredentialsSave(ssid, password);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("OK\n");
+    return 0;
+  }
+
+  if (strcmp(action, "clear") == 0) {
+    esp_err_t result = WifiCredentialsClear();
+    if (result != ESP_OK) {
+      printf("clear failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("OK\n");
+    return 0;
+  }
+
+  if (strcmp(action, "scan") == 0) {
+    int max_records = 10;
+    for (int i = 2; i < argc; ++i) {
+      if (strcmp(argv[i], "--max") == 0) {
+        if (i + 1 >= argc) {
+          printf("usage: wifi scan [--max N]\n");
+          return 1;
+        }
+        max_records = atoi(argv[++i]);
+      } else {
+        printf("usage: wifi scan [--max N]\n");
+        return 1;
+      }
+    }
+
+    if (max_records <= 0) {
+      printf("max must be > 0\n");
+      return 1;
+    }
+
+    const size_t kMaxScanRecords = 50;
+    size_t record_cap = (size_t)max_records;
+    if (record_cap > kMaxScanRecords) {
+      record_cap = kMaxScanRecords;
+      printf("note: max capped at %u\n", (unsigned)kMaxScanRecords);
+    }
+
+    wifi_ap_record_t* records =
+      (wifi_ap_record_t*)calloc(record_cap, sizeof(*records));
+    if (records == NULL) {
+      printf("out of memory\n");
+      return 1;
+    }
+
+    size_t total_count = 0;
+    esp_err_t result = WifiManagerScan(records, record_cap, &total_count);
+    if (result != ESP_OK) {
+      printf("scan failed: %s\n", esp_err_to_name(result));
+      free(records);
+      return 1;
+    }
+
+    const size_t listed_count =
+      (total_count < record_cap) ? total_count : record_cap;
+    printf("aps_found: %u (showing %u)\n",
+           (unsigned)total_count,
+           (unsigned)listed_count);
+    for (size_t index = 0; index < listed_count; ++index) {
+      const wifi_ap_record_t* ap = &records[index];
+      const char* ssid =
+        (ap->ssid[0] != '\0') ? (const char*)ap->ssid : "<hidden>";
+      printf("  %2u. %-32s rssi=%d ch=%u auth=%s\n",
+             (unsigned)(index + 1),
+             ssid,
+             ap->rssi,
+             (unsigned)ap->primary,
+             WifiAuthModeToString(ap->authmode));
+    }
+
+    free(records);
+    return 0;
+  }
+
+  if (strcmp(action, "status") == 0) {
+    wifi_manager_status_t status;
+    memset(&status, 0, sizeof(status));
+    WifiManagerGetStatus(&status);
+    printf("wifi_service_mode: %s\n",
+           WifiServiceModeToString(WifiServiceActiveMode()));
+    printf("wifi_sta_netif_present: %s\n",
+           status.sta_netif_present ? "yes" : "no");
+    printf("wifi_owns_sta_netif: %s\n",
+           status.owns_sta_netif ? "yes" : "no");
+    printf("wifi_initialized: %s\n",
+           status.wifi_initialized ? "yes" : "no");
+    printf("wifi_handler_registered: %s\n",
+           status.wifi_handler_registered ? "yes" : "no");
+    printf("wifi_ip_handler_registered: %s\n",
+           status.ip_handler_registered ? "yes" : "no");
+    printf("wifi_started: %s\n", status.wifi_started ? "yes" : "no");
+    printf("wifi_started_by_manager: %s\n",
+           status.started_by_manager ? "yes" : "no");
+
+    const bool connected = WifiManagerIsConnected();
+    printf("wifi_connected: %s\n", connected ? "yes" : "no");
+
+    wifi_ap_record_t ap_info;
+    memset(&ap_info, 0, sizeof(ap_info));
+    if (connected && esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+      printf("wifi_rssi: %d\n", ap_info.rssi);
+      printf("wifi_channel: %u\n", (unsigned)ap_info.primary);
+    } else {
+      printf("wifi_rssi: n/a\n");
+      printf("wifi_channel: n/a\n");
+    }
+
+    const wifi_err_reason_t reason = WifiManagerLastDisconnectReason();
+    printf("wifi_last_disconnect_reason: %s (%d)\n",
+           WifiDisconnectReasonToString(reason),
+           (int)reason);
+    printf("wifi_last_connect_attempts: %d\n",
+           WifiManagerLastConnectAttempts());
+
+    if (connected) {
+      esp_netif_ip_info_t ip_info;
+      memset(&ip_info, 0, sizeof(ip_info));
+      if (WifiManagerGetIpInfo(&ip_info) == ESP_OK) {
+        char ip[16] = { 0 }, mask[16] = { 0 }, gw[16] = { 0 };
+        esp_ip4addr_ntoa(&ip_info.ip, ip, sizeof(ip));
+        esp_ip4addr_ntoa(&ip_info.netmask, mask, sizeof(mask));
+        esp_ip4addr_ntoa(&ip_info.gw, gw, sizeof(gw));
+        printf("wifi_ip: %s\n", ip);
+        printf("wifi_netmask: %s\n", mask);
+        printf("wifi_gw: %s\n", gw);
+      } else {
+        printf("wifi_ip: n/a\n");
+        printf("wifi_netmask: n/a\n");
+        printf("wifi_gw: n/a\n");
+      }
+    } else {
+      printf("wifi_ip: n/a\n");
+      printf("wifi_netmask: n/a\n");
+      printf("wifi_gw: n/a\n");
+    }
+    return 0;
+  }
+
+  if (strcmp(action, "connect") == 0) {
+    int timeout_ms = 10000;
+    for (int i = 2; i < argc; ++i) {
+      if (strcmp(argv[i], "--timeout_ms") == 0) {
+        if (i + 1 >= argc) {
+          printf("usage: wifi connect [--timeout_ms T]\n");
+          return 1;
+        }
+        timeout_ms = atoi(argv[++i]);
+      } else {
+        printf("usage: wifi connect [--timeout_ms T]\n");
+        return 1;
+      }
+    }
+
+    wifi_credentials_t creds;
+    WifiCredentialsLoad(&creds);
+    if (!creds.has_ssid || !creds.from_nvs) {
+      printf("no saved Wi-Fi credentials in NVS. Use: wifi set <ssid> "
+             "[password]\n");
+      return 1;
+    }
+
+    esp_err_t result =
+      WifiManagerConnectSta(creds.ssid, creds.password, timeout_ms);
+    if (result != ESP_OK) {
+      const wifi_err_reason_t reason = WifiManagerLastDisconnectReason();
+      printf("connect failed: %s\n", esp_err_to_name(result));
+      printf("  attempts=%d reason=%s (%d)\n",
+             WifiManagerLastConnectAttempts(),
+             WifiDisconnectReasonToString(reason),
+             (int)reason);
+      return 1;
+    }
+    printf("connected\n");
+    return 0;
+  }
+
+  if (strcmp(action, "disconnect") == 0) {
+    esp_err_t result = WifiManagerDisconnectSta();
+    if (result != ESP_OK) {
+      printf("disconnect failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("OK\n");
+    return 0;
+  }
+
+  if (strcmp(action, "ntp") == 0) {
+    if (argc < 3) {
+      printf("usage: wifi ntp status | wifi ntp sync [--server host] "
+             "[--timeout_ms T] [--update-rtc 0|1]\n");
+      return 1;
+    }
+    const char* subaction = argv[2];
+    if (strcmp(subaction, "status") == 0) {
+      printf("system_time_valid: %s\n",
+             TimeSyncIsSystemTimeValid() ? "yes" : "no");
+      time_sntp_status_t sntp_status;
+      TimeSyncGetSntpStatus(&sntp_status);
+      printf("last_sntp_server: %s\n",
+             (sntp_status.last_server[0] != '\0') ? sntp_status.last_server
+                                                  : "n/a");
+      if (sntp_status.last_attempt_epoch > 0) {
+        printf("last_sntp_attempt_epoch: %" PRId64 "\n",
+               sntp_status.last_attempt_epoch);
+      } else {
+        printf("last_sntp_attempt_epoch: never\n");
+      }
+      printf("last_sntp_result: %s (%d)\n",
+             esp_err_to_name(sntp_status.last_result),
+             (int)sntp_status.last_result);
+      if (sntp_status.last_success_epoch > 0) {
+        printf("last_sntp_success_epoch: %" PRId64 "\n",
+               sntp_status.last_success_epoch);
+      } else {
+        printf("last_sntp_success_epoch: never\n");
+      }
+
+      const bool rtc_present =
+        (g_runtime != NULL && g_runtime->time_sync != NULL &&
+         g_runtime->time_sync->is_ds3231_ready);
+      printf("rtc_present: %s\n", rtc_present ? "yes" : "no");
+      printf("rtc_last_set_epoch: n/a\n");
+      return 0;
+    }
+
+    if (strcmp(subaction, "sync") == 0) {
+      const char* server = NULL;
+      int timeout_ms = 30000;
+      bool update_rtc = true;
+
+      for (int i = 3; i < argc; ++i) {
+        if (strcmp(argv[i], "--server") == 0) {
+          if (i + 1 >= argc) {
+            printf("usage: wifi ntp sync [--server host] [--timeout_ms T] "
+                   "[--update-rtc 0|1]\n");
+            return 1;
+          }
+          server = argv[++i];
+        } else if (strcmp(argv[i], "--timeout_ms") == 0) {
+          if (i + 1 >= argc) {
+            printf("usage: wifi ntp sync [--server host] [--timeout_ms T] "
+                   "[--update-rtc 0|1]\n");
+            return 1;
+          }
+          timeout_ms = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--update-rtc") == 0) {
+          if (i + 1 >= argc) {
+            printf("usage: wifi ntp sync [--server host] [--timeout_ms T] "
+                   "[--update-rtc 0|1]\n");
+            return 1;
+          }
+          update_rtc = (atoi(argv[++i]) != 0);
+        } else {
+          printf("usage: wifi ntp sync [--server host] [--timeout_ms T] "
+                 "[--update-rtc 0|1]\n");
+          return 1;
+        }
+      }
+
+      if (server == NULL) {
+        server = PickDefaultSntpServer();
+      }
+
+      esp_err_t result = TimeSyncStartSntpAndWait(server, timeout_ms);
+      if (result != ESP_OK) {
+        printf("sntp sync failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+      printf("sntp sync OK\n");
+
+      if (update_rtc) {
+        if (g_runtime != NULL && g_runtime->time_sync != NULL &&
+            g_runtime->time_sync->is_ds3231_ready) {
+          esp_err_t rtc_result =
+            TimeSyncSetRtcFromSystem(g_runtime->time_sync);
+          if (rtc_result != ESP_OK) {
+            printf("rtc update failed: %s\n", esp_err_to_name(rtc_result));
+            return 1;
+          }
+          printf("rtc updated\n");
+        } else {
+          printf("rtc update skipped: rtc not available\n");
+        }
+      }
+      return 0;
+    }
+
+    printf("usage: wifi ntp status | wifi ntp sync [--server host] "
+           "[--timeout_ms T] [--update-rtc 0|1]\n");
+    return 1;
+  }
+
+  PrintWifiUsage();
+  return 1;
+}
+
+/**
  * @brief Execute PrintMqttRestartNote.
  */
 static void
@@ -3073,6 +3581,16 @@ RegisterCommands(void)
     .argtable = &g_net_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&net_cmd));
+
+  const esp_console_cmd_t wifi_cmd = {
+    .command = "wifi",
+    .help = "wifi help | wifi show | wifi set <ssid> [password] | wifi clear | "
+            "wifi scan [--max N] | wifi status | wifi connect [--timeout_ms T] "
+            "| wifi disconnect | wifi ntp status | wifi ntp sync ...",
+    .hint = NULL,
+    .func = &CommandWifi,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_cmd));
 
   g_children_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_children_args.enabled =
