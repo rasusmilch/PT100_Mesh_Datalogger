@@ -1,6 +1,7 @@
 idf_component_register(
   SRCS
     "app_main.c"
+    "app_net_config.c"
     "app_settings.c"
     "alerts/alert_manager.c"
     "alerts/alert_ntfy.c"

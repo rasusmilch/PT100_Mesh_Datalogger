@@ -7,13 +7,13 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include "app_net_config.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
-#include "sdkconfig.h"
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
 #include "wifi_service.h"
@@ -213,8 +213,8 @@ PrintScanResults(const diag_ctx_t* ctx,
 static const char*
 PickDnsHost(void)
 {
-  return (CONFIG_APP_SNTP_SERVER[0] != '\0') ? CONFIG_APP_SNTP_SERVER
-                                             : "pool.ntp.org";
+  const char* server = AppNetConfigGetSntpServer();
+  return (server[0] != '\0') ? server : "pool.ntp.org";
 }
 
 /**
@@ -248,7 +248,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   const wifi_service_mode_t active_mode = WifiServiceActiveMode();
 
   const int total_steps =
-    4 + (scan ? 1 : 0) + (connect ? 1 : 0) + (dns_lookup ? 1 : 0);
+    5 + (scan ? 1 : 0) + (connect ? 1 : 0) + (dns_lookup ? 1 : 0);
   int step = 1;
 
   const bool runtime_running = RuntimeIsRunning();
@@ -270,6 +270,20 @@ RunDiagWifi(const app_runtime_t* runtime,
     DiagPrintSummary(&ctx, total_steps);
     return 1;
   }
+
+  const char* sntp_server = AppNetConfigGetSntpServer();
+  const char* sntp_value = (sntp_server[0] != '\0') ? sntp_server : "<empty>";
+  DiagReportStep(
+    &ctx,
+    step++,
+    total_steps,
+    "net config",
+    ESP_OK,
+    "sntp_server=%s sntp_src=%s time_sync_s=%u time_sync_src=%s",
+    sntp_value,
+    AppNetConfigSntpServerIsOverridden() ? "nvs" : "kconfig",
+    (unsigned)AppNetConfigGetTimeSyncPeriodSeconds(),
+    AppNetConfigTimeSyncPeriodIsOverridden() ? "nvs" : "kconfig");
 
   heap_snapshot_t net_before = CaptureHeapSnapshot();
   DiagHeapCheck(&ctx, "pre_net");

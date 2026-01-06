@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/ip4_addr.h"
+#include "app_net_config.h"
 #include "mesh_addr.h"
 #include "mesh_transport.h"
 #include "sdkconfig.h"
@@ -63,6 +64,12 @@ typedef struct
   bool router_password_valid;
   size_t mesh_ap_password_len;
   bool mesh_ap_password_valid;
+  uint8_t mesh_channel;
+  bool mesh_channel_from_nvs;
+  bool mesh_id_from_nvs;
+  bool mesh_ap_password_from_nvs;
+  bool mesh_disable_router;
+  bool mesh_disable_router_from_nvs;
 } mesh_diag_config_t;
 
 /**
@@ -183,37 +190,6 @@ PrintStackSizeWarning(const diag_ctx_t* ctx)
 }
 
 /**
- * @brief Execute ParseMeshId.
- * @param mesh_id_string Parameter mesh_id_string.
- * @param mesh_id_out Parameter mesh_id_out.
- * @return Return the function result.
- */
-static bool
-ParseMeshId(const char* mesh_id_string, pt100_mesh_addr_t* mesh_id_out)
-{
-  if (mesh_id_string == NULL || mesh_id_out == NULL) {
-    return false;
-  }
-
-  int values[6] = { 0 };
-  if (sscanf(mesh_id_string,
-             "%x:%x:%x:%x:%x:%x",
-             &values[0],
-             &values[1],
-             &values[2],
-             &values[3],
-             &values[4],
-             &values[5]) != 6) {
-    return false;
-  }
-
-  for (int index = 0; index < 6; ++index) {
-    mesh_id_out->addr[index] = (uint8_t)values[index];
-  }
-  return true;
-}
-
-/**
  * @brief Execute ValidateMeshConfig.
  * @param start_as_root Parameter start_as_root.
  * @param config Parameter config.
@@ -227,14 +203,13 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
   }
   memset(config, 0, sizeof(*config));
 
-  bool router_disabled = false;
-#if defined(CONFIG_APP_MESH_DISABLE_ROUTER)
-  // CONFIG_APP_MESH_DISABLE_ROUTER
-  // is a Kconfig bool and
-  // expands to 0 or 1.
-  router_disabled = (CONFIG_APP_MESH_DISABLE_ROUTER != 0);
-#endif
-  config->mesh_id_valid = ParseMeshId(CONFIG_APP_MESH_ID_HEX, &config->mesh_id);
+  config->mesh_disable_router = AppNetConfigGetMeshDisableRouter();
+  config->mesh_disable_router_from_nvs =
+    AppNetConfigMeshDisableRouterIsOverridden();
+  config->mesh_channel = AppNetConfigGetMeshChannel();
+  config->mesh_channel_from_nvs = AppNetConfigMeshChannelIsOverridden();
+  config->mesh_id_from_nvs = AppNetConfigMeshIdIsOverridden();
+  config->mesh_id_valid = AppNetConfigGetMeshId(&config->mesh_id);
   if (!config->mesh_id_valid) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -248,10 +223,13 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
     (config->router_password_len == 0 ||
      (config->router_password_len >= 8 && config->router_password_len <= 63));
 
-  config->mesh_ap_password_len = strlen(CONFIG_APP_MESH_AP_PASSWORD);
+  const char* ap_password = AppNetConfigGetMeshApPassword();
+  config->mesh_ap_password_len = strlen(ap_password);
   config->mesh_ap_password_valid =
     (config->mesh_ap_password_len == 0 ||
      (config->mesh_ap_password_len >= 8 && config->mesh_ap_password_len <= 63));
+  config->mesh_ap_password_from_nvs =
+    AppNetConfigMeshApPasswordIsOverridden();
 
   if (!config->mesh_ap_password_valid) {
     return ESP_ERR_INVALID_ARG;
@@ -260,7 +238,8 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
   // In a "no router" deployment, the root must be allowed to start without
   // upstream router credentials. When router backhaul is enabled, require
   // the SSID (and a valid password if present).
-  const bool require_router_credentials = start_as_root && !router_disabled;
+  const bool require_router_credentials =
+    start_as_root && !config->mesh_disable_router;
   if (require_router_credentials) {
     if (config->router_ssid_len == 0) {
       return ESP_ERR_INVALID_ARG;
@@ -572,12 +551,8 @@ RunDiagMesh(const app_runtime_t* runtime,
 #endif
   const bool start_as_root = force_root || default_root;
 
-  bool router_disabled = false;
-#if defined(CONFIG_APP_MESH_DISABLE_ROUTER)
-  router_disabled = (CONFIG_APP_MESH_DISABLE_ROUTER != 0);
-#endif
-
-  const bool require_router_credentials = start_as_root && !router_disabled;
+  const bool require_router_credentials =
+    start_as_root && AppNetConfigGetMeshDisableRouter() == false;
   mesh_diag_config_t diag_config;
   memset(&diag_config, 0, sizeof(diag_config));
 
@@ -595,13 +570,20 @@ RunDiagMesh(const app_runtime_t* runtime,
                  "mesh config",
                  config_result,
                  "mesh_id=%s router_ssid_len=%u router_pwd_len=%u ap_pwd_len=%u"
-                 " root_required_ssid=%s router_disabled=%s pwd_valid=%s",
+                 " mesh_chan=%u mesh_chan_src=%s mesh_id_src=%s"
+                 " ap_pwd_src=%s no_router=%s no_router_src=%s"
+                 " root_required_ssid=%s pwd_valid=%s",
                  diag_config.mesh_id_valid ? mesh_id_str : "<invalid>",
                  (unsigned)diag_config.router_ssid_len,
                  (unsigned)diag_config.router_password_len,
                  (unsigned)diag_config.mesh_ap_password_len,
+                 (unsigned)diag_config.mesh_channel,
+                 diag_config.mesh_channel_from_nvs ? "nvs" : "kconfig",
+                 diag_config.mesh_id_from_nvs ? "nvs" : "kconfig",
+                 diag_config.mesh_ap_password_from_nvs ? "nvs" : "kconfig",
+                 YesNo(diag_config.mesh_disable_router),
+                 diag_config.mesh_disable_router_from_nvs ? "nvs" : "kconfig",
                  YesNo(require_router_credentials),
-                 YesNo(router_disabled),
                  YesNo(diag_config.router_password_valid));
 
   heap_snapshot_t start_before = CaptureHeapSnapshot();
