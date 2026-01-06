@@ -22,6 +22,14 @@ extern "C"
     bool is_ds3231_ready;
   } time_sync_t;
 
+  typedef struct
+  {
+    char last_server[64];
+    int64_t last_attempt_epoch;
+    esp_err_t last_result;
+    int64_t last_success_epoch;
+  } time_sntp_status_t;
+
 /**
  * @brief Execute TimeSyncInit.
  * @param time_sync Parameter time_sync.
@@ -85,6 +93,12 @@ extern "C"
  * @param millis_out Parameter millis_out.
  */
   void TimeSyncGetNow(int64_t* epoch_seconds_out, int32_t* millis_out);
+
+/**
+ * @brief Execute TimeSyncGetSntpStatus.
+ * @param out Parameter out.
+ */
+  void TimeSyncGetSntpStatus(time_sntp_status_t* out);
 
   // Parse an ISO-like local time string into struct tm (local).
   // Accepts "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS".
