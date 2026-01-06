@@ -938,14 +938,17 @@ HealthPublisherTask(void* context)
     RuntimeHealthPublisherTick(state);
 
     // Debug: periodically log stack watermark to catch regressions.
-    const uint32_t now_ms = (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount());
-    if ((now_ms - last_watermark_log_ms) >= 5000u) {
-      const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
-      const uint32_t watermark_bytes = (uint32_t)watermark_words * (uint32_t)sizeof(StackType_t);
-      ESP_LOGI("runtime", "health_pub stack watermark: %u words (%u bytes) free",
-              (unsigned)watermark_words, (unsigned)watermark_bytes);
-      last_watermark_log_ms = now_ms;
-    }
+    // const uint32_t now_ms = (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount());
+    // if ((now_ms - last_watermark_log_ms) >= 30000u) {
+    //   const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
+    //   const uint32_t watermark_bytes =
+    //     (uint32_t)watermark_words * (uint32_t)sizeof(StackType_t);
+    //   ESP_LOGI("runtime",
+    //            "health_pub stack watermark: %u words (%u bytes) free",
+    //            (unsigned)watermark_words,
+    //            (unsigned)watermark_bytes);
+    //   last_watermark_log_ms = now_ms;
+    // }
     vTaskDelay(tick_delay);
   }
 

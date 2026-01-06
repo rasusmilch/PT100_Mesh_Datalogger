@@ -13,8 +13,8 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#include "argtable3/argtable3.h"
 #include "app_net_config.h"
+#include "argtable3/argtable3.h"
 #include "boot_mode.h"
 #include "calibration.h"
 #include "diagnostics/diag_fram.h"
@@ -28,9 +28,9 @@
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
 #include "esp_console.h"
+#include "esp_heap_caps.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
-#include "esp_heap_caps.h"
 #include "esp_wifi.h"
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
@@ -40,10 +40,10 @@
 #include <unistd.h>
 #endif
 
+#include "console_alerts.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "linenoise/linenoise.h"
-#include "console_alerts.h"
 #include "runtime_manager.h"
 #include "sdkconfig.h"
 #include "time_sync.h"
@@ -307,7 +307,17 @@ PrintWifiUsage(void)
     "  wifi cfg set no_router 0|1\n"
     "  wifi cfg set time_sync_s <seconds>\n"
     "  wifi ntp status\n"
-    "  wifi ntp sync [--server host] [--timeout_ms T] [--update-rtc 0|1]\n");
+    "  wifi ntp sync [--server host] [--timeout_ms T] [--update-rtc 0|1]\n"
+    "\n"
+    "notes:\n"
+    "  - wifi cfg set ... writes to NVS and persists across reboot.\n"
+    "  - wifi cfg defaults clears NVS overrides (revert to Kconfig defaults).\n"
+    "  - After changing wifi cfg values, restart the runtime to apply:\n"
+    "      run stop\n"
+    "      run start\n"
+    "  - time_sync_s is clamped to 5..3600 seconds.\n"
+    "  - wifi ntp sync performs a one-off sync; it does not change NVS\n"
+    "    unless you also use wifi cfg set sntp/time_sync_s.\n");
 }
 
 // In diagnostics/console mode, Wi-Fi may not be initialized yet. Most Wi-Fi
@@ -332,8 +342,7 @@ AcquireWifiForConsole(bool* did_acquire)
     return ESP_ERR_INVALID_STATE;
   }
 
-  const esp_err_t result =
-    WifiServiceAcquire(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
+  const esp_err_t result = WifiServiceAcquire(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
   if (result == ESP_OK && did_acquire != NULL) {
     *did_acquire = true;
   }
@@ -375,8 +384,7 @@ PrintWifiConfig(void)
   printf("mesh_ap_password_len: %u\n", (unsigned)ap_password_len);
   printf("mesh_ap_password_source: %s\n",
          AppNetConfigMeshApPasswordIsOverridden() ? "nvs" : "kconfig");
-  printf("mesh_no_router: %u\n",
-         AppNetConfigGetMeshDisableRouter() ? 1u : 0u);
+  printf("mesh_no_router: %u\n", AppNetConfigGetMeshDisableRouter() ? 1u : 0u);
   printf("mesh_no_router_source: %s\n",
          AppNetConfigMeshDisableRouterIsOverridden() ? "nvs" : "kconfig");
 
@@ -384,8 +392,7 @@ PrintWifiConfig(void)
          (sntp_server[0] != '\0') ? sntp_server : "<empty>");
   printf("sntp_server_source: %s\n",
          AppNetConfigSntpServerIsOverridden() ? "nvs" : "kconfig");
-  printf("time_sync_s: %u\n",
-         (unsigned)AppNetConfigGetTimeSyncPeriodSeconds());
+  printf("time_sync_s: %u\n", (unsigned)AppNetConfigGetTimeSyncPeriodSeconds());
   printf("time_sync_s_source: %s\n",
          AppNetConfigTimeSyncPeriodIsOverridden() ? "nvs" : "kconfig");
 }
@@ -566,8 +573,7 @@ CommandStatus(int argc, char** argv)
       settings->mqtt_enabled &&
       (settings->mqtt_bridge_mode == MQTT_BRIDGE_BROKER ||
        settings->mqtt_bridge_mode == MQTT_BRIDGE_BOTH);
-    printf("broker_bridge_active: %s\n",
-           broker_bridge_active ? "yes" : "no");
+    printf("broker_bridge_active: %s\n", broker_bridge_active ? "yes" : "no");
   }
 
   // Ensure the TZ rules are loaded before formatting local time.
@@ -647,10 +653,9 @@ CommandStatus(int argc, char** argv)
       ? *g_runtime->broker_send_fail_count
       : 0u;
   const runtime_cached_status_t* cached_status = RuntimeGetCachedStatus();
-  const bool mqtt_connected =
-    (g_runtime->mqtt_client_connected != NULL)
-      ? *g_runtime->mqtt_client_connected
-      : false;
+  const bool mqtt_connected = (g_runtime->mqtt_client_connected != NULL)
+                                ? *g_runtime->mqtt_client_connected
+                                : false;
   UBaseType_t export_outbox_used = 0;
   if (g_runtime->export_outbox != NULL && *g_runtime->export_outbox != NULL) {
     export_outbox_used = uxQueueMessagesWaiting(*g_runtime->export_outbox);
@@ -670,8 +675,7 @@ CommandStatus(int argc, char** argv)
            (unsigned)CONFIG_APP_BROKER_OUTBOX_DEPTH,
            (unsigned)broker_outbox_used);
     printf("broker_drop_count: %u\n", (unsigned)broker_drop_count);
-    printf("broker_send_fail_count: %u\n",
-           (unsigned)broker_send_fail_count);
+    printf("broker_send_fail_count: %u\n", (unsigned)broker_send_fail_count);
     if (cached_status != NULL) {
       printf("root_publish_consumer_active: %s\n",
              cached_status->root_publish_consumer_active ? "yes" : "no");
@@ -2712,10 +2716,8 @@ CommandWifi(int argc, char** argv)
            WifiServiceModeToString(WifiServiceActiveMode()));
     printf("wifi_sta_netif_present: %s\n",
            status.sta_netif_present ? "yes" : "no");
-    printf("wifi_owns_sta_netif: %s\n",
-           status.owns_sta_netif ? "yes" : "no");
-    printf("wifi_initialized: %s\n",
-           status.wifi_initialized ? "yes" : "no");
+    printf("wifi_owns_sta_netif: %s\n", status.owns_sta_netif ? "yes" : "no");
+    printf("wifi_initialized: %s\n", status.wifi_initialized ? "yes" : "no");
     printf("wifi_handler_registered: %s\n",
            status.wifi_handler_registered ? "yes" : "no");
     printf("wifi_ip_handler_registered: %s\n",
@@ -3005,8 +3007,7 @@ CommandWifi(int argc, char** argv)
       if (update_rtc) {
         if (g_runtime != NULL && g_runtime->time_sync != NULL &&
             g_runtime->time_sync->is_ds3231_ready) {
-          esp_err_t rtc_result =
-            TimeSyncSetRtcFromSystem(g_runtime->time_sync);
+          esp_err_t rtc_result = TimeSyncSetRtcFromSystem(g_runtime->time_sync);
           if (rtc_result != ESP_OK) {
             printf("rtc update failed: %s\n", esp_err_to_name(rtc_result));
             return 1;
@@ -3108,10 +3109,8 @@ CommandMqtt(int argc, char** argv)
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
     }
-    snprintf(settings->mqtt_broker_uri,
-             sizeof(settings->mqtt_broker_uri),
-             "%s",
-             uri);
+    snprintf(
+      settings->mqtt_broker_uri, sizeof(settings->mqtt_broker_uri), "%s", uri);
     printf("mqtt_broker_uri set to %s\n", settings->mqtt_broker_uri);
     PrintMqttRestartNote();
     return 0;
@@ -3625,10 +3624,11 @@ RegisterCommands(void)
 
   const esp_console_cmd_t mqtt_cmd = {
     .command = "mqtt",
-    .help = "MQTT settings: mqtt show | mqtt enable on|off | mqtt broker set "
-            "<uri> | mqtt prefix set <prefix> | mqtt qos set 0|1 | mqtt "
-            "retain set on|off | mqtt bridge set off|serial|broker|both\n"
-            "Note: broker bridge requires mqtt enabled; serial bridge does not.",
+    .help =
+      "MQTT settings: mqtt show | mqtt enable on|off | mqtt broker set "
+      "<uri> | mqtt prefix set <prefix> | mqtt qos set 0|1 | mqtt "
+      "retain set on|off | mqtt bridge set off|serial|broker|both\n"
+      "Note: broker bridge requires mqtt enabled; serial bridge does not.",
     .hint = NULL,
     .func = &CommandMqtt,
   };
