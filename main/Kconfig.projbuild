@@ -19,6 +19,20 @@ config APP_WIFI_ROUTER_PASSWORD
   help
     External Wi-Fi password used by the mesh root.
 
+config APP_WIFI_ALLOW_KCONFIG_FALLBACK
+  bool "Allow Kconfig router credentials fallback"
+  default n
+  help
+    When enabled, WifiCredentialsLoad falls back to the Kconfig router
+    SSID/password when no NVS credentials exist. Leave disabled to avoid
+    embedding Wi-Fi secrets in firmware builds.
+
+config APP_WIFI_ALLOW_PASSWORD_PRINT
+  bool "Allow printing Wi-Fi passwords in logs"
+  default n
+  help
+    When disabled, Wi-Fi passwords should only be logged in masked form.
+
 config APP_MESH_DISABLE_ROUTER
   bool "Disable router backhaul (Mesh-Lite only mode)"
   default n

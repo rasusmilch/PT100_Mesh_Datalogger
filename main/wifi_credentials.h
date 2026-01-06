@@ -1,7 +1,10 @@
 #ifndef PT100_LOGGER_WIFI_CREDENTIALS_H_
 #define PT100_LOGGER_WIFI_CREDENTIALS_H_
 
+#include <stddef.h>
 #include <stdbool.h>
+
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,10 +19,40 @@ extern "C" {
   } wifi_credentials_t;
 
 /**
+ * @brief Execute WifiCredentialsSave.
+ * @param ssid Parameter ssid.
+ * @param password Parameter password.
+ * @return Return the function result.
+ */
+  esp_err_t WifiCredentialsSave(const char* ssid, const char* password);
+
+/**
+ * @brief Execute WifiCredentialsClear.
+ * @return Return the function result.
+ */
+  esp_err_t WifiCredentialsClear(void);
+
+/**
  * @brief Execute WifiCredentialsLoad.
  * @param out Parameter out.
  */
   void WifiCredentialsLoad(wifi_credentials_t* out);
+
+/**
+ * @brief Execute WifiCredentialsHasSsid.
+ * @return Return the function result.
+ */
+  bool WifiCredentialsHasSsid(void);
+
+/**
+ * @brief Execute WifiCredentialsMaskPassword.
+ * @param password Parameter password.
+ * @param out Parameter out.
+ * @param out_len Parameter out_len.
+ */
+  void WifiCredentialsMaskPassword(const char* password,
+                                   char* out,
+                                   size_t out_len);
 
 #ifdef __cplusplus
 }
