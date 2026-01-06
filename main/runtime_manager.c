@@ -3591,9 +3591,6 @@ RuntimeStart(void)
       if (creds.has_ssid) {
         router_ssid = creds.ssid;
         router_password = creds.password;
-      } else {
-        router_ssid = CONFIG_APP_WIFI_ROUTER_SSID;
-        router_password = CONFIG_APP_WIFI_ROUTER_PASSWORD;
       }
     }
 

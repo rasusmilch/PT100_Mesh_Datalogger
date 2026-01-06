@@ -16,6 +16,7 @@
 #include "mesh_addr.h"
 #include "mesh_transport.h"
 #include "sdkconfig.h"
+#include "wifi_credentials.h"
 #include "wifi_service.h"
 
 static const char* kTag = "diag_mesh";
@@ -238,8 +239,11 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
     return ESP_ERR_INVALID_ARG;
   }
 
-  config->router_ssid_len = strlen(CONFIG_APP_WIFI_ROUTER_SSID);
-  config->router_password_len = strlen(CONFIG_APP_WIFI_ROUTER_PASSWORD);
+  wifi_credentials_t creds;
+  WifiCredentialsLoad(&creds);
+  config->router_ssid_len = creds.has_ssid ? strlen(creds.ssid) : 0;
+  config->router_password_len =
+    creds.has_ssid ? strlen(creds.password) : 0;
   config->router_password_valid =
     (config->router_password_len == 0 ||
      (config->router_password_len >= 8 && config->router_password_len <= 63));
@@ -615,11 +619,15 @@ RunDiagMesh(const app_runtime_t* runtime,
     } else if (mesh_started_before) {
       start_result = ESP_OK;
     } else {
+      wifi_credentials_t creds;
+      WifiCredentialsLoad(&creds);
+      const char* router_ssid = creds.has_ssid ? creds.ssid : "";
+      const char* router_password = creds.has_ssid ? creds.password : "";
       start_result = MeshTransportStart(runtime->mesh,
                                         start_as_root,
                                         runtime->settings->allow_children,
-                                        CONFIG_APP_WIFI_ROUTER_SSID,
-                                        CONFIG_APP_WIFI_ROUTER_PASSWORD,
+                                        router_ssid,
+                                        router_password,
                                         NULL,
                                         NULL,
                                         NULL,
