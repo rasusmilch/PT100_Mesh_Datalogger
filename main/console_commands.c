@@ -14,6 +14,7 @@
 #include <time.h>
 
 #include "argtable3/argtable3.h"
+#include "app_net_config.h"
 #include "boot_mode.h"
 #include "calibration.h"
 #include "diagnostics/diag_fram.h"
@@ -296,8 +297,58 @@ PrintWifiUsage(void)
     "  wifi status\n"
     "  wifi connect [--timeout_ms T]\n"
     "  wifi disconnect\n"
+    "  wifi cfg show\n"
+    "  wifi cfg defaults\n"
+    "  wifi cfg set sntp <server>\n"
+    "  wifi cfg set mesh_chan <1..13>\n"
+    "  wifi cfg set mesh_id <XX:XX:XX:XX:XX:XX>\n"
+    "  wifi cfg set mesh_ap_pass <password>\n"
+    "  wifi cfg set no_router 0|1\n"
+    "  wifi cfg set time_sync_s <seconds>\n"
     "  wifi ntp status\n"
     "  wifi ntp sync [--server host] [--timeout_ms T] [--update-rtc 0|1]\n");
+}
+
+/**
+ * @brief Execute PrintWifiConfig.
+ */
+static void
+PrintWifiConfig(void)
+{
+  const uint8_t mesh_channel = AppNetConfigGetMeshChannel();
+  const char* mesh_id = AppNetConfigGetMeshIdString();
+  const bool mesh_id_valid = (mesh_id != NULL && mesh_id[0] != '\0');
+  const char* ap_password = AppNetConfigGetMeshApPassword();
+  const size_t ap_password_len = strlen(ap_password);
+  const char* sntp_server = AppNetConfigGetSntpServer();
+
+  printf("mesh_channel: %u\n", (unsigned)mesh_channel);
+  printf("mesh_channel_source: %s\n",
+         AppNetConfigMeshChannelIsOverridden() ? "nvs" : "kconfig");
+  printf("mesh_id: %s\n", mesh_id_valid ? mesh_id : "<invalid>");
+  printf("mesh_id_source: %s\n",
+         AppNetConfigMeshIdIsOverridden() ? "nvs" : "kconfig");
+  if (ap_password_len == 0) {
+    printf("mesh_ap_password: <empty>\n");
+  } else {
+    printf("mesh_ap_password: <redacted>\n");
+  }
+  printf("mesh_ap_password_len: %u\n", (unsigned)ap_password_len);
+  printf("mesh_ap_password_source: %s\n",
+         AppNetConfigMeshApPasswordIsOverridden() ? "nvs" : "kconfig");
+  printf("mesh_no_router: %u\n",
+         AppNetConfigGetMeshDisableRouter() ? 1u : 0u);
+  printf("mesh_no_router_source: %s\n",
+         AppNetConfigMeshDisableRouterIsOverridden() ? "nvs" : "kconfig");
+
+  printf("sntp_server: %s\n",
+         (sntp_server[0] != '\0') ? sntp_server : "<empty>");
+  printf("sntp_server_source: %s\n",
+         AppNetConfigSntpServerIsOverridden() ? "nvs" : "kconfig");
+  printf("time_sync_s: %u\n",
+         (unsigned)AppNetConfigGetTimeSyncPeriodSeconds());
+  printf("time_sync_s_source: %s\n",
+         AppNetConfigTimeSyncPeriodIsOverridden() ? "nvs" : "kconfig");
 }
 
 /**
@@ -307,8 +358,8 @@ PrintWifiUsage(void)
 static const char*
 PickDefaultSntpServer(void)
 {
-  return (CONFIG_APP_SNTP_SERVER[0] != '\0') ? CONFIG_APP_SNTP_SERVER
-                                             : "pool.ntp.org";
+  const char* server = AppNetConfigGetSntpServer();
+  return (server[0] != '\0') ? server : "pool.ntp.org";
 }
 
 /**
@@ -2705,6 +2756,82 @@ CommandWifi(int argc, char** argv)
     }
     printf("OK\n");
     return 0;
+  }
+
+  if (strcmp(action, "cfg") == 0) {
+    if (argc < 3) {
+      PrintWifiUsage();
+      return 1;
+    }
+    const char* subaction = argv[2];
+    if (strcmp(subaction, "show") == 0) {
+      PrintWifiConfig();
+      return 0;
+    }
+    if (strcmp(subaction, "defaults") == 0) {
+      esp_err_t result = AppNetConfigClearAllOverrides();
+      if (result != ESP_OK) {
+        printf("defaults failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+      printf("OK\n");
+      if (RuntimeIsRunning()) {
+        printf("note: run stop; run start to apply\n");
+      }
+      return 0;
+    }
+    if (strcmp(subaction, "set") == 0) {
+      if (argc < 5) {
+        PrintWifiUsage();
+        return 1;
+      }
+      const char* key = argv[3];
+      const char* value = argv[4];
+      esp_err_t result = ESP_ERR_INVALID_ARG;
+
+      if (strcmp(key, "sntp") == 0) {
+        result = AppNetConfigSetSntpServer(value);
+      } else if (strcmp(key, "mesh_chan") == 0) {
+        char* end = NULL;
+        unsigned long channel = strtoul(value, &end, 10);
+        if (end != value && *end == '\0' && channel <= 13) {
+          result = AppNetConfigSetMeshChannel((uint8_t)channel);
+        }
+      } else if (strcmp(key, "mesh_id") == 0) {
+        result = AppNetConfigSetMeshIdString(value);
+      } else if (strcmp(key, "mesh_ap_pass") == 0) {
+        result = AppNetConfigSetMeshApPassword(value);
+      } else if (strcmp(key, "no_router") == 0) {
+        if (strcmp(value, "0") == 0) {
+          result = AppNetConfigSetMeshDisableRouter(false);
+        } else if (strcmp(value, "1") == 0) {
+          result = AppNetConfigSetMeshDisableRouter(true);
+        }
+      } else if (strcmp(key, "time_sync_s") == 0) {
+        char* end = NULL;
+        unsigned long seconds = strtoul(value, &end, 10);
+        if (end != value && *end == '\0' && seconds <= UINT32_MAX) {
+          result = AppNetConfigSetTimeSyncPeriodSeconds((uint32_t)seconds);
+        }
+      } else {
+        PrintWifiUsage();
+        return 1;
+      }
+
+      if (result != ESP_OK) {
+        printf("set failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+
+      printf("OK\n");
+      if (RuntimeIsRunning()) {
+        printf("note: run stop; run start to apply\n");
+      }
+      return 0;
+    }
+
+    PrintWifiUsage();
+    return 1;
   }
 
   if (strcmp(action, "ntp") == 0) {

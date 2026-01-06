@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "app_net_config.h"
 #include "alerts/alert_manager.h"
 #include "calibration.h"
 #include "data_csv.h"
@@ -2531,7 +2532,8 @@ TimeSyncTask(void* context)
         const int64_t now_seconds = (int64_t)time(NULL);
         (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
       }
-      vTaskDelay(pdMS_TO_TICKS(CONFIG_APP_TIME_SYNC_PERIOD_S * 1000));
+      vTaskDelay(pdMS_TO_TICKS(
+        AppNetConfigGetTimeSyncPeriodSeconds() * 1000));
     }
   }
 
@@ -2585,7 +2587,7 @@ DirectWifiTask(void* context)
     bool time_valid = TimeSyncIsSystemTimeValid();
     if (connected && !time_valid) {
       esp_err_t sntp_result =
-        TimeSyncStartSntpAndWait(CONFIG_APP_SNTP_SERVER, 30 * 1000);
+        TimeSyncStartSntpAndWait(AppNetConfigGetSntpServer(), 30 * 1000);
       if (sntp_result == ESP_OK) {
         (void)TimeSyncSetRtcFromSystem(&state->time_sync);
       }
@@ -3176,6 +3178,16 @@ RuntimeManagerInit(void)
       kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
   AppSettingsApplyTimeZone(&g_state.settings);
+
+  esp_err_t net_config_result = AppNetConfigInit();
+  if (net_config_result != ESP_OK) {
+    if (first_error == ESP_OK) {
+      first_error = net_config_result;
+    }
+    ESP_LOGE(kTag,
+             "AppNetConfigInit failed: %s",
+             esp_err_to_name(net_config_result));
+  }
   UpdateCachedUint32(&g_state,
                      &g_state.cached_status.disp_attn_mask,
                      g_state.settings.display_attention_mask);
@@ -3570,13 +3582,7 @@ RuntimeStart(void)
     }
   }
 
-  bool router_disabled = false;
-#if defined(CONFIG_APP_MESH_DISABLE_ROUTER)
-  // CONFIG_APP_MESH_DISABLE_ROUTER
-  // is a Kconfig bool and
-  // expands to 0 or 1.
-  router_disabled = (CONFIG_APP_MESH_DISABLE_ROUTER != 0);
-#endif
+  const bool router_disabled = AppNetConfigGetMeshDisableRouter();
 
   RuntimeEnableDataStreaming(true);
 
@@ -3642,7 +3648,7 @@ wifi_direct_start_done:
   if (g_state.mesh_started && g_state.mesh.is_root &&
       effective_net_mode == APP_NET_MODE_MESH) {
     esp_err_t sntp_result =
-      TimeSyncStartSntpAndWait(CONFIG_APP_SNTP_SERVER, 30 * 1000);
+      TimeSyncStartSntpAndWait(AppNetConfigGetSntpServer(), 30 * 1000);
     if (sntp_result == ESP_OK) {
       (void)TimeSyncSetRtcFromSystem(&g_state.time_sync);
     } else {

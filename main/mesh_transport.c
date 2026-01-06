@@ -4,9 +4,11 @@
 #include <string.h>
 #include <time.h>
 
+#include "app_net_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "esp_mac.h"
 #include "esp_log.h"
 #include "esp_mesh_lite.h"
 #include "esp_mesh_lite_core.h"
@@ -425,11 +427,9 @@ ApplyMeshSoftApChannelBestEffort(int channel)
     strlcpy((char*)ap_config.ap.ssid, kMeshSoftApSsid, sizeof(ap_config.ap.ssid));
     ap_config.ap.ssid_len = (uint8_t)strlen((const char*)ap_config.ap.ssid);
 
-#ifdef CONFIG_APP_MESH_AP_PASSWORD
     strlcpy((char*)ap_config.ap.password,
-            CONFIG_APP_MESH_AP_PASSWORD,
+            AppNetConfigGetMeshApPassword(),
             sizeof(ap_config.ap.password));
-#endif
 
     if (ap_config.ap.password[0] == '\0') {
       ap_config.ap.authmode = WIFI_AUTH_OPEN;
@@ -580,10 +580,7 @@ MeshTransportStart(mesh_transport_t* mesh,
     return svc_result;
   }
 
-  bool router_disabled = false;
-#ifdef CONFIG_APP_MESH_DISABLE_ROUTER
-  router_disabled = CONFIG_APP_MESH_DISABLE_ROUTER;
-#endif
+  const bool router_disabled = AppNetConfigGetMeshDisableRouter();
 
   esp_mesh_lite_config_t mesh_lite_config = ESP_MESH_LITE_DEFAULT_INIT();
   mesh_lite_config.join_mesh_ignore_router_status = true;
@@ -592,7 +589,23 @@ MeshTransportStart(mesh_transport_t* mesh,
   mesh_lite_config.join_mesh_without_configured_wifi =
     router_disabled || !is_root;
   mesh_lite_config.softap_ssid = kMeshSoftApSsid;
-  mesh_lite_config.softap_password = CONFIG_APP_MESH_AP_PASSWORD;
+  mesh_lite_config.softap_password = AppNetConfigGetMeshApPassword();
+
+  pt100_mesh_addr_t mesh_id = { 0 };
+  char mesh_id_str[20] = { 0 };
+  if (AppNetConfigGetMeshId(&mesh_id)) {
+    snprintf(mesh_id_str,
+             sizeof(mesh_id_str),
+             MACSTR,
+             MAC2STR(mesh_id.addr));
+    ESP_LOGI(kTag,
+             "mesh id=%s source=%s",
+             mesh_id_str,
+             AppNetConfigMeshIdIsOverridden() ? "nvs" : "kconfig");
+  } else {
+    ESP_LOGW(kTag, "mesh id invalid (source=%s)",
+             AppNetConfigMeshIdIsOverridden() ? "nvs" : "kconfig");
+  }
 
   ESP_LOGI(kTag, "starting Mesh-Lite (root=%d)", (int)is_root);
   esp_mesh_lite_init(&mesh_lite_config);
@@ -615,9 +628,7 @@ MeshTransportStart(mesh_transport_t* mesh,
   // Match the Mesh-Lite "no_router" example behavior: configure the SoftAP
   // channel explicitly. If the root later connects to an upstream router, the
   // Wi-Fi driver will move APSTA to the router's channel.
-#ifdef CONFIG_APP_MESH_CHANNEL
-  ApplyMeshSoftApChannelBestEffort(CONFIG_APP_MESH_CHANNEL);
-#endif
+  ApplyMeshSoftApChannelBestEffort(AppNetConfigGetMeshChannel());
 
   esp_err_t raw_action_result =
     esp_mesh_lite_raw_msg_action_list_register(kMeshRawActions);
