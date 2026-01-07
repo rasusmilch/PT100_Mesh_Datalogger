@@ -3700,6 +3700,24 @@ RuntimeStart(void)
       g_state.time_sync_task != NULL || g_state.topology_task != NULL ||
       g_state.health_publisher_task != NULL ||
       g_state.wifi_direct_task != NULL) {
+    if (g_state.sensor_task != NULL) {
+      ESP_LOGW(kTag, "Start blocked: sensor_task still alive");
+    }
+    if (g_state.storage_task != NULL) {
+      ESP_LOGW(kTag, "Start blocked: storage_task still alive");
+    }
+    if (g_state.time_sync_task != NULL) {
+      ESP_LOGW(kTag, "Start blocked: time_sync_task still alive");
+    }
+    if (g_state.topology_task != NULL) {
+      ESP_LOGW(kTag, "Start blocked: topology_task still alive");
+    }
+    if (g_state.health_publisher_task != NULL) {
+      ESP_LOGW(kTag, "Start blocked: health_publisher_task still alive");
+    }
+    if (g_state.wifi_direct_task != NULL) {
+      ESP_LOGW(kTag, "Start blocked: wifi_direct_task still alive");
+    }
     return ESP_ERR_INVALID_STATE;
   }
   if (g_state.log_queue == NULL) {
