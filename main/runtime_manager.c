@@ -4080,10 +4080,10 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   state->csv_header_emitted = false;
   state->root_bridge_header_emitted = false;
   state->stop_requested = true;
+  RuntimeNotifyAllRunTasks(state);
   state->is_running = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, true);
   UpdateCachedBool(state, &state->cached_status.runtime_running, false);
-  RuntimeNotifyAllRunTasks(state);
 
   const TickType_t wait_start = xTaskGetTickCount();
   while ((state->sensor_task != NULL || state->storage_task != NULL ||
@@ -4093,8 +4093,63 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
           state->wifi_direct_task != NULL || state->bridge_task != NULL ||
           state->broker_task != NULL || state->alert_monitor_task != NULL ||
           state->alert_sender_task != NULL) &&
-         (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 5000)) {
+         (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 15000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  if (state->sensor_task != NULL || state->storage_task != NULL ||
+      state->export_task != NULL || state->export_network_task != NULL ||
+      state->time_sync_task != NULL || state->topology_task != NULL ||
+      state->health_publisher_task != NULL || state->wifi_direct_task != NULL ||
+      state->bridge_task != NULL || state->broker_task != NULL ||
+      state->alert_monitor_task != NULL || state->alert_sender_task != NULL) {
+    if (state->sensor_task != NULL) {
+      ESP_LOGW(kTag, "Stop timeout: sensor_task still running (%p)", state->sensor_task);
+    }
+    if (state->storage_task != NULL) {
+      ESP_LOGW(kTag, "Stop timeout: storage_task still running (%p)", state->storage_task);
+    }
+    if (state->export_task != NULL) {
+      ESP_LOGW(kTag, "Stop timeout: export_task still running (%p)", state->export_task);
+    }
+    if (state->export_network_task != NULL) {
+      ESP_LOGW(kTag,
+               "Stop timeout: export_network_task still running (%p)",
+               state->export_network_task);
+    }
+    if (state->time_sync_task != NULL) {
+      ESP_LOGW(kTag, "Stop timeout: time_sync_task still running (%p)", state->time_sync_task);
+    }
+    if (state->topology_task != NULL) {
+      ESP_LOGW(kTag, "Stop timeout: topology_task still running (%p)", state->topology_task);
+    }
+    if (state->health_publisher_task != NULL) {
+      ESP_LOGW(kTag,
+               "Stop timeout: health_publisher_task still running (%p)",
+               state->health_publisher_task);
+    }
+    if (state->wifi_direct_task != NULL) {
+      ESP_LOGW(kTag,
+               "Stop timeout: wifi_direct_task still running (%p)",
+               state->wifi_direct_task);
+    }
+    if (state->bridge_task != NULL) {
+      ESP_LOGW(kTag, "Stop timeout: bridge_task still running (%p)", state->bridge_task);
+    }
+    if (state->broker_task != NULL) {
+      ESP_LOGW(kTag, "Stop timeout: broker_task still running (%p)", state->broker_task);
+    }
+    if (state->alert_monitor_task != NULL) {
+      ESP_LOGW(kTag,
+               "Stop timeout: alert_monitor_task still running (%p)",
+               state->alert_monitor_task);
+    }
+    if (state->alert_sender_task != NULL) {
+      ESP_LOGW(kTag,
+               "Stop timeout: alert_sender_task still running (%p)",
+               state->alert_sender_task);
+    }
+    return ESP_ERR_TIMEOUT;
   }
 
   return ESP_OK;
