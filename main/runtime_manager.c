@@ -2597,8 +2597,13 @@ TimeSyncTask(void* context)
         const int64_t now_seconds = (int64_t)time(NULL);
         (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
       }
-      RuntimeInterruptibleDelayTicks(
-        pdMS_TO_TICKS(AppNetConfigGetTimeSyncPeriodSeconds() * 1000));
+      uint64_t period_ms =
+        (uint64_t)AppNetConfigGetTimeSyncPeriodSeconds() * 1000ULL;
+      if (period_ms < 1000ULL) {
+        period_ms = 1000ULL;
+      }
+      const TickType_t period_ticks = pdMS_TO_TICKS(period_ms);
+      RuntimeInterruptibleDelayTicks(period_ticks);
     }
   }
 
