@@ -123,6 +123,32 @@ DisplayAttentionItemToName(display_attention_item_t item)
   }
 }
 
+static bool
+IsRuntimeWifiDirectMode(void)
+{
+  if (!RuntimeIsRunning()) {
+    return false;
+  }
+  if (g_runtime == NULL || g_runtime->settings == NULL) {
+    return false;
+  }
+
+  const app_net_mode_t effective_net_mode =
+    (g_runtime->settings->node_role == APP_NODE_ROLE_ROOT)
+      ? APP_NET_MODE_MESH
+      : g_runtime->settings->net_mode;
+  return effective_net_mode == APP_NET_MODE_WIFI;
+}
+
+static void
+MaybeNudgeWifiDirectTask(void)
+{
+  if (!IsRuntimeWifiDirectMode()) {
+    return;
+  }
+  RuntimeNudgeWifiDirectTask();
+}
+
 /**
  * @brief Execute ParseDisplayAttentionName.
  * @param value Parameter value.
@@ -2618,6 +2644,7 @@ CommandWifi(int argc, char** argv)
       return 1;
     }
     printf("OK\n");
+    MaybeNudgeWifiDirectTask();
     return 0;
   }
 
@@ -2910,6 +2937,7 @@ CommandWifi(int argc, char** argv)
       }
 
       printf("OK\n");
+      MaybeNudgeWifiDirectTask();
       if (RuntimeIsRunning()) {
         printf("note: run stop; run start to apply\n");
       }

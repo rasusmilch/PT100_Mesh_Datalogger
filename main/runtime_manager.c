@@ -4367,6 +4367,15 @@ RuntimeRequestRunStop(void)
 }
 
 /**
+ * @brief Execute RuntimeNudgeWifiDirectTask.
+ */
+void
+RuntimeNudgeWifiDirectTask(void)
+{
+  RuntimeNotifyTask(g_state.wifi_direct_task);
+}
+
+/**
  * @brief Execute RuntimeSdUnmountNow.
  * @return Return the function result.
  */
