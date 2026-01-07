@@ -137,7 +137,7 @@ IsRuntimeWifiDirectMode(void)
     (g_runtime->settings->node_role == APP_NODE_ROLE_ROOT)
       ? APP_NET_MODE_MESH
       : g_runtime->settings->net_mode;
-  return effective_net_mode == APP_NET_MODE_WIFI;
+  return effective_net_mode == APP_NET_MODE_DIRECT_WIFI;
 }
 
 static void
