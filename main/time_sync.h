@@ -100,6 +100,13 @@ extern "C"
  */
   void TimeSyncGetSntpStatus(time_sntp_status_t* out);
 
+  // Returns the last epoch (UTC) written to the RTC by this boot instance (0 if never).
+  int64_t TimeSyncGetLastRtcSetEpoch(void);
+
+  // Read the RTC time and return it as UTC epoch seconds.
+  esp_err_t TimeSyncReadRtcEpoch(const time_sync_t* time_sync, int64_t* out_epoch_seconds);
+
+
   // Parse an ISO-like local time string into struct tm (local).
   // Accepts "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS".
 /**

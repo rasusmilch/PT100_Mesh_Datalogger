@@ -932,7 +932,7 @@ HealthPublisherTask(void* context)
   runtime_state_t* state = (runtime_state_t*)context;
   const TickType_t tick_delay = pdMS_TO_TICKS(50);
 
-  uint32_t last_watermark_log_ms = 0;
+  // uint32_t last_watermark_log_ms = 0;
 
   while (!state->stop_requested) {
     RuntimeHealthPublisherTick(state);
@@ -2626,31 +2626,68 @@ DirectWifiTask(void* context)
       retry_delay_ms = 30 * 1000;
     }
 
-    if (connected != last_connected) {
+    // Schedule an immediate SNTP sync on each (re)connect, even if the current
+    // system time was loaded from the RTC at boot. This keeps the system time
+    // accurate and refreshes the RTC periodically.
+    static TickType_t s_next_time_sync_ticks = 0;
+
+    const bool connected_changed = (connected != last_connected);
+    if (connected_changed) {
       if (connected) {
         ESP_LOGI(kTag, "Wi-Fi connected (direct)");
+        s_next_time_sync_ticks = xTaskGetTickCount();  // immediate
       } else {
         ESP_LOGW(kTag, "Wi-Fi disconnected (direct)");
+        s_next_time_sync_ticks = 0;
       }
       last_connected = connected;
     }
 
+    const TickType_t now_ticks = xTaskGetTickCount();
+    const uint32_t time_sync_period_s = AppNetConfigGetTimeSyncPeriodSeconds();
+
     bool time_valid = TimeSyncIsSystemTimeValid();
-    if (connected && !time_valid) {
-      esp_err_t sntp_result =
-        TimeSyncStartSntpAndWait(AppNetConfigGetSntpServer(), 30 * 1000);
-      if (sntp_result == ESP_OK) {
-        (void)TimeSyncSetRtcFromSystem(&state->time_sync);
+    UpdateTimeHealthState(state, time_valid);
+
+    if (connected && s_next_time_sync_ticks != 0 && now_ticks >= s_next_time_sync_ticks) {
+      const char* sntp_server = AppNetConfigGetSntpServer();
+      esp_err_t sntp_result = ESP_ERR_INVALID_STATE;
+      if (sntp_server != NULL && sntp_server[0] != '\0') {
+        sntp_result = TimeSyncStartSntpAndWait(sntp_server, 30 * 1000);
+        if (sntp_result == ESP_OK) {
+          (void)TimeSyncSetRtcFromSystem(&state->time_sync);
+          state->wifi_direct_time_synced = true;
+          ESP_LOGI(kTag, "Time synchronized (SNTP -> RTC UTC)");
+        } else {
+          ESP_LOGW(kTag, "SNTP sync failed: %s", esp_err_to_name(sntp_result));
+        }
       }
+
+      // Schedule next sync. If the configured period is zero, we only sync once
+      // per connect (unless manually requested).
+      if (time_sync_period_s == 0) {
+        s_next_time_sync_ticks = 0;
+      } else {
+        TickType_t period_ticks = pdMS_TO_TICKS((uint64_t)time_sync_period_s * 1000ULL);
+        if (period_ticks == 0) {
+          period_ticks = pdMS_TO_TICKS(60 * 1000);
+        }
+
+        // If the sync failed, retry sooner (but not aggressively).
+        if (sntp_result != ESP_OK) {
+          const TickType_t retry_ticks = pdMS_TO_TICKS(30 * 1000);
+          if (period_ticks > retry_ticks) {
+            period_ticks = retry_ticks;
+          }
+        }
+
+        s_next_time_sync_ticks = now_ticks + period_ticks;
+      }
+
       time_valid = TimeSyncIsSystemTimeValid();
       UpdateTimeHealthState(state, time_valid);
-    }
-
-    if (time_valid != last_time_valid) {
-      if (time_valid) {
-        state->wifi_direct_time_synced = true;
-        ESP_LOGI(kTag, "Time synchronized (SNTP -> RTC UTC)");
-      }
+      last_time_valid = time_valid;
+    } else if (time_valid != last_time_valid) {
       last_time_valid = time_valid;
     }
 
@@ -2673,6 +2710,25 @@ TopologyTask(void* context)
   const TickType_t interval_ticks = pdMS_TO_TICKS(30 * 1000);
   const TickType_t warn_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
   TickType_t last_disconnected_warn_ticks = 0;
+
+  // Only emit the topology status line when something changes. This avoids
+  // spamming the CSV/console output with repeated identical lines.
+  bool have_prev_status = false;
+  char prev_role[16] = { 0 };
+  bool prev_allow_children = false;
+  int prev_layer = -9999;
+  char prev_parent_str[20] = { 0 };
+  uint32_t prev_child_count = 0;
+  int prev_rssi = -9999;
+
+  const TickType_t watermark_log_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
+  TickType_t last_watermark_log_ticks = 0;
+
+  const UBaseType_t initial_watermark_words = uxTaskGetStackHighWaterMark(NULL);
+  ESP_LOGI(kTag,
+           "topology stack watermark: %u words (%u bytes) free",
+           (unsigned)initial_watermark_words,
+           (unsigned)(initial_watermark_words * sizeof(StackType_t)));
 
   while (!state->stop_requested) {
     const char* role = AppSettingsRoleToString(state->settings.node_role);
@@ -2711,14 +2767,44 @@ TopologyTask(void* context)
     }
 
     if (!state->log_quiet) {
-      printf("topology role=%s allow_children=%u layer=%d parent=%s "
-             "children=%u rssi=%d\n",
-             role,
-             state->settings.allow_children ? 1u : 0u,
-             layer,
-             parent_str,
-             (unsigned)child_count,
-             rssi);
+      const bool allow_children = state->settings.allow_children;
+      const bool changed =
+        (!have_prev_status) ||
+        (strncmp(prev_role, role, sizeof(prev_role)) != 0) ||
+        (prev_allow_children != allow_children) || (prev_layer != layer) ||
+        (strncmp(prev_parent_str, parent_str, sizeof(prev_parent_str)) != 0) ||
+        (prev_child_count != child_count) || (prev_rssi != rssi);
+
+      if (changed) {
+        printf("topology role=%s allow_children=%u layer=%d parent=%s "
+               "children=%u rssi=%d\n",
+               role,
+               allow_children ? 1u : 0u,
+               layer,
+               parent_str,
+               (unsigned)child_count,
+               rssi);
+
+        strlcpy(prev_role, role, sizeof(prev_role));
+        prev_allow_children = allow_children;
+        prev_layer = layer;
+        strlcpy(prev_parent_str, parent_str, sizeof(prev_parent_str));
+        prev_child_count = child_count;
+        prev_rssi = rssi;
+        have_prev_status = true;
+      }
+    }
+
+    const TickType_t now_ticks = xTaskGetTickCount();
+    if ((last_watermark_log_ticks == 0) ||
+        ((now_ticks - last_watermark_log_ticks) >=
+         watermark_log_period_ticks)) {
+      const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
+      ESP_LOGI(kTag,
+               "topology stack watermark: %u words (%u bytes) free",
+               (unsigned)watermark_words,
+               (unsigned)(watermark_words * sizeof(StackType_t)));
+      last_watermark_log_ticks = now_ticks;
     }
     vTaskDelay(interval_ticks);
   }
@@ -3768,7 +3854,6 @@ wifi_direct_start_done:
 
   health_publish_created = xTaskCreate(&HealthPublisherTask,
                                        "health_pub",
-
                                        4096,
                                        &g_state,
                                        3,
@@ -3781,7 +3866,6 @@ wifi_direct_start_done:
   if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
     wifi_direct_created = xTaskCreate(&DirectWifiTask,
                                       "wifi_direct",
-
                                       4096,
                                       &g_state,
                                       3,
@@ -3800,7 +3884,7 @@ wifi_direct_start_done:
       ESP_LOGE(kTag, "Failed to create task sensor");
     }
     storage_created = xTaskCreate(
-      &StorageTask, "storage", 3072, &g_state, 6, &g_state.storage_task);
+      &StorageTask, "storage", 8192, &g_state, 6, &g_state.storage_task);
     if (storage_created != pdPASS) {
       g_state.storage_task = NULL;
       ESP_LOGE(kTag, "Failed to create task storage");
@@ -3809,7 +3893,7 @@ wifi_direct_start_done:
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     export_created = xTaskCreate(
-      &ExportTask, "export", 4096, &g_state, 4, &g_state.export_task);
+      &ExportTask, "export", 6144, &g_state, 4, &g_state.export_task);
     if (export_created != pdPASS) {
       g_state.export_task = NULL;
       ESP_LOGE(kTag, "Failed to create task export");
@@ -3864,7 +3948,7 @@ wifi_direct_start_done:
   }
 
   topology_created = xTaskCreate(
-    &TopologyTask, "topology", 1536, &g_state, 3, &g_state.topology_task);
+    &TopologyTask, "topology", 3072, &g_state, 3, &g_state.topology_task);
   if (topology_created != pdPASS) {
     g_state.topology_task = NULL;
     ESP_LOGE(kTag, "Failed to create task topology");

@@ -2955,7 +2955,21 @@ CommandWifi(int argc, char** argv)
         (g_runtime != NULL && g_runtime->time_sync != NULL &&
          g_runtime->time_sync->is_ds3231_ready);
       printf("rtc_present: %s\n", rtc_present ? "yes" : "no");
-      printf("rtc_last_set_epoch: n/a\n");
+
+      int64_t rtc_epoch = 0;
+      if (rtc_present && g_runtime != NULL && g_runtime->time_sync != NULL &&
+          TimeSyncReadRtcEpoch(g_runtime->time_sync, &rtc_epoch) == ESP_OK) {
+        printf("rtc_epoch_utc: %" PRId64 "\n", rtc_epoch);
+      } else {
+        printf("rtc_epoch_utc: n/a\n");
+      }
+
+      const int64_t rtc_last_set_epoch = TimeSyncGetLastRtcSetEpoch();
+      if (rtc_last_set_epoch > 0) {
+        printf("rtc_last_set_epoch: %" PRId64 "\n", rtc_last_set_epoch);
+      } else {
+        printf("rtc_last_set_epoch: n/a\n");
+      }
       return 0;
     }
 

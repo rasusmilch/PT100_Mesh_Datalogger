@@ -4,8 +4,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <ctype.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -26,6 +26,8 @@ static char s_last_sntp_server[64] = "";
 static int64_t s_last_sntp_attempt_epoch = 0;
 static esp_err_t s_last_sntp_result = ESP_ERR_INVALID_STATE;
 static int64_t s_last_sntp_success_epoch = 0;
+static int64_t s_last_rtc_set_epoch = 0;
+static bool s_esp_netif_sntp_initialized = false;
 
 /**
  * @brief Execute BcdToBinary.
@@ -66,37 +68,40 @@ YearLooksValid(int year_since_1900)
  * @param tm_utc Parameter tm_utc.
  * @return Return the function result.
  */
-static time_t
-UtcTmToEpochSeconds(struct tm* tm_utc)
+static int64_t
+DaysFromCivil(int year, unsigned month, unsigned day)
 {
-  if (tm_utc == NULL) {
-    return (time_t)-1;
+  // Howard Hinnant's algorithm: days since 1970-01-01.
+  // month: 1-12, day: 1-31.
+  year -= (month <= 2);
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = (unsigned)(year - era * 400); // [0, 399]
+  const unsigned doy =
+    (153U * (month + (month > 2 ? (unsigned)-3 : 9)) + 2U) / 5U + day - 1U;
+  const unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy; // [0, 146096]
+  return (int64_t)era * 146097 + (int64_t)doe - 719468;
+}
+
+int64_t
+UtcTmToEpochSeconds(const struct tm* utc_tm)
+{
+  // Convert a UTC tm to epoch seconds without touching the process TZ.
+  // (Avoids setenv()/tzset(), which are global and can be risky once multiple
+  // tasks are running.)
+  if (utc_tm == NULL) {
+    return 0;
   }
 
-  // DS3231 values are UTC in this application (see TimeSyncSetRtcFromSystem).
-  //
-  // mktime() interprets its input as local time under the currently configured TZ.
-  // When a non-UTC TZ is active (e.g. CST6CDT,...), using mktime() directly will
-  // incorrectly apply the TZ offset and skew the epoch (typically by 6 hours).
-  //
-  // Convert in a TZ-agnostic way by temporarily forcing TZ=UTC0.
-  const char* previous_tz = getenv("TZ");
-  char previous_tz_copy[80] = { 0 };
-  if (previous_tz != NULL) {
-    strncpy(previous_tz_copy, previous_tz, sizeof(previous_tz_copy) - 1);
-  }
+  const int year = utc_tm->tm_year + 1900;
+  const unsigned month = (unsigned)(utc_tm->tm_mon + 1);
+  const unsigned day = (unsigned)utc_tm->tm_mday;
 
-  setenv("TZ", "UTC0", 1);
-  tzset();
-  const time_t epoch_seconds = mktime(tm_utc);
+  const int64_t days = DaysFromCivil(year, month, day);
+  const int64_t seconds = days * 86400LL + (int64_t)utc_tm->tm_hour * 3600LL +
+                          (int64_t)utc_tm->tm_min * 60LL +
+                          (int64_t)utc_tm->tm_sec;
 
-  if (previous_tz == NULL) {
-    unsetenv("TZ");
-  } else {
-    setenv("TZ", previous_tz_copy, 1);
-  }
-  tzset();
-  return epoch_seconds;
+  return seconds;
 }
 
 /**
@@ -107,9 +112,7 @@ UtcTmToEpochSeconds(struct tm* tm_utc)
  * @return Return the function result.
  */
 esp_err_t
-TimeSyncInit(time_sync_t* time_sync,
-             i2c_bus_t* i2c_bus,
-             uint8_t ds3231_addr)
+TimeSyncInit(time_sync_t* time_sync, i2c_bus_t* i2c_bus, uint8_t ds3231_addr)
 {
   if (time_sync == NULL || i2c_bus == NULL) {
     return ESP_ERR_INVALID_ARG;
@@ -138,8 +141,8 @@ static esp_err_t
 Ds3231ReadTime(const time_sync_t* time_sync, struct tm* time_out)
 {
   uint8_t regs[7] = { 0 };
-  esp_err_t result = I2cBusReadRegister(
-    time_sync->ds3231_device, 0x00, regs, sizeof(regs));
+  esp_err_t result =
+    I2cBusReadRegister(time_sync->ds3231_device, 0x00, regs, sizeof(regs));
   if (result != ESP_OK) {
     return result;
   }
@@ -247,6 +250,7 @@ TimeSyncSetRtcFromSystem(const time_sync_t* time_sync)
 
   esp_err_t result = Ds3231WriteTime(time_sync, &now_utc);
   if (result == ESP_OK) {
+    s_last_rtc_set_epoch = (int64_t)now_seconds;
     ESP_LOGI(kTag, "RTC updated from system time");
   }
   return result;
@@ -301,6 +305,40 @@ TimeSyncGetSntpStatus(time_sntp_status_t* out)
   out->last_success_epoch = s_last_sntp_success_epoch;
 }
 
+int64_t
+TimeSyncGetLastRtcSetEpoch(void)
+{
+  return s_last_rtc_set_epoch;
+}
+
+esp_err_t
+TimeSyncReadRtcEpoch(const time_sync_t* time_sync, int64_t* out_epoch_seconds)
+{
+  if (out_epoch_seconds == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  *out_epoch_seconds = 0;
+
+  if (time_sync == NULL || !time_sync->is_ds3231_ready) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  struct tm rtc_tm = { 0 };
+  const esp_err_t read_result = Ds3231ReadTime(time_sync, &rtc_tm);
+  if (read_result != ESP_OK) {
+    return read_result;
+  }
+
+  // DS3231 is stored as UTC. Ensure plausibility before converting.
+  if (!YearLooksValid(rtc_tm.tm_year)) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  rtc_tm.tm_isdst = 0;
+
+  *out_epoch_seconds = UtcTmToEpochSeconds(&rtc_tm);
+  return ESP_OK;
+}
+
 /**
  * @brief Execute LocalTmFieldsMatch.
  * @param left Parameter left.
@@ -343,12 +381,26 @@ TimeParseLocalIso(const char* iso, struct tm* out_tm_local)
   int minute = 0;
   int second = 0;
   int consumed = 0;
-  int matched = sscanf(
-    iso, "%d-%d-%d %d:%d:%d %n", &year, &month, &day, &hour, &minute, &second, &consumed);
+  int matched = sscanf(iso,
+                       "%d-%d-%d %d:%d:%d %n",
+                       &year,
+                       &month,
+                       &day,
+                       &hour,
+                       &minute,
+                       &second,
+                       &consumed);
   if (matched != 6) {
     consumed = 0;
-    matched = sscanf(
-      iso, "%d-%d-%dT%d:%d:%d %n", &year, &month, &day, &hour, &minute, &second, &consumed);
+    matched = sscanf(iso,
+                     "%d-%d-%dT%d:%d:%d %n",
+                     &year,
+                     &month,
+                     &day,
+                     &hour,
+                     &minute,
+                     &second,
+                     &consumed);
   }
   if (matched != 6 || consumed <= 0) {
     return ESP_ERR_INVALID_ARG;
@@ -464,34 +516,49 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
     return ESP_ERR_INVALID_ARG;
   }
 
-  strncpy(
-    s_last_sntp_server, sntp_server, sizeof(s_last_sntp_server) - 1);
+  strncpy(s_last_sntp_server, sntp_server, sizeof(s_last_sntp_server) - 1);
   s_last_sntp_server[sizeof(s_last_sntp_server) - 1] = '\0';
   s_last_sntp_attempt_epoch = (int64_t)time(NULL);
   s_last_sntp_result = ESP_ERR_INVALID_STATE;
 
 #if APP_USE_ESP_NETIF_SNTP
+  // esp_netif_sntp_init() may only be called once unless the service is
+  // destroyed with esp_netif_sntp_deinit(). Deinit between one-off syncs to
+  // avoid "already initialized" warnings and to allow server changes.
+  if (s_esp_netif_sntp_initialized) {
+    esp_netif_sntp_deinit();
+    s_esp_netif_sntp_initialized = false;
+  }
+
   esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(sntp_server);
   config.smooth_sync = false;
-  esp_netif_sntp_init(&config);
+  const esp_err_t init_result = esp_netif_sntp_init(&config);
+  if (init_result != ESP_OK) {
+    ESP_LOGW(kTag, "SNTP init failed: %s", esp_err_to_name(init_result));
+    s_last_sntp_result = init_result;
+    return init_result;
+  }
+  s_esp_netif_sntp_initialized = true;
 
-  esp_err_t wait_result = ESP_OK;
+  esp_err_t wait_result = ESP_ERR_TIMEOUT;
   const TickType_t start_ticks = xTaskGetTickCount();
   while (true) {
-    // Prefer sync_wait when available, but poll to stay robust across versions.
 #ifdef esp_netif_sntp_sync_wait
     wait_result = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(250));
-    if (wait_result == ESP_OK) {
+    if (wait_result == ESP_OK && TimeSyncIsSystemTimeValid()) {
       break;
     }
 #else
     // No sync_wait symbol; poll for valid time instead.
-    wait_result = ESP_ERR_TIMEOUT;
-#endif
+
     if (TimeSyncIsSystemTimeValid()) {
       wait_result = ESP_OK;
       break;
     }
+    wait_result = ESP_ERR_TIMEOUT;
+    vTaskDelay(pdMS_TO_TICKS(200));
+#endif
+
     const int elapsed_ms =
       (int)pdTICKS_TO_MS(xTaskGetTickCount() - start_ticks);
     if (elapsed_ms >= timeout_ms) {
@@ -499,6 +566,10 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
       break;
     }
   }
+
+  // Stop + destroy the SNTP service; we run it only for one-off sync requests.
+  esp_netif_sntp_deinit();
+  s_esp_netif_sntp_initialized = false;
 
   if (wait_result != ESP_OK) {
     ESP_LOGW(kTag, "SNTP timeout/failure: %s", esp_err_to_name(wait_result));
@@ -577,7 +648,8 @@ TimeSyncReadRtcRegisters(const time_sync_t* time_sync,
   if (time_sync == NULL || !time_sync->is_ds3231_ready) {
     return ESP_ERR_INVALID_STATE;
   }
-  return I2cBusReadRegister(time_sync->ds3231_device, start_reg, data_out, length);
+  return I2cBusReadRegister(
+    time_sync->ds3231_device, start_reg, data_out, length);
 }
 
 /**
