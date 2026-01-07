@@ -53,6 +53,32 @@ static const uint32_t kExportOutboxDepth = CONFIG_APP_EXPORT_OUTBOX_DEPTH;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 
+static void
+RuntimeNotifyTask(TaskHandle_t handle)
+{
+  if (handle == NULL) {
+    return;
+  }
+  xTaskNotifyGive(handle);
+}
+
+static void
+RuntimeNotifyAllRunTasks(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  RuntimeNotifyTask(state->wifi_direct_task);
+  RuntimeNotifyTask(state->topology_task);
+  RuntimeNotifyTask(state->time_sync_task);
+}
+
+static void
+RuntimeInterruptibleDelayTicks(TickType_t delay_ticks)
+{
+  (void)ulTaskNotifyTake(pdTRUE, delay_ticks);
+}
+
 /**
  * @brief Execute UpdateCachedBool.
  * @param state Parameter state.
@@ -2554,7 +2580,7 @@ TimeSyncTask(void* context)
       if (mesh_connected) {
         (void)MeshTransportRequestTime(&state->mesh);
       }
-      vTaskDelay(pdMS_TO_TICKS(10 * 1000));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(10 * 1000));
     }
   }
 
@@ -2571,7 +2597,8 @@ TimeSyncTask(void* context)
         const int64_t now_seconds = (int64_t)time(NULL);
         (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
       }
-      vTaskDelay(pdMS_TO_TICKS(AppNetConfigGetTimeSyncPeriodSeconds() * 1000));
+      RuntimeInterruptibleDelayTicks(
+        pdMS_TO_TICKS(AppNetConfigGetTimeSyncPeriodSeconds() * 1000));
     }
   }
 
@@ -2693,7 +2720,7 @@ DirectWifiTask(void* context)
       last_time_valid = time_valid;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
+    RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(retry_delay_ms));
   }
 
   state->wifi_direct_task = NULL;
@@ -2808,7 +2835,7 @@ TopologyTask(void* context)
     //            (unsigned)(watermark_words * sizeof(StackType_t)));
     //   last_watermark_log_ticks = now_ticks;
     // }
-    vTaskDelay(interval_ticks);
+    RuntimeInterruptibleDelayTicks(interval_ticks);
   }
 
   state->topology_task = NULL;
@@ -4051,6 +4078,7 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   state->is_running = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, true);
   UpdateCachedBool(state, &state->cached_status.runtime_running, false);
+  RuntimeNotifyAllRunTasks(state);
 
   const TickType_t wait_start = xTaskGetTickCount();
   while ((state->sensor_task != NULL || state->storage_task != NULL ||
