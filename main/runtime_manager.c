@@ -2635,7 +2635,7 @@ DirectWifiTask(void* context)
     if (connected_changed) {
       if (connected) {
         ESP_LOGI(kTag, "Wi-Fi connected (direct)");
-        s_next_time_sync_ticks = xTaskGetTickCount();  // immediate
+        s_next_time_sync_ticks = xTaskGetTickCount(); // immediate
       } else {
         ESP_LOGW(kTag, "Wi-Fi disconnected (direct)");
         s_next_time_sync_ticks = 0;
@@ -2649,7 +2649,8 @@ DirectWifiTask(void* context)
     bool time_valid = TimeSyncIsSystemTimeValid();
     UpdateTimeHealthState(state, time_valid);
 
-    if (connected && s_next_time_sync_ticks != 0 && now_ticks >= s_next_time_sync_ticks) {
+    if (connected && s_next_time_sync_ticks != 0 &&
+        now_ticks >= s_next_time_sync_ticks) {
       const char* sntp_server = AppNetConfigGetSntpServer();
       esp_err_t sntp_result = ESP_ERR_INVALID_STATE;
       if (sntp_server != NULL && sntp_server[0] != '\0') {
@@ -2668,7 +2669,8 @@ DirectWifiTask(void* context)
       if (time_sync_period_s == 0) {
         s_next_time_sync_ticks = 0;
       } else {
-        TickType_t period_ticks = pdMS_TO_TICKS((uint64_t)time_sync_period_s * 1000ULL);
+        TickType_t period_ticks =
+          pdMS_TO_TICKS((uint64_t)time_sync_period_s * 1000ULL);
         if (period_ticks == 0) {
           period_ticks = pdMS_TO_TICKS(60 * 1000);
         }
@@ -2721,14 +2723,14 @@ TopologyTask(void* context)
   uint32_t prev_child_count = 0;
   int prev_rssi = -9999;
 
-  const TickType_t watermark_log_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
-  TickType_t last_watermark_log_ticks = 0;
+  // const TickType_t watermark_log_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
+  // TickType_t last_watermark_log_ticks = 0;
 
-  const UBaseType_t initial_watermark_words = uxTaskGetStackHighWaterMark(NULL);
-  ESP_LOGI(kTag,
-           "topology stack watermark: %u words (%u bytes) free",
-           (unsigned)initial_watermark_words,
-           (unsigned)(initial_watermark_words * sizeof(StackType_t)));
+  // const UBaseType_t initial_watermark_words =
+  // uxTaskGetStackHighWaterMark(NULL); ESP_LOGI(kTag,
+  //          "topology stack watermark: %u words (%u bytes) free",
+  //          (unsigned)initial_watermark_words,
+  //          (unsigned)(initial_watermark_words * sizeof(StackType_t)));
 
   while (!state->stop_requested) {
     const char* role = AppSettingsRoleToString(state->settings.node_role);
@@ -2795,17 +2797,17 @@ TopologyTask(void* context)
       }
     }
 
-    const TickType_t now_ticks = xTaskGetTickCount();
-    if ((last_watermark_log_ticks == 0) ||
-        ((now_ticks - last_watermark_log_ticks) >=
-         watermark_log_period_ticks)) {
-      const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
-      ESP_LOGI(kTag,
-               "topology stack watermark: %u words (%u bytes) free",
-               (unsigned)watermark_words,
-               (unsigned)(watermark_words * sizeof(StackType_t)));
-      last_watermark_log_ticks = now_ticks;
-    }
+    // const TickType_t now_ticks = xTaskGetTickCount();
+    // if ((last_watermark_log_ticks == 0) ||
+    //     ((now_ticks - last_watermark_log_ticks) >=
+    //      watermark_log_period_ticks)) {
+    //   const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
+    //   ESP_LOGI(kTag,
+    //            "topology stack watermark: %u words (%u bytes) free",
+    //            (unsigned)watermark_words,
+    //            (unsigned)(watermark_words * sizeof(StackType_t)));
+    //   last_watermark_log_ticks = now_ticks;
+    // }
     vTaskDelay(interval_ticks);
   }
 
@@ -3948,7 +3950,7 @@ wifi_direct_start_done:
   }
 
   topology_created = xTaskCreate(
-    &TopologyTask, "topology", 3072, &g_state, 3, &g_state.topology_task);
+    &TopologyTask, "topology", 4096, &g_state, 3, &g_state.topology_task);
   if (topology_created != pdPASS) {
     g_state.topology_task = NULL;
     ESP_LOGE(kTag, "Failed to create task topology");
