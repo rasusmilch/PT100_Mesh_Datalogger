@@ -126,6 +126,11 @@ extern "C" {
   void RuntimeRequestRunStop(void);
 
 /**
+ * @brief Execute RuntimeNudgeWifiDirectTask.
+ */
+  void RuntimeNudgeWifiDirectTask(void);
+
+/**
  * @brief Execute RuntimeSdUnmountNow.
  * @return Return the function result.
  */
