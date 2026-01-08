@@ -183,6 +183,8 @@ extern "C" {
     bool initialized;
     bool is_running;
     bool stop_requested;
+    bool spi_pause_requested;
+    bool spi_paused;
     bool mesh_started;
     bool wifi_direct_started;
     bool wifi_direct_time_synced;
