@@ -265,3 +265,16 @@ RunGpioInit(void)
     ESP_LOGE(kTag, "Failed to create run GPIO task");
   }
 }
+
+/**
+ * @brief Execute RunGpioStopActive.
+ * @return Return the function result.
+ */
+bool
+RunGpioStopActive(void)
+{
+  if (!g_run_gpio.stop.enabled) {
+    return false;
+  }
+  return g_run_gpio.stop.last_active;
+}
