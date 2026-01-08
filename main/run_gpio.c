@@ -16,8 +16,10 @@ typedef struct
   bool enabled;
   gpio_num_t gpio;
   bool last_level;
+  bool last_active;
   TickType_t last_change_ticks;
   TickType_t low_start_ticks;
+  TickType_t holdoff_until_ticks;
   bool waiting_release;
 } run_gpio_input_t;
 
@@ -27,9 +29,23 @@ typedef struct
   run_gpio_input_t stop;
   uint32_t debounce_ms;
   uint32_t hold_ms;
+  uint32_t holdoff_ms;
 } run_gpio_state_t;
 
 static run_gpio_state_t g_run_gpio;
+
+/**
+ * @brief Execute DetermineActive.
+ * @param input Parameter input.
+ * @param level_high Parameter level_high.
+ * @return Return the function result.
+ */
+static bool
+DetermineActive(const run_gpio_input_t* input, bool level_high)
+{
+  (void)input;
+  return !level_high;
+}
 
 /**
  * @brief Execute ConfigureInput.
@@ -63,11 +79,13 @@ ConfigureInput(run_gpio_input_t* input, int gpio_num)
   input->enabled = true;
   input->gpio = (gpio_num_t)gpio_num;
   input->last_level = gpio_get_level(input->gpio);
+  input->last_active = DetermineActive(input, input->last_level);
   ESP_LOGI(
     kTag, "GPIO %d initial=%s", gpio_num, input->last_level ? "HIGH" : "LOW");
   input->last_change_ticks = now_ticks;
   input->low_start_ticks = input->last_level ? 0 : now_ticks;
-  input->waiting_release = false;
+  input->holdoff_until_ticks = 0;
+  input->waiting_release = input->last_active;
   return true;
 }
 
@@ -95,18 +113,35 @@ UpdateInput(run_gpio_input_t* input,
     input->last_change_ticks = now_ticks;
     if (level_high) {
       input->low_start_ticks = 0;
-      input->waiting_release = false;
     } else {
       input->low_start_ticks = now_ticks;
     }
   }
 
-  if (!level_high && !input->waiting_release) {
-    const uint32_t stable_ms =
-      (uint32_t)pdTICKS_TO_MS(now_ticks - input->last_change_ticks);
+  const uint32_t stable_ms =
+    (uint32_t)pdTICKS_TO_MS(now_ticks - input->last_change_ticks);
+  if (stable_ms < debounce_ms) {
+    return false;
+  }
+
+  const bool active = DetermineActive(input, input->last_level);
+  if (active != input->last_active) {
+    input->last_active = active;
+    if (!active) {
+      input->waiting_release = false;
+    }
+  }
+
+  if (active && !input->waiting_release) {
     const uint32_t low_ms =
       (uint32_t)pdTICKS_TO_MS(now_ticks - input->low_start_ticks);
-    if (stable_ms >= debounce_ms && low_ms >= hold_ms) {
+    if (low_ms >= hold_ms) {
+      if (input->holdoff_until_ticks != 0 &&
+          now_ticks < input->holdoff_until_ticks) {
+        ESP_LOGI(kTag, "GPIO %d edge ignored (holdoff)", input->gpio);
+        input->waiting_release = true;
+        return false;
+      }
       input->waiting_release = true;
       return true;
     }
@@ -143,8 +178,9 @@ PrimeInput(run_gpio_input_t* input, uint32_t debounce_ms)
     if (stable_ms >= debounce_ms) {
       input->last_level = last_level;
       input->last_change_ticks = now_ticks;
+      input->last_active = DetermineActive(input, last_level);
       input->low_start_ticks = last_level ? 0 : now_ticks;
-      input->waiting_release = !last_level;
+      input->waiting_release = input->last_active;
       break;
     }
 
@@ -174,8 +210,14 @@ RunGpioTask(void* context)
 
     if (stop_triggered) {
       RuntimeRequestRunStop();
+      state->stop.holdoff_until_ticks =
+        now_ticks + pdMS_TO_TICKS(state->holdoff_ms);
+    } else if (state->stop.last_active && start_triggered) {
+      ESP_LOGI(kTag, "Run start ignored (stop active)");
     } else if (start_triggered) {
       RuntimeRequestRunStart();
+      state->start.holdoff_until_ticks =
+        now_ticks + pdMS_TO_TICKS(state->holdoff_ms);
     }
 
     vTaskDelay(pdMS_TO_TICKS(kRunGpioPollMs));
@@ -191,6 +233,7 @@ RunGpioInit(void)
   memset(&g_run_gpio, 0, sizeof(g_run_gpio));
   g_run_gpio.debounce_ms = CONFIG_APP_RUN_GPIO_DEBOUNCE_MS;
   g_run_gpio.hold_ms = CONFIG_APP_RUN_GPIO_HOLD_MS;
+  g_run_gpio.holdoff_ms = CONFIG_APP_RUN_GPIO_HOLDOFF_MS;
 
   bool any_enabled = false;
 #if CONFIG_APP_RUN_STOP_GPIO_ENABLE
