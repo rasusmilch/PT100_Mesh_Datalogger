@@ -10,6 +10,12 @@ extern "C" {
  */
   void RunGpioInit(void);
 
+/**
+ * @brief Execute RunGpioStopActive.
+ * @return Return the function result.
+ */
+  bool RunGpioStopActive(void);
+
 #ifdef __cplusplus
 }
 #endif
