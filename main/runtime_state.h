@@ -143,6 +143,7 @@ extern "C" {
     bool sd_start_drain_pending;
     bool sd_degraded;
     bool sd_force_unmount_on_append;
+    bool sd_verify_readback;
     bool sd_last_io_error_active;
     esp_err_t sd_last_io_err;
     int sd_last_errno;

@@ -42,6 +42,25 @@ extern "C"
     bool slot_config_valid;
   } sd_logger_t;
 
+  typedef enum
+  {
+    SD_APPEND_VERIFY_NONE = 0,
+    SD_APPEND_VERIFY_READBACK_SHA256,
+  } sd_append_verify_t;
+
+  typedef enum
+  {
+    SD_APPEND_FLUSH_NEVER = 0,
+    SD_APPEND_FLUSH_ALWAYS,
+  } sd_append_flush_t;
+
+  typedef struct
+  {
+    size_t bytes_appended;
+    size_t write_calls;
+    SdCsvAppendDiagnostics diag;
+  } sd_csv_append_stats_t;
+
 /**
  * @brief Execute SdLoggerInit.
  * @param logger Parameter logger.
@@ -105,6 +124,16 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc);
+
+  esp_err_t SdLoggerAppendBatchEx(
+    sd_logger_t* logger,
+    const uint8_t* batch_bytes,
+    size_t batch_length_bytes,
+    uint64_t last_record_id,
+    sd_append_verify_t verify_mode,
+    sd_append_flush_t flush_mode,
+    const sd_csv_append_scratch_t* scratch,
+    sd_csv_append_stats_t* out_stats);
 
   // Append a verified batch (already formatted CSV) and update
   // last_record_id_on_sd.
