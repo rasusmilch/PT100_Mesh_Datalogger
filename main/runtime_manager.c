@@ -3529,6 +3529,76 @@ GetDisplaySpiHost(void)
 }
 
 /**
+ * @brief Execute InitializeMax31865Sensor.
+ * @param state Parameter state.
+ * @param spi_host Parameter spi_host.
+ * @return Return the function result.
+ */
+static esp_err_t
+InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host)
+{
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  esp_err_t sensor_result =
+    Max31865ReaderInit(&state->sensor, spi_host, CONFIG_APP_MAX31865_CS_GPIO);
+  if (sensor_result != ESP_OK) {
+    ESP_LOGE(
+      kTag, "Max31865ReaderInit failed: %s", esp_err_to_name(sensor_result));
+    return sensor_result;
+  }
+  if (state->settings.calibration.is_valid) {
+    calibration_context_t current_context;
+    AppSettingsBuildCalibrationContextFromReader(&current_context,
+                                                 &state->sensor);
+    char reason[128];
+    if (!CalibrationContextMatches(
+          &state->settings, &current_context, reason, sizeof(reason))) {
+      CalibrationModelInitIdentity(&state->settings.calibration);
+      state->settings.calibration.is_valid = false;
+      ESP_LOGW(kTag, "Calibration invalidated: %s", reason);
+    }
+  }
+  return ESP_OK;
+}
+
+#if CONFIG_APP_MAX7219_ENABLE
+/**
+ * @brief Execute InitializeMax7219Display.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+static esp_err_t
+InitializeMax7219Display(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  max7219_display_config_t display_config = {
+    .host = GetDisplaySpiHost(),
+    .mosi_gpio = CONFIG_APP_MAX7219_MOSI_GPIO,
+    .sclk_gpio = CONFIG_APP_MAX7219_SCLK_GPIO,
+    .cs_gpio = CONFIG_APP_MAX7219_CS_GPIO,
+    .chain_len = CONFIG_APP_MAX7219_CHAIN_LEN,
+    .clock_hz = 2000000,
+    .intensity = CONFIG_APP_MAX7219_INTENSITY,
+  };
+  esp_err_t display_result =
+    Max7219DisplayInit(&state->display, &display_config);
+  if (display_result == ESP_OK) {
+    state->display_initialized = true;
+  } else {
+    state->display_initialized = false;
+    ESP_LOGW(
+      kTag, "Max7219 display init failed: %s", esp_err_to_name(display_result));
+  }
+  return display_result;
+}
+#endif
+
+/**
  * @brief Execute InitializeRuntimeStruct.
  */
 static void
@@ -3666,19 +3736,8 @@ RuntimeManagerInit(void)
   (void)AlertManagerLoadConfig(&g_state.alert_manager);
 
 #if CONFIG_APP_MAX7219_ENABLE
-  max7219_display_config_t display_config = {
-    .host = GetDisplaySpiHost(),
-    .mosi_gpio = CONFIG_APP_MAX7219_MOSI_GPIO,
-    .sclk_gpio = CONFIG_APP_MAX7219_SCLK_GPIO,
-    .cs_gpio = CONFIG_APP_MAX7219_CS_GPIO,
-    .chain_len = CONFIG_APP_MAX7219_CHAIN_LEN,
-    .clock_hz = 2000000,
-    .intensity = CONFIG_APP_MAX7219_INTENSITY,
-  };
-  esp_err_t display_result =
-    Max7219DisplayInit(&g_state.display, &display_config);
-  if (display_result == ESP_OK) {
-    g_state.display_initialized = true;
+  esp_err_t display_result = InitializeMax7219Display(&g_state);
+  if (display_result == ESP_OK && g_state.display_initialized) {
     BaseType_t display_created = xTaskCreate(
       &DisplayTask, "display", 4096, &g_state, 2, &g_state.display_task);
     if (display_created != pdPASS) {
@@ -3686,9 +3745,6 @@ RuntimeManagerInit(void)
       g_state.display_task = NULL;
       ESP_LOGW(kTag, "Display task create failed");
     }
-  } else {
-    ESP_LOGW(
-      kTag, "Max7219 display init failed: %s", esp_err_to_name(display_result));
   }
 #endif
 
@@ -3824,26 +3880,9 @@ RuntimeManagerInit(void)
   UpdateCachedBool(
     &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
 
-  esp_err_t sensor_result =
-    Max31865ReaderInit(&g_state.sensor, spi_host, CONFIG_APP_MAX31865_CS_GPIO);
-  if (sensor_result != ESP_OK) {
-    if (first_error == ESP_OK) {
-      first_error = sensor_result;
-    }
-    ESP_LOGE(
-      kTag, "Max31865ReaderInit failed: %s", esp_err_to_name(sensor_result));
-  }
-  if (sensor_result == ESP_OK && g_state.settings.calibration.is_valid) {
-    calibration_context_t current_context;
-    AppSettingsBuildCalibrationContextFromReader(&current_context,
-                                                 &g_state.sensor);
-    char reason[128];
-    if (!CalibrationContextMatches(
-          &g_state.settings, &current_context, reason, sizeof(reason))) {
-      CalibrationModelInitIdentity(&g_state.settings.calibration);
-      g_state.settings.calibration.is_valid = false;
-      ESP_LOGW(kTag, "Calibration invalidated: %s", reason);
-    }
+  esp_err_t sensor_result = InitializeMax31865Sensor(&g_state, spi_host);
+  if (sensor_result != ESP_OK && first_error == ESP_OK) {
+    first_error = sensor_result;
   }
 
   if (g_log_queue_storage == NULL) {
@@ -4070,6 +4109,20 @@ RuntimeStart(void)
   if (g_state.batch_buffer == NULL || g_state.batch_buffer_size == 0) {
     return ESP_ERR_NO_MEM;
   }
+
+  if (!g_state.sensor.is_initialized) {
+    esp_err_t sensor_result =
+      InitializeMax31865Sensor(&g_state, GetSpiHost());
+    if (sensor_result != ESP_OK) {
+      return sensor_result;
+    }
+  }
+
+#if CONFIG_APP_MAX7219_ENABLE
+  if (!g_state.display_initialized) {
+    (void)InitializeMax7219Display(&g_state);
+  }
+#endif
 
   g_state.stop_requested = false;
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
@@ -4576,6 +4629,17 @@ RuntimeStopAllTasks(runtime_state_t* state)
   UpdateMqttConnectionState(state);
   state->stop_requested = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, false);
+
+#if CONFIG_APP_MAX7219_ENABLE
+  if (state->display_initialized) {
+    (void)Max7219DisplayDeinit(&state->display);
+    state->display_initialized = false;
+  }
+#endif
+
+  if (state->sensor.is_initialized) {
+    (void)Max31865ReaderDeinit(&state->sensor);
+  }
   return ESP_OK;
 }
 
