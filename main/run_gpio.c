@@ -116,6 +116,43 @@ UpdateInput(run_gpio_input_t* input,
 }
 
 /**
+ * @brief Execute PrimeInput.
+ * @param input Parameter input.
+ * @param debounce_ms Parameter debounce_ms.
+ */
+static void
+PrimeInput(run_gpio_input_t* input, uint32_t debounce_ms)
+{
+  if (input == NULL || !input->enabled) {
+    return;
+  }
+
+  bool last_level = (gpio_get_level(input->gpio) != 0);
+  TickType_t last_change_ticks = xTaskGetTickCount();
+
+  while (true) {
+    const TickType_t now_ticks = xTaskGetTickCount();
+    const bool level_high = (gpio_get_level(input->gpio) != 0);
+    if (level_high != last_level) {
+      last_level = level_high;
+      last_change_ticks = now_ticks;
+    }
+
+    const uint32_t stable_ms =
+      (uint32_t)pdTICKS_TO_MS(now_ticks - last_change_ticks);
+    if (stable_ms >= debounce_ms) {
+      input->last_level = last_level;
+      input->last_change_ticks = now_ticks;
+      input->low_start_ticks = last_level ? 0 : now_ticks;
+      input->waiting_release = !last_level;
+      break;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(kRunGpioPollMs));
+  }
+}
+
+/**
  * @brief Execute RunGpioTask.
  * @param context Parameter context.
  * @note FreeRTOS task entry for the RunGpioTask task.
@@ -124,6 +161,9 @@ static void
 RunGpioTask(void* context)
 {
   run_gpio_state_t* state = (run_gpio_state_t*)context;
+
+  PrimeInput(&state->stop, state->debounce_ms);
+  PrimeInput(&state->start, state->debounce_ms);
 
   while (true) {
     const TickType_t now_ticks = xTaskGetTickCount();
