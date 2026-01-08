@@ -1214,8 +1214,15 @@ CommandSdView(const sd_logger_t* logger)
     return 1;
   }
 
+  runtime_state_t* state = RuntimeGetState();
+  if (state == NULL || !RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
+    printf("sd view failed: sd io lock timeout\n");
+    return 1;
+  }
+
   DIR* dir = opendir(logger->mount_point);
   if (dir == NULL) {
+    RuntimeSdIoUnlock(state);
     printf("sd view failed: %s\n", strerror(errno));
     return 1;
   }
@@ -1252,6 +1259,7 @@ CommandSdView(const sd_logger_t* logger)
     ++file_count;
   }
   closedir(dir);
+  RuntimeSdIoUnlock(state);
   printf("sd file count: %d\n", file_count);
   return 0;
 }
@@ -1293,7 +1301,13 @@ static esp_err_t
 SdFormatOp(app_runtime_t* runtime, void* ctx)
 {
   (void)ctx;
-  return SdLoggerFormatDestructive(runtime->sd_logger);
+  runtime_state_t* state = RuntimeGetState();
+  if (state == NULL || !RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
+    return ESP_ERR_TIMEOUT;
+  }
+  esp_err_t result = SdLoggerFormatDestructive(runtime->sd_logger);
+  RuntimeSdIoUnlock(state);
+  return result;
 }
 
 /**

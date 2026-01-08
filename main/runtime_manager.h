@@ -76,6 +76,12 @@ extern "C" {
   const runtime_cached_status_t* RuntimeGetCachedStatus(void);
 
 /**
+ * @brief Execute RuntimeGetState.
+ * @return Return the function result.
+ */
+  runtime_state_t* RuntimeGetState(void);
+
+/**
  * @brief Execute RuntimeStart.
  * @return Return the function result.
  */
@@ -114,6 +120,20 @@ extern "C" {
  * @return Return the function result.
  */
   esp_err_t RuntimeWithTemporarySdMount(runtime_sd_op_fn_t op, void* ctx);
+
+/**
+ * @brief Execute RuntimeSdIoLock.
+ * @param state Parameter state.
+ * @param timeout_ticks Parameter timeout_ticks.
+ * @return Return the function result.
+ */
+  bool RuntimeSdIoLock(runtime_state_t* state, TickType_t timeout_ticks);
+
+/**
+ * @brief Execute RuntimeSdIoUnlock.
+ * @param state Parameter state.
+ */
+  void RuntimeSdIoUnlock(runtime_state_t* state);
 
 /**
  * @brief Execute RuntimeRequestRunStart.

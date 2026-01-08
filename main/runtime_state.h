@@ -11,6 +11,7 @@
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "log_record.h"
 #include "alerts/alert_manager.h"
@@ -114,6 +115,8 @@ extern "C" {
     fram_log_t fram_log;
     sd_logger_t sd_logger;
     sd_card_detect_t sd_card_detect;
+    StaticSemaphore_t sd_io_mutex_buf;
+    SemaphoreHandle_t sd_io_mutex;
     max31865_reader_t sensor;
     mesh_transport_t mesh;
     time_sync_t time_sync;
