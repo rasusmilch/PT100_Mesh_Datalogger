@@ -94,7 +94,7 @@ SpiTransfer(max31865_reader_t* reader,
     transaction.rx_buffer = reader->dma_rx_buf;
   }
 
-  esp_err_t result = spi_device_transmit(reader->spi_device, &transaction);
+  esp_err_t result = spi_device_polling_transmit(reader->spi_device, &transaction);
   if (result != ESP_OK) {
     return result;
   }
