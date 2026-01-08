@@ -354,6 +354,8 @@ ControlTask(void* context);
 
 static void
 EnsureSdMounted(void);
+static void
+EnsureSdMountedLocked(runtime_state_t* state);
 
 static void
 MarkSdFailure(runtime_state_t* state,
@@ -1772,9 +1774,6 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
   if (state == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  if (!state->sd_logger.is_mounted) {
-    return ESP_ERR_INVALID_STATE;
-  }
   if (state->batch_buffer == NULL || state->batch_buffer_size == 0) {
     return ESP_ERR_NO_MEM;
   }
@@ -1803,6 +1802,11 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
 
     if (!RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
       return ESP_ERR_TIMEOUT;
+    }
+    EnsureSdMountedLocked(state);
+    if (!state->sd_logger.is_mounted) {
+      RuntimeSdIoUnlock(state);
+      return ESP_ERR_INVALID_STATE;
     }
     esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
     if (sync_result != ESP_OK) {
@@ -2050,13 +2054,6 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     return ESP_OK;
   }
 
-  if (!state->sd_logger.is_mounted) {
-    if (more_pending_out != NULL) {
-      *more_pending_out = true;
-    }
-    return ESP_OK;
-  }
-
   log_record_t first_record;
   esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
   if (peek_result == ESP_ERR_INVALID_RESPONSE) {
@@ -2089,8 +2086,16 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     }
     return ESP_ERR_TIMEOUT;
   }
-  state->sd_flush_in_progress = true;
   esp_err_t result = ESP_OK;
+  state->sd_flush_in_progress = true;
+  EnsureSdMountedLocked(state);
+  if (!state->sd_logger.is_mounted) {
+    if (more_pending_out != NULL) {
+      *more_pending_out = true;
+    }
+    result = ESP_OK;
+    goto flush_done;
+  }
   esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
   if (sync_result != ESP_OK) {
     RuntimeDiagHeapCheck(state, "SD unmount (flush sync before)", false);
@@ -3358,29 +3363,28 @@ RuntimeStopForceSdUnmount(runtime_state_t* state,
   SdCsvAppendDiagnostics diag = { 0 };
   const bool locked = RuntimeSdIoLock(state, kSdIoLockTimeoutTicks);
   if (!locked) {
-    ESP_LOGW(kTag,
-             "SD STOP INCOMPLETE: SD I/O lock timeout; attempting unmount without lock");
+    ESP_LOGW(
+      kTag,
+      "SD STOP INCOMPLETE: SD I/O lock timeout; skipping forced unmount");
   } else {
     state->sd_flush_in_progress = true;
-  }
 
-  if (state->sd_logger.file != NULL) {
-    esp_err_t flush_result = SdLoggerFlushAndSync(&state->sd_logger, &diag);
-    if (flush_result != ESP_OK) {
-      const char* op = (diag.operation != NULL) ? diag.operation : "flush";
-      const char* errno_str =
-        (diag.errno_value != 0) ? strerror(diag.errno_value) : "n/a";
-      ESP_LOGW(kTag,
-               "SD STOP INCOMPLETE: %s failed errno=%d (%s)",
-               op,
-               diag.errno_value,
-               errno_str);
+    if (state->sd_logger.file != NULL) {
+      esp_err_t flush_result = SdLoggerFlushAndSync(&state->sd_logger, &diag);
+      if (flush_result != ESP_OK) {
+        const char* op = (diag.operation != NULL) ? diag.operation : "flush";
+        const char* errno_str =
+          (diag.errno_value != 0) ? strerror(diag.errno_value) : "n/a";
+        ESP_LOGW(kTag,
+                 "SD STOP INCOMPLETE: %s failed errno=%d (%s)",
+                 op,
+                 diag.errno_value,
+                 errno_str);
+      }
     }
-  }
 
-  (void)SdLoggerUnmount(&state->sd_logger);
+    (void)SdLoggerUnmount(&state->sd_logger);
 
-  if (locked) {
     state->sd_flush_in_progress = false;
     RuntimeSdIoUnlock(state);
   }
@@ -4088,33 +4092,44 @@ RuntimeManagerInit(void)
 }
 
 /**
+ * @brief Execute EnsureSdMountedLocked.
+ * @param state Parameter state.
+ */
+static void
+EnsureSdMountedLocked(runtime_state_t* state)
+{
+  if (state == NULL || state->sd_logger.is_mounted) {
+    return;
+  }
+  if (!SdCardPresent(state)) {
+    UpdateCachedBool(
+      state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+    return;
+  }
+  RuntimeDiagHeapCheck(state, "SD mount (ensure before)", false);
+  esp_err_t mount_result =
+    SdLoggerMount(&state->sd_logger, GetSpiHost(), CONFIG_APP_SD_CS_GPIO);
+  RuntimeDiagHeapCheck(state, "SD mount (ensure after)", false);
+  if (mount_result != ESP_OK) {
+    MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
+  } else {
+    ClearSdIoError(state);
+  }
+  UpdateCachedBool(
+    state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+}
+
+/**
  * @brief Execute EnsureSdMounted.
  */
 static void
 EnsureSdMounted(void)
 {
-  if (!g_state.sd_logger.is_mounted) {
-    if (!SdCardPresent(&g_state)) {
-      return;
-    }
-    if (!RuntimeSdIoLock(&g_state, kSdIoLockTimeoutTicks)) {
-      return;
-    }
-    RuntimeDiagHeapCheck(&g_state, "SD mount (ensure before)", false);
-    esp_err_t mount_result =
-      SdLoggerMount(&g_state.sd_logger, GetSpiHost(), CONFIG_APP_SD_CS_GPIO);
-    RuntimeDiagHeapCheck(&g_state, "SD mount (ensure after)", false);
-    RuntimeSdIoUnlock(&g_state);
-    if (mount_result != ESP_OK) {
-      MarkSdFailure(
-        &g_state, "SD mount failed", "mount", mount_result, 0, false);
-    } else {
-      ClearSdIoError(&g_state);
-      UpdateCachedBool(&g_state,
-                       &g_state.cached_status.sd_mounted,
-                       g_state.sd_logger.is_mounted);
-    }
+  if (!RuntimeSdIoLock(&g_state, kSdIoLockTimeoutTicks)) {
+    return;
   }
+  EnsureSdMountedLocked(&g_state);
+  RuntimeSdIoUnlock(&g_state);
 }
 
 /**
@@ -4979,6 +4994,25 @@ RuntimeNudgeWifiDirectTask(void)
 }
 
 /**
+ * @brief Execute RuntimeSdUnmountLocked.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+static esp_err_t
+RuntimeSdUnmountLocked(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  RuntimeDiagHeapCheck(state, "SD unmount (manual before)", false);
+  esp_err_t result = SdLoggerUnmount(&state->sd_logger);
+  RuntimeDiagHeapCheck(state, "SD unmount (manual after)", false);
+  UpdateCachedBool(
+    state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+  return result;
+}
+
+/**
  * @brief Execute RuntimeSdUnmountNow.
  * @return Return the function result.
  */
@@ -4987,13 +5021,9 @@ RuntimeSdUnmountNow(void)
 {
   esp_err_t result = ESP_ERR_TIMEOUT;
   if (RuntimeSdIoLock(&g_state, kSdIoLockTimeoutTicks)) {
-    RuntimeDiagHeapCheck(&g_state, "SD unmount (manual before)", false);
-    result = SdLoggerUnmount(&g_state.sd_logger);
-    RuntimeDiagHeapCheck(&g_state, "SD unmount (manual after)", false);
+    result = RuntimeSdUnmountLocked(&g_state);
     RuntimeSdIoUnlock(&g_state);
   }
-  UpdateCachedBool(
-    &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
   return result;
 }
 
