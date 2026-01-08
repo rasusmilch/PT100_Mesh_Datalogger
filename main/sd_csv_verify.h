@@ -25,6 +25,14 @@ typedef struct
   int errno_value;
 } SdCsvAppendDiagnostics;
 
+typedef struct
+{
+  uint8_t* io_bounce_bytes;
+  size_t io_bounce_capacity;
+  uint8_t* verify_readback_bytes;
+  size_t verify_readback_capacity;
+} sd_csv_append_scratch_t;
+
 // Repairs a power-loss tail (truncates to the last '\n' if needed) and returns
 // the last successfully written record_id found in the file.
 //
@@ -61,6 +69,17 @@ esp_err_t SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
                                              const uint8_t* batch_bytes,
                                              size_t batch_length_bytes,
                                              SdCsvAppendDiagnostics* diag_out);
+
+// Same as SdCsvAppendBatchWithReadbackVerify, but allows caller-provided scratch
+// buffers and configurable flush behavior. When flush_per_append is false, the
+// write is still fflush()'d for readback verification, but fsync() is skipped.
+esp_err_t SdCsvAppendBatchWithReadbackVerifyEx(
+  FILE* file_handle,
+  const uint8_t* batch_bytes,
+  size_t batch_length_bytes,
+  SdCsvAppendDiagnostics* diag_out,
+  const sd_csv_append_scratch_t* scratch,
+  bool flush_per_append);
 
 #ifdef __cplusplus
 }

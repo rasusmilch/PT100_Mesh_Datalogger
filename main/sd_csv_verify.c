@@ -23,6 +23,12 @@ typedef struct
   uint8_t bytes[32];
 } sha256_digest_t;
 
+static esp_err_t
+ReadExactly(int file_descriptor,
+            off_t offset,
+            uint8_t* buffer,
+            size_t length_bytes);
+
 /**
  * @brief Execute SetAppendDiagnostics.
  * @param diag_out Parameter diag_out.
@@ -77,6 +83,54 @@ ComputeSha256(const uint8_t* data, size_t length_bytes)
 
   mbedtls_sha256_free(&sha_context);
   return digest;
+}
+
+/**
+ * @brief Execute ComputeSha256FromFileRegion.
+ * @param file_descriptor Parameter file_descriptor.
+ * @param offset Parameter offset.
+ * @param length_bytes Parameter length_bytes.
+ * @param buffer Parameter buffer.
+ * @param buffer_capacity Parameter buffer_capacity.
+ * @param digest_out Parameter digest_out.
+ * @return Return the function result.
+ */
+static esp_err_t
+ComputeSha256FromFileRegion(int file_descriptor,
+                            off_t offset,
+                            size_t length_bytes,
+                            uint8_t* buffer,
+                            size_t buffer_capacity,
+                            sha256_digest_t* digest_out)
+{
+  if (buffer == NULL || buffer_capacity == 0 || digest_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  mbedtls_sha256_context sha_context;
+  mbedtls_sha256_init(&sha_context);
+  const int use_sha256 = 0; // 0 => SHA-256, 1 => SHA-224
+  mbedtls_sha256_starts(&sha_context, use_sha256);
+
+  size_t remaining = length_bytes;
+  off_t read_offset = offset;
+  while (remaining > 0) {
+    size_t chunk = remaining;
+    if (chunk > buffer_capacity) {
+      chunk = buffer_capacity;
+    }
+    if (ReadExactly(file_descriptor, read_offset, buffer, chunk) != ESP_OK) {
+      mbedtls_sha256_free(&sha_context);
+      return ESP_FAIL;
+    }
+    mbedtls_sha256_update(&sha_context, buffer, chunk);
+    read_offset += (off_t)chunk;
+    remaining -= chunk;
+  }
+
+  mbedtls_sha256_finish(&sha_context, digest_out->bytes);
+  mbedtls_sha256_free(&sha_context);
+  return ESP_OK;
 }
 
 /**
@@ -459,6 +513,32 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
                                    size_t batch_length_bytes,
                                    SdCsvAppendDiagnostics* diag_out)
 {
+  return SdCsvAppendBatchWithReadbackVerifyEx(file_handle,
+                                              batch_bytes,
+                                              batch_length_bytes,
+                                              diag_out,
+                                              NULL,
+                                              true);
+}
+
+/**
+ * @brief Execute SdCsvAppendBatchWithReadbackVerifyEx.
+ * @param file_handle Parameter file_handle.
+ * @param batch_bytes Parameter batch_bytes.
+ * @param batch_length_bytes Parameter batch_length_bytes.
+ * @param diag_out Parameter diag_out.
+ * @param scratch Parameter scratch.
+ * @param flush_per_append Parameter flush_per_append.
+ * @return Return the function result.
+ */
+esp_err_t
+SdCsvAppendBatchWithReadbackVerifyEx(FILE* file_handle,
+                                     const uint8_t* batch_bytes,
+                                     size_t batch_length_bytes,
+                                     SdCsvAppendDiagnostics* diag_out,
+                                     const sd_csv_append_scratch_t* scratch,
+                                     bool flush_per_append)
+{
   if (file_handle == NULL || batch_bytes == NULL || batch_length_bytes == 0) {
     SetAppendDiagnostics(diag_out, "append", 0);
     return ESP_ERR_INVALID_ARG;
@@ -482,17 +562,42 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
   const sha256_digest_t digest_before =
     ComputeSha256(batch_bytes, batch_length_bytes);
 
-  const size_t written =
-    fwrite(batch_bytes, 1, batch_length_bytes, file_handle);
-  if (written != batch_length_bytes) {
-    ESP_LOGE(kTag,
-             "fwrite() short write: wrote=%u expected=%u",
-             (unsigned)written,
-             (unsigned)batch_length_bytes);
-    SetAppendDiagnostics(diag_out, "append", errno);
-    ftruncate(file_descriptor, original_size);
-    fsync(file_descriptor);
-    return ESP_FAIL;
+  if (scratch != NULL && scratch->io_bounce_bytes != NULL &&
+      scratch->io_bounce_capacity > 0) {
+    size_t offset = 0;
+    while (offset < batch_length_bytes) {
+      size_t chunk = batch_length_bytes - offset;
+      if (chunk > scratch->io_bounce_capacity) {
+        chunk = scratch->io_bounce_capacity;
+      }
+      memcpy(scratch->io_bounce_bytes, batch_bytes + offset, chunk);
+      const size_t written =
+        fwrite(scratch->io_bounce_bytes, 1, chunk, file_handle);
+      if (written != chunk) {
+        ESP_LOGE(kTag,
+                 "fwrite() short write: wrote=%u expected=%u",
+                 (unsigned)written,
+                 (unsigned)chunk);
+        SetAppendDiagnostics(diag_out, "append", errno);
+        ftruncate(file_descriptor, original_size);
+        fsync(file_descriptor);
+        return ESP_FAIL;
+      }
+      offset += chunk;
+    }
+  } else {
+    const size_t written =
+      fwrite(batch_bytes, 1, batch_length_bytes, file_handle);
+    if (written != batch_length_bytes) {
+      ESP_LOGE(kTag,
+               "fwrite() short write: wrote=%u expected=%u",
+               (unsigned)written,
+               (unsigned)batch_length_bytes);
+      SetAppendDiagnostics(diag_out, "append", errno);
+      ftruncate(file_descriptor, original_size);
+      fsync(file_descriptor);
+      return ESP_FAIL;
+    }
   }
 
   if (fflush(file_handle) != 0) {
@@ -503,38 +608,64 @@ SdCsvAppendBatchWithReadbackVerify(FILE* file_handle,
     return ESP_FAIL;
   }
 
-  if (fsync(file_descriptor) != 0) {
-    ESP_LOGE(kTag, "fsync() failed: errno=%d (%s)", errno, strerror(errno));
-    SetAppendDiagnostics(diag_out, "fsync", errno);
-    ftruncate(file_descriptor, original_size);
-    fsync(file_descriptor);
-    return ESP_FAIL;
+  if (flush_per_append) {
+    if (fsync(file_descriptor) != 0) {
+      ESP_LOGE(kTag, "fsync() failed: errno=%d (%s)", errno, strerror(errno));
+      SetAppendDiagnostics(diag_out, "fsync", errno);
+      ftruncate(file_descriptor, original_size);
+      fsync(file_descriptor);
+      return ESP_FAIL;
+    }
   }
 
-  // Read-back buffer is used for file I/O only; PSRAM is safe.
-  uint8_t* readback_bytes = (uint8_t*)heap_caps_malloc(
-    batch_length_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (readback_bytes == NULL) {
+  uint8_t* readback_bytes = NULL;
+  size_t readback_capacity = 0;
+  bool readback_owned = false;
+  if (scratch != NULL && scratch->verify_readback_bytes != NULL &&
+      scratch->verify_readback_capacity >= batch_length_bytes) {
+    readback_bytes = scratch->verify_readback_bytes;
+    readback_capacity = scratch->verify_readback_capacity;
+  } else if (scratch != NULL && scratch->io_bounce_bytes != NULL &&
+             scratch->io_bounce_capacity > 0) {
+    readback_bytes = scratch->io_bounce_bytes;
+    readback_capacity = scratch->io_bounce_capacity;
+  } else if (scratch == NULL) {
+    // Read-back buffer is used for file I/O only; PSRAM is safe.
     readback_bytes = (uint8_t*)heap_caps_malloc(
-      batch_length_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  }
-  if (readback_bytes == NULL) {
+      batch_length_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (readback_bytes == NULL) {
+      readback_bytes = (uint8_t*)heap_caps_malloc(
+        batch_length_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (readback_bytes == NULL) {
+      return ESP_ERR_NO_MEM;
+    }
+    readback_capacity = batch_length_bytes;
+    readback_owned = true;
+  } else {
     return ESP_ERR_NO_MEM;
   }
-  if (ReadExactly(
-        file_descriptor, append_offset, readback_bytes, batch_length_bytes) !=
-      ESP_OK) {
+
+  sha256_digest_t digest_after = { 0 };
+  if (ComputeSha256FromFileRegion(file_descriptor,
+                                  append_offset,
+                                  batch_length_bytes,
+                                  readback_bytes,
+                                  readback_capacity,
+                                  &digest_after) != ESP_OK) {
     ESP_LOGE(kTag, "Read-back failed; truncating to original size.");
     SetAppendDiagnostics(diag_out, "verify", errno);
-    free(readback_bytes);
+    if (readback_owned) {
+      free(readback_bytes);
+    }
     ftruncate(file_descriptor, original_size);
     fsync(file_descriptor);
     return ESP_FAIL;
   }
 
-  const sha256_digest_t digest_after =
-    ComputeSha256(readback_bytes, batch_length_bytes);
-  free(readback_bytes);
+  if (readback_owned) {
+    free(readback_bytes);
+  }
 
   if (!DigestsEqual(&digest_before, &digest_after)) {
     ESP_LOGE(kTag, "SD verify failed (SHA mismatch). Truncating append.");
