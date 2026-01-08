@@ -4997,6 +4997,28 @@ RuntimeSdBackoffUntilTicks(void)
 }
 
 /**
+ * @brief Execute RuntimeGetSpiDeviceCount.
+ * @return Return the function result.
+ */
+uint32_t
+RuntimeGetSpiDeviceCount(void)
+{
+  uint32_t count = 0;
+  if (g_state.sensor.spi_device != NULL) {
+    ++count;
+  }
+#if CONFIG_APP_MAX7219_ENABLE
+  if (g_state.display.device != NULL) {
+    ++count;
+  }
+#endif
+  if (g_state.sd_logger.card != NULL) {
+    ++count;
+  }
+  return count;
+}
+
+/**
  * @brief Execute RuntimeAcknowledgeDisplayAttention.
  * @param item Parameter item.
  * @return Return the function result.

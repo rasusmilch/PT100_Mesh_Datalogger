@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +47,7 @@
 #include "linenoise/linenoise.h"
 #include "runtime_manager.h"
 #include "sdkconfig.h"
+#include "sd_card_detect.h"
 #include "time_sync.h"
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
@@ -3365,6 +3367,7 @@ PrintDiagUsage(void)
   printf("diag rtd quick|full [--samples N] [--delay_ms M] [--verbose N]\n");
   printf("diag rtc quick|full [--set-known] [--verbose N]\n");
   printf("diag heapcheck on|off|now\n");
+  printf("diag cycle [--count N] [--run_ms M] [--stop_ms M]\n");
   printf("diag wifi quick|full [--scan 0|1] [--connect 0|1] [--dns 0|1] "
          "[--keep-connected 0|1] [--verbose N]\n");
   printf("diag mesh quick|full [--start] [--stop] [--root] [--timeout_ms T] "
@@ -3486,6 +3489,169 @@ CommandDiagnostics(int argc, char** argv)
     }
     printf("usage: diag heapcheck on|off|now\n");
     return 1;
+  }
+
+  if (strcmp(target, "cycle") == 0) {
+    int count = 1;
+    int run_ms = 1000;
+    int stop_ms = 0;
+    for (int i = 2; i < argc; ++i) {
+      if (strcmp(argv[i], "--count") == 0 && (i + 1) < argc) {
+        count = atoi(argv[++i]);
+      } else if (strcmp(argv[i], "--run_ms") == 0 && (i + 1) < argc) {
+        run_ms = atoi(argv[++i]);
+      } else if (strcmp(argv[i], "--stop_ms") == 0 && (i + 1) < argc) {
+        stop_ms = atoi(argv[++i]);
+      } else {
+        printf("unknown option: %s\n", argv[i]);
+        PrintDiagUsage();
+        return 2;
+      }
+    }
+
+    if (count <= 0 || run_ms < 0 || stop_ms < 0) {
+      printf("invalid values: count > 0, run_ms >= 0, stop_ms >= 0\n");
+      PrintDiagUsage();
+      return 2;
+    }
+
+    runtime_state_t* state = RuntimeGetState();
+    if (state == NULL) {
+      printf("diag cycle failed: runtime unavailable\n");
+      return 1;
+    }
+
+    if (RuntimeIsRunning()) {
+      printf("diag cycle: runtime running; stopping first\n");
+      esp_err_t stop_result = EnterDiagMode();
+      if (stop_result != ESP_OK) {
+        printf("diag cycle: stop failed: %s\n", esp_err_to_name(stop_result));
+        return 1;
+      }
+    }
+
+    size_t min_free_heap = SIZE_MAX;
+    size_t min_free_internal = SIZE_MAX;
+    uint32_t spi_min = UINT32_MAX;
+    uint32_t spi_max = 0;
+    int start_fail = 0;
+    int stop_fail = 0;
+    int mount_attempts = 0;
+    int mount_ok = 0;
+    int unmount_attempts = 0;
+    int unmount_ok = 0;
+
+    for (int cycle = 1; cycle <= count; ++cycle) {
+      printf("diag cycle %d/%d: start\n", cycle, count);
+      esp_err_t start_result = EnterRunMode();
+      if (start_result != ESP_OK) {
+        printf("diag cycle: start failed on cycle %d: %s\n",
+               cycle,
+               esp_err_to_name(start_result));
+        start_fail++;
+        break;
+      }
+
+      if (run_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(run_ms));
+      }
+
+      size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+      if (free_heap < min_free_heap) {
+        min_free_heap = free_heap;
+      }
+      size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      if (free_internal < min_free_internal) {
+        min_free_internal = free_internal;
+      }
+
+      uint32_t spi_count = RuntimeGetSpiDeviceCount();
+      if (spi_count < spi_min) {
+        spi_min = spi_count;
+      }
+      if (spi_count > spi_max) {
+        spi_max = spi_count;
+      }
+
+      if (SdCardDetectIsPresent(&state->sd_card_detect)) {
+        mount_attempts++;
+        if (state->sd_logger.is_mounted) {
+          mount_ok++;
+        }
+      }
+
+      printf("diag cycle %d/%d: stop\n", cycle, count);
+      esp_err_t stop_result = EnterDiagMode();
+      if (stop_result != ESP_OK) {
+        printf("diag cycle: stop failed on cycle %d: %s\n",
+               cycle,
+               esp_err_to_name(stop_result));
+        stop_fail++;
+      }
+
+      free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+      if (free_heap < min_free_heap) {
+        min_free_heap = free_heap;
+      }
+      free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      if (free_internal < min_free_internal) {
+        min_free_internal = free_internal;
+      }
+
+      spi_count = RuntimeGetSpiDeviceCount();
+      if (spi_count < spi_min) {
+        spi_min = spi_count;
+      }
+      if (spi_count > spi_max) {
+        spi_max = spi_count;
+      }
+
+      if (SdCardDetectIsPresent(&state->sd_card_detect)) {
+        unmount_attempts++;
+        if (!state->sd_logger.is_mounted) {
+          unmount_ok++;
+        }
+      }
+
+      if (stop_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(stop_ms));
+      }
+    }
+
+    if (min_free_heap == SIZE_MAX) {
+      min_free_heap = 0;
+    }
+    if (min_free_internal == SIZE_MAX) {
+      min_free_internal = 0;
+    }
+    if (spi_min == UINT32_MAX) {
+      spi_min = 0;
+    }
+
+    printf("diag cycle done: cycles=%d start_fail=%d stop_fail=%d\n",
+           count,
+           start_fail,
+           stop_fail);
+    printf("diag cycle heap min: default=%u internal=%u\n",
+           (unsigned)min_free_heap,
+           (unsigned)min_free_internal);
+    printf("diag cycle spi devices: min=%" PRIu32 " max=%" PRIu32 "\n",
+           spi_min,
+           spi_max);
+    printf("diag cycle SD mount ok=%d/%d unmount ok=%d/%d\n",
+           mount_ok,
+           mount_attempts,
+           unmount_ok,
+           unmount_attempts);
+
+    if (start_fail != 0 || stop_fail != 0) {
+      return 1;
+    }
+    if ((mount_attempts > 0 && mount_ok != mount_attempts) ||
+        (unmount_attempts > 0 && unmount_ok != unmount_attempts)) {
+      return 1;
+    }
+    return 0;
   }
 
   const bool target_requires_mode =

@@ -214,6 +214,12 @@ extern "C" {
   uint32_t RuntimeSdBackoffUntilTicks(void);
 
 /**
+ * @brief Execute RuntimeGetSpiDeviceCount.
+ * @return Return the function result.
+ */
+  uint32_t RuntimeGetSpiDeviceCount(void);
+
+/**
  * @brief Execute RuntimeAcknowledgeDisplayAttention.
  * @param item Parameter item.
  * @return Return the function result.
