@@ -99,6 +99,14 @@ extern "C" {
     log_record_t record;
   } export_record_item_t;
 
+  typedef enum
+  {
+    RUNTIME_PHASE_DIAGNOSTICS = 0,
+    RUNTIME_PHASE_STARTING,
+    RUNTIME_PHASE_RUNNING,
+    RUNTIME_PHASE_STOPPING,
+  } runtime_phase_t;
+
   typedef struct runtime_state_t
   {
     app_settings_t settings;
@@ -191,6 +199,9 @@ extern "C" {
     bool data_streaming_enabled;
     bool log_quiet;
     bool diag_heap_check_enabled;
+    runtime_phase_t runtime_phase;
+    bool pending_start;
+    bool pending_stop;
 
     bool request_run_start;
     bool request_run_stop;

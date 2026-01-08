@@ -273,6 +273,11 @@ config APP_RUN_GPIO_HOLD_MS
   range 1 5000
   default 100
 
+config APP_RUN_GPIO_HOLDOFF_MS
+  int "Run GPIO holdoff after request (ms)"
+  range 1 5000
+  default 250
+
 config APP_FRAM_SIZE_BYTES
   int "FRAM size in bytes"
   range 4096 33554432

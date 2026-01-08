@@ -32,6 +32,7 @@
 #include "max7219_display.h"
 #include "mesh_transport.h"
 #include "mqtt_client_wrap.h"
+#include "run_gpio.h"
 #include "runtime_health.h"
 #include "runtime_health_publisher.h"
 #include "runtime_state.h"
@@ -3564,10 +3565,27 @@ ControlTask(void* context)
     state->request_run_stop = false;
     taskEXIT_CRITICAL(&state->request_lock);
 
-    if (request_stop && RuntimeIsRunning()) {
-      (void)EnterDiagMode();
-    } else if (request_start && !RuntimeIsRunning()) {
-      (void)EnterRunMode();
+    if (request_start) {
+      state->pending_start = true;
+    }
+    if (request_stop) {
+      state->pending_stop = true;
+    }
+
+    if (state->runtime_phase == RUNTIME_PHASE_RUNNING) {
+      state->pending_start = false;
+      if (state->pending_stop) {
+        state->pending_stop = false;
+        (void)EnterDiagMode();
+      }
+    }
+
+    if (state->runtime_phase == RUNTIME_PHASE_DIAGNOSTICS) {
+      state->pending_stop = false;
+      if (state->pending_start && !RunGpioStopActive()) {
+        state->pending_start = false;
+        (void)EnterRunMode();
+      }
     }
 
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -3837,6 +3855,9 @@ RuntimeManagerInit(void)
                      g_state.settings.fram_flush_watermark_records);
   UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
+  g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
+  g_state.pending_start = false;
+  g_state.pending_stop = false;
   SdCardDetectInit(&g_state.sd_card_detect);
   const bool sd_card_present = SdCardDetectPoll(&g_state.sd_card_detect, NULL);
   UpdateCachedBool(
@@ -4182,9 +4203,16 @@ esp_err_t
 RuntimeStart(void)
 {
   if (!g_state.initialized) {
+    g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return ESP_ERR_INVALID_STATE;
   }
+  if (g_state.runtime_phase == RUNTIME_PHASE_STOPPING) {
+    g_state.pending_start = true;
+    return ESP_ERR_INVALID_STATE;
+  }
+  g_state.runtime_phase = RUNTIME_PHASE_STARTING;
   if (g_state.is_running) {
+    g_state.runtime_phase = RUNTIME_PHASE_RUNNING;
     return ESP_OK;
   }
   if (g_state.sensor_task != NULL || g_state.storage_task != NULL ||
@@ -4209,21 +4237,26 @@ RuntimeStart(void)
     if (g_state.wifi_direct_task != NULL) {
       ESP_LOGW(kTag, "Start blocked: wifi_direct_task still alive");
     }
+    g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return ESP_ERR_INVALID_STATE;
   }
   if (g_state.log_queue == NULL) {
+    g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return ESP_ERR_NO_MEM;
   }
   if (g_state.export_queue == NULL) {
+    g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return ESP_ERR_NO_MEM;
   }
   if (g_state.batch_buffer == NULL || g_state.batch_buffer_size == 0) {
+    g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return ESP_ERR_NO_MEM;
   }
 
   if (!g_state.sensor.is_initialized) {
     esp_err_t sensor_result = InitializeMax31865Sensor(&g_state, GetSpiHost());
     if (sensor_result != ESP_OK) {
+      g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
       return sensor_result;
     }
   }
@@ -4596,6 +4629,7 @@ wifi_direct_start_done:
       g_state.stop_requested = false;
       UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
     }
+    g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return ESP_ERR_NO_MEM;
   }
 
@@ -4603,6 +4637,7 @@ wifi_direct_start_done:
            "Runtime started (node=%s role=%s)",
            g_state.node_id_string,
            AppSettingsRoleToString(role));
+  g_state.runtime_phase = RUNTIME_PHASE_RUNNING;
   return ESP_OK;
 }
 
@@ -4780,8 +4815,10 @@ RuntimeStopAllTasks(runtime_state_t* state)
 esp_err_t
 RuntimeStop(void)
 {
+  g_state.runtime_phase = RUNTIME_PHASE_STOPPING;
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
   esp_err_t finalize_result = RuntimeStopAllTasks(&g_state);
+  g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
   return (stop_result != ESP_OK) ? stop_result : finalize_result;
 }
 
@@ -4818,6 +4855,7 @@ EnterRunMode(void)
 esp_err_t
 EnterDiagMode(void)
 {
+  g_state.runtime_phase = RUNTIME_PHASE_STOPPING;
   RuntimeSetLogPolicyDiag();
   RuntimeEnableDataStreaming(false);
   ESP_LOGW(kTag, "Stop: sampling halt requested");
@@ -4873,11 +4911,14 @@ EnterDiagMode(void)
   esp_err_t finalize_result = RuntimeStopAllTasks(&g_state);
 
   if (stop_result != ESP_OK) {
+    g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return stop_result;
   }
   if (flush_result != ESP_OK && flush_result != ESP_ERR_TIMEOUT) {
+    g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return flush_result;
   }
+  g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
   return finalize_result;
 }
 
