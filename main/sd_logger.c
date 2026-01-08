@@ -176,10 +176,13 @@ SdLoggerMountInternal(sd_logger_t* logger,
   sd_host.max_freq_khz = 10000; // 10 MHz
   if (logger->io_bounce_bytes != NULL && logger->io_bounce_capacity > 0) {
 #if defined(ESP_IDF_VERSION) && (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0))
-    sd_host.dma_aligned_buffer = logger->io_bounce_bytes;
-#if defined(ESP_IDF_VERSION) && (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0))
-    sd_host.dma_aligned_buffer_size = logger->io_bounce_capacity;
-#endif
+    if (logger->io_bounce_capacity >= 512) {
+      sd_host.dma_aligned_buffer = logger->io_bounce_bytes;
+    } else {
+      ESP_LOGW(kTag,
+               "IO bounce buffer too small (%zu bytes); skipping DMA buffer",
+               logger->io_bounce_capacity);
+    }
 #endif
   }
 
