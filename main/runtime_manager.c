@@ -1076,6 +1076,7 @@ DisplayTask(void* context)
 
     const bool runtime_running = state->cached_status.runtime_running;
     const bool stop_requested = state->cached_status.stop_requested;
+    const bool sd_safe_to_remove = state->cached_status.sd_safe_to_remove;
     if (!runtime_running) {
       const bool stop_save_active =
         stop_requested && (state->cached_status.fram_count > 0u ||
@@ -1083,8 +1084,10 @@ DisplayTask(void* context)
 
       // Operator feedback:
       // - "SAVE" while draining/unmounting after stop
-      // - "IDLE" once fully stopped and SD is unmounted
-      const char* text = stop_save_active ? "SAVE " : "IDLE ";
+      // - "SAFE" once fully stopped and SD is unmounted
+      // - "IDLE" otherwise
+      const char* text =
+        stop_save_active ? "SAVE " : (sd_safe_to_remove ? "SAFE " : "IDLE ");
       if (strncmp(last_text, text, sizeof(last_text)) != 0) {
         Max7219DisplaySetText(&state->display, text);
         snprintf(last_text, sizeof(last_text), "%s", text);
@@ -3213,6 +3216,8 @@ DrainFramToSd(runtime_state_t* state,
     ClearSdIoError(state);
     UpdateCachedBool(
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+    UpdateCachedBool(
+      state, &state->cached_status.sd_safe_to_remove, false);
   }
 
   const int32_t drain_records_per_pass = (max_records_per_pass > 0)
@@ -3312,6 +3317,7 @@ drain_done:
   }
 
   if (unmount_on_exit) {
+    esp_err_t unmount_result = ESP_ERR_INVALID_STATE;
     if (state->sd_flush_in_progress) {
       const TickType_t now_ticks = xTaskGetTickCount();
       if (state->last_sd_flush_wait_warn_ticks == 0 ||
@@ -3324,13 +3330,24 @@ drain_done:
     if (RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
       state->sd_flush_in_progress = true;
       RuntimeDiagHeapCheck(state, "SD unmount (drain before)", false);
-      (void)SdLoggerUnmount(&state->sd_logger);
+      unmount_result = SdLoggerUnmount(&state->sd_logger);
       RuntimeDiagHeapCheck(state, "SD unmount (drain after)", false);
       state->sd_flush_in_progress = false;
       RuntimeSdIoUnlock(state);
+    } else {
+      unmount_result = ESP_ERR_TIMEOUT;
     }
     UpdateCachedBool(
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+    if (result == ESP_OK && unmount_result == ESP_OK &&
+        !state->sd_logger.is_mounted) {
+      UpdateCachedBool(
+        state, &state->cached_status.sd_safe_to_remove, true);
+      printf("SD: unmounted; safe to remove\n");
+    } else {
+      UpdateCachedBool(
+        state, &state->cached_status.sd_safe_to_remove, false);
+    }
   } else if (mounted_here && !state->sd_logger.is_mounted) {
     UpdateCachedBool(
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
@@ -4014,6 +4031,10 @@ RuntimeManagerInit(void)
   }
   UpdateCachedBool(
     &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
+  if (g_state.sd_logger.is_mounted) {
+    UpdateCachedBool(
+      &g_state, &g_state.cached_status.sd_safe_to_remove, false);
+  }
 
   esp_err_t sensor_result = InitializeMax31865Sensor(&g_state, spi_host);
   if (sensor_result != ESP_OK && first_error == ESP_OK) {
@@ -4115,6 +4136,10 @@ EnsureSdMountedLocked(runtime_state_t* state)
     MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
   } else {
     ClearSdIoError(state);
+    if (state->sd_logger.is_mounted) {
+      UpdateCachedBool(
+        state, &state->cached_status.sd_safe_to_remove, false);
+    }
   }
   UpdateCachedBool(
     state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
@@ -4173,6 +4198,8 @@ SdWithTemporaryMount(runtime_state_t* state, runtime_sd_op_fn_t op, void* ctx)
     ClearSdIoError(state);
     UpdateCachedBool(
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+    UpdateCachedBool(
+      state, &state->cached_status.sd_safe_to_remove, false);
   }
 
   esp_err_t result = op(&g_runtime, ctx);
@@ -4283,6 +4310,7 @@ RuntimeStart(void)
 
   g_state.stop_requested = false;
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.sd_safe_to_remove, false);
   g_state.fram_full = false;
   g_state.sd_degraded = false;
   g_state.sd_fail_count = 0;

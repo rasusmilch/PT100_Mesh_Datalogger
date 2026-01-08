@@ -48,6 +48,7 @@ extern "C" {
     uint32_t sd_backoff_remaining_ms;
     bool sd_io_error_active;
     bool sd_card_present;
+    bool sd_safe_to_remove;
 
     // fram (written by fram_log or storage task when it updates counters)
     uint32_t fram_count;
