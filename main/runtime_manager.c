@@ -54,6 +54,7 @@ static const uint32_t kExportOutboxDepth = CONFIG_APP_EXPORT_OUTBOX_DEPTH;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
+static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 
 static void
 RuntimeNotifyTask(TaskHandle_t handle)
@@ -111,6 +112,18 @@ static void
 RuntimeInterruptibleDelayTicks(TickType_t delay_ticks)
 {
   (void)ulTaskNotifyTake(pdTRUE, delay_ticks);
+}
+
+static int32_t
+ResolveStopDrainMaxMs(void)
+{
+  if (CONFIG_APP_STOP_DRAIN_MAX_MS < 0) {
+    ESP_LOGW(kTag,
+             "Stop drain max ms is unlimited; enforcing hard cap of %d ms",
+             kStopDrainHardMaxDefaultMs);
+    return kStopDrainHardMaxDefaultMs;
+  }
+  return CONFIG_APP_STOP_DRAIN_MAX_MS;
 }
 
 /**
@@ -3318,6 +3331,65 @@ drain_done:
   return result;
 }
 
+static void
+RuntimeStopForceSdUnmount(runtime_state_t* state,
+                          const char* reason,
+                          const sd_drain_stats_t* drain_stats)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  state->sd_flush_pending = false;
+  state->sd_start_drain_pending = false;
+  state->sd_degraded = true;
+
+  if (drain_stats != NULL) {
+    ESP_LOGW(kTag,
+             "SD STOP INCOMPLETE: %s (remaining=%d duration=%d ms)",
+             reason,
+             drain_stats->remaining_records,
+             drain_stats->duration_ms);
+  } else {
+    ESP_LOGW(kTag, "SD STOP INCOMPLETE: %s", reason);
+  }
+
+  SdCsvAppendDiagnostics diag = { 0 };
+  const bool locked = RuntimeSdIoLock(state, kSdIoLockTimeoutTicks);
+  if (!locked) {
+    ESP_LOGW(kTag,
+             "SD STOP INCOMPLETE: SD I/O lock timeout; attempting unmount without lock");
+  } else {
+    state->sd_flush_in_progress = true;
+  }
+
+  if (state->sd_logger.file != NULL) {
+    esp_err_t flush_result = SdLoggerFlushAndSync(&state->sd_logger, &diag);
+    if (flush_result != ESP_OK) {
+      const char* op = (diag.operation != NULL) ? diag.operation : "flush";
+      const char* errno_str =
+        (diag.errno_value != 0) ? strerror(diag.errno_value) : "n/a";
+      ESP_LOGW(kTag,
+               "SD STOP INCOMPLETE: %s failed errno=%d (%s)",
+               op,
+               diag.errno_value,
+               errno_str);
+    }
+  }
+
+  (void)SdLoggerUnmount(&state->sd_logger);
+
+  if (locked) {
+    state->sd_flush_in_progress = false;
+    RuntimeSdIoUnlock(state);
+  }
+
+  UpdateCachedBool(
+    state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
+  UpdateCachedBool(
+    state, &state->cached_status.sd_degraded, state->sd_degraded);
+}
+
 /**
  * @brief Execute UpdateStartDrainCachedStatus.
  * @param state Parameter state.
@@ -4754,9 +4826,10 @@ EnterDiagMode(void)
     RuntimePauseSpiUsers(&g_state, 1000u);
     ESP_LOGW(kTag, "Stop: draining FRAM->SD (and unmounting)");
     sd_drain_stats_t drain_stats = { 0 };
+    const int32_t stop_drain_max_ms = ResolveStopDrainMaxMs();
     flush_result = DrainFramToSd(&g_state,
                                  true,
-                                 CONFIG_APP_STOP_DRAIN_MAX_MS,
+                                 stop_drain_max_ms,
                                  CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
                                  CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
                                  &drain_stats);
@@ -4765,6 +4838,7 @@ EnterDiagMode(void)
                "Stop drain timed out: remaining=%d duration=%d ms",
                drain_stats.remaining_records,
                drain_stats.duration_ms);
+      RuntimeStopForceSdUnmount(&g_state, "drain timeout", &drain_stats);
     } else if (flush_result != ESP_OK) {
       ESP_LOGW(kTag,
                "Stop drain failed: %s remaining=%d",

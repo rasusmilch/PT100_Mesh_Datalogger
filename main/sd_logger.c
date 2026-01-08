@@ -536,6 +536,24 @@ SdLoggerClose(sd_logger_t* logger)
 }
 
 /**
+ * @brief Execute SdLoggerFlushAndSync.
+ * @param logger Parameter logger.
+ * @param diag_out Parameter diag_out.
+ * @return Return the function result.
+ */
+esp_err_t
+SdLoggerFlushAndSync(sd_logger_t* logger, SdCsvAppendDiagnostics* diag_out)
+{
+  if (logger == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (logger->file == NULL) {
+    return ESP_OK;
+  }
+  return SdCsvFlushAndSync(logger->file, diag_out);
+}
+
+/**
  * @brief Execute SdLoggerFormatDestructive.
  * @param logger Parameter logger.
  * @return Return the function result.
