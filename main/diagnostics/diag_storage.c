@@ -204,9 +204,16 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
     return false;
   }
 
+  runtime_state_t* state = RuntimeGetState();
+  if (state == NULL || !RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
+    snprintf(details, details_len, "sd io lock failed");
+    return false;
+  }
+
   esp_err_t ensure_result =
     SdLoggerEnsureDailyFile(logger, pending_record.timestamp_epoch_sec);
   if (ensure_result != ESP_OK) {
+    RuntimeSdIoUnlock(state);
     snprintf(details,
              details_len,
              "ensure daily file failed: %s",
@@ -220,6 +227,7 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
                                                  runtime->node_id_string,
                                                  &line_len);
   if (partial_result != ESP_OK) {
+    RuntimeSdIoUnlock(state);
     snprintf(details,
              details_len,
              "partial write failed: %s",
@@ -230,6 +238,7 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
   SdLoggerClose(logger);
   esp_err_t reopen_result =
     SdLoggerEnsureDailyFile(logger, pending_record.timestamp_epoch_sec);
+  RuntimeSdIoUnlock(state);
   if (reopen_result != ESP_OK) {
     snprintf(details,
              details_len,
@@ -313,7 +322,12 @@ RunSdPullTest(const app_runtime_t* runtime,
   const bool backoff_active =
     RuntimeSdIsDegraded() && backoff_until > (uint32_t)now_ticks;
 
-  esp_err_t remount_result = SdLoggerTryRemount(logger, false);
+  esp_err_t remount_result = ESP_ERR_TIMEOUT;
+  runtime_state_t* state = RuntimeGetState();
+  if (state != NULL && RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
+    remount_result = SdLoggerTryRemount(logger, false);
+    RuntimeSdIoUnlock(state);
+  }
   esp_err_t replay_result = runtime->flush_callback(runtime->flush_context);
 
   const uint32_t buffered_after_replay = FramLogGetBufferedRecords(fram);
@@ -359,8 +373,15 @@ ReadLastRecordId(const char* path,
   if (path == NULL || found_out == NULL || record_id_out == NULL) {
     return false;
   }
+  runtime_state_t* state = RuntimeGetState();
+  if (state == NULL || !RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
+    *found_out = false;
+    *record_id_out = 0;
+    return false;
+  }
   FILE* file = fopen(path, "r+b");
   if (file == NULL) {
+    RuntimeSdIoUnlock(state);
     *found_out = false;
     *record_id_out = 0;
     return false;
@@ -369,6 +390,7 @@ ReadLastRecordId(const char* path,
   esp_err_t result =
     SdCsvFindLastRecordIdAndRepairTail(file, tail_scan_bytes, &info);
   fclose(file);
+  RuntimeSdIoUnlock(state);
   if (result != ESP_OK) {
     *found_out = false;
     *record_id_out = 0;
@@ -550,7 +572,11 @@ RunDiagStorageImpl(const app_runtime_t* runtime,
   }
 
   if (!runtime->sd_logger->is_mounted) {
-    (void)SdLoggerTryRemount(runtime->sd_logger, false);
+    runtime_state_t* state = RuntimeGetState();
+    if (state != NULL && RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
+      (void)SdLoggerTryRemount(runtime->sd_logger, false);
+      RuntimeSdIoUnlock(state);
+    }
   }
 
   char details[256];

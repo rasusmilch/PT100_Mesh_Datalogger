@@ -30,6 +30,7 @@ RunDiagSdImpl(const app_runtime_t* runtime,
   diag_ctx_t ctx;
   DiagInitCtx(&ctx, "SD", verbosity);
   const int total_steps = full ? 4 : 2;
+  int result = 1;
 
   DiagHeapCheck(&ctx, "pre_sd_diag");
 
@@ -37,6 +38,22 @@ RunDiagSdImpl(const app_runtime_t* runtime,
     DiagReportStep(&ctx, 1, total_steps, "runtime available", ESP_ERR_INVALID_STATE, "runtime not initialized");
     DiagPrintSummary(&ctx, total_steps);
     return 1;
+  }
+
+  runtime_state_t* state = RuntimeGetState();
+  bool locked = false;
+  if (state != NULL) {
+    locked = RuntimeSdIoLock(state, pdMS_TO_TICKS(2000));
+    if (!locked) {
+      DiagReportStep(&ctx,
+                     1,
+                     total_steps,
+                     "sd lock",
+                     ESP_ERR_TIMEOUT,
+                     "sd_io_lock_timeout");
+      DiagPrintSummary(&ctx, total_steps);
+      return 1;
+    }
   }
 
   const bool should_mount = mount || format_if_needed;
@@ -132,7 +149,12 @@ RunDiagSdImpl(const app_runtime_t* runtime,
 
   DiagHeapCheck(&ctx, "post_sd_diag");
   DiagPrintSummary(&ctx, total_steps);
-  return (ctx.steps_failed == 0) ? 0 : 1;
+  result = (ctx.steps_failed == 0) ? 0 : 1;
+
+  if (locked) {
+    RuntimeSdIoUnlock(state);
+  }
+  return result;
 }
 
 typedef struct
