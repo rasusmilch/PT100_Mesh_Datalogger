@@ -13,6 +13,7 @@
 
 #include "data_csv.h"
 #include "esp_heap_caps.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 
@@ -173,6 +174,14 @@ SdLoggerMountInternal(sd_logger_t* logger,
   // lower SPI clock. If you want maximum throughput later, make this
   // configurable and/or raise it after a successful probe.
   sd_host.max_freq_khz = 10000; // 10 MHz
+  if (logger->io_bounce_bytes != NULL && logger->io_bounce_capacity > 0) {
+#if defined(ESP_IDF_VERSION) && (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0))
+    sd_host.dma_aligned_buffer = logger->io_bounce_bytes;
+#if defined(ESP_IDF_VERSION) && (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0))
+    sd_host.dma_aligned_buffer_size = logger->io_bounce_capacity;
+#endif
+#endif
+  }
 
   sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
   slot_config.gpio_cs = cs_gpio;
