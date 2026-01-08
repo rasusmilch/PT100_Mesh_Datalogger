@@ -3364,6 +3364,7 @@ PrintDiagUsage(void)
   printf("diag fram quick|full [--bytes N] [--verbose N]\n");
   printf("diag rtd quick|full [--samples N] [--delay_ms M] [--verbose N]\n");
   printf("diag rtc quick|full [--set-known] [--verbose N]\n");
+  printf("diag heapcheck on|off|now\n");
   printf("diag wifi quick|full [--scan 0|1] [--connect 0|1] [--dns 0|1] "
          "[--keep-connected 0|1] [--verbose N]\n");
   printf("diag mesh quick|full [--start] [--stop] [--root] [--timeout_ms T] "
@@ -3453,6 +3454,38 @@ CommandDiagnostics(int argc, char** argv)
   if (strcmp(target, "help") == 0) {
     PrintDiagUsage();
     return 0;
+  }
+
+  if (strcmp(target, "heapcheck") == 0) {
+    runtime_state_t* state = RuntimeGetState();
+    if (state == NULL) {
+      printf("diag heapcheck failed: runtime unavailable\n");
+      return 1;
+    }
+    if (argc < 3) {
+      printf("diag heapcheck: %s\n",
+             state->diag_heap_check_enabled ? "on" : "off");
+      printf("usage: diag heapcheck on|off|now\n");
+      return 0;
+    }
+    const char* action = argv[2];
+    if (strcmp(action, "on") == 0) {
+      state->diag_heap_check_enabled = true;
+      printf("diag heapcheck: on\n");
+      return 0;
+    }
+    if (strcmp(action, "off") == 0) {
+      state->diag_heap_check_enabled = false;
+      printf("diag heapcheck: off\n");
+      return 0;
+    }
+    if (strcmp(action, "now") == 0) {
+      const bool ok = RuntimeDiagHeapCheck(state, "diag heapcheck now", true);
+      printf("diag heapcheck: %s\n", ok ? "ok" : "failed");
+      return ok ? 0 : 1;
+    }
+    printf("usage: diag heapcheck on|off|now\n");
+    return 1;
   }
 
   const bool target_requires_mode =
