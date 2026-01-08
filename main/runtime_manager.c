@@ -4401,24 +4401,44 @@ EnterDiagMode(void)
   RuntimeEnableDataStreaming(false);
   ESP_LOGW(kTag, "Stop: sampling halt requested");
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
-  ESP_LOGW(kTag, "Stop: draining FRAM->SD (and unmounting)");
-  sd_drain_stats_t drain_stats = { 0 };
-  esp_err_t flush_result = DrainFramToSd(&g_state,
-                                         true,
-                                         CONFIG_APP_STOP_DRAIN_MAX_MS,
-                                         CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
-                                         CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
-                                         &drain_stats);
-  if (flush_result == ESP_ERR_TIMEOUT) {
+  bool allow_drain = (stop_result == ESP_OK);
+  if (allow_drain && (g_state.sensor_task != NULL || g_state.storage_task != NULL)) {
+    if (g_state.sensor_task != NULL) {
+      ESP_LOGW(kTag, "Diag entry guard: sensor_task still running (%p)",
+               g_state.sensor_task);
+    }
+    if (g_state.storage_task != NULL) {
+      ESP_LOGW(kTag, "Diag entry guard: storage_task still running (%p)",
+               g_state.storage_task);
+    }
+    allow_drain = false;
+    stop_result = ESP_ERR_TIMEOUT;
+  }
+  esp_err_t flush_result = ESP_OK;
+  if (!allow_drain) {
     ESP_LOGW(kTag,
-             "Stop drain timed out: remaining=%d duration=%d ms",
-             drain_stats.remaining_records,
-             drain_stats.duration_ms);
-  } else if (flush_result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "Stop drain failed: %s remaining=%d",
-             esp_err_to_name(flush_result),
-             drain_stats.remaining_records);
+             "Diag entry: stop timeout; skipping FRAM->SD drain/unmount to avoid SD/SPI contention");
+    g_state.sd_degraded = true;
+  } else {
+    ESP_LOGW(kTag, "Stop: draining FRAM->SD (and unmounting)");
+    sd_drain_stats_t drain_stats = { 0 };
+    flush_result = DrainFramToSd(&g_state,
+                                 true,
+                                 CONFIG_APP_STOP_DRAIN_MAX_MS,
+                                 CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
+                                 CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
+                                 &drain_stats);
+    if (flush_result == ESP_ERR_TIMEOUT) {
+      ESP_LOGW(kTag,
+               "Stop drain timed out: remaining=%d duration=%d ms",
+               drain_stats.remaining_records,
+               drain_stats.duration_ms);
+    } else if (flush_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "Stop drain failed: %s remaining=%d",
+               esp_err_to_name(flush_result),
+               drain_stats.remaining_records);
+    }
   }
   ESP_LOGW(kTag, "Stop: finalize");
   esp_err_t finalize_result = RuntimeStopAllTasks(&g_state);
