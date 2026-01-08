@@ -1948,18 +1948,29 @@ SdFlushWorkerTick(runtime_state_t* state,
   const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
                                    ? first_record.timestamp_epoch_sec
                                    : (int64_t)time(NULL);
+  if (state->sd_flush_in_progress) {
+    const TickType_t now_ticks = xTaskGetTickCount();
+    if (state->last_sd_flush_wait_warn_ticks == 0 ||
+        (now_ticks - state->last_sd_flush_wait_warn_ticks) >
+          pdMS_TO_TICKS(kSdFlushWarnIntervalMs)) {
+      ESP_LOGW(kTag, "SD flush already in progress; waiting for SD lock");
+      state->last_sd_flush_wait_warn_ticks = now_ticks;
+    }
+  }
   if (!RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
     if (more_pending_out != NULL) {
       *more_pending_out = true;
     }
     return ESP_ERR_TIMEOUT;
   }
+  state->sd_flush_in_progress = true;
+  esp_err_t result = ESP_OK;
   esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
   if (sync_result != ESP_OK) {
     (void)SdLoggerUnmount(&state->sd_logger);
-    RuntimeSdIoUnlock(state);
     MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
-    return sync_result;
+    result = sync_result;
+    goto flush_done;
   }
 
   char day_string[16];
@@ -1979,8 +1990,8 @@ SdFlushWorkerTick(runtime_state_t* state,
                                             &last_record_id,
                                             &bytes_used);
   if (batch_result != ESP_OK) {
-    RuntimeSdIoUnlock(state);
-    return batch_result;
+    result = batch_result;
+    goto flush_done;
   }
   if (records_used == 0 || bytes_used == 0) {
     // We still have buffered records, but couldn't build a batch this pass
@@ -1990,8 +2001,8 @@ SdFlushWorkerTick(runtime_state_t* state,
     if (more_pending_out != NULL) {
       *more_pending_out = true;
     }
-    RuntimeSdIoUnlock(state);
-    return ESP_OK;
+    result = ESP_OK;
+    goto flush_done;
   }
 
   SdCsvAppendDiagnostics append_diag = { 0 };
@@ -2002,7 +2013,6 @@ SdFlushWorkerTick(runtime_state_t* state,
                                                        &append_diag);
   if (write_result != ESP_OK) {
     (void)SdLoggerUnmount(&state->sd_logger);
-    RuntimeSdIoUnlock(state);
     const char* op =
       (append_diag.operation != NULL) ? append_diag.operation : "append";
     MarkSdFailure(state,
@@ -2011,10 +2021,18 @@ SdFlushWorkerTick(runtime_state_t* state,
                   write_result,
                   append_diag.errno_value,
                   true);
-    return write_result;
+    result = write_result;
+    goto flush_done;
   }
   ClearSdIoError(state);
+  result = ESP_OK;
+
+flush_done:
+  state->sd_flush_in_progress = false;
   RuntimeSdIoUnlock(state);
+  if (result != ESP_OK) {
+    return result;
+  }
 
   for (uint32_t index = 0; index < records_used; ++index) {
     esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
@@ -2990,11 +3008,22 @@ DrainFramToSd(runtime_state_t* state,
   }
 
   if (!state->sd_logger.is_mounted) {
+    if (state->sd_flush_in_progress) {
+      const TickType_t now_ticks = xTaskGetTickCount();
+      if (state->last_sd_flush_wait_warn_ticks == 0 ||
+          (now_ticks - state->last_sd_flush_wait_warn_ticks) >
+            pdMS_TO_TICKS(kSdFlushWarnIntervalMs)) {
+        ESP_LOGW(kTag, "SD drain already in progress; waiting for SD lock");
+        state->last_sd_flush_wait_warn_ticks = now_ticks;
+      }
+    }
     if (!RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
       result = ESP_ERR_TIMEOUT;
       goto drain_done;
     }
+    state->sd_flush_in_progress = true;
     esp_err_t mount_result = SdLoggerTryRemount(&state->sd_logger, false);
+    state->sd_flush_in_progress = false;
     RuntimeSdIoUnlock(state);
     if (mount_result != ESP_OK) {
       MarkSdFailure(state, "SD mount failed", "mount", mount_result, 0, false);
@@ -3102,8 +3131,19 @@ drain_done:
   }
 
   if (unmount_on_exit) {
+    if (state->sd_flush_in_progress) {
+      const TickType_t now_ticks = xTaskGetTickCount();
+      if (state->last_sd_flush_wait_warn_ticks == 0 ||
+          (now_ticks - state->last_sd_flush_wait_warn_ticks) >
+            pdMS_TO_TICKS(kSdFlushWarnIntervalMs)) {
+        ESP_LOGW(kTag, "SD drain already in progress; waiting for SD lock");
+        state->last_sd_flush_wait_warn_ticks = now_ticks;
+      }
+    }
     if (RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
+      state->sd_flush_in_progress = true;
       (void)SdLoggerUnmount(&state->sd_logger);
+      state->sd_flush_in_progress = false;
       RuntimeSdIoUnlock(state);
     }
     UpdateCachedBool(
@@ -3874,7 +3914,9 @@ RuntimeStart(void)
   g_state.sd_fail_count = 0;
   g_state.sd_backoff_until_ticks = 0;
   g_state.last_sd_flush_warn_ticks = 0;
+  g_state.last_sd_flush_wait_warn_ticks = 0;
   g_state.sd_flush_records_since = 0;
+  g_state.sd_flush_in_progress = false;
   g_state.sd_flush_pending = false;
   g_state.sd_start_drain_pending = false;
   g_state.sd_next_flush_allowed_ticks = 0;

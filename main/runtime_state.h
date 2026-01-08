@@ -133,8 +133,10 @@ extern "C" {
     TickType_t sd_next_flush_allowed_ticks;
     TickType_t sd_backoff_until_ticks;
     TickType_t last_sd_flush_warn_ticks;
+    TickType_t last_sd_flush_wait_warn_ticks;
     uint32_t sd_fail_count;
     uint32_t sd_flush_records_since;
+    bool sd_flush_in_progress;
     bool sd_flush_pending;
     // If the FRAM->SD drain was requested at run start but SD was not mounted,
     // keep trying aggressively once the card becomes available.
