@@ -136,6 +136,17 @@ extern "C" {
   void RuntimeSdIoUnlock(runtime_state_t* state);
 
 /**
+ * @brief Execute RuntimeDiagHeapCheck.
+ * @param state Parameter state.
+ * @param context Parameter context.
+ * @param force Parameter force.
+ * @return Return the function result.
+ */
+  bool RuntimeDiagHeapCheck(runtime_state_t* state,
+                            const char* context,
+                            bool force);
+
+/**
  * @brief Execute RuntimeRequestRunStart.
  */
   void RuntimeRequestRunStart(void);

@@ -188,6 +188,7 @@ extern "C" {
     bool wifi_direct_time_synced;
     bool data_streaming_enabled;
     bool log_quiet;
+    bool diag_heap_check_enabled;
 
     bool request_run_start;
     bool request_run_stop;
