@@ -250,6 +250,25 @@ AllocatePreferPsram(size_t bytes)
   }
   return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
+
+static const sd_csv_append_scratch_t*
+BuildSdAppendScratch(const runtime_state_t* state,
+                     sd_csv_append_scratch_t* scratch_out)
+{
+  if (state == NULL || scratch_out == NULL) {
+    return NULL;
+  }
+  scratch_out->io_bounce_bytes = state->sd_logger.io_bounce_bytes;
+  scratch_out->io_bounce_capacity = state->sd_logger.io_bounce_capacity;
+  scratch_out->verify_readback_bytes = state->sd_logger.verify_readback_bytes;
+  scratch_out->verify_readback_capacity =
+    state->sd_logger.verify_readback_capacity;
+  if (scratch_out->io_bounce_bytes == NULL &&
+      scratch_out->verify_readback_bytes == NULL) {
+    return NULL;
+  }
+  return scratch_out;
+}
 static esp_err_t
 RuntimeFlushToSd(void* context);
 static void
@@ -1740,6 +1759,9 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     }
 
     sd_csv_append_stats_t append_stats = { 0 };
+    sd_csv_append_scratch_t append_scratch = { 0 };
+    const sd_csv_append_scratch_t* scratch =
+      BuildSdAppendScratch(state, &append_scratch);
     esp_err_t write_result = ESP_OK;
     if (state->sd_force_unmount_on_append) {
       state->sd_force_unmount_on_append = false;
@@ -1755,7 +1777,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
                               last_record_id,
                               ResolveSdVerifyMode(state),
                               SD_APPEND_FLUSH_ALWAYS,
-                              NULL,
+                              scratch,
                               &append_stats);
     }
     if (write_result != ESP_OK) {
@@ -2028,6 +2050,9 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   }
 
   sd_csv_append_stats_t append_stats = { 0 };
+  sd_csv_append_scratch_t append_scratch = { 0 };
+  const sd_csv_append_scratch_t* scratch =
+    BuildSdAppendScratch(state, &append_scratch);
   esp_err_t write_result =
     SdLoggerAppendBatchEx(&state->sd_logger,
                           state->batch_buffer,
@@ -2035,7 +2060,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
                           last_record_id,
                           verify_mode,
                           flush_mode,
-                          NULL,
+                          scratch,
                           &append_stats);
   if (write_result != ESP_OK) {
     (void)SdLoggerUnmount(&state->sd_logger);
@@ -3664,6 +3689,33 @@ RuntimeManagerInit(void)
       g_state.batch_buffer_size = kMinBatchBytes;
       g_state.batch_buffer =
         (uint8_t*)AllocatePreferPsram(g_state.batch_buffer_size);
+    }
+  }
+
+  {
+    const size_t kSdIoBounceBytes = 4096;
+    g_state.sd_logger.io_bounce_bytes = (uint8_t*)heap_caps_malloc(
+      kSdIoBounceBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (g_state.sd_logger.io_bounce_bytes != NULL) {
+      g_state.sd_logger.io_bounce_capacity = kSdIoBounceBytes;
+    } else {
+      g_state.sd_logger.io_bounce_capacity = 0;
+      ESP_LOGW(kTag, "SD I/O bounce buffer allocation failed");
+    }
+
+    size_t verify_bytes = g_state.sd_logger.config.batch_target_bytes;
+    const size_t kVerifyReadbackMaxBytes = 64 * 1024;
+    if (verify_bytes > kVerifyReadbackMaxBytes) {
+      verify_bytes = kVerifyReadbackMaxBytes;
+    }
+    if (verify_bytes > 0) {
+      g_state.sd_logger.verify_readback_bytes =
+        (uint8_t*)AllocatePreferPsram(verify_bytes);
+    }
+    if (g_state.sd_logger.verify_readback_bytes != NULL) {
+      g_state.sd_logger.verify_readback_capacity = verify_bytes;
+    } else {
+      g_state.sd_logger.verify_readback_capacity = 0;
     }
   }
 

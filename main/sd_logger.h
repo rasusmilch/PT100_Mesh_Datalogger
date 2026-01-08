@@ -35,6 +35,10 @@ extern "C"
     uint8_t* file_buffer;
 
     sd_logger_config_t config;
+    uint8_t* io_bounce_bytes;
+    size_t io_bounce_capacity;
+    uint8_t* verify_readback_bytes;
+    size_t verify_readback_capacity;
 
     // Saved slot configuration so we can retry mounting on hot-insert.
     spi_host_device_t host_id;
