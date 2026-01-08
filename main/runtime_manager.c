@@ -85,6 +85,29 @@ RuntimeNotifyAllRunTasks(runtime_state_t* state)
 }
 
 static void
+RuntimePauseSpiUsers(runtime_state_t* state, uint32_t timeout_ms)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  state->spi_pause_requested = true;
+  RuntimeNotifyTask(state->display_task);
+
+  const TickType_t wait_start = xTaskGetTickCount();
+  while (state->display_task != NULL && !state->spi_paused &&
+         (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < timeout_ms)) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  if (state->display_task != NULL && !state->spi_paused) {
+    ESP_LOGW(kTag,
+             "Stop: SPI pause timed out; display task still active (%p)",
+             state->display_task);
+  }
+}
+
+static void
 RuntimeInterruptibleDelayTicks(TickType_t delay_ticks)
 {
   (void)ulTaskNotifyTake(pdTRUE, delay_ticks);
@@ -904,9 +927,19 @@ DisplayTask(void* context)
 
   while (state != NULL) {
     if (!state->display_initialized) {
+      if (state->spi_pause_requested) {
+        state->spi_paused = true;
+      }
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
+
+    if (state->spi_pause_requested) {
+      state->spi_paused = true;
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
+      continue;
+    }
+    state->spi_paused = false;
 
     if (state->display_test_active) {
       const TickType_t now_ticks = xTaskGetTickCount();
@@ -4632,6 +4665,8 @@ RuntimeStopAllTasks(runtime_state_t* state)
   MqttClientWrapStop(&state->mqtt_client);
   UpdateMqttConnectionState(state);
   state->stop_requested = false;
+  state->spi_pause_requested = false;
+  state->spi_paused = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, false);
 
 #if CONFIG_APP_MAX7219_ENABLE
@@ -4715,6 +4750,8 @@ EnterDiagMode(void)
              "Diag entry: stop timeout; skipping FRAM->SD drain/unmount to avoid SD/SPI contention");
     g_state.sd_degraded = true;
   } else {
+    ESP_LOGW(kTag, "Stop: pausing SPI users before drain");
+    RuntimePauseSpiUsers(&g_state, 1000u);
     ESP_LOGW(kTag, "Stop: draining FRAM->SD (and unmounting)");
     sd_drain_stats_t drain_stats = { 0 };
     flush_result = DrainFramToSd(&g_state,
