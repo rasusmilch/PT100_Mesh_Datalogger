@@ -57,6 +57,9 @@ static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 
+static sd_append_verify_t
+ResolveSdVerifyMode(const runtime_state_t* state);
+
 static void
 RuntimeNotifyTask(TaskHandle_t handle)
 {
@@ -257,9 +260,8 @@ RuntimeSdIoLock(runtime_state_t* state, TickType_t timeout_ticks)
   if (xSemaphoreTake(state->sd_io_mutex, timeout_ticks) != pdTRUE) {
     const char* phase =
       (state->stop_requested || !state->is_running) ? "stop/diag" : "runtime";
-    ESP_LOGE(kTag,
-             "SD I/O mutex timeout during %s; marking SD degraded",
-             phase);
+    ESP_LOGE(
+      kTag, "SD I/O mutex timeout during %s; marking SD degraded", phase);
     MarkSdIoLockFailure(state);
     return false;
   }
@@ -1854,15 +1856,14 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       append_stats.diag.errno_value = 0;
       write_result = ESP_ERR_INVALID_STATE;
     } else {
-      write_result =
-        SdLoggerAppendBatchEx(&state->sd_logger,
-                              state->batch_buffer,
-                              bytes_used,
-                              last_record_id,
-                              ResolveSdVerifyMode(state),
-                              SD_APPEND_FLUSH_ALWAYS,
-                              scratch,
-                              &append_stats);
+      write_result = SdLoggerAppendBatchEx(&state->sd_logger,
+                                           state->batch_buffer,
+                                           bytes_used,
+                                           last_record_id,
+                                           ResolveSdVerifyMode(state),
+                                           SD_APPEND_FLUSH_ALWAYS,
+                                           scratch,
+                                           &append_stats);
     }
     if (write_result != ESP_OK) {
       ESP_LOGE(kTag,
@@ -1873,9 +1874,9 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       (void)SdLoggerUnmount(&state->sd_logger);
       RuntimeDiagHeapCheck(state, "SD unmount (append fail after)", false);
       RuntimeSdIoUnlock(state);
-      const char* op =
-        (append_stats.diag.operation != NULL) ? append_stats.diag.operation
-                                              : "append";
+      const char* op = (append_stats.diag.operation != NULL)
+                         ? append_stats.diag.operation
+                         : "append";
       MarkSdFailure(state,
                     "SD append failed",
                     op,
@@ -2142,22 +2143,21 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   sd_csv_append_scratch_t append_scratch = { 0 };
   const sd_csv_append_scratch_t* scratch =
     BuildSdAppendScratch(state, &append_scratch);
-  esp_err_t write_result =
-    SdLoggerAppendBatchEx(&state->sd_logger,
-                          state->batch_buffer,
-                          bytes_used,
-                          last_record_id,
-                          verify_mode,
-                          flush_mode,
-                          scratch,
-                          &append_stats);
+  esp_err_t write_result = SdLoggerAppendBatchEx(&state->sd_logger,
+                                                 state->batch_buffer,
+                                                 bytes_used,
+                                                 last_record_id,
+                                                 verify_mode,
+                                                 flush_mode,
+                                                 scratch,
+                                                 &append_stats);
   if (write_result != ESP_OK) {
     RuntimeDiagHeapCheck(state, "SD unmount (flush append before)", false);
     (void)SdLoggerUnmount(&state->sd_logger);
     RuntimeDiagHeapCheck(state, "SD unmount (flush append after)", false);
-    const char* op =
-      (append_stats.diag.operation != NULL) ? append_stats.diag.operation
-                                            : "append";
+    const char* op = (append_stats.diag.operation != NULL)
+                       ? append_stats.diag.operation
+                       : "append";
     MarkSdFailure(state,
                   "SD append failed",
                   op,
@@ -2747,9 +2747,11 @@ StorageTask(void* context)
           if (state->sd_logger.is_mounted) {
             if (RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
               SdLoggerClose(&state->sd_logger);
-              RuntimeDiagHeapCheck(state, "SD unmount (card removed before)", false);
+              RuntimeDiagHeapCheck(
+                state, "SD unmount (card removed before)", false);
               (void)SdLoggerUnmount(&state->sd_logger);
-              RuntimeDiagHeapCheck(state, "SD unmount (card removed after)", false);
+              RuntimeDiagHeapCheck(
+                state, "SD unmount (card removed after)", false);
               RuntimeSdIoUnlock(state);
             }
             UpdateCachedBool(state,
@@ -3809,8 +3811,7 @@ RuntimeManagerInit(void)
   InitializeRuntimeStruct();
   esp_err_t first_error = ESP_OK;
 
-  g_state.sd_io_mutex =
-    xSemaphoreCreateMutexStatic(&g_state.sd_io_mutex_buf);
+  g_state.sd_io_mutex = xSemaphoreCreateMutexStatic(&g_state.sd_io_mutex_buf);
   if (g_state.sd_io_mutex == NULL) {
     ESP_LOGE(kTag, "Failed to create SD I/O mutex; SD marked degraded");
     g_state.sd_degraded = true;
@@ -4267,8 +4268,7 @@ RuntimeStart(void)
   }
 
   if (!g_state.sensor.is_initialized) {
-    esp_err_t sensor_result =
-      InitializeMax31865Sensor(&g_state, GetSpiHost());
+    esp_err_t sensor_result = InitializeMax31865Sensor(&g_state, GetSpiHost());
     if (sensor_result != ESP_OK) {
       g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
       return sensor_result;
@@ -4404,9 +4404,11 @@ RuntimeStart(void)
         g_state.mesh_started = true;
       } else {
         ESP_LOGE(kTag, "Mesh start failed: %s", esp_err_to_name(mesh_result));
-        RuntimeDiagHeapCheck(&g_state, "Wi-Fi mesh stop (start fail before)", false);
+        RuntimeDiagHeapCheck(
+          &g_state, "Wi-Fi mesh stop (start fail before)", false);
         (void)WifiServiceRelease();
-        RuntimeDiagHeapCheck(&g_state, "Wi-Fi mesh stop (start fail after)", false);
+        RuntimeDiagHeapCheck(
+          &g_state, "Wi-Fi mesh stop (start fail after)", false);
         g_state.mesh_started = false;
       }
     }
@@ -4444,9 +4446,11 @@ wifi_direct_start_done:
     if (RuntimeSdIoLock(&g_state, kSdIoLockTimeoutTicks)) {
       esp_err_t sync_result = EnsureSdSyncedForEpoch(&g_state, epoch_for_file);
       if (sync_result != ESP_OK) {
-        RuntimeDiagHeapCheck(&g_state, "SD unmount (initial sync before)", false);
+        RuntimeDiagHeapCheck(
+          &g_state, "SD unmount (initial sync before)", false);
         (void)SdLoggerUnmount(&g_state.sd_logger);
-        RuntimeDiagHeapCheck(&g_state, "SD unmount (initial sync after)", false);
+        RuntimeDiagHeapCheck(
+          &g_state, "SD unmount (initial sync after)", false);
         MarkSdFailure(
           &g_state, "Initial SD sync failed", "sync", sync_result, 0, true);
       }
@@ -4690,13 +4694,19 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
       state->bridge_task != NULL || state->broker_task != NULL ||
       state->alert_monitor_task != NULL || state->alert_sender_task != NULL) {
     if (state->sensor_task != NULL) {
-      ESP_LOGW(kTag, "Stop timeout: sensor_task still running (%p)", state->sensor_task);
+      ESP_LOGW(kTag,
+               "Stop timeout: sensor_task still running (%p)",
+               state->sensor_task);
     }
     if (state->storage_task != NULL) {
-      ESP_LOGW(kTag, "Stop timeout: storage_task still running (%p)", state->storage_task);
+      ESP_LOGW(kTag,
+               "Stop timeout: storage_task still running (%p)",
+               state->storage_task);
     }
     if (state->export_task != NULL) {
-      ESP_LOGW(kTag, "Stop timeout: export_task still running (%p)", state->export_task);
+      ESP_LOGW(kTag,
+               "Stop timeout: export_task still running (%p)",
+               state->export_task);
     }
     if (state->export_network_task != NULL) {
       ESP_LOGW(kTag,
@@ -4704,10 +4714,14 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
                state->export_network_task);
     }
     if (state->time_sync_task != NULL) {
-      ESP_LOGW(kTag, "Stop timeout: time_sync_task still running (%p)", state->time_sync_task);
+      ESP_LOGW(kTag,
+               "Stop timeout: time_sync_task still running (%p)",
+               state->time_sync_task);
     }
     if (state->topology_task != NULL) {
-      ESP_LOGW(kTag, "Stop timeout: topology_task still running (%p)", state->topology_task);
+      ESP_LOGW(kTag,
+               "Stop timeout: topology_task still running (%p)",
+               state->topology_task);
     }
     if (state->health_publisher_task != NULL) {
       ESP_LOGW(kTag,
@@ -4720,10 +4734,14 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
                state->wifi_direct_task);
     }
     if (state->bridge_task != NULL) {
-      ESP_LOGW(kTag, "Stop timeout: bridge_task still running (%p)", state->bridge_task);
+      ESP_LOGW(kTag,
+               "Stop timeout: bridge_task still running (%p)",
+               state->bridge_task);
     }
     if (state->broker_task != NULL) {
-      ESP_LOGW(kTag, "Stop timeout: broker_task still running (%p)", state->broker_task);
+      ESP_LOGW(kTag,
+               "Stop timeout: broker_task still running (%p)",
+               state->broker_task);
     }
     if (state->alert_monitor_task != NULL) {
       ESP_LOGW(kTag,
@@ -4857,13 +4875,16 @@ EnterDiagMode(void)
   ESP_LOGW(kTag, "Stop: sampling halt requested");
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
   bool allow_drain = (stop_result == ESP_OK);
-  if (allow_drain && (g_state.sensor_task != NULL || g_state.storage_task != NULL)) {
+  if (allow_drain &&
+      (g_state.sensor_task != NULL || g_state.storage_task != NULL)) {
     if (g_state.sensor_task != NULL) {
-      ESP_LOGW(kTag, "Diag entry guard: sensor_task still running (%p)",
+      ESP_LOGW(kTag,
+               "Diag entry guard: sensor_task still running (%p)",
                g_state.sensor_task);
     }
     if (g_state.storage_task != NULL) {
-      ESP_LOGW(kTag, "Diag entry guard: storage_task still running (%p)",
+      ESP_LOGW(kTag,
+               "Diag entry guard: storage_task still running (%p)",
                g_state.storage_task);
     }
     allow_drain = false;
@@ -4872,7 +4893,8 @@ EnterDiagMode(void)
   esp_err_t flush_result = ESP_OK;
   if (!allow_drain) {
     ESP_LOGW(kTag,
-             "Diag entry: stop timeout; skipping FRAM->SD drain/unmount to avoid SD/SPI contention");
+             "Diag entry: stop timeout; skipping FRAM->SD drain/unmount to "
+             "avoid SD/SPI contention");
     g_state.sd_degraded = true;
   } else {
     ESP_LOGW(kTag, "Stop: pausing SPI users before drain");
