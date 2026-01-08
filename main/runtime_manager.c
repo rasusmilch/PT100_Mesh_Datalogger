@@ -3505,7 +3505,11 @@ InitSpiBus(spi_host_device_t host)
     .quadhd_io_num = -1,
     .max_transfer_sz = 4096,
   };
-  return spi_bus_initialize(host, &bus_config, SPI_DMA_CH_AUTO);
+  esp_err_t result = spi_bus_initialize(host, &bus_config, SPI_DMA_CH_AUTO);
+  if (result == ESP_ERR_INVALID_STATE) {
+    return ESP_OK;
+  }
+  return result;
 }
 
 /**
