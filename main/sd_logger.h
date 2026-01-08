@@ -163,6 +163,15 @@ extern "C"
   void SdLoggerClose(sd_logger_t* logger);
 
 /**
+ * @brief Execute SdLoggerFlushAndSync.
+ * @param logger Parameter logger.
+ * @param diag_out Parameter diag_out.
+ * @return Return the function result.
+ */
+  esp_err_t SdLoggerFlushAndSync(sd_logger_t* logger,
+                                 SdCsvAppendDiagnostics* diag_out);
+
+/**
  * @brief Execute SdLoggerLastRecordIdOnSd.
  * @param logger Parameter logger.
  * @return Return the function result.

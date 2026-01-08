@@ -682,3 +682,40 @@ SdCsvAppendBatchWithReadbackVerifyEx(FILE* file_handle,
 
   return ESP_OK;
 }
+
+/**
+ * @brief Execute SdCsvFlushAndSync.
+ * @param file_handle Parameter file_handle.
+ * @param diag_out Parameter diag_out.
+ * @return Return the function result.
+ */
+esp_err_t
+SdCsvFlushAndSync(FILE* file_handle, SdCsvAppendDiagnostics* diag_out)
+{
+  if (file_handle == NULL) {
+    SetAppendDiagnostics(diag_out, "fflush", 0);
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  const int file_descriptor = fileno(file_handle);
+  if (file_descriptor < 0) {
+    ESP_LOGE(kTag, "fileno() failed");
+    SetAppendDiagnostics(diag_out, "fflush", errno);
+    return ESP_FAIL;
+  }
+
+  if (fflush(file_handle) != 0) {
+    ESP_LOGE(kTag, "fflush() failed: errno=%d (%s)", errno, strerror(errno));
+    SetAppendDiagnostics(diag_out, "fflush", errno);
+    return ESP_FAIL;
+  }
+
+  if (fsync(file_descriptor) != 0) {
+    ESP_LOGE(kTag, "fsync() failed: errno=%d (%s)", errno, strerror(errno));
+    SetAppendDiagnostics(diag_out, "fsync", errno);
+    return ESP_FAIL;
+  }
+
+  SetAppendDiagnostics(diag_out, NULL, 0);
+  return ESP_OK;
+}

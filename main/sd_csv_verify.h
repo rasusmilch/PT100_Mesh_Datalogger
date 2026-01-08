@@ -81,6 +81,10 @@ esp_err_t SdCsvAppendBatchWithReadbackVerifyEx(
   const sd_csv_append_scratch_t* scratch,
   bool flush_per_append);
 
+// Flush and fsync a CSV file handle, reporting diagnostics.
+esp_err_t SdCsvFlushAndSync(FILE* file_handle,
+                            SdCsvAppendDiagnostics* diag_out);
+
 #ifdef __cplusplus
 }
 #endif
