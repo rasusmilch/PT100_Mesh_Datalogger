@@ -526,6 +526,33 @@ Max31865ReaderInit(max31865_reader_t* reader,
 }
 
 /**
+ * @brief Execute Max31865ReaderDeinit.
+ * @param reader Parameter reader.
+ * @return Return the function result.
+ */
+esp_err_t
+Max31865ReaderDeinit(max31865_reader_t* reader)
+{
+  if (reader == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  esp_err_t result = ESP_OK;
+  if (reader->spi_device != NULL) {
+    result = spi_bus_remove_device(reader->spi_device);
+  }
+  if (reader->dma_tx_buf != NULL) {
+    heap_caps_free(reader->dma_tx_buf);
+  }
+  if (reader->dma_rx_buf != NULL) {
+    heap_caps_free(reader->dma_rx_buf);
+  }
+
+  memset(reader, 0, sizeof(*reader));
+  return result;
+}
+
+/**
  * @brief Execute FillSample.
  * @param sample Parameter sample.
  * @param adc_code Parameter adc_code.

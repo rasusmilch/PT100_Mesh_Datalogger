@@ -107,6 +107,26 @@ FramSpiInit(fram_spi_t* fram,
 }
 
 /**
+ * @brief Execute FramSpiDeinit.
+ * @param fram Parameter fram.
+ * @return Return the function result.
+ */
+esp_err_t
+FramSpiDeinit(fram_spi_t* fram)
+{
+  if (fram == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  esp_err_t result = ESP_OK;
+  if (fram->device != NULL) {
+    result = spi_bus_remove_device(fram->device);
+  }
+  memset(fram, 0, sizeof(*fram));
+  return result;
+}
+
+/**
  * @brief Execute FramSpiRead.
  * @param fram Parameter fram.
  * @param address Parameter address.

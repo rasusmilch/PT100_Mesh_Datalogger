@@ -30,6 +30,12 @@ extern "C"
                         spi_host_device_t host,
                         int cs_gpio,
                         int address_bytes);
+/**
+ * @brief Execute FramSpiDeinit.
+ * @param fram Parameter fram.
+ * @return Return the function result.
+ */
+  esp_err_t FramSpiDeinit(fram_spi_t* fram);
 
 /**
  * @brief Execute FramSpiRead.

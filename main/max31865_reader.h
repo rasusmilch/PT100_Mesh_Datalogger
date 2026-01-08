@@ -75,6 +75,12 @@ extern "C"
   esp_err_t Max31865ReaderInit(max31865_reader_t* reader,
                                spi_host_device_t host,
                                int cs_gpio);
+/**
+ * @brief Execute Max31865ReaderDeinit.
+ * @param reader Parameter reader.
+ * @return Return the function result.
+ */
+  esp_err_t Max31865ReaderDeinit(max31865_reader_t* reader);
 
   // Register helpers.
 /**

@@ -40,6 +40,12 @@ extern "C" {
  */
   esp_err_t Max7219DisplayInit(max7219_display_t* disp,
                                const max7219_display_config_t* config);
+/**
+ * @brief Execute Max7219DisplayDeinit.
+ * @param disp Parameter disp.
+ * @return Return the function result.
+ */
+  esp_err_t Max7219DisplayDeinit(max7219_display_t* disp);
 
 /**
  * @brief Execute Max7219DisplaySetText.

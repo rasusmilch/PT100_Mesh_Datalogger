@@ -287,6 +287,26 @@ Max7219DisplayInit(max7219_display_t* disp,
 }
 
 /**
+ * @brief Execute Max7219DisplayDeinit.
+ * @param disp Parameter disp.
+ * @return Return the function result.
+ */
+esp_err_t
+Max7219DisplayDeinit(max7219_display_t* disp)
+{
+  if (disp == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  esp_err_t result = ESP_OK;
+  if (disp->device != NULL) {
+    result = spi_bus_remove_device(disp->device);
+  }
+  memset(disp, 0, sizeof(*disp));
+  return result;
+}
+
+/**
  * @brief Execute Max7219DisplaySetText.
  * @param disp Parameter disp.
  * @param text Parameter text.
