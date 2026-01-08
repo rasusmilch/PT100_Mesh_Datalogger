@@ -55,6 +55,7 @@ RuntimeHealthPublisherTick(runtime_state_t* state)
     state->cached_status.sd_backoff_remaining_ms;
   snapshot.sd_io_error_active = state->cached_status.sd_io_error_active;
   snapshot.sd_card_present = state->cached_status.sd_card_present;
+  snapshot.sd_safe_to_remove = state->cached_status.sd_safe_to_remove;
   snapshot.fram_count = state->cached_status.fram_count;
   snapshot.fram_capacity = state->cached_status.fram_capacity;
   snapshot.fram_full = state->cached_status.fram_full;

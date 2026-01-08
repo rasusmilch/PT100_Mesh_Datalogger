@@ -731,11 +731,14 @@ CommandStatus(int argc, char** argv)
       (uint32_t)pdTICKS_TO_MS((TickType_t)sd_backoff_until - now_ticks);
   }
   const char* sd_card_present = "unknown";
+  const char* sd_safe_to_remove = "unknown";
   if (cached_status != NULL) {
     sd_card_present = cached_status->sd_card_present ? "yes" : "no";
+    sd_safe_to_remove = cached_status->sd_safe_to_remove ? "yes" : "no";
   }
   printf("sd_mounted: %s\n", sd_mounted ? "yes" : "no");
   printf("sd_card_present: %s\n", sd_card_present);
+  printf("sd_safe_to_remove: %s\n", sd_safe_to_remove);
   printf("sd_card_detect_gpio: %d\n", CONFIG_APP_SD_CARD_DETECT_GPIO);
   printf("sd_card_detect_present_level: %s\n",
 #if CONFIG_APP_SD_CARD_DETECT_PRESENT_HIGH
