@@ -1252,7 +1252,11 @@ AlertManagerSenderTask(void* context)
       if (ctx->manager->ntfy.backoff_ms > 30000) {
         ctx->manager->ntfy.backoff_ms = 30000;
       }
-      vTaskDelay(pdMS_TO_TICKS(ctx->manager->ntfy.backoff_ms));
+      (void)ulTaskNotifyTake(pdTRUE,
+                             pdMS_TO_TICKS(ctx->manager->ntfy.backoff_ms));
+      if (*ctx->stop_requested) {
+        break;
+      }
       (void)AlertNtfyEnqueue(&ctx->manager->ntfy, &note);
     }
   }
