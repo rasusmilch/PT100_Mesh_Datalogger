@@ -70,6 +70,15 @@ RuntimeNotifyAllRunTasks(runtime_state_t* state)
   if (state == NULL) {
     return;
   }
+  RuntimeNotifyTask(state->sensor_task);
+  RuntimeNotifyTask(state->storage_task);
+  RuntimeNotifyTask(state->export_task);
+  RuntimeNotifyTask(state->export_network_task);
+  RuntimeNotifyTask(state->broker_task);
+  RuntimeNotifyTask(state->bridge_task);
+  RuntimeNotifyTask(state->health_publisher_task);
+  RuntimeNotifyTask(state->alert_monitor_task);
+  RuntimeNotifyTask(state->alert_sender_task);
   RuntimeNotifyTask(state->wifi_direct_task);
   RuntimeNotifyTask(state->topology_task);
   RuntimeNotifyTask(state->time_sync_task);
@@ -2158,7 +2167,7 @@ SensorTask(void* context)
     taskEXIT_CRITICAL(&state->last_temp_lock);
 
     (void)xQueueSend(state->log_queue, &record, 0);
-    vTaskDelay(pdMS_TO_TICKS(period_ms));
+    RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(period_ms));
   }
 
   state->sensor_task = NULL;
@@ -2186,7 +2195,7 @@ ExportTask(void* context)
         continue;
       }
       if (!TryEmitCsvHeader(state)) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
         continue;
       }
       if (!CsvWriteRow(CsvDataPortWriter, NULL, &item.record, item.node_id)) {
@@ -2194,7 +2203,7 @@ ExportTask(void* context)
         UpdateCachedUint32(state,
                            &state->cached_status.export_write_fail_count,
                            state->export_write_fail_count);
-        vTaskDelay(pdMS_TO_TICKS(50));
+        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
       }
     }
   }
@@ -2217,18 +2226,18 @@ ExportNetworkTask(void* context)
          (state->export_outbox != NULL &&
           uxQueueMessagesWaiting(state->export_outbox) > 0)) {
     if (state->export_outbox == NULL) {
-      vTaskDelay(pdMS_TO_TICKS(200));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(200));
       continue;
     }
     export_record_item_t item;
     if (xQueuePeek(state->export_outbox, &item, pdMS_TO_TICKS(500)) != pdTRUE) {
-      vTaskDelay(pdMS_TO_TICKS(100));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(100));
       continue;
     }
 
     if (state->net_mode_active == APP_NET_MODE_MESH) {
       if (!MeshTransportIsConnected(&state->mesh)) {
-        vTaskDelay(pdMS_TO_TICKS(500));
+        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
         continue;
       }
       const esp_err_t send_result = MeshTransportSendPublishRecord(
@@ -2245,7 +2254,7 @@ ExportNetworkTask(void* context)
           ESP_LOGW(
             kTag, "mesh export send failed: %s", esp_err_to_name(send_result));
         }
-        vTaskDelay(pdMS_TO_TICKS(500));
+        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
       }
       continue;
     }
@@ -2254,7 +2263,7 @@ ExportNetworkTask(void* context)
                              state->net_mode_active == APP_NET_MODE_DIRECT_WIFI;
     EnsureMqttClientState(state, should_mqtt);
     if (!state->mqtt_client_connected) {
-      vTaskDelay(pdMS_TO_TICKS(500));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
       continue;
     }
 
@@ -2301,7 +2310,7 @@ ExportNetworkTask(void* context)
                             kExportLogRateLimitMs)) {
         ESP_LOGW(kTag, "MQTT publish failed");
       }
-      vTaskDelay(pdMS_TO_TICKS(500));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
     }
   }
 
@@ -2417,13 +2426,13 @@ BrokerPublishTask(void* context)
          (state->broker_outbox != NULL &&
           uxQueueMessagesWaiting(state->broker_outbox) > 0)) {
     if (state->broker_outbox == NULL) {
-      vTaskDelay(pdMS_TO_TICKS(200));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(200));
       continue;
     }
 
     broker_publish_item_t item;
     if (xQueuePeek(state->broker_outbox, &item, pdMS_TO_TICKS(500)) != pdTRUE) {
-      vTaskDelay(pdMS_TO_TICKS(100));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(100));
       continue;
     }
 
@@ -2432,7 +2441,7 @@ BrokerPublishTask(void* context)
       BridgeModeUsesBroker(state->mqtt_bridge_mode_active);
     EnsureMqttClientState(state, should_mqtt);
     if (!state->mqtt_client_connected) {
-      vTaskDelay(pdMS_TO_TICKS(500));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
       continue;
     }
 
@@ -2454,7 +2463,7 @@ BrokerPublishTask(void* context)
                             kExportLogRateLimitMs)) {
         ESP_LOGW(kTag, "broker publish failed");
       }
-      vTaskDelay(pdMS_TO_TICKS(500));
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
     }
   }
 
