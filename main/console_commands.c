@@ -1168,6 +1168,11 @@ PrintSdStatus(const app_runtime_t* runtime)
   printf("sd_degraded: %s\n", sd_degraded ? "yes" : "no");
   printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
   printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
+  runtime_state_t* state = RuntimeGetState();
+  if (state != NULL) {
+    printf("sd_verify_readback: %s\n",
+           state->sd_verify_readback ? "on" : "off");
+  }
   printf("sd_last_record_id: %" PRIu64 "\n", SdLoggerLastRecordIdOnSd(logger));
   if (sd_mounted) {
     printf("sd_mount_point: %s\n", logger->mount_point);
@@ -1337,7 +1342,7 @@ CommandSd(int argc, char** argv)
     return 1;
   }
   if (argc < 2) {
-    printf("usage: sd status|mount|unmount|format|view\n");
+    printf("usage: sd status|mount|unmount|format|view|verify\n");
     return 1;
   }
 
@@ -1370,6 +1375,31 @@ CommandSd(int argc, char** argv)
       return 0;
     }
     return CommandSdView(g_runtime->sd_logger);
+  }
+
+  if (strcmp(action, "verify") == 0) {
+    runtime_state_t* state = RuntimeGetState();
+    if (state == NULL) {
+      printf("sd verify failed: runtime unavailable\n");
+      return 1;
+    }
+    if (argc < 3) {
+      printf("sd verify: %s\n", state->sd_verify_readback ? "on" : "off");
+      return 0;
+    }
+    const char* value = argv[2];
+    if (strcmp(value, "on") == 0) {
+      state->sd_verify_readback = true;
+      printf("sd verify: on\n");
+      return 0;
+    }
+    if (strcmp(value, "off") == 0) {
+      state->sd_verify_readback = false;
+      printf("sd verify: off\n");
+      return 0;
+    }
+    printf("usage: sd verify on|off\n");
+    return 1;
   }
 
   if (RuntimeIsRunning()) {
@@ -1407,7 +1437,8 @@ CommandSd(int argc, char** argv)
     return 0;
   }
 
-  printf("unknown sd command. try 'sd status|mount|unmount|format|view'\n");
+  printf(
+    "unknown sd command. try 'sd status|mount|unmount|format|view|verify'\n");
   return 1;
 }
 
@@ -3655,7 +3686,8 @@ RegisterCommands(void)
   const esp_console_cmd_t sd_cmd = {
     .command = "sd",
     .help =
-      "SD commands: sd status | sd mount | sd unmount | sd format | sd view",
+      "SD commands: sd status | sd mount | sd unmount | sd format | sd view | "
+      "sd verify",
     .hint = NULL,
     .func = &CommandSd,
   };

@@ -31,6 +31,38 @@ DefaultOr(const size_t value, const size_t fallback)
 }
 
 /**
+ * @brief Execute SetAppendDiagnostics.
+ * @param diag Parameter diag.
+ * @param operation Parameter operation.
+ * @param errno_value Parameter errno_value.
+ */
+static void
+SetAppendDiagnostics(SdCsvAppendDiagnostics* diag,
+                     const char* operation,
+                     int errno_value)
+{
+  if (diag == NULL) {
+    return;
+  }
+  diag->operation = operation;
+  diag->errno_value = errno_value;
+}
+
+/**
+ * @brief Execute ResetAppendStats.
+ * @param stats Parameter stats.
+ */
+static void
+ResetAppendStats(sd_csv_append_stats_t* stats)
+{
+  if (stats == NULL) {
+    return;
+  }
+  memset(stats, 0, sizeof(*stats));
+  SetAppendDiagnostics(&stats->diag, NULL, 0);
+}
+
+/**
  * @brief Execute CsvFileWriter.
  * @param bytes Parameter bytes.
  * @param len Parameter len.
@@ -364,20 +396,122 @@ SdLoggerAppendVerifiedBatch(sd_logger_t* logger,
                             uint64_t last_record_id_in_batch,
                             SdCsvAppendDiagnostics* diag_out)
 {
+  sd_csv_append_stats_t stats = { 0 };
+  esp_err_t result = SdLoggerAppendBatchEx(logger,
+                                           batch_bytes,
+                                           batch_length_bytes,
+                                           last_record_id_in_batch,
+                                           SD_APPEND_VERIFY_READBACK_SHA256,
+                                           SD_APPEND_FLUSH_ALWAYS,
+                                           NULL,
+                                           &stats);
+  if (diag_out != NULL) {
+    *diag_out = stats.diag;
+  }
+  return result;
+}
+
+/**
+ * @brief Execute SdLoggerAppendBatchEx.
+ * @param logger Parameter logger.
+ * @param batch_bytes Parameter batch_bytes.
+ * @param batch_length_bytes Parameter batch_length_bytes.
+ * @param last_record_id Parameter last_record_id.
+ * @param verify_mode Parameter verify_mode.
+ * @param flush_mode Parameter flush_mode.
+ * @param scratch Parameter scratch.
+ * @param out_stats Parameter out_stats.
+ * @return Return the function result.
+ */
+esp_err_t
+SdLoggerAppendBatchEx(sd_logger_t* logger,
+                      const uint8_t* batch_bytes,
+                      size_t batch_length_bytes,
+                      uint64_t last_record_id,
+                      sd_append_verify_t verify_mode,
+                      sd_append_flush_t flush_mode,
+                      const sd_csv_append_scratch_t* scratch,
+                      sd_csv_append_stats_t* out_stats)
+{
+  sd_csv_append_stats_t stats = { 0 };
+  sd_csv_append_stats_t* stats_out = (out_stats != NULL) ? out_stats : &stats;
+  ResetAppendStats(stats_out);
+
   if (logger == NULL || logger->file == NULL) {
+    SetAppendDiagnostics(&stats_out->diag, "append", 0);
     return ESP_ERR_INVALID_STATE;
   }
   if (batch_bytes == NULL || batch_length_bytes == 0) {
+    SetAppendDiagnostics(&stats_out->diag, "append", 0);
     return ESP_ERR_INVALID_ARG;
   }
 
   fseek(logger->file, 0, SEEK_END);
-  esp_err_t result = SdCsvAppendBatchWithReadbackVerify(
-    logger->file, batch_bytes, batch_length_bytes, diag_out);
-  if (result == ESP_OK) {
-    logger->last_record_id_on_sd = last_record_id_in_batch;
+
+  if (verify_mode == SD_APPEND_VERIFY_READBACK_SHA256) {
+    esp_err_t result = SdCsvAppendBatchWithReadbackVerifyEx(
+      logger->file,
+      batch_bytes,
+      batch_length_bytes,
+      &stats_out->diag,
+      scratch,
+      flush_mode == SD_APPEND_FLUSH_ALWAYS);
+    if (result == ESP_OK) {
+      stats_out->bytes_appended = batch_length_bytes;
+      logger->last_record_id_on_sd = last_record_id;
+    }
+    return result;
   }
-  return result;
+
+  size_t write_calls = 0;
+  if (scratch != NULL && scratch->io_bounce_bytes != NULL &&
+      scratch->io_bounce_capacity > 0) {
+    size_t offset = 0;
+    while (offset < batch_length_bytes) {
+      size_t chunk = batch_length_bytes - offset;
+      if (chunk > scratch->io_bounce_capacity) {
+        chunk = scratch->io_bounce_capacity;
+      }
+      memcpy(scratch->io_bounce_bytes, batch_bytes + offset, chunk);
+      const size_t written =
+        fwrite(scratch->io_bounce_bytes, 1, chunk, logger->file);
+      write_calls++;
+      if (written != chunk) {
+        ESP_LOGE(kTag,
+                 "fwrite() short write: wrote=%u expected=%u",
+                 (unsigned)written,
+                 (unsigned)chunk);
+        SetAppendDiagnostics(&stats_out->diag, "append", errno);
+        return ESP_FAIL;
+      }
+      offset += chunk;
+    }
+  } else {
+    const size_t written =
+      fwrite(batch_bytes, 1, batch_length_bytes, logger->file);
+    write_calls++;
+    if (written != batch_length_bytes) {
+      ESP_LOGE(kTag,
+               "fwrite() short write: wrote=%u expected=%u",
+               (unsigned)written,
+               (unsigned)batch_length_bytes);
+      SetAppendDiagnostics(&stats_out->diag, "append", errno);
+      return ESP_FAIL;
+    }
+  }
+
+  if (flush_mode == SD_APPEND_FLUSH_ALWAYS) {
+    if (fflush(logger->file) != 0) {
+      ESP_LOGE(kTag, "fflush() failed: errno=%d (%s)", errno, strerror(errno));
+      SetAppendDiagnostics(&stats_out->diag, "fflush", errno);
+      return ESP_FAIL;
+    }
+  }
+
+  stats_out->bytes_appended = batch_length_bytes;
+  stats_out->write_calls = write_calls;
+  logger->last_record_id_on_sd = last_record_id;
+  return ESP_OK;
 }
 
 /**

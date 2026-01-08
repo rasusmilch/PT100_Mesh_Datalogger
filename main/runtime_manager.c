@@ -1739,20 +1739,24 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       return ESP_ERR_INVALID_STATE;
     }
 
-    SdCsvAppendDiagnostics append_diag = { 0 };
+    sd_csv_append_stats_t append_stats = { 0 };
     esp_err_t write_result = ESP_OK;
     if (state->sd_force_unmount_on_append) {
       state->sd_force_unmount_on_append = false;
       (void)SdLoggerUnmount(&state->sd_logger);
-      append_diag.operation = "inject-unmount";
-      append_diag.errno_value = 0;
+      append_stats.diag.operation = "inject-unmount";
+      append_stats.diag.errno_value = 0;
       write_result = ESP_ERR_INVALID_STATE;
     } else {
-      write_result = SdLoggerAppendVerifiedBatch(&state->sd_logger,
-                                                 state->batch_buffer,
-                                                 bytes_used,
-                                                 last_record_id,
-                                                 &append_diag);
+      write_result =
+        SdLoggerAppendBatchEx(&state->sd_logger,
+                              state->batch_buffer,
+                              bytes_used,
+                              last_record_id,
+                              ResolveSdVerifyMode(state),
+                              SD_APPEND_FLUSH_ALWAYS,
+                              NULL,
+                              &append_stats);
     }
     if (write_result != ESP_OK) {
       ESP_LOGE(kTag,
@@ -1762,12 +1766,13 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       (void)SdLoggerUnmount(&state->sd_logger);
       RuntimeSdIoUnlock(state);
       const char* op =
-        (append_diag.operation != NULL) ? append_diag.operation : "append";
+        (append_stats.diag.operation != NULL) ? append_stats.diag.operation
+                                              : "append";
       MarkSdFailure(state,
                     "SD append failed",
                     op,
                     write_result,
-                    append_diag.errno_value,
+                    append_stats.diag.errno_value,
                     true);
       return write_result;
     }
@@ -1877,6 +1882,21 @@ MarkSdFailure(runtime_state_t* state,
 }
 
 /**
+ * @brief Execute ResolveSdVerifyMode.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+static sd_append_verify_t
+ResolveSdVerifyMode(const runtime_state_t* state)
+{
+  if (state == NULL) {
+    return SD_APPEND_VERIFY_NONE;
+  }
+  return state->sd_verify_readback ? SD_APPEND_VERIFY_READBACK_SHA256
+                                   : SD_APPEND_VERIFY_NONE;
+}
+
+/**
  * @brief Execute SdFlushWorkerTick.
  * @param state Parameter state.
  * @param max_records Parameter max_records.
@@ -1887,12 +1907,14 @@ MarkSdFailure(runtime_state_t* state,
  * @return Return the function result.
  */
 static esp_err_t
-SdFlushWorkerTick(runtime_state_t* state,
-                  uint32_t max_records,
-                  uint32_t max_ms,
-                  uint32_t* records_flushed_out,
-                  size_t* bytes_flushed_out,
-                  bool* more_pending_out)
+SdFlushWorkerTickEx(runtime_state_t* state,
+                    uint32_t max_records,
+                    uint32_t max_ms,
+                    sd_append_verify_t verify_mode,
+                    sd_append_flush_t flush_mode,
+                    uint32_t* records_flushed_out,
+                    size_t* bytes_flushed_out,
+                    bool* more_pending_out)
 {
   if (records_flushed_out != NULL) {
     *records_flushed_out = 0;
@@ -2005,21 +2027,26 @@ SdFlushWorkerTick(runtime_state_t* state,
     goto flush_done;
   }
 
-  SdCsvAppendDiagnostics append_diag = { 0 };
-  esp_err_t write_result = SdLoggerAppendVerifiedBatch(&state->sd_logger,
-                                                       state->batch_buffer,
-                                                       bytes_used,
-                                                       last_record_id,
-                                                       &append_diag);
+  sd_csv_append_stats_t append_stats = { 0 };
+  esp_err_t write_result =
+    SdLoggerAppendBatchEx(&state->sd_logger,
+                          state->batch_buffer,
+                          bytes_used,
+                          last_record_id,
+                          verify_mode,
+                          flush_mode,
+                          NULL,
+                          &append_stats);
   if (write_result != ESP_OK) {
     (void)SdLoggerUnmount(&state->sd_logger);
     const char* op =
-      (append_diag.operation != NULL) ? append_diag.operation : "append";
+      (append_stats.diag.operation != NULL) ? append_stats.diag.operation
+                                            : "append";
     MarkSdFailure(state,
                   "SD append failed",
                   op,
                   write_result,
-                  append_diag.errno_value,
+                  append_stats.diag.errno_value,
                   true);
     result = write_result;
     goto flush_done;
@@ -2051,6 +2078,34 @@ flush_done:
     *more_pending_out = (FramLogGetBufferedRecords(&state->fram_log) > 0);
   }
   return ESP_OK;
+}
+
+/**
+ * @brief Execute SdFlushWorkerTick.
+ * @param state Parameter state.
+ * @param max_records Parameter max_records.
+ * @param max_ms Parameter max_ms.
+ * @param records_flushed_out Parameter records_flushed_out.
+ * @param bytes_flushed_out Parameter bytes_flushed_out.
+ * @param more_pending_out Parameter more_pending_out.
+ * @return Return the function result.
+ */
+static esp_err_t
+SdFlushWorkerTick(runtime_state_t* state,
+                  uint32_t max_records,
+                  uint32_t max_ms,
+                  uint32_t* records_flushed_out,
+                  size_t* bytes_flushed_out,
+                  bool* more_pending_out)
+{
+  return SdFlushWorkerTickEx(state,
+                             max_records,
+                             max_ms,
+                             ResolveSdVerifyMode(state),
+                             SD_APPEND_FLUSH_ALWAYS,
+                             records_flushed_out,
+                             bytes_flushed_out,
+                             more_pending_out);
 }
 
 /**
@@ -3050,12 +3105,14 @@ DrainFramToSd(runtime_state_t* state,
     uint32_t flushed = 0;
     size_t bytes_flushed = 0;
     bool more_pending = false;
-    result = SdFlushWorkerTick(state,
-                               (uint32_t)drain_records_per_pass,
-                               kSdFlushMaxMsPerPass,
-                               &flushed,
-                               &bytes_flushed,
-                               &more_pending);
+    result = SdFlushWorkerTickEx(state,
+                                 (uint32_t)drain_records_per_pass,
+                                 kSdFlushMaxMsPerPass,
+                                 SD_APPEND_VERIFY_NONE,
+                                 SD_APPEND_FLUSH_NEVER,
+                                 &flushed,
+                                 &bytes_flushed,
+                                 &more_pending);
     if (result != ESP_OK) {
       break;
     }
