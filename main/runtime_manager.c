@@ -3655,7 +3655,7 @@ InitSpiBus(spi_host_device_t host)
   };
   esp_err_t result = spi_bus_initialize(host, &bus_config, SPI_DMA_CH_AUTO);
   if (result == ESP_ERR_INVALID_STATE) {
-    return ESP_OK;
+    ESP_LOGE(kTag, "spi_bus_initialize called twice for host %d", (int)host);
   }
   return result;
 }
@@ -3670,6 +3670,18 @@ GetSpiHost(void)
   return (CONFIG_APP_SPI_HOST == 3) ? SPI3_HOST : SPI2_HOST;
 }
 
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+#if CONFIG_APP_MAX7219_SPI_HOST != CONFIG_APP_SPI_HOST
+#error "CONFIG_APP_MAX7219_SPI_HOST must match CONFIG_APP_SPI_HOST when sharing SPI bus"
+#endif
+#if CONFIG_APP_MAX7219_MOSI_GPIO != CONFIG_APP_SPI_MOSI_GPIO
+#error "CONFIG_APP_MAX7219_MOSI_GPIO must match CONFIG_APP_SPI_MOSI_GPIO when sharing SPI bus"
+#endif
+#if CONFIG_APP_MAX7219_SCLK_GPIO != CONFIG_APP_SPI_SCLK_GPIO
+#error "CONFIG_APP_MAX7219_SCLK_GPIO must match CONFIG_APP_SPI_SCLK_GPIO when sharing SPI bus"
+#endif
+#endif
+
 /**
  * @brief Execute GetDisplaySpiHost.
  * @return Return the function result.
@@ -3677,7 +3689,11 @@ GetSpiHost(void)
 static spi_host_device_t
 GetDisplaySpiHost(void)
 {
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+  return GetSpiHost();
+#else
   return (CONFIG_APP_MAX7219_SPI_HOST == 3) ? SPI3_HOST : SPI2_HOST;
+#endif
 }
 
 /**
@@ -3729,13 +3745,21 @@ InitializeMax7219Display(runtime_state_t* state)
   }
 
   max7219_display_config_t display_config = {
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+    .host = GetSpiHost(),
+    .mosi_gpio = CONFIG_APP_SPI_MOSI_GPIO,
+    .sclk_gpio = CONFIG_APP_SPI_SCLK_GPIO,
+#else
     .host = GetDisplaySpiHost(),
     .mosi_gpio = CONFIG_APP_MAX7219_MOSI_GPIO,
     .sclk_gpio = CONFIG_APP_MAX7219_SCLK_GPIO,
+#endif
     .cs_gpio = CONFIG_APP_MAX7219_CS_GPIO,
     .chain_len = CONFIG_APP_MAX7219_CHAIN_LEN,
     .clock_hz = 2000000,
     .intensity = CONFIG_APP_MAX7219_INTENSITY,
+    .spi_bus_mutex = state->sd_io_mutex,
+    .spi_bus_mutex_timeout_ticks = kSdIoLockTimeoutTicks,
   };
   esp_err_t display_result =
     Max7219DisplayInit(&state->display, &display_config);
@@ -3890,6 +3914,16 @@ RuntimeManagerInit(void)
   AlertManagerInit(&g_state.alert_manager, g_state.node_id_string);
   (void)AlertManagerLoadConfig(&g_state.alert_manager);
 
+  const spi_host_device_t spi_host = GetSpiHost();
+  esp_err_t bus_result = InitSpiBus(spi_host);
+  if (bus_result != ESP_OK) {
+    if (first_error == ESP_OK) {
+      first_error = bus_result;
+    }
+    ESP_LOGE(
+      kTag, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
+  }
+
 #if CONFIG_APP_MAX7219_ENABLE
   esp_err_t display_result = InitializeMax7219Display(&g_state);
   if (display_result == ESP_OK && g_state.display_initialized) {
@@ -3988,16 +4022,6 @@ RuntimeManagerInit(void)
   if (time_result == ESP_OK) {
     (void)TimeSyncSetSystemFromRtc(&g_state.time_sync);
     UpdateTimeHealthState(&g_state, TimeSyncIsSystemTimeValid());
-  }
-
-  const spi_host_device_t spi_host = GetSpiHost();
-  esp_err_t bus_result = InitSpiBus(spi_host);
-  if (bus_result != ESP_OK) {
-    if (first_error == ESP_OK) {
-      first_error = bus_result;
-    }
-    ESP_LOGE(
-      kTag, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
   }
 
   esp_err_t fram_i2c_result = ESP_ERR_INVALID_STATE;

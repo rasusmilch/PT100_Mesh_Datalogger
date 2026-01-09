@@ -797,13 +797,24 @@ CommandDisplay(int argc, char** argv)
     printf("display_units: %s\n",
            AppSettingsDisplayUnitsToString(g_runtime->settings->display_units));
     printf("max7219_enabled: %s\n", CONFIG_APP_MAX7219_ENABLE ? "yes" : "no");
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+    printf("max7219_spi_host: %d (shared)\n", CONFIG_APP_SPI_HOST);
+#else
     printf("max7219_spi_host: %d\n", CONFIG_APP_MAX7219_SPI_HOST);
+#endif
     printf("max7219_chain_len: %d\n", CONFIG_APP_MAX7219_CHAIN_LEN);
     printf("max7219_intensity: %d\n", CONFIG_APP_MAX7219_INTENSITY);
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+    printf("max7219_pins: mosi=%d sclk=%d cs=%d (shared)\n",
+           CONFIG_APP_SPI_MOSI_GPIO,
+           CONFIG_APP_SPI_SCLK_GPIO,
+           CONFIG_APP_MAX7219_CS_GPIO);
+#else
     printf("max7219_pins: mosi=%d sclk=%d cs=%d\n",
            CONFIG_APP_MAX7219_MOSI_GPIO,
            CONFIG_APP_MAX7219_SCLK_GPIO,
            CONFIG_APP_MAX7219_CS_GPIO);
+#endif
     PrintDisplayAttentionPolicy(AppSettingsGetDisplayAttentionPolicy());
     return 0;
   }

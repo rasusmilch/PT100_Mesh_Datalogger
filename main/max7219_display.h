@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "driver/spi_master.h"
 #include "esp_err.h"
 
@@ -20,6 +22,8 @@ extern "C" {
     int chain_len;
     uint32_t clock_hz;
     uint8_t intensity;
+    SemaphoreHandle_t spi_bus_mutex;
+    TickType_t spi_bus_mutex_timeout_ticks;
   } max7219_display_config_t;
 
   typedef struct
@@ -29,6 +33,8 @@ extern "C" {
     int chain_len;
     uint8_t intensity;
     bool initialized;
+    SemaphoreHandle_t spi_bus_mutex;
+    TickType_t spi_bus_mutex_timeout_ticks;
     uint32_t framebuffer[8];
   } max7219_display_t;
 
