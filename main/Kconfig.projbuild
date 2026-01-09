@@ -102,31 +102,29 @@ config APP_MAX7219_ENABLE
 
 config APP_MAX7219_SHARE_APP_SPI_BUS
   bool "MAX7219 shares app SPI bus"
-  default y
+  default n
   help
     When enabled, the MAX7219 display uses the shared app SPI bus and does not
-    initialize its own SPI bus configuration.
+    initialize its own SPI bus configuration. Only enable this if the MAX7219
+    MOSI/SCLK pins are physically tied to the APP_SPI MOSI/SCLK pins.
 
 config APP_MAX7219_SPI_HOST
-  int "MAX7219 SPI host (2=SPI2_HOST, 3=SPI3_HOST)"
+  int "MAX7219 SPI host (2=SPI2_HOST, 3=SPI3_HOST)" if !APP_MAX7219_SHARE_APP_SPI_BUS
   range 2 3
   default APP_SPI_HOST if APP_MAX7219_SHARE_APP_SPI_BUS
   default 3
-  depends on !APP_MAX7219_SHARE_APP_SPI_BUS
 
 config APP_MAX7219_MOSI_GPIO
-  int "MAX7219 MOSI GPIO"
+  int "MAX7219 MOSI GPIO" if !APP_MAX7219_SHARE_APP_SPI_BUS
   range -1 48
   default APP_SPI_MOSI_GPIO if APP_MAX7219_SHARE_APP_SPI_BUS
   default 17
-  depends on !APP_MAX7219_SHARE_APP_SPI_BUS
 
 config APP_MAX7219_SCLK_GPIO
-  int "MAX7219 SCLK GPIO"
+  int "MAX7219 SCLK GPIO" if !APP_MAX7219_SHARE_APP_SPI_BUS
   range -1 48
   default APP_SPI_SCLK_GPIO if APP_MAX7219_SHARE_APP_SPI_BUS
   default 18
-  depends on !APP_MAX7219_SHARE_APP_SPI_BUS
 
 config APP_MAX7219_CS_GPIO
   int "MAX7219 CS GPIO"
