@@ -10,9 +10,12 @@
 
 static const char* kTag = "app";
 static const app_runtime_t* g_runtime = NULL;
+static const UBaseType_t kAppInitStackWarnThresholdBytes = 1024;
 
 static void
 AppInitTask(void* context);
+static void
+LogAppInitStackWatermark(const char* label);
 
 /**
  * @brief Execute InitNvs.
@@ -45,15 +48,15 @@ app_main(void)
 {
   // Keep the ESP-IDF "main" task lightweight. Initialization can be stack-heavy
   // (console, SD/FAT, Wi-Fi), and the default main task stack can be small.
-  // Run init on a dedicated task with an explicit stack size.
+  // Run init on a dedicated task with an explicit stack size (bytes).
 
   InitNvs();
 
-  static const uint32_t kAppInitStackWords = 4096; // 16 KB
+  static const uint32_t kAppInitStackBytes = 16384; // 16 KB
   static const UBaseType_t kAppInitPriority = 5;
 
   BaseType_t created = xTaskCreate(
-    &AppInitTask, "app_init", kAppInitStackWords, NULL, kAppInitPriority, NULL);
+    &AppInitTask, "app_init", kAppInitStackBytes, NULL, kAppInitPriority, NULL);
   if (created != pdPASS) {
     ESP_LOGE(kTag, "Failed to create app_init task");
   }
@@ -89,7 +92,9 @@ AppInitTask(void* context)
   }
 
   if (boot_mode == APP_BOOT_MODE_RUN) {
+    LogAppInitStackWatermark("before EnterRunMode");
     esp_err_t start_result = EnterRunMode();
+    LogAppInitStackWatermark("after EnterRunMode");
     if (start_result != ESP_OK) {
       ESP_LOGE(
         kTag, "Failed to start runtime: %s", esp_err_to_name(start_result));
@@ -105,4 +110,20 @@ AppInitTask(void* context)
 
   // Init is complete; nothing else to do in this task.
   vTaskDelete(NULL);
+}
+
+static void
+LogAppInitStackWatermark(const char* label)
+{
+  const UBaseType_t watermark_bytes = uxTaskGetStackHighWaterMark(NULL);
+  ESP_LOGI(kTag,
+           "app_init stack watermark %s: %u bytes",
+           (label != NULL) ? label : "unknown",
+           (unsigned)watermark_bytes);
+  if (watermark_bytes < kAppInitStackWarnThresholdBytes) {
+    ESP_LOGW(kTag,
+             "app_init stack low: %u bytes remaining (< %u bytes)",
+             (unsigned)watermark_bytes,
+             (unsigned)kAppInitStackWarnThresholdBytes);
+  }
 }

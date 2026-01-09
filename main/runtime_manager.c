@@ -3670,18 +3670,6 @@ GetSpiHost(void)
   return (CONFIG_APP_SPI_HOST == 3) ? SPI3_HOST : SPI2_HOST;
 }
 
-#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
-#if CONFIG_APP_MAX7219_SPI_HOST != CONFIG_APP_SPI_HOST
-#error "CONFIG_APP_MAX7219_SPI_HOST must match CONFIG_APP_SPI_HOST when sharing SPI bus"
-#endif
-#if CONFIG_APP_MAX7219_MOSI_GPIO != CONFIG_APP_SPI_MOSI_GPIO
-#error "CONFIG_APP_MAX7219_MOSI_GPIO must match CONFIG_APP_SPI_MOSI_GPIO when sharing SPI bus"
-#endif
-#if CONFIG_APP_MAX7219_SCLK_GPIO != CONFIG_APP_SPI_SCLK_GPIO
-#error "CONFIG_APP_MAX7219_SCLK_GPIO must match CONFIG_APP_SPI_SCLK_GPIO when sharing SPI bus"
-#endif
-#endif
-
 /**
  * @brief Execute GetDisplaySpiHost.
  * @return Return the function result.
@@ -3693,6 +3681,34 @@ GetDisplaySpiHost(void)
   return GetSpiHost();
 #else
   return (CONFIG_APP_MAX7219_SPI_HOST == 3) ? SPI3_HOST : SPI2_HOST;
+#endif
+}
+
+/**
+ * @brief Execute GetDisplayMosiGpio.
+ * @return Return the function result.
+ */
+static int
+GetDisplayMosiGpio(void)
+{
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+  return CONFIG_APP_SPI_MOSI_GPIO;
+#else
+  return CONFIG_APP_MAX7219_MOSI_GPIO;
+#endif
+}
+
+/**
+ * @brief Execute GetDisplaySclkGpio.
+ * @return Return the function result.
+ */
+static int
+GetDisplaySclkGpio(void)
+{
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+  return CONFIG_APP_SPI_SCLK_GPIO;
+#else
+  return CONFIG_APP_MAX7219_SCLK_GPIO;
 #endif
 }
 
@@ -3745,15 +3761,9 @@ InitializeMax7219Display(runtime_state_t* state)
   }
 
   max7219_display_config_t display_config = {
-#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
-    .host = GetSpiHost(),
-    .mosi_gpio = CONFIG_APP_SPI_MOSI_GPIO,
-    .sclk_gpio = CONFIG_APP_SPI_SCLK_GPIO,
-#else
     .host = GetDisplaySpiHost(),
-    .mosi_gpio = CONFIG_APP_MAX7219_MOSI_GPIO,
-    .sclk_gpio = CONFIG_APP_MAX7219_SCLK_GPIO,
-#endif
+    .mosi_gpio = GetDisplayMosiGpio(),
+    .sclk_gpio = GetDisplaySclkGpio(),
     .cs_gpio = CONFIG_APP_MAX7219_CS_GPIO,
     .chain_len = CONFIG_APP_MAX7219_CHAIN_LEN,
     .clock_hz = 2000000,
