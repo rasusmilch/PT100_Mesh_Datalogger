@@ -130,6 +130,34 @@ SetPixel(max7219_display_t* disp, int x, int y, bool on)
 }
 
 /**
+ * @brief Execute TransmitWithLock.
+ * @param disp Parameter disp.
+ * @param transaction Parameter transaction.
+ * @return Return the function result.
+ */
+static esp_err_t
+TransmitWithLock(max7219_display_t* disp, spi_transaction_t* transaction)
+{
+  if (disp == NULL || disp->device == NULL || transaction == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (disp->spi_bus_mutex != NULL) {
+    if (xSemaphoreTake(disp->spi_bus_mutex,
+                       disp->spi_bus_mutex_timeout_ticks) != pdTRUE) {
+      return ESP_ERR_TIMEOUT;
+    }
+  }
+
+  esp_err_t result = spi_device_transmit(disp->device, transaction);
+
+  if (disp->spi_bus_mutex != NULL) {
+    (void)xSemaphoreGive(disp->spi_bus_mutex);
+  }
+  return result;
+}
+
+/**
  * @brief Execute WriteRegisterAll.
  * @param disp Parameter disp.
  * @param reg Parameter reg.
@@ -164,7 +192,7 @@ WriteRegisterAll(max7219_display_t* disp, uint8_t reg, uint8_t value)
     .tx_buffer = tx_buf,
   };
 
-  return spi_device_transmit(disp->device, &t);
+  return TransmitWithLock(disp, &t);
 }
 
 /**
@@ -214,7 +242,7 @@ FlushFramebuffer(max7219_display_t* disp)
       .length = tx_len * 8,
       .tx_buffer = tx_buf,
     };
-    esp_err_t result = spi_device_transmit(disp->device, &t);
+    esp_err_t result = TransmitWithLock(disp, &t);
     if (result != ESP_OK) {
       return result;
     }
@@ -241,7 +269,10 @@ Max7219DisplayInit(max7219_display_t* disp,
   disp->chain_len = config->chain_len;
   disp->host = config->host;
   disp->intensity = config->intensity;
+  disp->spi_bus_mutex = config->spi_bus_mutex;
+  disp->spi_bus_mutex_timeout_ticks = config->spi_bus_mutex_timeout_ticks;
 
+#if !CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
   spi_bus_config_t bus_config = {
     .mosi_io_num = config->mosi_gpio,
     .miso_io_num = -1,
@@ -258,6 +289,7 @@ Max7219DisplayInit(max7219_display_t* disp,
       kTag, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
     return bus_result;
   }
+#endif
 
   spi_device_interface_config_t dev_config = {
     .clock_speed_hz = (int)config->clock_hz,
@@ -269,8 +301,15 @@ Max7219DisplayInit(max7219_display_t* disp,
   esp_err_t dev_result =
     spi_bus_add_device(config->host, &dev_config, &disp->device);
   if (dev_result != ESP_OK) {
-    ESP_LOGE(
-      kTag, "spi_bus_add_device failed: %s", esp_err_to_name(dev_result));
+    if (dev_result == ESP_ERR_INVALID_STATE) {
+      ESP_LOGE(
+        kTag,
+        "SPI bus not initialized before MAX7219 init; expected "
+        "RuntimeManagerInit to call InitSpiBus() first.");
+    } else {
+      ESP_LOGE(
+        kTag, "spi_bus_add_device failed: %s", esp_err_to_name(dev_result));
+    }
     return dev_result;
   }
 
