@@ -74,6 +74,7 @@ extern "C" {
     // runtime
     bool runtime_running;
     bool stop_requested;
+    bool system_running;
 
     // config (written by settings load/apply)
     uint32_t disp_attn_mask;
@@ -190,7 +191,8 @@ extern "C" {
     alert_task_context_t alert_sender_context;
 
     bool initialized;
-    bool is_running;
+    bool system_running;
+    bool logger_running;
     bool stop_requested;
     bool spi_pause_requested;
     bool spi_paused;

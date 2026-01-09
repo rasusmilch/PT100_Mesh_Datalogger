@@ -217,7 +217,7 @@ RuntimeDiagHeapCheck(runtime_state_t* state, const char* context, bool force)
     ESP_LOGE(kTag,
              "HEAP integrity check failed: %s",
              (context != NULL) ? context : "unknown");
-    if (!state->is_running) {
+    if (!state->logger_running) {
       ESP_LOGE(kTag, "Diagnostics mode heap check failure; aborting");
       abort();
     }
@@ -258,8 +258,9 @@ RuntimeSdIoLock(runtime_state_t* state, TickType_t timeout_ticks)
     return false;
   }
   if (xSemaphoreTake(state->sd_io_mutex, timeout_ticks) != pdTRUE) {
-    const char* phase =
-      (state->stop_requested || !state->is_running) ? "stop/diag" : "runtime";
+    const char* phase = (state->stop_requested || !state->logger_running)
+                          ? "stop/diag"
+                          : "runtime";
     ESP_LOGE(
       kTag, "SD I/O mutex timeout during %s; marking SD degraded", phase);
     MarkSdIoLockFailure(state);
@@ -3875,6 +3876,7 @@ RuntimeManagerInit(void)
                      g_state.settings.fram_flush_watermark_records);
   UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.system_running, false);
   g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
   g_state.pending_start = false;
   g_state.pending_stop = false;
@@ -4109,6 +4111,8 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create control task");
   }
 
+  g_state.system_running = true;
+  UpdateCachedBool(&g_state, &g_state.cached_status.system_running, true);
   g_state.initialized = true;
   return first_error;
 }
@@ -4252,7 +4256,7 @@ RuntimeStart(void)
     return ESP_ERR_INVALID_STATE;
   }
   g_state.runtime_phase = RUNTIME_PHASE_STARTING;
-  if (g_state.is_running) {
+  if (g_state.logger_running) {
     g_state.runtime_phase = RUNTIME_PHASE_RUNNING;
     return ESP_OK;
   }
@@ -4488,7 +4492,7 @@ wifi_direct_start_done:
     }
   }
 
-  g_state.is_running = true;
+  g_state.logger_running = true;
   UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, true);
 
   BaseType_t sensor_created = pdPASS;
@@ -4646,7 +4650,7 @@ wifi_direct_start_done:
       bridge_created != pdPASS || broker_created != pdPASS ||
       alert_monitor_created != pdPASS || alert_sender_created != pdPASS) {
     g_state.stop_requested = true;
-    g_state.is_running = false;
+    g_state.logger_running = false;
     UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);
     UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
     const TickType_t wait_start = xTaskGetTickCount();
@@ -4691,7 +4695,7 @@ wifi_direct_start_done:
 static esp_err_t
 RuntimeStopSamplingOnly(runtime_state_t* state)
 {
-  if (state == NULL || !state->is_running) {
+  if (state == NULL || !state->logger_running) {
     return ESP_OK;
   }
 
@@ -4699,7 +4703,7 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   state->root_bridge_header_emitted = false;
   state->stop_requested = true;
   RuntimeNotifyAllRunTasks(state);
-  state->is_running = false;
+  state->logger_running = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, true);
   UpdateCachedBool(state, &state->cached_status.runtime_running, false);
 
@@ -4837,12 +4841,7 @@ RuntimeStopAllTasks(runtime_state_t* state)
   state->spi_paused = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, false);
 
-#if CONFIG_APP_MAX7219_ENABLE
-  if (state->display_initialized) {
-    (void)Max7219DisplayDeinit(&state->display);
-    state->display_initialized = false;
-  }
-#endif
+  // Leave the MAX7219 display initialized during stop; only deinit on shutdown.
 
   if (state->sensor.is_initialized) {
     (void)Max31865ReaderDeinit(&state->sensor);
@@ -4871,7 +4870,7 @@ RuntimeStop(void)
 bool
 RuntimeIsRunning(void)
 {
-  return g_state.is_running;
+  return g_state.logger_running;
 }
 
 /**
