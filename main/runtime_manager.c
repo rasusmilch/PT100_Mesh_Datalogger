@@ -97,15 +97,16 @@ RuntimePauseSpiUsers(runtime_state_t* state, uint32_t timeout_ms)
   }
 
   state->spi_pause_requested = true;
+  state->spi_pause_acked = false;
   RuntimeNotifyTask(state->display_task);
 
   const TickType_t wait_start = xTaskGetTickCount();
-  while (state->display_task != NULL && !state->spi_paused &&
+  while (state->display_task != NULL && !state->spi_pause_acked &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < timeout_ms)) {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 
-  if (state->display_task != NULL && !state->spi_paused) {
+  if (state->display_task != NULL && !state->spi_pause_acked) {
     ESP_LOGW(kTag,
              "Stop: SPI pause timed out; display task still active (%p)",
              state->display_task);
@@ -947,18 +948,18 @@ DisplayTask(void* context)
   while (state != NULL) {
     if (!state->display_initialized) {
       if (state->spi_pause_requested) {
-        state->spi_paused = true;
+        state->spi_pause_acked = true;
       }
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
 
     if (state->spi_pause_requested) {
-      state->spi_paused = true;
+      state->spi_pause_acked = true;
       RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
       continue;
     }
-    state->spi_paused = false;
+    state->spi_pause_acked = false;
 
     if (state->display_test_active) {
       const TickType_t now_ticks = xTaskGetTickCount();
@@ -4838,7 +4839,7 @@ RuntimeStopAllTasks(runtime_state_t* state)
   UpdateMqttConnectionState(state);
   state->stop_requested = false;
   state->spi_pause_requested = false;
-  state->spi_paused = false;
+  state->spi_pause_acked = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, false);
 
   // Leave the MAX7219 display initialized during stop; only deinit on shutdown.
@@ -4935,6 +4936,8 @@ EnterDiagMode(void)
                                  CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
                                  CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
                                  &drain_stats);
+    g_state.spi_pause_requested = false;
+    g_state.spi_pause_acked = false;
     if (flush_result == ESP_ERR_TIMEOUT) {
       ESP_LOGW(kTag,
                "Stop drain timed out: remaining=%d duration=%d ms",
