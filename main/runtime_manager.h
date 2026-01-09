@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "app_settings.h"
+#include "driver/spi_master.h"
 #include "esp_err.h"
 #include "fram_i2c.h"
 #include "fram_io.h"
@@ -200,6 +201,30 @@ extern "C" {
  * @return Return the function result.
  */
   bool RuntimeSdIsDegraded(void);
+
+/**
+ * @brief Execute RuntimeGetDisplaySpiHost.
+ * @return Return the function result.
+ */
+  spi_host_device_t RuntimeGetDisplaySpiHost(void);
+
+/**
+ * @brief Execute RuntimeGetDisplayMosiGpio.
+ * @return Return the function result.
+ */
+  int RuntimeGetDisplayMosiGpio(void);
+
+/**
+ * @brief Execute RuntimeGetDisplaySclkGpio.
+ * @return Return the function result.
+ */
+  int RuntimeGetDisplaySclkGpio(void);
+
+/**
+ * @brief Execute RuntimeGetDisplayCsGpio.
+ * @return Return the function result.
+ */
+  int RuntimeGetDisplayCsGpio(void);
 
 /**
  * @brief Execute RuntimeSdFailCount.

@@ -273,22 +273,24 @@ Max7219DisplayInit(max7219_display_t* disp,
   disp->spi_bus_mutex_timeout_ticks = config->spi_bus_mutex_timeout_ticks;
 
 #if !CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+  bool bus_initialized = false;
   spi_bus_config_t bus_config = {
     .mosi_io_num = config->mosi_gpio,
     .miso_io_num = -1,
     .sclk_io_num = config->sclk_gpio,
     .quadwp_io_num = -1,
     .quadhd_io_num = -1,
-    .max_transfer_sz = 64,
+    .max_transfer_sz = 256,
   };
 
   esp_err_t bus_result =
     spi_bus_initialize(config->host, &bus_config, SPI_DMA_CH_AUTO);
-  if (bus_result != ESP_OK && bus_result != ESP_ERR_INVALID_STATE) {
+  if (bus_result != ESP_OK) {
     ESP_LOGE(
       kTag, "spi_bus_initialize failed: %s", esp_err_to_name(bus_result));
     return bus_result;
   }
+  bus_initialized = true;
 #endif
 
   spi_device_interface_config_t dev_config = {
@@ -310,6 +312,11 @@ Max7219DisplayInit(max7219_display_t* disp,
       ESP_LOGE(
         kTag, "spi_bus_add_device failed: %s", esp_err_to_name(dev_result));
     }
+#if !CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+    if (bus_initialized) {
+      (void)spi_bus_free(config->host);
+    }
+#endif
     return dev_result;
   }
 
