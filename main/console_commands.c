@@ -796,10 +796,19 @@ CommandDisplay(int argc, char** argv)
   if (strcmp(action, "show") == 0) {
     const spi_host_device_t display_host = RuntimeGetDisplaySpiHost();
     const int display_host_id = (display_host == SPI3_HOST) ? 3 : 2;
-    const bool display_shared = CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS;
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+    const bool display_shared = true;
+#else
+    const bool display_shared = false;
+#endif
+#if CONFIG_APP_MAX7219_ENABLE
+    const bool display_enabled = true;
+#else
+    const bool display_enabled = false;
+#endif
     printf("display_units: %s\n",
            AppSettingsDisplayUnitsToString(g_runtime->settings->display_units));
-    printf("max7219_enabled: %s\n", CONFIG_APP_MAX7219_ENABLE ? "yes" : "no");
+    printf("max7219_enabled: %s\n", display_enabled ? "yes" : "no");
     printf("max7219_spi_host: %d%s\n",
            display_host_id,
            display_shared ? " (shared)" : "");

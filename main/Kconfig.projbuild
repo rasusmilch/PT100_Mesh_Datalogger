@@ -221,7 +221,7 @@ endchoice
 config APP_SD_CS_GPIO
   int "SD card CS GPIO"
   range -1 48
-  default 15
+  default 14
 
 config APP_SD_CARD_DETECT_GPIO
   int "SD card detect GPIO (-1 disables)"

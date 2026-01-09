@@ -3725,9 +3725,9 @@ RuntimeGetDisplayCsGpio(void)
 static bool
 DisplayShareConfigMatchesApp(void)
 {
-  return CONFIG_APP_MAX7219_SPI_HOST == CONFIG_APP_SPI_HOST &&
-         CONFIG_APP_MAX7219_MOSI_GPIO == CONFIG_APP_SPI_MOSI_GPIO &&
-         CONFIG_APP_MAX7219_SCLK_GPIO == CONFIG_APP_SPI_SCLK_GPIO;
+  return RuntimeGetDisplaySpiHost() == GetSpiHost() &&
+         RuntimeGetDisplayMosiGpio() == CONFIG_APP_SPI_MOSI_GPIO &&
+         RuntimeGetDisplaySclkGpio() == CONFIG_APP_SPI_SCLK_GPIO;
 }
 
 static int
@@ -3789,14 +3789,14 @@ InitializeMax7219Display(runtime_state_t* state)
     ESP_LOGE(
       kTag,
       "MAX7219 share enabled but pins/host differ "
-      "(app host=%d mosi=%d sclk=%d, max7219 host=%d mosi=%d sclk=%d); "
+      "(app host=%d mosi=%d sclk=%d, display host=%d mosi=%d sclk=%d); "
       "disable display or unshare SPI buses",
-      CONFIG_APP_SPI_HOST,
+      SpiHostToId(GetSpiHost()),
       CONFIG_APP_SPI_MOSI_GPIO,
       CONFIG_APP_SPI_SCLK_GPIO,
-      CONFIG_APP_MAX7219_SPI_HOST,
-      CONFIG_APP_MAX7219_MOSI_GPIO,
-      CONFIG_APP_MAX7219_SCLK_GPIO);
+      SpiHostToId(RuntimeGetDisplaySpiHost()),
+      RuntimeGetDisplayMosiGpio(),
+      RuntimeGetDisplaySclkGpio());
     return ESP_ERR_INVALID_STATE;
   }
 #endif
@@ -3997,7 +3997,12 @@ RuntimeManagerInit(void)
            RuntimeGetDisplayMosiGpio(),
            RuntimeGetDisplaySclkGpio(),
            RuntimeGetDisplayCsGpio(),
-           CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS ? 1 : 0);
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+           1
+#else
+           0
+#endif
+  );
 
 #if CONFIG_APP_MAX7219_ENABLE
   esp_err_t display_result = InitializeMax7219Display(&g_state);
