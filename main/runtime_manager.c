@@ -1085,11 +1085,11 @@ DisplayTask(void* context)
                            state->cached_status.sd_mounted);
 
       // Operator feedback:
-      // - "SAVE" while draining/unmounting after stop
       // - "SAFE" once fully stopped and SD is unmounted
+      // - "SAVE" while draining/unmounting after stop
       // - "IDLE" otherwise
       const char* text =
-        stop_save_active ? "SAVE " : (sd_safe_to_remove ? "SAFE " : "IDLE ");
+        sd_safe_to_remove ? "SAFE " : (stop_save_active ? "SAVE " : "IDLE ");
       if (strncmp(last_text, text, sizeof(last_text)) != 0) {
         Max7219DisplaySetText(&state->display, text);
         snprintf(last_text, sizeof(last_text), "%s", text);
