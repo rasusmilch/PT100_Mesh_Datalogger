@@ -195,7 +195,7 @@ extern "C" {
     bool logger_running;
     bool stop_requested;
     bool spi_pause_requested;
-    bool spi_paused;
+    bool spi_pause_acked;
     bool mesh_started;
     bool wifi_direct_started;
     bool wifi_direct_time_synced;
