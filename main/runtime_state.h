@@ -13,6 +13,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "heap_monitor.h"
 #include "log_record.h"
 #include "alerts/alert_manager.h"
 #include "i2c_bus.h"
@@ -86,6 +87,23 @@ extern "C" {
     uint32_t last_drain_duration_ms;
     int32_t last_drain_flushed_records;
     int32_t last_drain_flushed_bytes;
+
+    // Heap monitor (bytes)
+    uint32_t heap_internal_free_bytes;
+    uint32_t heap_internal_largest_free_block_bytes;
+    uint32_t heap_internal_min_free_bytes;
+    uint32_t heap_internal_min_largest_free_block_bytes;
+    uint8_t heap_internal_frag_percent;
+    bool heap_internal_warn;
+    bool heap_internal_crit;
+
+    uint32_t heap_psram_free_bytes;
+    uint32_t heap_psram_largest_free_block_bytes;
+    uint32_t heap_psram_min_free_bytes;
+    uint32_t heap_psram_min_largest_free_block_bytes;
+    uint8_t heap_psram_frag_percent;
+    bool heap_psram_warn;
+    bool heap_psram_crit;
   } runtime_cached_status_t;
 
   typedef struct
@@ -233,6 +251,7 @@ extern "C" {
     runtime_cached_status_t cached_status;
     runtime_health_cache_t health_cache;
     runtime_health_publisher_state_t health_publisher;
+    heap_monitor_t heap_monitor;
 
     alert_manager_t alert_manager;
     mqtt_client_wrap_t mqtt_client;

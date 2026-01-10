@@ -33,6 +33,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "runtime_health.h"
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"
@@ -120,6 +121,8 @@ DisplayAttentionItemToName(display_attention_item_t item)
       return "time";
     case kDispAttnItemMeshDown:
       return "mesh";
+    case kDispAttnItemHeap:
+      return "heap";
     default:
       return "unknown";
   }
@@ -185,6 +188,10 @@ ParseDisplayAttentionName(const char* value, display_attention_item_t* item_out)
   }
   if (strcasecmp(value, "mesh") == 0) {
     *item_out = kDispAttnItemMeshDown;
+    return true;
+  }
+  if (strcasecmp(value, "heap") == 0) {
+    *item_out = kDispAttnItemHeap;
     return true;
   }
   return false;
@@ -446,6 +453,7 @@ PrintDisplayAttentionPolicy(uint32_t policy)
   const display_attention_item_t items[] = {
     kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
     kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemMeshDown,
+    kDispAttnItemHeap,
   };
   printf("display_attention_policy: 0x%08" PRIX32 "\n", policy);
   for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
@@ -681,6 +689,11 @@ CommandStatus(int argc, char** argv)
       ? *g_runtime->broker_send_fail_count
       : 0u;
   const runtime_cached_status_t* cached_status = RuntimeGetCachedStatus();
+  runtime_health_snapshot_t health = { 0 };
+  runtime_state_t* state = RuntimeGetState();
+  if (state != NULL) {
+    RuntimeHealthRead(&state->health_cache, &health);
+  }
   const bool mqtt_connected = (g_runtime->mqtt_client_connected != NULL)
                                 ? *g_runtime->mqtt_client_connected
                                 : false;
@@ -752,6 +765,36 @@ CommandStatus(int argc, char** argv)
   printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
   printf("sd_last_record_id: %" PRIu64 "\n",
          SdLoggerLastRecordIdOnSd(g_runtime->sd_logger));
+#if CONFIG_APP_HEAP_MONITOR_ENABLE
+  printf("heap_internal_free_bytes: %u\n",
+         (unsigned)health.heap_internal_free_bytes);
+  printf("heap_internal_largest_free_block_bytes: %u\n",
+         (unsigned)health.heap_internal_largest_free_block_bytes);
+  printf("heap_internal_min_free_bytes: %u\n",
+         (unsigned)health.heap_internal_min_free_bytes);
+  printf("heap_internal_min_largest_free_block_bytes: %u\n",
+         (unsigned)health.heap_internal_min_largest_free_block_bytes);
+  printf("heap_internal_frag_percent: %u\n",
+         (unsigned)health.heap_internal_frag_percent);
+  printf("heap_internal_warn: %s\n",
+         health.heap_internal_warn ? "yes" : "no");
+  printf("heap_internal_crit: %s\n",
+         health.heap_internal_crit ? "yes" : "no");
+#if CONFIG_APP_HEAP_PSRAM_MONITOR_ENABLE
+  printf("heap_psram_free_bytes: %u\n",
+         (unsigned)health.heap_psram_free_bytes);
+  printf("heap_psram_largest_free_block_bytes: %u\n",
+         (unsigned)health.heap_psram_largest_free_block_bytes);
+  printf("heap_psram_min_free_bytes: %u\n",
+         (unsigned)health.heap_psram_min_free_bytes);
+  printf("heap_psram_min_largest_free_block_bytes: %u\n",
+         (unsigned)health.heap_psram_min_largest_free_block_bytes);
+  printf("heap_psram_frag_percent: %u\n",
+         (unsigned)health.heap_psram_frag_percent);
+  printf("heap_psram_warn: %s\n", health.heap_psram_warn ? "yes" : "no");
+  printf("heap_psram_crit: %s\n", health.heap_psram_crit ? "yes" : "no");
+#endif
+#endif
   printf("mesh_connected: %s\n",
          MeshTransportIsConnected(g_runtime->mesh) ? "yes" : "no");
   const bool wifi_connected = WifiManagerIsConnected();
@@ -860,7 +903,8 @@ CommandDisplay(int argc, char** argv)
       }
       display_attention_item_t item = kDispAttnItemSdOut;
       if (!ParseDisplayAttentionName(argv[3], &item)) {
-        printf("unknown name. valid: sdout, sdio, framovr, rtd, time, mesh\n");
+        printf(
+          "unknown name. valid: sdout, sdio, framovr, rtd, time, mesh, heap\n");
         return 1;
       }
       display_attention_severity_t severity = DISP_SEV_OFF;

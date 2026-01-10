@@ -24,6 +24,7 @@ idf_component_register(
     "fram_i2c.c"
     "fram_log.c"
     "fram_spi.c"
+    "heap_monitor.c"
     "i2c_bus.c"
     "log_rate_limit.c"
     "max31865_reader.c"

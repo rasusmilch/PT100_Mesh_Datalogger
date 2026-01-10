@@ -58,6 +58,23 @@ extern "C" {
     uint32_t last_drain_duration_ms;
     int32_t last_drain_flushed_records;
     int32_t last_drain_flushed_bytes;
+
+    // Heap monitor (bytes)
+    uint32_t heap_internal_free_bytes;
+    uint32_t heap_internal_largest_free_block_bytes;
+    uint32_t heap_internal_min_free_bytes;
+    uint32_t heap_internal_min_largest_free_block_bytes;
+    uint8_t heap_internal_frag_percent;
+    bool heap_internal_warn;
+    bool heap_internal_crit;
+
+    uint32_t heap_psram_free_bytes;
+    uint32_t heap_psram_largest_free_block_bytes;
+    uint32_t heap_psram_min_free_bytes;
+    uint32_t heap_psram_min_largest_free_block_bytes;
+    uint8_t heap_psram_frag_percent;
+    bool heap_psram_warn;
+    bool heap_psram_crit;
   } runtime_health_snapshot_t;
 
   typedef struct
