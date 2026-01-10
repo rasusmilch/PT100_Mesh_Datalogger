@@ -31,6 +31,7 @@
 #include "log_rate_limit.h"
 #include "max31865_reader.h"
 #include "max7219_display.h"
+#include "mem_guard.h"
 #include "mesh_transport.h"
 #include "mqtt_client_wrap.h"
 #include "run_gpio.h"
@@ -3921,6 +3922,7 @@ RuntimeGetState(void)
 esp_err_t
 RuntimeManagerInit(void)
 {
+  MemGuardInit();
   InitializeRuntimeStruct();
   esp_err_t first_error = ESP_OK;
 
@@ -4999,6 +5001,8 @@ EnterRunMode(void)
   esp_err_t result = RuntimeStart();
   if (result != ESP_OK) {
     RuntimeSetLogPolicyDiag();
+  } else {
+    MemGuardSetPhase(MEM_GUARD_PHASE_RUN);
   }
   return result;
 }

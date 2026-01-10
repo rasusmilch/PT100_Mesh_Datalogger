@@ -7,6 +7,8 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include "mem_guard.h"
+
 #include "app_net_config.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
@@ -341,7 +343,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   esp_err_t scan_result = ESP_ERR_INVALID_STATE;
   if (scan) {
     ap_records =
-      (wifi_ap_record_t*)calloc(ap_records_capacity, sizeof(*ap_records));
+      (wifi_ap_record_t*)AppCalloc(ap_records_capacity, sizeof(*ap_records));
     if (ap_records == NULL) {
       scan_result = ESP_ERR_NO_MEM;
     }
@@ -388,7 +390,7 @@ RunDiagWifi(const app_runtime_t* runtime,
   }
 
   if (ap_records != NULL) {
-    free(ap_records);
+    AppFree(ap_records);
     ap_records = NULL;
   }
 

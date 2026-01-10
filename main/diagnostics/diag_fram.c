@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "mem_guard.h"
+
 #include "esp_err.h"
 #include "fram_i2c.h"
 #include "fram_log.h"
@@ -247,9 +249,9 @@ RunDiagFram(const app_runtime_t* runtime,
           : 1,
       };
 
-      uint8_t* original = (uint8_t*)malloc(scratch_size);
-      uint8_t* verify = (uint8_t*)malloc(scratch_size);
-      uint8_t* pattern = (uint8_t*)malloc(max_test_len);
+      uint8_t* original = (uint8_t*)AppMalloc(scratch_size);
+      uint8_t* verify = (uint8_t*)AppMalloc(scratch_size);
+      uint8_t* pattern = (uint8_t*)AppMalloc(max_test_len);
       esp_err_t rw_result = ESP_OK;
       char rw_details[240];
       uint32_t mismatch_addr = 0;
@@ -342,9 +344,9 @@ RunDiagFram(const app_runtime_t* runtime,
                  (unsigned)scratch_addr,
                  (unsigned)scratch_size);
       }
-      free(original);
-      free(verify);
-      free(pattern);
+      AppFree(original);
+      AppFree(verify);
+      AppFree(pattern);
 
       DiagReportStep(&ctx,
                      step_index++,

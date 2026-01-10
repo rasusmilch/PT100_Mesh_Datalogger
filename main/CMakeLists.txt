@@ -32,6 +32,7 @@ idf_component_register(
     "mqtt_client_wrap.c"
     "pt100_table.c"
     "mesh_transport.c"
+    "mem_guard.c"
     "runtime_health.c"
     "runtime_health_publisher.c"
     "runtime_manager.c"

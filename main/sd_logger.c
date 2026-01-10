@@ -16,6 +16,7 @@
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "mem_guard.h"
 
 static const char* kTag = "sd_logger";
 
@@ -358,7 +359,7 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
   }
 
   if (logger->file_buffer != NULL) {
-    free(logger->file_buffer);
+    AppFree(logger->file_buffer);
     logger->file_buffer = NULL;
   }
   // File buffer is used only for VFS I/O (no DMA); PSRAM is safe here.
@@ -541,7 +542,7 @@ SdLoggerClose(sd_logger_t* logger)
     logger->file = NULL;
   }
   if (logger->file_buffer != NULL) {
-    free(logger->file_buffer);
+    AppFree(logger->file_buffer);
     logger->file_buffer = NULL;
   }
   logger->current_date[0] = '\0';
