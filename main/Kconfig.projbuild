@@ -362,6 +362,67 @@ config APP_EXPORT_RATE_LIMIT_MS
   help
     Minimum interval between repeated export warning logs (outbox full, publish failures).
 
+config APP_HEAP_MONITOR_ENABLE
+  bool "Enable heap fragmentation monitor"
+  default y
+
+config APP_HEAP_MONITOR_PERIOD_MS
+  int "Heap monitor sample period (ms)"
+  range 1000 3600000
+  default 60000
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_INTERNAL_LARGEST_WARN_BYTES
+  int "Internal heap warn if largest free block < (bytes)"
+  range 0 1048576
+  default 8192
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_INTERNAL_LARGEST_CRIT_BYTES
+  int "Internal heap critical if largest free block < (bytes)"
+  range 0 1048576
+  default 4096
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_INTERNAL_FRAG_WARN_PCT
+  int "Internal heap warn if fragmentation >= (%)"
+  range 0 100
+  default 70
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_INTERNAL_FRAG_CRIT_PCT
+  int "Internal heap critical if fragmentation >= (%)"
+  range 0 100
+  default 85
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_PSRAM_MONITOR_ENABLE
+  bool "Also monitor PSRAM heap"
+  default y
+  depends on APP_HEAP_MONITOR_ENABLE
+
+choice APP_HEAP_GUARD_ACTION
+  prompt "Heap guard action on repeated critical condition"
+  default APP_HEAP_GUARD_ACTION_NONE
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_GUARD_ACTION_NONE
+  bool "None (monitor only)"
+
+config APP_HEAP_GUARD_ACTION_RUN_STOP
+  bool "Request run stop (enter diagnostics safely)"
+
+config APP_HEAP_GUARD_ACTION_RESTART
+  bool "Restart device"
+
+endchoice
+
+config APP_HEAP_GUARD_CRIT_CONSECUTIVE_SAMPLES
+  int "Critical samples required before guard action"
+  range 1 20
+  default 3
+  depends on APP_HEAP_MONITOR_ENABLE && (APP_HEAP_GUARD_ACTION_RUN_STOP || APP_HEAP_GUARD_ACTION_RESTART)
+
 config APP_STOP_DRAIN_MAX_MS
   int "Stop drain max duration (ms, -1 for no limit)"
   range -1 600000

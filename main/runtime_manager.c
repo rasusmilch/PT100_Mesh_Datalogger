@@ -26,6 +26,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "heap_monitor.h"
 #include "i2c_bus.h"
 #include "log_rate_limit.h"
 #include "max31865_reader.h"
@@ -705,6 +706,10 @@ ComputeActiveAttentionMaskFromHealth(const runtime_health_snapshot_t* health)
   if ((mask & kDispAttnMeshDown) != 0u && !health->mesh_connected) {
     active |= kDispAttnMeshDown;
   }
+  if ((mask & kDispAttnHeap) != 0u &&
+      (health->heap_internal_warn || health->heap_internal_crit)) {
+    active |= kDispAttnHeap;
+  }
 
   return active;
 }
@@ -730,6 +735,8 @@ AttentionBitToCode(display_attention_bit_t bit)
       return "TIME ";
     case kDispAttnMeshDown:
       return "MESH ";
+    case kDispAttnHeap:
+      return "HEAP ";
     default:
       return "ERR  ";
   }
@@ -1000,6 +1007,7 @@ DisplayTask(void* context)
     const display_attention_item_t items[] = {
       kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
       kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemMeshDown,
+      kDispAttnItemHeap,
     };
     for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
       const display_attention_item_t item = items[idx];
@@ -3848,6 +3856,7 @@ InitializeRuntimeStruct(void)
   MqttClientWrapInit(&g_state.mqtt_client);
   RuntimeHealthInit(&g_state.health_cache);
   RuntimeHealthPublisherInit(&g_state);
+  HeapMonitorInit(&g_state.heap_monitor);
   g_state.cached_status.mesh_level = -1;
 
   g_runtime.settings = &g_state.settings;

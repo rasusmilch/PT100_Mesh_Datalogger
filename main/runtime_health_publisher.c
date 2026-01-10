@@ -2,7 +2,9 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "heap_monitor.h"
 #include "runtime_health.h"
+#include "sdkconfig.h"
 
 /**
  * @brief Execute RuntimeHealthPublisherInit.
@@ -31,6 +33,9 @@ RuntimeHealthPublisherTick(runtime_state_t* state)
   }
 
   const TickType_t now_ticks = xTaskGetTickCount();
+#if CONFIG_APP_HEAP_MONITOR_ENABLE
+  HeapMonitorTick(state, now_ticks);
+#endif
   const uint32_t elapsed_ms =
     (state->health_publisher.last_publish_ticks == 0)
       ? state->health_publisher.publish_period_ms
@@ -80,6 +85,29 @@ RuntimeHealthPublisherTick(runtime_state_t* state)
     state->cached_status.last_drain_flushed_records;
   snapshot.last_drain_flushed_bytes =
     state->cached_status.last_drain_flushed_bytes;
+  snapshot.heap_internal_free_bytes =
+    state->cached_status.heap_internal_free_bytes;
+  snapshot.heap_internal_largest_free_block_bytes =
+    state->cached_status.heap_internal_largest_free_block_bytes;
+  snapshot.heap_internal_min_free_bytes =
+    state->cached_status.heap_internal_min_free_bytes;
+  snapshot.heap_internal_min_largest_free_block_bytes =
+    state->cached_status.heap_internal_min_largest_free_block_bytes;
+  snapshot.heap_internal_frag_percent =
+    state->cached_status.heap_internal_frag_percent;
+  snapshot.heap_internal_warn = state->cached_status.heap_internal_warn;
+  snapshot.heap_internal_crit = state->cached_status.heap_internal_crit;
+  snapshot.heap_psram_free_bytes = state->cached_status.heap_psram_free_bytes;
+  snapshot.heap_psram_largest_free_block_bytes =
+    state->cached_status.heap_psram_largest_free_block_bytes;
+  snapshot.heap_psram_min_free_bytes =
+    state->cached_status.heap_psram_min_free_bytes;
+  snapshot.heap_psram_min_largest_free_block_bytes =
+    state->cached_status.heap_psram_min_largest_free_block_bytes;
+  snapshot.heap_psram_frag_percent =
+    state->cached_status.heap_psram_frag_percent;
+  snapshot.heap_psram_warn = state->cached_status.heap_psram_warn;
+  snapshot.heap_psram_crit = state->cached_status.heap_psram_crit;
 
   RuntimeHealthPublish(&state->health_cache, &snapshot);
   state->health_publisher.last_publish_ticks = now_ticks;
