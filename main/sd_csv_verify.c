@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mem_guard.h"
 #include "mbedtls/sha256.h"
 
 static const char* kTag = "sd_csv_verify";
@@ -316,7 +317,7 @@ RepairTailToLastNewline(int file_descriptor,
   esp_err_t read_result =
     ReadExactly(file_descriptor, scan_start, tail_bytes, scan_length);
   if (read_result != ESP_OK) {
-    free(tail_bytes);
+    AppFree(tail_bytes);
     return read_result;
   }
 
@@ -335,7 +336,7 @@ RepairTailToLastNewline(int file_descriptor,
     new_size = 0;
   }
 
-  free(tail_bytes);
+  AppFree(tail_bytes);
 
   if (ftruncate(file_descriptor, new_size) != 0) {
     ESP_LOGE(kTag, "ftruncate() failed: errno=%d (%s)", errno, strerror(errno));
@@ -400,7 +401,7 @@ FindLastRecordIdInFile(int file_descriptor,
   esp_err_t read_result =
     ReadExactly(file_descriptor, scan_start, tail_bytes, scan_length);
   if (read_result != ESP_OK) {
-    free(tail_bytes);
+    AppFree(tail_bytes);
     return read_result;
   }
   tail_bytes[scan_length] = '\0';
@@ -418,9 +419,9 @@ FindLastRecordIdInFile(int file_descriptor,
     const size_t line_offset = (size_t)(line_start + 1);
     const size_t line_length = (size_t)(line_end - line_start);
 
-    char* line_copy = (char*)malloc(line_length + 1);
+    char* line_copy = (char*)AppMalloc(line_length + 1);
     if (line_copy == NULL) {
-      free(tail_bytes);
+      AppFree(tail_bytes);
       return ESP_ERR_NO_MEM;
     }
     memcpy(line_copy, &tail_bytes[line_offset], line_length);
@@ -429,19 +430,19 @@ FindLastRecordIdInFile(int file_descriptor,
     uint64_t parsed_record_id = 0;
     const bool parsed_ok =
       ParseRecordIdFromCsvLine(line_copy, &parsed_record_id);
-    free(line_copy);
+    AppFree(line_copy);
 
     if (parsed_ok) {
       *found_out = true;
       *last_record_id_out = parsed_record_id;
-      free(tail_bytes);
+      AppFree(tail_bytes);
       return ESP_OK;
     }
 
     line_end = line_start - 1;
   }
 
-  free(tail_bytes);
+  AppFree(tail_bytes);
   return ESP_OK;
 }
 
@@ -656,7 +657,7 @@ SdCsvAppendBatchWithReadbackVerifyEx(FILE* file_handle,
     ESP_LOGE(kTag, "Read-back failed; truncating to original size.");
     SetAppendDiagnostics(diag_out, "verify", errno);
     if (readback_owned) {
-      free(readback_bytes);
+      AppFree(readback_bytes);
     }
     ftruncate(file_descriptor, original_size);
     fsync(file_descriptor);
@@ -664,7 +665,7 @@ SdCsvAppendBatchWithReadbackVerifyEx(FILE* file_handle,
   }
 
   if (readback_owned) {
-    free(readback_bytes);
+    AppFree(readback_bytes);
   }
 
   if (!DigestsEqual(&digest_before, &digest_after)) {

@@ -46,6 +46,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "linenoise/linenoise.h"
+#include "mem_guard.h"
 #include "runtime_manager.h"
 #include "sdkconfig.h"
 #include "sd_card_detect.h"
@@ -795,6 +796,7 @@ CommandStatus(int argc, char** argv)
   printf("heap_psram_crit: %s\n", health.heap_psram_crit ? "yes" : "no");
 #endif
 #endif
+  printf("allocs_since_run: %" PRIu64 "\n", MemGuardGetAllocCountSinceRun());
   printf("mesh_connected: %s\n",
          MeshTransportIsConnected(g_runtime->mesh) ? "yes" : "no");
   const bool wifi_connected = WifiManagerIsConnected();
@@ -2806,7 +2808,7 @@ CommandWifi(int argc, char** argv)
     }
 
     wifi_ap_record_t* records =
-      (wifi_ap_record_t*)calloc(record_cap, sizeof(*records));
+      (wifi_ap_record_t*)AppCalloc(record_cap, sizeof(*records));
     if (records == NULL) {
       printf("out of memory\n");
       ReleaseWifiForConsoleIfNeeded(did_acquire);
@@ -2817,7 +2819,7 @@ CommandWifi(int argc, char** argv)
     esp_err_t result = WifiManagerScan(records, record_cap, &total_count);
     if (result != ESP_OK) {
       printf("scan failed: %s\n", esp_err_to_name(result));
-      free(records);
+      AppFree(records);
       ReleaseWifiForConsoleIfNeeded(did_acquire);
       return 1;
     }
@@ -2839,7 +2841,7 @@ CommandWifi(int argc, char** argv)
              WifiAuthModeToString(ap->authmode));
     }
 
-    free(records);
+    AppFree(records);
     ReleaseWifiForConsoleIfNeeded(did_acquire);
     return 0;
   }
