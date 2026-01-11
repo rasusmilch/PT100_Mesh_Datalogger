@@ -127,6 +127,12 @@ extern "C" {
     RUNTIME_PHASE_STOPPING,
   } runtime_phase_t;
 
+  enum
+  {
+    kLogQueueDepth = 64,
+    kStorageTaskStackBytes = 8192, // bytes
+  };
+
   typedef struct runtime_state_t
   {
     app_settings_t settings;
@@ -151,6 +157,8 @@ extern "C" {
     i2c_bus_t i2c_bus;
 
     QueueHandle_t log_queue;
+    StaticQueue_t log_queue_struct;
+    uint8_t log_queue_storage[kLogQueueDepth * sizeof(log_record_t)];
     QueueHandle_t export_queue;
     QueueHandle_t export_outbox;
     QueueHandle_t broker_outbox;
@@ -192,6 +200,9 @@ extern "C" {
 
     TaskHandle_t sensor_task;
     TaskHandle_t storage_task;
+    StaticTask_t storage_task_tcb;
+    StackType_t storage_task_stack[kStorageTaskStackBytes /
+                                   sizeof(StackType_t)];
     TaskHandle_t export_task;
     TaskHandle_t export_network_task;
     TaskHandle_t time_sync_task;

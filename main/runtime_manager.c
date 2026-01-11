@@ -312,9 +312,6 @@ static uint8_t* g_broker_outbox_pool_storage = NULL;
 static mem_pool_t g_export_outbox_pool;
 static mem_pool_t g_broker_outbox_pool;
 
-static StaticQueue_t g_log_queue_struct;
-static uint8_t* g_log_queue_storage = NULL;
-
 static StaticQueue_t g_export_queue_struct;
 static uint8_t* g_export_queue_storage = NULL;
 
@@ -4293,12 +4290,10 @@ RuntimeManagerInit(void)
     first_error = sensor_result;
   }
 
-  if (g_log_queue_storage == NULL) {
-    g_log_queue_storage =
-      (uint8_t*)AllocatePreferPsram(64 * sizeof(log_record_t));
-  }
-  g_state.log_queue = xQueueCreateStatic(
-    64, sizeof(log_record_t), g_log_queue_storage, &g_log_queue_struct);
+  g_state.log_queue = xQueueCreateStatic(kLogQueueDepth,
+                                         sizeof(log_record_t),
+                                         g_state.log_queue_storage,
+                                         &g_state.log_queue_struct);
   if (g_state.log_queue == NULL) {
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
@@ -4832,8 +4827,15 @@ wifi_direct_start_done:
       g_state.sensor_task = NULL;
       ESP_LOGE(kTag, "Failed to create task sensor");
     }
-    storage_created = xTaskCreate(
-      &StorageTask, "storage", 8192, &g_state, 6, &g_state.storage_task);
+    g_state.storage_task =
+      xTaskCreateStatic(&StorageTask,
+                        "storage",
+                        kStorageTaskStackBytes / sizeof(StackType_t),
+                        &g_state,
+                        6,
+                        g_state.storage_task_stack,
+                        &g_state.storage_task_tcb);
+    storage_created = (g_state.storage_task != NULL) ? pdPASS : pdFAIL;
     if (storage_created != pdPASS) {
       g_state.storage_task = NULL;
       ESP_LOGE(kTag, "Failed to create task storage");
