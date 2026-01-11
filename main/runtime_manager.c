@@ -39,6 +39,7 @@
 #include "runtime_health_publisher.h"
 #include "runtime_state.h"
 #include "sd_logger.h"
+#include "sdkconfig.h"
 #include "time_sync.h"
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
@@ -58,6 +59,7 @@ static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
+static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 
 static sd_append_verify_t
 ResolveSdVerifyMode(const runtime_state_t* state);
@@ -1751,10 +1753,13 @@ BuildBatchForDay(runtime_state_t* state,
       break; // stop at day rollover; flush current batch first
     }
 
-    char line[256];
     size_t line_len = 0;
     if (!CsvFormatRow(
-          &record, state->node_id_string, line, sizeof(line), &line_len)) {
+          &record,
+          state->node_id_string,
+          g_sd_csv_line_buffer,
+          sizeof(g_sd_csv_line_buffer),
+          &line_len)) {
       return ESP_ERR_NO_MEM;
     }
     if (used + line_len > buffer_size) {
@@ -1762,12 +1767,12 @@ BuildBatchForDay(runtime_state_t* state,
       break;
     }
 
-    memcpy(buffer + used, line, line_len);
+    memcpy(buffer + used, g_sd_csv_line_buffer, line_len);
     used += line_len;
     records_used++;
     last_record_id = record.record_id;
 
-    if (used >= buffer_size - sizeof(line)) {
+    if (used >= buffer_size - sizeof(g_sd_csv_line_buffer)) {
       break;
     }
   }

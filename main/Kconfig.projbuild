@@ -363,6 +363,14 @@ config APP_SD_BATCH_BYTES_TARGET
     CSV flush batches are built up to roughly this many bytes before being
     appended to SD. Larger batches improve wear and throughput.
 
+config APP_MAX_CSV_LINE_BYTES
+  int "Max CSV line size (bytes)"
+  range 128 1024
+  default 256
+  help
+    Maximum size for formatted CSV rows, including the trailing newline. This
+    buffer is allocated once and reused for CSV formatting.
+
 config APP_SD_PERIODIC_FLUSH_MS
   int "Periodic flush interval (ms)"
   range 1000 3600000
