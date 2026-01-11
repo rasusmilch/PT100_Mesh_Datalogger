@@ -34,7 +34,7 @@ RuntimeHealthPublisherTick(runtime_state_t* state)
 
   const TickType_t now_ticks = xTaskGetTickCount();
 #if CONFIG_APP_HEAP_MONITOR_ENABLE
-  HeapMonitorTick(state, now_ticks);
+  HeapMonitorMaybeSample(state, now_ticks);
 #endif
   const uint32_t elapsed_ms =
     (state->health_publisher.last_publish_ticks == 0)
