@@ -33,6 +33,8 @@ extern "C"
     char current_date[16]; // YYYY-MM-DD
     uint64_t last_record_id_on_sd;
     uint8_t* file_buffer;
+    uint8_t* resume_tail_bytes;
+    size_t resume_tail_capacity;
 
     sd_logger_config_t config;
     uint8_t* io_bounce_bytes;

@@ -267,6 +267,36 @@ ParseRecordIdFromCsvLine(const char* line, uint64_t* record_id_out)
   return true;
 }
 
+static uint8_t*
+AcquireTailBuffer(size_t required_bytes,
+                  const sd_csv_resume_scratch_t* scratch,
+                  bool* needs_free_out)
+{
+  if (needs_free_out == NULL) {
+    return NULL;
+  }
+  *needs_free_out = false;
+  if (scratch != NULL) {
+    if (scratch->tail_bytes != NULL &&
+        scratch->tail_capacity >= required_bytes) {
+      return scratch->tail_bytes;
+    }
+    return NULL;
+  }
+
+  uint8_t* tail_bytes = (uint8_t*)heap_caps_malloc(
+    required_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (tail_bytes == NULL) {
+    tail_bytes = (uint8_t*)heap_caps_malloc(
+      required_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
+  if (tail_bytes == NULL) {
+    return NULL;
+  }
+  *needs_free_out = true;
+  return tail_bytes;
+}
+
 // Finds the last '\n' in the file and truncates to that point+1 if needed.
 // If there is no '\n' at all, truncates to 0.
 /**
@@ -281,6 +311,7 @@ static esp_err_t
 RepairTailToLastNewline(int file_descriptor,
                         off_t file_size,
                         size_t tail_scan_max_bytes,
+                        const sd_csv_resume_scratch_t* scratch,
                         bool* truncated_out)
 {
   *truncated_out = false;
@@ -303,13 +334,9 @@ RepairTailToLastNewline(int file_descriptor,
                              : 0;
   const size_t scan_length = (size_t)(file_size - scan_start);
 
-  // Tail scan can be large (e.g., hundreds of KiB). Place it in PSRAM.
-  uint8_t* tail_bytes = (uint8_t*)heap_caps_malloc(
-    scan_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (tail_bytes == NULL) {
-    tail_bytes = (uint8_t*)heap_caps_malloc(
-      scan_length, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  }
+  bool needs_free = false;
+  uint8_t* tail_bytes =
+    AcquireTailBuffer(scan_length, scratch, &needs_free);
   if (tail_bytes == NULL) {
     return ESP_ERR_NO_MEM;
   }
@@ -317,7 +344,9 @@ RepairTailToLastNewline(int file_descriptor,
   esp_err_t read_result =
     ReadExactly(file_descriptor, scan_start, tail_bytes, scan_length);
   if (read_result != ESP_OK) {
-    AppFree(tail_bytes);
+    if (needs_free) {
+      AppFree(tail_bytes);
+    }
     return read_result;
   }
 
@@ -336,7 +365,9 @@ RepairTailToLastNewline(int file_descriptor,
     new_size = 0;
   }
 
-  AppFree(tail_bytes);
+  if (needs_free) {
+    AppFree(tail_bytes);
+  }
 
   if (ftruncate(file_descriptor, new_size) != 0) {
     ESP_LOGE(kTag, "ftruncate() failed: errno=%d (%s)", errno, strerror(errno));
@@ -372,6 +403,7 @@ static esp_err_t
 FindLastRecordIdInFile(int file_descriptor,
                        off_t file_size,
                        size_t tail_scan_max_bytes,
+                       const sd_csv_resume_scratch_t* scratch,
                        bool* found_out,
                        uint64_t* last_record_id_out)
 {
@@ -387,13 +419,10 @@ FindLastRecordIdInFile(int file_descriptor,
                              : 0;
   const size_t scan_length = (size_t)(file_size - scan_start);
 
-  // Tail scan can be large (e.g., hundreds of KiB). Place it in PSRAM.
-  uint8_t* tail_bytes = (uint8_t*)heap_caps_malloc(
-    scan_length + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (tail_bytes == NULL) {
-    tail_bytes = (uint8_t*)heap_caps_malloc(
-      scan_length + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  }
+  const size_t buffer_needed = scan_length + 1;
+  bool needs_free = false;
+  uint8_t* tail_bytes =
+    AcquireTailBuffer(buffer_needed, scratch, &needs_free);
   if (tail_bytes == NULL) {
     return ESP_ERR_NO_MEM;
   }
@@ -401,7 +430,9 @@ FindLastRecordIdInFile(int file_descriptor,
   esp_err_t read_result =
     ReadExactly(file_descriptor, scan_start, tail_bytes, scan_length);
   if (read_result != ESP_OK) {
-    AppFree(tail_bytes);
+    if (needs_free) {
+      AppFree(tail_bytes);
+    }
     return read_result;
   }
   tail_bytes[scan_length] = '\0';
@@ -419,30 +450,26 @@ FindLastRecordIdInFile(int file_descriptor,
     const size_t line_offset = (size_t)(line_start + 1);
     const size_t line_length = (size_t)(line_end - line_start);
 
-    char* line_copy = (char*)AppMalloc(line_length + 1);
-    if (line_copy == NULL) {
-      AppFree(tail_bytes);
-      return ESP_ERR_NO_MEM;
-    }
-    memcpy(line_copy, &tail_bytes[line_offset], line_length);
-    line_copy[line_length] = '\0';
-
     uint64_t parsed_record_id = 0;
-    const bool parsed_ok =
-      ParseRecordIdFromCsvLine(line_copy, &parsed_record_id);
-    AppFree(line_copy);
+    tail_bytes[line_offset + line_length] = '\0';
+    const bool parsed_ok = ParseRecordIdFromCsvLine(
+      (const char*)&tail_bytes[line_offset], &parsed_record_id);
 
     if (parsed_ok) {
       *found_out = true;
       *last_record_id_out = parsed_record_id;
-      AppFree(tail_bytes);
+      if (needs_free) {
+        AppFree(tail_bytes);
+      }
       return ESP_OK;
     }
 
     line_end = line_start - 1;
   }
 
-  AppFree(tail_bytes);
+  if (needs_free) {
+    AppFree(tail_bytes);
+  }
   return ESP_OK;
 }
 
@@ -456,6 +483,7 @@ FindLastRecordIdInFile(int file_descriptor,
 esp_err_t
 SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
                                    size_t tail_scan_max_bytes,
+                                   const sd_csv_resume_scratch_t* scratch,
                                    SdCsvResumeInfo* resume_info_out)
 {
   if (file_handle == NULL || resume_info_out == NULL) {
@@ -475,8 +503,11 @@ SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
 
   bool file_was_truncated = false;
   if (RepairTailToLastNewline(
-        file_descriptor, file_size, tail_scan_max_bytes, &file_was_truncated) !=
-      ESP_OK) {
+        file_descriptor,
+        file_size,
+        tail_scan_max_bytes,
+        scratch,
+        &file_was_truncated) != ESP_OK) {
     return ESP_FAIL;
   }
   resume_info_out->file_was_truncated = file_was_truncated;
@@ -490,6 +521,7 @@ SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
   if (FindLastRecordIdInFile(file_descriptor,
                              file_size,
                              tail_scan_max_bytes,
+                             scratch,
                              &found_last_record_id,
                              &last_record_id) != ESP_OK) {
     return ESP_FAIL;

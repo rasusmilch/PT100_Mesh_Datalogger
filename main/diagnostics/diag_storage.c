@@ -387,8 +387,8 @@ ReadLastRecordId(const char* path,
     return false;
   }
   SdCsvResumeInfo info = { 0 };
-  esp_err_t result =
-    SdCsvFindLastRecordIdAndRepairTail(file, tail_scan_bytes, &info);
+  esp_err_t result = SdCsvFindLastRecordIdAndRepairTail(
+    file, tail_scan_bytes, NULL, &info);
   fclose(file);
   RuntimeSdIoUnlock(state);
   if (result != ESP_OK) {
