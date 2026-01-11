@@ -32,6 +32,7 @@
 #include "max31865_reader.h"
 #include "max7219_display.h"
 #include "mem_guard.h"
+#include "mem_pool.h"
 #include "mesh_transport.h"
 #include "mqtt_client_wrap.h"
 #include "run_gpio.h"
@@ -304,8 +305,12 @@ static runtime_state_t g_state;
 static app_runtime_t g_runtime;
 static StaticQueue_t g_export_outbox_queue_struct;
 static StaticQueue_t g_broker_outbox_queue_struct;
-static uint8_t* g_export_outbox_storage = NULL;
-static uint8_t* g_broker_outbox_storage = NULL;
+static uint8_t* g_export_outbox_queue_storage = NULL;
+static uint8_t* g_broker_outbox_queue_storage = NULL;
+static uint8_t* g_export_outbox_pool_storage = NULL;
+static uint8_t* g_broker_outbox_pool_storage = NULL;
+static mem_pool_t g_export_outbox_pool;
+static mem_pool_t g_broker_outbox_pool;
 
 static StaticQueue_t g_log_queue_struct;
 static uint8_t* g_log_queue_storage = NULL;
@@ -323,6 +328,36 @@ AllocatePreferPsram(size_t bytes)
     return buffer;
   }
   return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+static void
+DrainExportOutboxQueue(runtime_state_t* state)
+{
+  if (state == NULL || state->export_outbox == NULL) {
+    return;
+  }
+
+  export_record_item_t* item = NULL;
+  while (xQueueReceive(state->export_outbox, &item, 0) == pdTRUE) {
+    if (item != NULL) {
+      MemPoolFree(&g_export_outbox_pool, item);
+    }
+  }
+}
+
+static void
+DrainBrokerOutboxQueue(runtime_state_t* state)
+{
+  if (state == NULL || state->broker_outbox == NULL) {
+    return;
+  }
+
+  broker_publish_item_t* item = NULL;
+  while (xQueueReceive(state->broker_outbox, &item, 0) == pdTRUE) {
+    if (item != NULL) {
+      MemPoolFree(&g_broker_outbox_pool, item);
+    }
+  }
 }
 
 static const sd_csv_append_scratch_t*
@@ -1468,10 +1503,22 @@ EnqueueExportOutbox(runtime_state_t* state,
     return;
   }
 
-  export_record_item_t item;
-  memset(&item, 0, sizeof(item));
-  memcpy(item.src_mac, src_mac, sizeof(item.src_mac));
-  item.record = *record;
+  export_record_item_t* item =
+    (export_record_item_t*)MemPoolAlloc(&g_export_outbox_pool);
+  if (item == NULL) {
+    state->export_drop_count++;
+    UpdateCachedUint32(
+      state, &state->cached_status.export_drop_count, state->export_drop_count);
+    if (LogRateLimitAllow(&state->last_export_drop_log_ms,
+                          kExportLogRateLimitMs)) {
+      ESP_LOGW(kTag, "export outbox pool empty; dropping network export");
+    }
+    return;
+  }
+
+  memset(item, 0, sizeof(*item));
+  memcpy(item->src_mac, src_mac, sizeof(item->src_mac));
+  item->record = *record;
 
   if (xQueueSend(state->export_outbox, &item, 0) != pdTRUE) {
     state->export_drop_count++;
@@ -1481,6 +1528,7 @@ EnqueueExportOutbox(runtime_state_t* state,
                           kExportLogRateLimitMs)) {
       ESP_LOGW(kTag, "export outbox full; dropping network export");
     }
+    MemPoolFree(&g_export_outbox_pool, item);
   }
 }
 
@@ -1503,33 +1551,47 @@ EnqueueBrokerPublish(runtime_state_t* state,
   char node_id[32] = { 0 };
   FormatMacString(src_mac, node_id, sizeof(node_id));
 
-  broker_publish_item_t publish_item;
-  memset(&publish_item, 0, sizeof(publish_item));
+  broker_publish_item_t* publish_item =
+    (broker_publish_item_t*)MemPoolAlloc(&g_broker_outbox_pool);
+  if (publish_item == NULL) {
+    state->broker_drop_count++;
+    UpdateCachedUint32(
+      state, &state->cached_status.broker_drop_count, state->broker_drop_count);
+    if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
+                          kExportLogRateLimitMs)) {
+      ESP_LOGW(kTag, "broker outbox pool empty; dropping publish");
+    }
+    return;
+  }
+
+  memset(publish_item, 0, sizeof(*publish_item));
   if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
                       node_id,
-                      publish_item.topic,
-                      sizeof(publish_item.topic))) {
+                      publish_item->topic,
+                      sizeof(publish_item->topic))) {
     state->broker_send_fail_count++;
     UpdateCachedUint32(state,
                        &state->cached_status.broker_send_fail_count,
                        state->broker_send_fail_count);
+    MemPoolFree(&g_broker_outbox_pool, publish_item);
     return;
   }
 
   size_t payload_len = 0;
   if (!BuildMqttPayload(record,
                         node_id,
-                        publish_item.payload,
-                        sizeof(publish_item.payload),
+                        publish_item->payload,
+                        sizeof(publish_item->payload),
                         &payload_len)) {
     state->broker_send_fail_count++;
     UpdateCachedUint32(state,
                        &state->cached_status.broker_send_fail_count,
                        state->broker_send_fail_count);
+    MemPoolFree(&g_broker_outbox_pool, publish_item);
     return;
   }
 
-  publish_item.payload_len = (uint16_t)payload_len;
+  publish_item->payload_len = (uint16_t)payload_len;
 
   if (xQueueSend(state->broker_outbox, &publish_item, 0) != pdTRUE) {
     state->broker_drop_count++;
@@ -1539,6 +1601,7 @@ EnqueueBrokerPublish(runtime_state_t* state,
                           kExportLogRateLimitMs)) {
       ESP_LOGW(kTag, "broker outbox full; dropping publish");
     }
+    MemPoolFree(&g_broker_outbox_pool, publish_item);
   }
 }
 
@@ -2437,9 +2500,14 @@ ExportNetworkTask(void* context)
       RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(200));
       continue;
     }
-    export_record_item_t item;
+    export_record_item_t* item = NULL;
     if (xQueuePeek(state->export_outbox, &item, pdMS_TO_TICKS(500)) != pdTRUE) {
       RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(100));
+      continue;
+    }
+    if (item == NULL) {
+      (void)xQueueReceive(state->export_outbox, &item, 0);
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
       continue;
     }
 
@@ -2449,9 +2517,13 @@ ExportNetworkTask(void* context)
         continue;
       }
       const esp_err_t send_result = MeshTransportSendPublishRecord(
-        &state->mesh, item.src_mac, &item.record);
+        &state->mesh, item->src_mac, &item->record);
       if (send_result == ESP_OK) {
-        (void)xQueueReceive(state->export_outbox, &item, 0);
+        export_record_item_t* dequeued = NULL;
+        if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE &&
+            dequeued != NULL) {
+          MemPoolFree(&g_export_outbox_pool, dequeued);
+        }
       } else {
         state->export_send_fail_count++;
         UpdateCachedUint32(state,
@@ -2476,7 +2548,7 @@ ExportNetworkTask(void* context)
     }
 
     char node_id[32] = { 0 };
-    FormatMacString(item.src_mac, node_id, sizeof(node_id));
+    FormatMacString(item->src_mac, node_id, sizeof(node_id));
     char topic[128] = { 0 };
     if (!BuildMqttTopic(
           state->mqtt_topic_prefix_active, node_id, topic, sizeof(topic))) {
@@ -2484,19 +2556,27 @@ ExportNetworkTask(void* context)
       UpdateCachedUint32(state,
                          &state->cached_status.export_send_fail_count,
                          state->export_send_fail_count);
-      (void)xQueueReceive(state->export_outbox, &item, 0);
+      export_record_item_t* dequeued = NULL;
+      if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE &&
+          dequeued != NULL) {
+        MemPoolFree(&g_export_outbox_pool, dequeued);
+      }
       continue;
     }
 
     size_t payload_len = 0;
     char payload[256] = { 0 };
     if (!BuildMqttPayload(
-          &item.record, node_id, payload, sizeof(payload), &payload_len)) {
+          &item->record, node_id, payload, sizeof(payload), &payload_len)) {
       state->export_send_fail_count++;
       UpdateCachedUint32(state,
                          &state->cached_status.export_send_fail_count,
                          state->export_send_fail_count);
-      (void)xQueueReceive(state->export_outbox, &item, 0);
+      export_record_item_t* dequeued = NULL;
+      if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE &&
+          dequeued != NULL) {
+        MemPoolFree(&g_export_outbox_pool, dequeued);
+      }
       continue;
     }
 
@@ -2508,7 +2588,11 @@ ExportNetworkTask(void* context)
                             state->mqtt_qos_active,
                             state->mqtt_retain_active ? 1 : 0);
     if (publish_result == ESP_OK) {
-      (void)xQueueReceive(state->export_outbox, &item, 0);
+      export_record_item_t* dequeued = NULL;
+      if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE &&
+          dequeued != NULL) {
+        MemPoolFree(&g_export_outbox_pool, dequeued);
+      }
     } else {
       state->export_send_fail_count++;
       UpdateCachedUint32(state,
@@ -2539,27 +2623,32 @@ RootBridgeTask(void* context)
   while (!state->stop_requested ||
          (state->export_outbox != NULL &&
           uxQueueMessagesWaiting(state->export_outbox) > 0)) {
-    export_record_item_t item;
+    export_record_item_t* item = NULL;
     if (state->export_outbox != NULL &&
         xQueueReceive(state->export_outbox, &item, pdMS_TO_TICKS(500)) ==
           pdTRUE) {
+      if (item == NULL) {
+        continue;
+      }
       char node_id[32] = { 0 };
-      FormatMacString(item.src_mac, node_id, sizeof(node_id));
+      FormatMacString(item->src_mac, node_id, sizeof(node_id));
 
       char payload[256] = { 0 };
       size_t payload_len = 0;
       if (!BuildMqttPayload(
-            &item.record, node_id, payload, sizeof(payload), &payload_len)) {
+            &item->record, node_id, payload, sizeof(payload), &payload_len)) {
         state->export_send_fail_count++;
         UpdateCachedUint32(state,
                            &state->cached_status.export_send_fail_count,
                            state->export_send_fail_count);
+        MemPoolFree(&g_export_outbox_pool, item);
         continue;
       }
 
       if (BridgeModeUsesSerial(state->mqtt_bridge_mode_active)) {
         if (!TryEmitBridgeCsvHeader(state)) {
           vTaskDelay(pdMS_TO_TICKS(50));
+          MemPoolFree(&g_export_outbox_pool, item);
           continue;
         }
         size_t written = 0;
@@ -2579,27 +2668,56 @@ RootBridgeTask(void* context)
 
       if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active) &&
           state->mqtt_enabled_active) {
-        broker_publish_item_t publish_item;
-        memset(&publish_item, 0, sizeof(publish_item));
+        if (state->broker_outbox == NULL) {
+          state->broker_drop_count++;
+          UpdateCachedUint32(state,
+                             &state->cached_status.broker_drop_count,
+                             state->broker_drop_count);
+          if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
+                                kExportLogRateLimitMs)) {
+            ESP_LOGW(kTag, "broker outbox unavailable; dropping publish");
+          }
+          MemPoolFree(&g_export_outbox_pool, item);
+          continue;
+        }
+        broker_publish_item_t* publish_item =
+          (broker_publish_item_t*)MemPoolAlloc(&g_broker_outbox_pool);
+        if (publish_item == NULL) {
+          state->broker_drop_count++;
+          UpdateCachedUint32(state,
+                             &state->cached_status.broker_drop_count,
+                             state->broker_drop_count);
+          if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
+                                kExportLogRateLimitMs)) {
+            ESP_LOGW(kTag, "broker outbox pool empty; dropping publish");
+          }
+          MemPoolFree(&g_export_outbox_pool, item);
+          continue;
+        }
+        memset(publish_item, 0, sizeof(*publish_item));
         if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
                             node_id,
-                            publish_item.topic,
-                            sizeof(publish_item.topic))) {
+                            publish_item->topic,
+                            sizeof(publish_item->topic))) {
           state->broker_send_fail_count++;
           UpdateCachedUint32(state,
                              &state->cached_status.broker_send_fail_count,
                              state->broker_send_fail_count);
+          MemPoolFree(&g_broker_outbox_pool, publish_item);
+          MemPoolFree(&g_export_outbox_pool, item);
           continue;
         }
-        if (payload_len >= sizeof(publish_item.payload)) {
+        if (payload_len >= sizeof(publish_item->payload)) {
           state->broker_send_fail_count++;
           UpdateCachedUint32(state,
                              &state->cached_status.broker_send_fail_count,
                              state->broker_send_fail_count);
+          MemPoolFree(&g_broker_outbox_pool, publish_item);
+          MemPoolFree(&g_export_outbox_pool, item);
           continue;
         }
-        memcpy(publish_item.payload, payload, payload_len);
-        publish_item.payload_len = (uint16_t)payload_len;
+        memcpy(publish_item->payload, payload, payload_len);
+        publish_item->payload_len = (uint16_t)payload_len;
 
         if (state->broker_outbox != NULL &&
             xQueueSend(state->broker_outbox, &publish_item, 0) != pdTRUE) {
@@ -2611,8 +2729,10 @@ RootBridgeTask(void* context)
                                 kExportLogRateLimitMs)) {
             ESP_LOGW(kTag, "broker outbox full; dropping publish");
           }
+          MemPoolFree(&g_broker_outbox_pool, publish_item);
         }
       }
+      MemPoolFree(&g_export_outbox_pool, item);
     }
   }
 
@@ -2638,9 +2758,14 @@ BrokerPublishTask(void* context)
       continue;
     }
 
-    broker_publish_item_t item;
+    broker_publish_item_t* item = NULL;
     if (xQueuePeek(state->broker_outbox, &item, pdMS_TO_TICKS(500)) != pdTRUE) {
       RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(100));
+      continue;
+    }
+    if (item == NULL) {
+      (void)xQueueReceive(state->broker_outbox, &item, 0);
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
       continue;
     }
 
@@ -2655,13 +2780,17 @@ BrokerPublishTask(void* context)
 
     const esp_err_t publish_result =
       MqttClientWrapPublish(&state->mqtt_client,
-                            item.topic,
-                            item.payload,
-                            (int)item.payload_len,
+                            item->topic,
+                            item->payload,
+                            (int)item->payload_len,
                             state->mqtt_qos_active,
                             state->mqtt_retain_active ? 1 : 0);
     if (publish_result == ESP_OK) {
-      (void)xQueueReceive(state->broker_outbox, &item, 0);
+      broker_publish_item_t* dequeued = NULL;
+      if (xQueueReceive(state->broker_outbox, &dequeued, 0) == pdTRUE &&
+          dequeued != NULL) {
+        MemPoolFree(&g_broker_outbox_pool, dequeued);
+      }
     } else {
       state->broker_send_fail_count++;
       UpdateCachedUint32(state,
@@ -4192,34 +4321,78 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create export queue");
   }
 
-  if (g_export_outbox_storage == NULL) {
-    g_export_outbox_storage = (uint8_t*)AllocatePreferPsram(
-      kExportOutboxDepth * sizeof(export_record_item_t));
+  bool export_pool_ready = false;
+  if (g_export_outbox_pool_storage == NULL) {
+    const size_t export_pool_bytes = MemPoolGetRequiredBytes(
+      sizeof(export_record_item_t), kExportOutboxDepth);
+    g_export_outbox_pool_storage = (uint8_t*)AppMalloc(export_pool_bytes);
   }
-  g_state.export_outbox = xQueueCreateStatic(kExportOutboxDepth,
-                                             sizeof(export_record_item_t),
-                                             g_export_outbox_storage,
-                                             &g_export_outbox_queue_struct);
-  if (g_state.export_outbox == NULL) {
+  if (g_export_outbox_pool_storage != NULL &&
+      MemPoolInit(&g_export_outbox_pool,
+                  g_export_outbox_pool_storage,
+                  sizeof(export_record_item_t),
+                  kExportOutboxDepth)) {
+    export_pool_ready = true;
+  } else {
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
     }
-    ESP_LOGE(kTag, "Failed to create export outbox");
+    ESP_LOGE(kTag, "Failed to initialize export outbox pool");
   }
 
-  if (g_broker_outbox_storage == NULL) {
-    g_broker_outbox_storage = (uint8_t*)AllocatePreferPsram(
-      kBrokerOutboxDepth * sizeof(broker_publish_item_t));
+  if (export_pool_ready) {
+    if (g_export_outbox_queue_storage == NULL) {
+      g_export_outbox_queue_storage = (uint8_t*)AllocatePreferPsram(
+        kExportOutboxDepth * sizeof(export_record_item_t*));
+    }
+    g_state.export_outbox =
+      xQueueCreateStatic(kExportOutboxDepth,
+                         sizeof(export_record_item_t*),
+                         g_export_outbox_queue_storage,
+                         &g_export_outbox_queue_struct);
+    if (g_state.export_outbox == NULL) {
+      if (first_error == ESP_OK) {
+        first_error = ESP_ERR_NO_MEM;
+      }
+      ESP_LOGE(kTag, "Failed to create export outbox");
+    }
   }
-  g_state.broker_outbox = xQueueCreateStatic(kBrokerOutboxDepth,
-                                             sizeof(broker_publish_item_t),
-                                             g_broker_outbox_storage,
-                                             &g_broker_outbox_queue_struct);
-  if (g_state.broker_outbox == NULL) {
+
+  bool broker_pool_ready = false;
+  if (g_broker_outbox_pool_storage == NULL) {
+    const size_t broker_pool_bytes = MemPoolGetRequiredBytes(
+      sizeof(broker_publish_item_t), kBrokerOutboxDepth);
+    g_broker_outbox_pool_storage = (uint8_t*)AppMalloc(broker_pool_bytes);
+  }
+  if (g_broker_outbox_pool_storage != NULL &&
+      MemPoolInit(&g_broker_outbox_pool,
+                  g_broker_outbox_pool_storage,
+                  sizeof(broker_publish_item_t),
+                  kBrokerOutboxDepth)) {
+    broker_pool_ready = true;
+  } else {
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
     }
-    ESP_LOGE(kTag, "Failed to create broker outbox");
+    ESP_LOGE(kTag, "Failed to initialize broker outbox pool");
+  }
+
+  if (broker_pool_ready) {
+    if (g_broker_outbox_queue_storage == NULL) {
+      g_broker_outbox_queue_storage = (uint8_t*)AllocatePreferPsram(
+        kBrokerOutboxDepth * sizeof(broker_publish_item_t*));
+    }
+    g_state.broker_outbox =
+      xQueueCreateStatic(kBrokerOutboxDepth,
+                         sizeof(broker_publish_item_t*),
+                         g_broker_outbox_queue_storage,
+                         &g_broker_outbox_queue_struct);
+    if (g_state.broker_outbox == NULL) {
+      if (first_error == ESP_OK) {
+        first_error = ESP_ERR_NO_MEM;
+      }
+      ESP_LOGE(kTag, "Failed to create broker outbox");
+    }
   }
 
   BaseType_t control_created = xTaskCreate(
@@ -4491,6 +4664,7 @@ RuntimeStart(void)
                      g_state.root_publish_drop_no_consumer);
   if (is_root && !g_state.root_publish_consumer_active &&
       g_state.export_outbox != NULL) {
+    DrainExportOutboxQueue(&g_state);
     (void)xQueueReset(g_state.export_outbox);
   }
 
@@ -4950,9 +5124,11 @@ RuntimeStopAllTasks(runtime_state_t* state)
     (void)xQueueReset(state->export_queue);
   }
   if (state->export_outbox != NULL) {
+    DrainExportOutboxQueue(state);
     (void)xQueueReset(state->export_outbox);
   }
   if (state->broker_outbox != NULL) {
+    DrainBrokerOutboxQueue(state);
     (void)xQueueReset(state->broker_outbox);
   }
   MqttClientWrapStop(&state->mqtt_client);
