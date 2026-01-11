@@ -33,6 +33,12 @@ typedef struct
   size_t verify_readback_capacity;
 } sd_csv_append_scratch_t;
 
+typedef struct
+{
+  uint8_t* tail_bytes;
+  size_t tail_capacity;
+} sd_csv_resume_scratch_t;
+
 // Repairs a power-loss tail (truncates to the last '\n' if needed) and returns
 // the last successfully written record_id found in the file.
 //
@@ -45,11 +51,13 @@ typedef struct
  * @brief Execute SdCsvFindLastRecordIdAndRepairTail.
  * @param file_handle Parameter file_handle.
  * @param tail_scan_max_bytes Parameter tail_scan_max_bytes.
+ * @param scratch Parameter scratch.
  * @param resume_info_out Parameter resume_info_out.
  * @return Return the function result.
  */
 esp_err_t SdCsvFindLastRecordIdAndRepairTail(FILE* file_handle,
                                              size_t tail_scan_max_bytes,
+                                             const sd_csv_resume_scratch_t* scratch,
                                              SdCsvResumeInfo* resume_info_out);
 
 // Appends a large buffer to the CSV file, then verifies by reading back the

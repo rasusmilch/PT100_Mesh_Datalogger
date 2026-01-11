@@ -16,9 +16,20 @@
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
-#include "mem_guard.h"
 
 static const char* kTag = "sd_logger";
+
+static uint8_t*
+AllocatePreferPsram(size_t bytes)
+{
+  uint8_t* buffer = (uint8_t*)heap_caps_malloc(
+    bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (buffer != NULL) {
+    return buffer;
+  }
+  return (uint8_t*)heap_caps_malloc(
+    bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
 
 /**
  * @brief Execute DefaultOr.
@@ -103,6 +114,18 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
     DefaultOr(config ? config->tail_scan_bytes : 0, default_tail_scan);
   logger->config.file_buffer_bytes =
     DefaultOr(config ? config->file_buffer_bytes : 0, default_buffer);
+
+  if (logger->config.file_buffer_bytes > 0) {
+    logger->file_buffer = AllocatePreferPsram(
+      logger->config.file_buffer_bytes);
+  }
+  if (logger->config.tail_scan_bytes > 0) {
+    const size_t resume_bytes = logger->config.tail_scan_bytes + 1;
+    logger->resume_tail_bytes = AllocatePreferPsram(resume_bytes);
+    if (logger->resume_tail_bytes != NULL) {
+      logger->resume_tail_capacity = resume_bytes;
+    }
+  }
 
   logger->host_id = (spi_host_device_t)0;
   logger->cs_gpio = -1;
@@ -301,8 +324,12 @@ static esp_err_t
 ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
 {
   SdCsvResumeInfo resume_info = { 0 };
+  sd_csv_resume_scratch_t scratch = {
+    .tail_bytes = logger->resume_tail_bytes,
+    .tail_capacity = logger->resume_tail_capacity,
+  };
   esp_err_t resume_result = SdCsvFindLastRecordIdAndRepairTail(
-    file, logger->config.tail_scan_bytes, &resume_info);
+    file, logger->config.tail_scan_bytes, &scratch, &resume_info);
   if (resume_result != ESP_OK) {
     ESP_LOGE(kTag,
              "Failed to scan/repair %s: %s",
@@ -358,18 +385,6 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
     return ESP_FAIL;
   }
 
-  if (logger->file_buffer != NULL) {
-    AppFree(logger->file_buffer);
-    logger->file_buffer = NULL;
-  }
-  // File buffer is used only for VFS I/O (no DMA); PSRAM is safe here.
-  logger->file_buffer = (uint8_t*)heap_caps_malloc(
-    logger->config.file_buffer_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (logger->file_buffer == NULL) {
-    logger->file_buffer = (uint8_t*)heap_caps_malloc(
-      logger->config.file_buffer_bytes,
-      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  }
   if (logger->file_buffer != NULL) {
     setvbuf((FILE*)logger->file,
             (char*)logger->file_buffer,
@@ -540,10 +555,6 @@ SdLoggerClose(sd_logger_t* logger)
   if (logger->file != NULL) {
     fclose(logger->file);
     logger->file = NULL;
-  }
-  if (logger->file_buffer != NULL) {
-    AppFree(logger->file_buffer);
-    logger->file_buffer = NULL;
   }
   logger->current_date[0] = '\0';
 }
