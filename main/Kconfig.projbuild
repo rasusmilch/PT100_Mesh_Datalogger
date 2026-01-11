@@ -33,6 +33,36 @@ config APP_WIFI_ALLOW_PASSWORD_PRINT
   help
     When disabled, Wi-Fi passwords should only be logged in masked form.
 
+config APP_MEM_GUARD_ENABLE
+  bool "Enable mem guard allocation tracking"
+  default y
+  help
+    When enabled, allocation wrappers track allocations and optionally log
+    when allocations occur during the RUN phase.
+
+config APP_MEM_GUARD_LOG_ENABLE
+  bool "Enable mem guard allocation warnings"
+  default y
+  depends on APP_MEM_GUARD_ENABLE
+  help
+    When enabled, allocations during the RUN phase emit a warning with a
+    configurable rate limit.
+
+config APP_MEM_GUARD_LOG_RATE_LIMIT_MS
+  int "Mem guard warning rate limit (ms)"
+  default 60000
+  depends on APP_MEM_GUARD_LOG_ENABLE
+  help
+    Minimum time between repeated mem guard warnings during RUN. Set to 0 to
+    log every allocation.
+
+config APP_MEM_GUARD_STRICT
+  bool "Abort on allocations during RUN phase"
+  default n
+  depends on APP_MEM_GUARD_ENABLE
+  help
+    When enabled, any allocation during RUN will abort quickly.
+
 config APP_MESH_DISABLE_ROUTER
   bool "Disable router backhaul (Mesh-Lite only mode)"
   default n
