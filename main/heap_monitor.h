@@ -24,7 +24,8 @@ extern "C" {
   struct runtime_state_t;
 
   void HeapMonitorInit(heap_monitor_t* monitor);
-  void HeapMonitorTick(struct runtime_state_t* state, uint32_t now_ticks);
+  void HeapMonitorMaybeSample(struct runtime_state_t* state,
+                              uint32_t now_ticks);
 
 #ifdef __cplusplus
 }

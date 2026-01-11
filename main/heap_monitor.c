@@ -240,7 +240,7 @@ UpdatePsramHeapStatus(runtime_state_t* state,
 }
 
 void
-HeapMonitorTick(runtime_state_t* state, uint32_t now_ticks)
+HeapMonitorMaybeSample(runtime_state_t* state, uint32_t now_ticks)
 {
   if (state == NULL) {
     return;
@@ -259,12 +259,12 @@ HeapMonitorTick(runtime_state_t* state, uint32_t now_ticks)
   monitor->last_sample_ticks = now_ticks;
 
   heap_caps_info_t info = { 0 };
-  SampleCaps(MALLOC_CAP_INTERNAL, &info);
+  SampleCaps(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, &info);
   UpdateInternalHeapStatus(state, monitor, &info);
 
 #if CONFIG_APP_HEAP_PSRAM_MONITOR_ENABLE
   heap_caps_info_t psram_info = { 0 };
-  SampleCaps(MALLOC_CAP_SPIRAM, &psram_info);
+  SampleCaps(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, &psram_info);
   UpdatePsramHeapStatus(state, monitor, &psram_info);
 #else
   monitor->psram_warn_active = false;
