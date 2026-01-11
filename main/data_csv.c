@@ -6,9 +6,13 @@
 #include <string.h>
 #include <time.h>
 
+#include "sdkconfig.h"
+
 static const char* kCsvHeader =
   "schema_ver,record_id,seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,"
   "cal_temp_c,flags,node_id\n";
+
+static char g_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 
 /**
  * @brief Format a signed milli-unit value as fixed-point with 3 decimals.
@@ -232,10 +236,13 @@ CsvWriteRow(csv_write_fn_t writer,
   if (writer == NULL || record == NULL) {
     return false;
   }
-  char line[256];
   size_t line_len = 0;
-  if (!CsvFormatRow(record, node_id, line, sizeof(line), &line_len)) {
+  if (!CsvFormatRow(record,
+                    node_id,
+                    g_csv_line_buffer,
+                    sizeof(g_csv_line_buffer),
+                    &line_len)) {
     return false;
   }
-  return writer(line, line_len, context);
+  return writer(g_csv_line_buffer, line_len, context);
 }
