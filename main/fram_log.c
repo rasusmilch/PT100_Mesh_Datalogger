@@ -788,6 +788,16 @@ FramLogPeekOffset(const fram_log_t* log,
     return result;
   }
   if (FramLogValidateRecord(record_out, NULL) != OK) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      log_record_t retry_record;
+      esp_err_t retry_result =
+        IoRead(log, address, &retry_record, sizeof(retry_record));
+      if (retry_result == ESP_OK &&
+          FramLogValidateRecord(&retry_record, NULL) == OK) {
+        *record_out = retry_record;
+        return ESP_OK;
+      }
+    }
     ((fram_log_t*)log)->saw_corruption = true;
     return ESP_ERR_INVALID_RESPONSE;
   }
