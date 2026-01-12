@@ -189,6 +189,7 @@ extern "C" {
     uint64_t last_overrun_records_total;
     uint64_t last_overrun_logged_total;
     uint64_t fram_overrun_ack_total;
+    uint32_t fram_corrupt_skip_count;
 
     // Sensor fault logging state (rate-limited).
     bool last_sensor_fault_present;

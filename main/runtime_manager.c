@@ -1720,8 +1720,32 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   log_record_t oldest_record;
   esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &oldest_record);
   if (peek_result == ESP_ERR_INVALID_RESPONSE) {
-    ESP_LOGE(kTag, "Cannot sync: corrupted FRAM record at head");
-    return peek_result;
+    const uint32_t record_index = state->fram_log.read_index;
+    const uint32_t slot = record_index % state->fram_log.capacity_records;
+    const uint32_t addr = state->fram_log.record_region_offset +
+                          slot * sizeof(log_record_t);
+    uint16_t actual_crc = 0;
+    const fram_log_validate_result_t validate_result =
+      FramLogValidateRecord(&oldest_record, &actual_crc);
+    ESP_LOGE(kTag,
+             "Skipping corrupted FRAM record at head index=%u slot=%u "
+             "addr=0x%04x reason=%s magic=0x%08" PRIx32 " schema=%" PRIu32
+             " exp_crc=0x%04x act_crc=0x%04x",
+             (unsigned)record_index,
+             (unsigned)slot,
+             (unsigned)addr,
+             FramLogValidateResultToString(validate_result),
+             oldest_record.magic,
+             oldest_record.schema_version,
+             (unsigned)oldest_record.crc16_ccitt,
+             (unsigned)actual_crc);
+    state->fram_log.saw_corruption = true;
+    state->fram_corrupt_skip_count++;
+    esp_err_t skip_result = FramLogDiscardOldest(&state->fram_log);
+    if (skip_result != ESP_OK) {
+      return skip_result;
+    }
+    return ESP_OK;
   }
   if (peek_result != ESP_OK) {
     return peek_result;
@@ -1799,8 +1823,27 @@ BuildBatchForDay(runtime_state_t* state,
       break;
     }
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
-      ESP_LOGE(kTag, "Corrupted FRAM record detected during batch build");
-      (void)FramLogSkipCorruptedRecord(&state->fram_log);
+      const uint32_t record_index = state->fram_log.read_index + offset;
+      const uint32_t slot = record_index % state->fram_log.capacity_records;
+      const uint32_t addr = state->fram_log.record_region_offset +
+                            slot * sizeof(log_record_t);
+      uint16_t actual_crc = 0;
+      const fram_log_validate_result_t validate_result =
+        FramLogValidateRecord(&record, &actual_crc);
+      ESP_LOGE(kTag,
+               "Corrupted FRAM record during batch build offset=%u "
+               "index=%u slot=%u addr=0x%04x reason=%s magic=0x%08" PRIx32
+               " schema=%" PRIu32 " exp_crc=0x%04x act_crc=0x%04x",
+               (unsigned)offset,
+               (unsigned)record_index,
+               (unsigned)slot,
+               (unsigned)addr,
+               FramLogValidateResultToString(validate_result),
+               record.magic,
+               record.schema_version,
+               (unsigned)record.crc16_ccitt,
+               (unsigned)actual_crc);
+      state->fram_log.saw_corruption = true;
       break;
     }
     if (peek_result != ESP_OK) {

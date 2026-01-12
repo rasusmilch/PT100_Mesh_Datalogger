@@ -181,30 +181,22 @@ RecordAddressForIndex(const fram_log_t* log, uint32_t record_index)
   return log->record_region_offset + slot * sizeof(log_record_t);
 }
 
-typedef enum
-{
-  RECORD_VALIDATE_OK = 0,
-  RECORD_VALIDATE_BAD_MAGIC,
-  RECORD_VALIDATE_BAD_SCHEMA,
-  RECORD_VALIDATE_BAD_CRC,
-} record_validate_result_t;
-
 /**
- * @brief Execute RecordValidateResultToString.
+ * @brief Execute FramLogValidateResultToString.
  * @param result Parameter result.
  * @return Return the function result.
  */
-static const char*
-RecordValidateResultToString(record_validate_result_t result)
+const char*
+FramLogValidateResultToString(fram_log_validate_result_t result)
 {
   switch (result) {
-    case RECORD_VALIDATE_OK:
+    case OK:
       return "ok";
-    case RECORD_VALIDATE_BAD_MAGIC:
+    case MAGIC_MISMATCH:
       return "bad-magic";
-    case RECORD_VALIDATE_BAD_SCHEMA:
+    case SCHEMA_MISMATCH:
       return "bad-schema";
-    case RECORD_VALIDATE_BAD_CRC:
+    case CRC_MISMATCH:
       return "bad-crc";
     default:
       return "unknown";
@@ -212,37 +204,48 @@ RecordValidateResultToString(record_validate_result_t result)
 }
 
 /**
- * @brief Execute ValidateRecord.
+ * @brief Execute FramLogValidateRecord.
  * @param record Parameter record.
  * @param actual_crc_out Parameter actual_crc_out.
  * @return Return the function result.
  */
-static record_validate_result_t
-ValidateRecord(log_record_t* record, uint16_t* actual_crc_out)
+fram_log_validate_result_t
+FramLogValidateRecord(const log_record_t* record, uint16_t* actual_crc_out)
 {
   if (record == NULL) {
-    return RECORD_VALIDATE_BAD_CRC;
+    if (actual_crc_out != NULL) {
+      *actual_crc_out = 0;
+    }
+    return CRC_MISMATCH;
   }
   if (record->magic != LOG_RECORD_MAGIC) {
-    return RECORD_VALIDATE_BAD_MAGIC;
+    if (actual_crc_out != NULL) {
+      *actual_crc_out = 0;
+    }
+    return MAGIC_MISMATCH;
   }
   if (record->schema_version != LOG_RECORD_SCHEMA_VER) {
-    return RECORD_VALIDATE_BAD_SCHEMA;
+    if (actual_crc_out != NULL) {
+      *actual_crc_out = 0;
+    }
+    return SCHEMA_MISMATCH;
   }
 
   const uint16_t expected_crc = record->crc16_ccitt;
-  record->crc16_ccitt = 0;
+  log_record_t temp_record;
+  memcpy(&temp_record, record, sizeof(temp_record));
+  temp_record.crc16_ccitt = 0;
   const uint16_t actual_crc =
-    Crc16CcittFalse(record, sizeof(*record) - sizeof(uint16_t));
-  record->crc16_ccitt = expected_crc;
+    Crc16CcittFalse(&temp_record,
+                    sizeof(temp_record) - sizeof(temp_record.crc16_ccitt));
 
   if (actual_crc_out != NULL) {
     *actual_crc_out = actual_crc;
   }
   if (expected_crc != actual_crc) {
-    return RECORD_VALIDATE_BAD_CRC;
+    return CRC_MISMATCH;
   }
-  return RECORD_VALIDATE_OK;
+  return OK;
 }
 
 /**
@@ -283,9 +286,9 @@ WriteRecord(const fram_log_t* log, uint32_t record_index, log_record_t record)
     }
 
     uint16_t actual_crc = 0;
-    const record_validate_result_t validate_result =
-      ValidateRecord(&verify, &actual_crc);
-    if (validate_result == RECORD_VALIDATE_OK) {
+    const fram_log_validate_result_t validate_result =
+      FramLogValidateRecord(&verify, &actual_crc);
+    if (validate_result == OK) {
       return ESP_OK;
     }
     last_error = ESP_ERR_INVALID_RESPONSE;
@@ -318,20 +321,7 @@ ReadRecord(const fram_log_t* log,
   if (result != ESP_OK) {
     return result;
   }
-  if (record_out->magic != LOG_RECORD_MAGIC) {
-    ((fram_log_t*)log)->saw_corruption = true;
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-  if (record_out->schema_version != LOG_RECORD_SCHEMA_VER) {
-    ((fram_log_t*)log)->saw_corruption = true;
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-  const uint16_t expected_crc = record_out->crc16_ccitt;
-  record_out->crc16_ccitt = 0;
-  const uint16_t actual_crc =
-    Crc16CcittFalse(record_out, sizeof(*record_out) - sizeof(uint16_t));
-  record_out->crc16_ccitt = expected_crc;
-  if (expected_crc != actual_crc) {
+  if (FramLogValidateRecord(record_out, NULL) != OK) {
     ((fram_log_t*)log)->saw_corruption = true;
     return ESP_ERR_INVALID_RESPONSE;
   }
@@ -797,20 +787,7 @@ FramLogPeekOffset(const fram_log_t* log,
   if (result != ESP_OK) {
     return result;
   }
-  if (record_out->magic != LOG_RECORD_MAGIC) {
-    ((fram_log_t*)log)->saw_corruption = true;
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-  if (record_out->schema_version != LOG_RECORD_SCHEMA_VER) {
-    ((fram_log_t*)log)->saw_corruption = true;
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-  const uint16_t expected_crc = record_out->crc16_ccitt;
-  record_out->crc16_ccitt = 0;
-  const uint16_t actual_crc =
-    Crc16CcittFalse(record_out, sizeof(*record_out) - sizeof(uint16_t));
-  record_out->crc16_ccitt = expected_crc;
-  if (expected_crc != actual_crc) {
+  if (FramLogValidateRecord(record_out, NULL) != OK) {
     ((fram_log_t*)log)->saw_corruption = true;
     return ESP_ERR_INVALID_RESPONSE;
   }
@@ -897,8 +874,8 @@ FramLogSkipCorruptedRecord(fram_log_t* log)
   const esp_err_t read_result = IoRead(log, address, &record, sizeof(record));
   if (read_result == ESP_OK) {
     uint16_t actual_crc = 0;
-    const record_validate_result_t validate_result =
-      ValidateRecord(&record, &actual_crc);
+    const fram_log_validate_result_t validate_result =
+      FramLogValidateRecord(&record, &actual_crc);
     const uint16_t expected_crc = record.crc16_ccitt;
     ESP_LOGW(kTag,
              "Skipping corrupted record at index=%u slot=%u addr=0x%04x "
@@ -907,7 +884,7 @@ FramLogSkipCorruptedRecord(fram_log_t* log)
              (unsigned)log->read_index,
              (unsigned)(log->read_index % log->capacity_records),
              (unsigned)address,
-             RecordValidateResultToString(validate_result),
+             FramLogValidateResultToString(validate_result),
              record.magic,
              record.schema_version,
              (unsigned)expected_crc,
