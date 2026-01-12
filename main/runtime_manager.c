@@ -2163,37 +2163,15 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     return ESP_ERR_NO_MEM;
   }
 
-  const uint32_t buffered_records = FramLogGetBufferedRecords(&state->fram_log);
-  if (buffered_records == 0) {
-    return ESP_OK;
-  }
-
-  const TickType_t now_ticks = xTaskGetTickCount();
+  const TickType_t start_ticks = xTaskGetTickCount();
   if (state->sd_backoff_until_ticks != 0 &&
-      now_ticks < state->sd_backoff_until_ticks) {
+      start_ticks < state->sd_backoff_until_ticks) {
     if (more_pending_out != NULL) {
       *more_pending_out = true;
     }
     return ESP_OK;
   }
 
-  log_record_t first_record;
-  esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
-  if (peek_result == ESP_ERR_INVALID_RESPONSE) {
-    ESP_LOGE(kTag, "Corrupted FRAM record detected during SD flush");
-    (void)FramLogSkipCorruptedRecord(&state->fram_log);
-    if (more_pending_out != NULL) {
-      *more_pending_out = (FramLogGetBufferedRecords(&state->fram_log) > 0);
-    }
-    return ESP_OK;
-  }
-  if (peek_result != ESP_OK) {
-    return peek_result;
-  }
-
-  const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
-                                   ? first_record.timestamp_epoch_sec
-                                   : (int64_t)time(NULL);
   if (state->sd_flush_in_progress) {
     const TickType_t now_ticks = xTaskGetTickCount();
     if (state->last_sd_flush_wait_warn_ticks == 0 ||
@@ -2211,86 +2189,128 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   }
   esp_err_t result = ESP_OK;
   state->sd_flush_in_progress = true;
+  uint32_t total_records_flushed = 0;
+  size_t total_bytes_flushed = 0;
+  uint32_t corrupt_skips_this_call = 0;
+  const uint32_t kMaxCorruptSkipsThisCall = 8;
   EnsureSdMountedLocked(state);
   if (!state->sd_logger.is_mounted) {
-    if (more_pending_out != NULL) {
-      *more_pending_out = true;
-    }
-    result = ESP_OK;
-    goto flush_done;
-  }
-  esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
-  if (sync_result != ESP_OK) {
-    RuntimeDiagHeapCheck(state, "SD unmount (flush sync before)", false);
-    (void)SdLoggerUnmount(&state->sd_logger);
-    RuntimeDiagHeapCheck(state, "SD unmount (flush sync after)", false);
-    MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
-    result = sync_result;
-    goto flush_done;
-  }
-
-  char day_string[16];
-  BuildDateStringFromRecord(&first_record, day_string, sizeof(day_string));
-
-  uint32_t records_used = 0;
-  uint64_t last_record_id = 0;
-  size_t bytes_used = 0;
-  esp_err_t batch_result = BuildBatchForDay(state,
-                                            day_string,
-                                            state->batch_buffer,
-                                            state->batch_buffer_size,
-                                            max_records,
-                                            now_ticks,
-                                            max_ms,
-                                            &records_used,
-                                            &last_record_id,
-                                            &bytes_used);
-  if (batch_result != ESP_OK) {
-    result = batch_result;
-    goto flush_done;
-  }
-  if (records_used == 0 || bytes_used == 0) {
-    // We still have buffered records, but couldn't build a batch this pass
-    // (e.g., time jumped while formatting dates or a corrupted record was
-    // skipped). Keep the flush pending so we retry soon instead of waiting for
-    // watermark/periodic.
-    if (more_pending_out != NULL) {
-      *more_pending_out = true;
-    }
     result = ESP_OK;
     goto flush_done;
   }
 
-  sd_csv_append_stats_t append_stats = { 0 };
-  sd_csv_append_scratch_t append_scratch = { 0 };
-  const sd_csv_append_scratch_t* scratch =
-    BuildSdAppendScratch(state, &append_scratch);
-  esp_err_t write_result = SdLoggerAppendBatchEx(&state->sd_logger,
-                                                 state->batch_buffer,
-                                                 bytes_used,
-                                                 last_record_id,
-                                                 verify_mode,
-                                                 flush_mode,
-                                                 scratch,
-                                                 &append_stats);
-  if (write_result != ESP_OK) {
-    RuntimeDiagHeapCheck(state, "SD unmount (flush append before)", false);
-    (void)SdLoggerUnmount(&state->sd_logger);
-    RuntimeDiagHeapCheck(state, "SD unmount (flush append after)", false);
-    const char* op = (append_stats.diag.operation != NULL)
-                       ? append_stats.diag.operation
-                       : "append";
-    MarkSdFailure(state,
-                  "SD append failed",
-                  op,
-                  write_result,
-                  append_stats.diag.errno_value,
-                  true);
-    result = write_result;
-    goto flush_done;
+  while (true) {
+    const uint32_t buffered_records =
+      FramLogGetBufferedRecords(&state->fram_log);
+    if (buffered_records == 0) {
+      break;
+    }
+    if (max_records > 0 && total_records_flushed >= max_records) {
+      break;
+    }
+    if (max_ms > 0 &&
+        pdTICKS_TO_MS(xTaskGetTickCount() - start_ticks) >= max_ms) {
+      break;
+    }
+
+    log_record_t first_record;
+    esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
+    if (peek_result == ESP_ERR_INVALID_RESPONSE) {
+      ESP_LOGW(kTag, "Skipping corrupted FRAM record during SD flush");
+      (void)FramLogSkipCorruptedRecord(&state->fram_log);
+      state->fram_corrupt_skip_count++;
+      corrupt_skips_this_call++;
+      if (corrupt_skips_this_call >= kMaxCorruptSkipsThisCall) {
+        break;
+      }
+      continue;
+    }
+    if (peek_result != ESP_OK) {
+      result = peek_result;
+      goto flush_done;
+    }
+
+    const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
+                                     ? first_record.timestamp_epoch_sec
+                                     : (int64_t)time(NULL);
+    esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
+    if (sync_result != ESP_OK) {
+      RuntimeDiagHeapCheck(state, "SD unmount (flush sync before)", false);
+      (void)SdLoggerUnmount(&state->sd_logger);
+      RuntimeDiagHeapCheck(state, "SD unmount (flush sync after)", false);
+      MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
+      result = sync_result;
+      goto flush_done;
+    }
+
+    char day_string[16];
+    BuildDateStringFromRecord(&first_record, day_string, sizeof(day_string));
+
+    uint32_t records_used = 0;
+    uint64_t last_record_id = 0;
+    size_t bytes_used = 0;
+    const uint32_t remaining_records_budget =
+      (max_records > 0) ? (max_records - total_records_flushed) : 0;
+    esp_err_t batch_result = BuildBatchForDay(state,
+                                              day_string,
+                                              state->batch_buffer,
+                                              state->batch_buffer_size,
+                                              remaining_records_budget,
+                                              start_ticks,
+                                              max_ms,
+                                              &records_used,
+                                              &last_record_id,
+                                              &bytes_used);
+    if (batch_result != ESP_OK) {
+      result = batch_result;
+      goto flush_done;
+    }
+    if (records_used == 0 || bytes_used == 0) {
+      result = ESP_OK;
+      break;
+    }
+
+    sd_csv_append_stats_t append_stats = { 0 };
+    sd_csv_append_scratch_t append_scratch = { 0 };
+    const sd_csv_append_scratch_t* scratch =
+      BuildSdAppendScratch(state, &append_scratch);
+    esp_err_t write_result = SdLoggerAppendBatchEx(&state->sd_logger,
+                                                   state->batch_buffer,
+                                                   bytes_used,
+                                                   last_record_id,
+                                                   verify_mode,
+                                                   flush_mode,
+                                                   scratch,
+                                                   &append_stats);
+    if (write_result != ESP_OK) {
+      RuntimeDiagHeapCheck(state, "SD unmount (flush append before)", false);
+      (void)SdLoggerUnmount(&state->sd_logger);
+      RuntimeDiagHeapCheck(state, "SD unmount (flush append after)", false);
+      const char* op = (append_stats.diag.operation != NULL)
+                         ? append_stats.diag.operation
+                         : "append";
+      MarkSdFailure(state,
+                    "SD append failed",
+                    op,
+                    write_result,
+                    append_stats.diag.errno_value,
+                    true);
+      result = write_result;
+      goto flush_done;
+    }
+    ClearSdIoError(state);
+
+    for (uint32_t index = 0; index < records_used; ++index) {
+      esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
+      if (discard_result != ESP_OK) {
+        result = discard_result;
+        goto flush_done;
+      }
+    }
+
+    total_records_flushed += records_used;
+    total_bytes_flushed += bytes_used;
   }
-  ClearSdIoError(state);
-  result = ESP_OK;
 
 flush_done:
   state->sd_flush_in_progress = false;
@@ -2299,18 +2319,11 @@ flush_done:
     return result;
   }
 
-  for (uint32_t index = 0; index < records_used; ++index) {
-    esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
-    if (discard_result != ESP_OK) {
-      return discard_result;
-    }
-  }
-
   if (records_flushed_out != NULL) {
-    *records_flushed_out = records_used;
+    *records_flushed_out = total_records_flushed;
   }
   if (bytes_flushed_out != NULL) {
-    *bytes_flushed_out = bytes_used;
+    *bytes_flushed_out = total_bytes_flushed;
   }
   if (more_pending_out != NULL) {
     *more_pending_out = (FramLogGetBufferedRecords(&state->fram_log) > 0);
