@@ -12,10 +12,10 @@
 #include "runtime_manager.h"
 #include "runtime_state.h"
 
-static const char* kTag = "heap_monitor";
+static const char* kTag __attribute__((unused)) = "heap_monitor";
 
 static void
-SampleCaps(uint32_t caps, heap_caps_info_t* out_info)
+SampleCaps(uint32_t caps, multi_heap_info_t* out_info)
 {
   if (out_info == NULL) {
     return;
@@ -25,7 +25,7 @@ SampleCaps(uint32_t caps, heap_caps_info_t* out_info)
 }
 
 static uint8_t
-ComputeFragPercent(const heap_caps_info_t* info)
+ComputeFragPercent(const multi_heap_info_t* info)
 {
   if (info == NULL || info->total_free_bytes == 0u) {
     return 100u;
@@ -87,7 +87,7 @@ HeapMonitorInit(heap_monitor_t* monitor)
 static void
 UpdateInternalHeapStatus(runtime_state_t* state,
                          heap_monitor_t* monitor,
-                         const heap_caps_info_t* info)
+                         const multi_heap_info_t* info)
 {
   if (state == NULL || monitor == NULL || info == NULL) {
     return;
@@ -179,7 +179,7 @@ UpdateInternalHeapStatus(runtime_state_t* state,
 static void
 UpdatePsramHeapStatus(runtime_state_t* state,
                       heap_monitor_t* monitor,
-                      const heap_caps_info_t* info)
+                      const multi_heap_info_t* info)
 {
   if (state == NULL || monitor == NULL || info == NULL) {
     return;
@@ -258,12 +258,12 @@ HeapMonitorMaybeSample(runtime_state_t* state, uint32_t now_ticks)
   }
   monitor->last_sample_ticks = now_ticks;
 
-  heap_caps_info_t info = { 0 };
+  multi_heap_info_t info = { 0 };
   SampleCaps(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, &info);
   UpdateInternalHeapStatus(state, monitor, &info);
 
 #if CONFIG_APP_HEAP_PSRAM_MONITOR_ENABLE
-  heap_caps_info_t psram_info = { 0 };
+  multi_heap_info_t psram_info = { 0 };
   SampleCaps(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, &psram_info);
   UpdatePsramHeapStatus(state, monitor, &psram_info);
 #else

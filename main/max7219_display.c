@@ -15,6 +15,13 @@ typedef struct
 
 static const font_glyph_t kFont5x7[] = {
   { '0', { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E } },
+  // 00100
+  // 01100
+  // 00100
+  // 00100
+  // 00100
+  // 00100
+  // 01110
   { '1', { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E } },
   { '2', { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F } },
   { '3', { 0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E } },
@@ -304,10 +311,9 @@ Max7219DisplayInit(max7219_display_t* disp,
     spi_bus_add_device(config->host, &dev_config, &disp->device);
   if (dev_result != ESP_OK) {
     if (dev_result == ESP_ERR_INVALID_STATE) {
-      ESP_LOGE(
-        kTag,
-        "SPI bus not initialized before MAX7219 init; expected "
-        "RuntimeManagerInit to call InitSpiBus() first.");
+      ESP_LOGE(kTag,
+               "SPI bus not initialized before MAX7219 init; expected "
+               "RuntimeManagerInit to call InitSpiBus() first.");
     } else {
       ESP_LOGE(
         kTag, "spi_bus_add_device failed: %s", esp_err_to_name(dev_result));
