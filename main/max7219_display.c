@@ -136,6 +136,25 @@ SetPixel(max7219_display_t* disp, int x, int y, bool on)
   }
 }
 
+static void
+DrawCompressedDecimal(max7219_display_t* disp, int start_x)
+{
+  const int dot_left_x = start_x + 1;
+  const int dot_right_x = start_x + 2;
+
+  if (disp == NULL) {
+    return;
+  }
+  if (start_x < 0 || (start_x + 3) >= 32) {
+    return;
+  }
+
+  SetPixel(disp, dot_left_x, 5, true);
+  SetPixel(disp, dot_left_x, 6, true);
+  SetPixel(disp, dot_right_x, 5, true);
+  SetPixel(disp, dot_right_x, 6, true);
+}
+
 /**
  * @brief Execute TransmitWithLock.
  * @param disp Parameter disp.
@@ -379,7 +398,22 @@ Max7219DisplaySetText(max7219_display_t* disp, const char* text)
 
   int cursor_x = 0;
   for (const char* p = text; *p != '\0'; ++p) {
-    const char glyph_char = (char)toupper((unsigned char)*p);
+    const char current_char = *p;
+    const char next_char = *(p + 1);
+
+    if (current_char == '.') {
+      if ((cursor_x + 3) >= 32) {
+        break;
+      }
+      DrawCompressedDecimal(disp, cursor_x);
+      cursor_x += 4;
+      if (cursor_x >= 32) {
+        break;
+      }
+      continue;
+    }
+
+    const char glyph_char = (char)toupper((unsigned char)current_char);
     const font_glyph_t* glyph = FindGlyph(glyph_char);
     if (glyph == NULL) {
       glyph = FindGlyph(' ');
@@ -396,7 +430,12 @@ Max7219DisplaySetText(max7219_display_t* disp, const char* text)
       }
     }
 
-    cursor_x += 6;
+    int advance_cols = 6;
+    if (next_char == '.') {
+      advance_cols = 5;
+    }
+
+    cursor_x += advance_cols;
     if (cursor_x >= 32) {
       break;
     }
