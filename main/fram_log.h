@@ -50,6 +50,32 @@ extern "C"
     bool full;
   } fram_log_status_t;
 
+  typedef enum
+  {
+    OK = 0,
+    MAGIC_MISMATCH,
+    SCHEMA_MISMATCH,
+    CRC_MISMATCH,
+  } fram_log_validate_result_t;
+
+/**
+ * @brief Execute FramLogValidateRecord.
+ * @param record Parameter record.
+ * @param out_actual_crc Parameter out_actual_crc.
+ * @return Return the function result.
+ */
+  fram_log_validate_result_t
+  FramLogValidateRecord(const log_record_t* record,
+                        uint16_t* out_actual_crc);
+
+/**
+ * @brief Execute FramLogValidateResultToString.
+ * @param result Parameter result.
+ * @return Return the function result.
+ */
+  const char* FramLogValidateResultToString(
+    fram_log_validate_result_t result);
+
 /**
  * @brief Execute FramLogInit.
  * @param log Parameter log.
