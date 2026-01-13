@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "runtime_manager.h"
 #include "time_sync.h"
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
@@ -29,6 +30,9 @@ GetDesiredNetMode(void)
 {
   if (s_runtime == NULL || s_runtime->settings == NULL) {
     return APP_NET_MODE_NONE;
+  }
+  if (s_runtime->settings->node_role == APP_NODE_ROLE_ROOT) {
+    return APP_NET_MODE_MESH;
   }
   return s_runtime->settings->net_mode;
 }
@@ -135,9 +139,9 @@ NetSupervisorTask(void* context)
 
       if (active_mode == NET_SUP_MODE_WIFI) {
         (void)WifiManagerDisconnectSta();
-      }
-      if (active_mode != NET_SUP_MODE_NONE) {
         (void)WifiServiceRelease();
+      } else if (active_mode == NET_SUP_MODE_MESH) {
+        (void)RuntimeApplyNetMode(APP_NET_MODE_NONE);
       }
       active_mode = NET_SUP_MODE_NONE;
       ResetWifiState(
@@ -152,11 +156,27 @@ NetSupervisorTask(void* context)
     }
 
     if (active_mode != desired_mode) {
-      const wifi_service_mode_t svc_mode = ToWifiServiceMode(desired_mode);
-      if (svc_mode != WIFI_SERVICE_MODE_NONE) {
+      if (desired_mode == NET_SUP_MODE_MESH) {
+        const esp_err_t mesh_result = RuntimeApplyNetMode(desired_net_mode);
+        if (mesh_result == ESP_OK) {
+          active_mode = NET_SUP_MODE_MESH;
+          ResetWifiState(&connected,
+                         &next_connect_ticks,
+                         &next_time_sync_ticks,
+                         &retry_delay_ms,
+                         &time_sync_retry_ms);
+          ESP_LOGI(kTag, "Mesh transport started");
+        } else {
+          ESP_LOGW(kTag,
+                   "Mesh transport start failed: %s",
+                   esp_err_to_name(mesh_result));
+        }
+      } else if (desired_mode == NET_SUP_MODE_WIFI) {
+        (void)RuntimeApplyNetMode(desired_net_mode);
+        const wifi_service_mode_t svc_mode = ToWifiServiceMode(desired_mode);
         const esp_err_t acquire_result = WifiServiceAcquire(svc_mode);
         if (acquire_result == ESP_OK) {
-          active_mode = desired_mode;
+          active_mode = NET_SUP_MODE_WIFI;
           ResetWifiState(&connected,
                          &next_connect_ticks,
                          &next_time_sync_ticks,
@@ -168,6 +188,15 @@ NetSupervisorTask(void* context)
                    "Wi-Fi service acquire failed: %s",
                    esp_err_to_name(acquire_result));
         }
+      } else {
+        (void)RuntimeApplyNetMode(desired_net_mode);
+        if (active_mode == NET_SUP_MODE_WIFI) {
+          (void)WifiManagerDisconnectSta();
+          (void)WifiServiceRelease();
+        } else if (active_mode == NET_SUP_MODE_MESH) {
+          (void)RuntimeApplyNetMode(APP_NET_MODE_NONE);
+        }
+        active_mode = NET_SUP_MODE_NONE;
       }
     }
 
