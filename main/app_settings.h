@@ -38,6 +38,7 @@ extern "C"
   {
     APP_NET_MODE_MESH = 0,
     APP_NET_MODE_DIRECT_WIFI = 1,
+    APP_NET_MODE_NONE = 2,
   } app_net_mode_t;
 
   typedef enum
@@ -271,6 +272,12 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t AppSettingsSaveNetMode(app_net_mode_t mode);
+
+/**
+ * @brief Execute AppSettingsGetNetModeRevision.
+ * @return Return the function result.
+ */
+  uint32_t AppSettingsGetNetModeRevision(void);
 
 /**
  * @brief Execute AppSettingsSaveMqttEnabled.

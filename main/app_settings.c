@@ -52,6 +52,7 @@ static const char* kKeyMqttBridgeMode = "mqtt_bmode";
 static const uint8_t kCalibrationContextVersion = 1;
 static uint32_t g_display_attention_policy = 0;
 static display_attention_mask_t g_display_attention_mask = 0;
+static uint32_t g_net_mode_revision = 0;
 
 /**
  * @brief Execute DefaultNodeRole.
@@ -180,6 +181,8 @@ AppSettingsNetModeToString(app_net_mode_t mode)
       return "MESH";
     case APP_NET_MODE_DIRECT_WIFI:
       return "WIFI";
+    case APP_NET_MODE_NONE:
+      return "NONE";
     default:
       return "UNKNOWN";
   }
@@ -204,6 +207,10 @@ AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out)
   if (strcasecmp(value, "wifi") == 0 || strcasecmp(value, "direct") == 0 ||
       strcasecmp(value, "direct_wifi") == 0) {
     *mode_out = APP_NET_MODE_DIRECT_WIFI;
+    return true;
+  }
+  if (strcasecmp(value, "none") == 0 || strcasecmp(value, "off") == 0) {
+    *mode_out = APP_NET_MODE_NONE;
     return true;
   }
   return false;
@@ -594,7 +601,7 @@ AppSettingsLoad(app_settings_t* settings_out)
   uint8_t net_mode = (uint8_t)settings_out->net_mode;
   result = nvs_get_u8(handle, kKeyNetMode, &net_mode);
   if (result == ESP_OK &&
-      net_mode <= (uint8_t)APP_NET_MODE_DIRECT_WIFI) {
+      net_mode <= (uint8_t)APP_NET_MODE_NONE) {
     settings_out->net_mode = (app_net_mode_t)net_mode;
   }
 
@@ -1049,7 +1056,8 @@ AppSettingsSaveDisplayUnits(app_display_units_t units)
 esp_err_t
 AppSettingsSaveNetMode(app_net_mode_t mode)
 {
-  if (mode != APP_NET_MODE_MESH && mode != APP_NET_MODE_DIRECT_WIFI) {
+  if (mode != APP_NET_MODE_MESH && mode != APP_NET_MODE_DIRECT_WIFI &&
+      mode != APP_NET_MODE_NONE) {
     return ESP_ERR_INVALID_ARG;
   }
   nvs_handle_t handle;
@@ -1063,7 +1071,20 @@ AppSettingsSaveNetMode(app_net_mode_t mode)
     result = nvs_commit(handle);
   }
   nvs_close(handle);
+  if (result == ESP_OK) {
+    g_net_mode_revision++;
+  }
   return result;
+}
+
+/**
+ * @brief Execute AppSettingsGetNetModeRevision.
+ * @return Return the function result.
+ */
+uint32_t
+AppSettingsGetNetModeRevision(void)
+{
+  return g_net_mode_revision;
 }
 
 /**
