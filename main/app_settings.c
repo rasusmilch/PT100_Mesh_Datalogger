@@ -40,6 +40,10 @@ static const char* kKeyNodeRole = "node_role";
 static const char* kKeyAllowChildren = "allow_child";
 static const char* kKeyAllowChildrenSet = "allow_child_set";
 static const char* kKeyDisplayUnits = "disp_units";
+static const char* kKeyUnitsGpioPin = "units_gpio_pin";
+static const char* kKeyUnitsGpioPull = "units_gpio_pull";
+// Keep NVS keys <= 15 characters (excluding NUL).
+static const char* kKeyUnitsGpioCLevel = "units_gpio_clvl";
 static const char* kKeyDisplayAttentionMask = "disp_attn";
 static const char* kKeyDisplayAttentionPolicy = "disp_attn_pol";
 static const char* kKeyNetMode = "net_mode";
@@ -297,6 +301,11 @@ ApplyDefaults(app_settings_t* settings)
     AppSettingsRoleDefaultAllowsChildren(settings->node_role);
   settings->allow_children_set = false;
   settings->display_units = APP_DISPLAY_UNITS_F;
+  settings->units_gpio_pin = CONFIG_APP_UNITS_GPIO_DEFAULT_PIN;
+  settings->units_gpio_pull =
+    (app_units_gpio_pull_t)CONFIG_APP_UNITS_GPIO_DEFAULT_PULL;
+  settings->units_gpio_c_level_high =
+    (CONFIG_APP_UNITS_GPIO_DEFAULT_LEVEL_FOR_C != 0);
   settings->display_attention_policy = AppSettingsDefaultDisplayAttentionPolicy();
   settings->display_attention_mask =
     AppSettingsDefaultDisplayAttentionMask();
@@ -596,6 +605,25 @@ AppSettingsLoad(app_settings_t* settings_out)
   result = nvs_get_u8(handle, kKeyDisplayUnits, &display_units);
   if (result == ESP_OK && display_units <= (uint8_t)APP_DISPLAY_UNITS_F) {
     settings_out->display_units = (app_display_units_t)display_units;
+  }
+
+  int32_t units_gpio_pin = settings_out->units_gpio_pin;
+  result = nvs_get_i32(handle, kKeyUnitsGpioPin, &units_gpio_pin);
+  if (result == ESP_OK && units_gpio_pin >= -1 && units_gpio_pin <= 48) {
+    settings_out->units_gpio_pin = units_gpio_pin;
+  }
+
+  uint8_t units_gpio_pull = (uint8_t)settings_out->units_gpio_pull;
+  result = nvs_get_u8(handle, kKeyUnitsGpioPull, &units_gpio_pull);
+  if (result == ESP_OK &&
+      units_gpio_pull <= (uint8_t)APP_UNITS_GPIO_PULL_DOWN) {
+    settings_out->units_gpio_pull = (app_units_gpio_pull_t)units_gpio_pull;
+  }
+
+  uint8_t units_gpio_c_level = settings_out->units_gpio_c_level_high ? 1 : 0;
+  result = nvs_get_u8(handle, kKeyUnitsGpioCLevel, &units_gpio_c_level);
+  if (result == ESP_OK && units_gpio_c_level <= 1) {
+    settings_out->units_gpio_c_level_high = (units_gpio_c_level == 1);
   }
 
   uint8_t net_mode = (uint8_t)settings_out->net_mode;
@@ -1041,6 +1069,79 @@ AppSettingsSaveDisplayUnits(app_display_units_t units)
   }
 
   result = nvs_set_u8(handle, kKeyDisplayUnits, (uint8_t)units);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+/**
+ * @brief Execute AppSettingsSaveUnitsGpioPin.
+ * @param pin Parameter pin.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveUnitsGpioPin(int32_t pin)
+{
+  if (pin < -1 || pin > 48) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_i32(handle, kKeyUnitsGpioPin, pin);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+/**
+ * @brief Execute AppSettingsSaveUnitsGpioPull.
+ * @param pull Parameter pull.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveUnitsGpioPull(app_units_gpio_pull_t pull)
+{
+  if (pull < APP_UNITS_GPIO_PULL_NONE ||
+      pull > APP_UNITS_GPIO_PULL_DOWN) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_u8(handle, kKeyUnitsGpioPull, (uint8_t)pull);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+/**
+ * @brief Execute AppSettingsSaveUnitsGpioCLevel.
+ * @param c_level_high Parameter c_level_high.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveUnitsGpioCLevel(bool c_level_high)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_u8(handle, kKeyUnitsGpioCLevel, c_level_high ? 1 : 0);
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }

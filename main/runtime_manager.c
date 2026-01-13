@@ -41,6 +41,7 @@
 #include "runtime_state.h"
 #include "sd_logger.h"
 #include "sdkconfig.h"
+#include "units_gpio.h"
 #include "time_sync.h"
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
@@ -1226,7 +1227,7 @@ DisplayTask(void* context)
     FormatTemperatureText(text,
                           sizeof(text),
                           temp_milli_c,
-                          state->settings.display_units,
+                          RuntimeGetEffectiveDisplayUnits(),
                           temp_valid);
     if (strncmp(last_text, text, sizeof(last_text)) != 0) {
       Max7219DisplaySetText(&state->display, text);
@@ -4514,6 +4515,16 @@ RuntimeGetRuntime(void)
 }
 
 /**
+ * @brief Execute RuntimeGetEffectiveDisplayUnits.
+ * @return Return the function result.
+ */
+app_display_units_t
+RuntimeGetEffectiveDisplayUnits(void)
+{
+  return AppDisplayUnitsGetEffective();
+}
+
+/**
  * @brief Execute RuntimeGetCachedStatus.
  * @return Return the function result.
  */
@@ -4572,6 +4583,7 @@ RuntimeManagerInit(void)
       kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
   AppSettingsApplyTimeZone(&g_state.settings);
+  UnitsGpioInit(&g_state.settings);
 
   esp_err_t net_config_result = AppNetConfigInit();
   if (net_config_result != ESP_OK) {

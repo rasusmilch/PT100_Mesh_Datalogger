@@ -52,6 +52,7 @@
 #include "sdkconfig.h"
 #include "sd_card_detect.h"
 #include "time_sync.h"
+#include "units_gpio.h"
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
 #include "wifi_service.h"
@@ -890,8 +891,11 @@ CommandDisplay(int argc, char** argv)
 #else
     const bool display_enabled = false;
 #endif
-    printf("display_units: %s\n",
-           AppSettingsDisplayUnitsToString(g_runtime->settings->display_units));
+    const app_display_units_t effective_units =
+      RuntimeGetEffectiveDisplayUnits();
+    printf("display_units: %s (effective: %s)\n",
+           AppSettingsDisplayUnitsToString(g_runtime->settings->display_units),
+           AppSettingsDisplayUnitsToString(effective_units));
     printf("max7219_enabled: %s\n", display_enabled ? "yes" : "no");
     printf("max7219_spi_host: %d%s\n",
            display_host_id,
@@ -996,6 +1000,143 @@ CommandDisplay(int argc, char** argv)
   printf(
     "unknown action. usage: disp show | disp units C|F | disp attn ... | disp "
     "test [ms]\n");
+  return 1;
+}
+
+static void
+PrintUnitsUsage(void)
+{
+  printf("usage: units set C|F | units gpio show | units gpio set pin <n> | "
+         "units gpio set pull <up|down|none> | units gpio set c_level <high|low>\n");
+}
+
+/**
+ * @brief Execute CommandUnits.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandUnits(int argc, char** argv)
+{
+  if (g_runtime == NULL) {
+    return 1;
+  }
+  if (argc < 2) {
+    PrintUnitsUsage();
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "set") == 0) {
+    if (argc < 3) {
+      PrintUnitsUsage();
+      return 1;
+    }
+    app_display_units_t units = APP_DISPLAY_UNITS_F;
+    if (!AppSettingsParseDisplayUnits(argv[2], &units)) {
+      PrintUnitsUsage();
+      return 1;
+    }
+    g_runtime->settings->display_units = units;
+    esp_err_t result = AppSettingsSaveDisplayUnits(units);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("display_units set to %s\n", AppSettingsDisplayUnitsToString(units));
+    return 0;
+  }
+
+  if (strcmp(action, "gpio") == 0) {
+    if (argc < 3) {
+      PrintUnitsUsage();
+      return 1;
+    }
+    const char* gpio_action = argv[2];
+    if (strcmp(gpio_action, "show") == 0) {
+      units_gpio_status_t status = { 0 };
+      UnitsGpioGetStatus(&status);
+      printf("units_gpio_enabled: %s\n", status.enabled ? "yes" : "no");
+      printf("units_gpio_pin: %ld%s\n",
+             (long)status.pin,
+             status.pin_valid ? "" : " (invalid)");
+      printf("units_gpio_pull: %s\n", UnitsGpioPullToString(status.pull));
+      printf("units_gpio_c_level: %s\n",
+             UnitsGpioLevelToString(status.c_level_high));
+      printf("units_gpio_level: %s\n",
+             status.pin_valid ? UnitsGpioLevelToString(status.last_level_high)
+                              : "n/a");
+      printf("units_gpio_effective: %s\n",
+             AppSettingsDisplayUnitsToString(status.effective_units));
+      printf("units_saved: %s\n",
+             AppSettingsDisplayUnitsToString(g_runtime->settings->display_units));
+      return 0;
+    }
+    if (strcmp(gpio_action, "set") == 0) {
+      if (argc < 5) {
+        PrintUnitsUsage();
+        return 1;
+      }
+      const char* field = argv[3];
+      if (strcmp(field, "pin") == 0) {
+        char* end = NULL;
+        long pin = strtol(argv[4], &end, 10);
+        if (end == argv[4] || *end != '\0') {
+          PrintUnitsUsage();
+          return 1;
+        }
+        esp_err_t result = AppSettingsSaveUnitsGpioPin((int32_t)pin);
+        if (result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(result));
+          return 1;
+        }
+        g_runtime->settings->units_gpio_pin = (int32_t)pin;
+        UnitsGpioApplySettings(g_runtime->settings);
+        printf("units_gpio_pin set to %ld\n", pin);
+        return 0;
+      }
+      if (strcmp(field, "pull") == 0) {
+        app_units_gpio_pull_t pull = APP_UNITS_GPIO_PULL_NONE;
+        if (!UnitsGpioParsePull(argv[4], &pull)) {
+          PrintUnitsUsage();
+          return 1;
+        }
+        esp_err_t result = AppSettingsSaveUnitsGpioPull(pull);
+        if (result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(result));
+          return 1;
+        }
+        g_runtime->settings->units_gpio_pull = pull;
+        UnitsGpioApplySettings(g_runtime->settings);
+        printf("units_gpio_pull set to %s\n", UnitsGpioPullToString(pull));
+        return 0;
+      }
+      if (strcmp(field, "c_level") == 0) {
+        bool level_high = false;
+        if (!UnitsGpioParseLevel(argv[4], &level_high)) {
+          PrintUnitsUsage();
+          return 1;
+        }
+        esp_err_t result = AppSettingsSaveUnitsGpioCLevel(level_high);
+        if (result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(result));
+          return 1;
+        }
+        g_runtime->settings->units_gpio_c_level_high = level_high;
+        UnitsGpioApplySettings(g_runtime->settings);
+        printf("units_gpio_c_level set to %s\n",
+               UnitsGpioLevelToString(level_high));
+        return 0;
+      }
+      PrintUnitsUsage();
+      return 1;
+    }
+    PrintUnitsUsage();
+    return 1;
+  }
+
+  PrintUnitsUsage();
   return 1;
 }
 
@@ -3981,6 +4122,16 @@ RegisterCommands(void)
     .func = &CommandDisplay,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&disp_cmd));
+
+  const esp_console_cmd_t units_cmd = {
+    .command = "units",
+    .help = "Units settings: units set C|F | units gpio show | units gpio set "
+            "pin <n> | units gpio set pull <up|down|none> | units gpio set "
+            "c_level <high|low>",
+    .hint = NULL,
+    .func = &CommandUnits,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&units_cmd));
 
   const esp_console_cmd_t raw_cmd = {
     .command = "raw",
