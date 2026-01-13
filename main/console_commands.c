@@ -668,6 +668,27 @@ CommandStatus(int argc, char** argv)
   printf("fram_count/seq: %u/%u\n",
          (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
          (unsigned)FramLogNextSequence(g_runtime->fram_log));
+  runtime_state_t* state = RuntimeGetState();
+  if (state != NULL) {
+    printf("fram_corrupt_detect_count: %u\n",
+           (unsigned)state->fram_corrupt_detect_count);
+    printf("fram_corrupt_skip_count: %u\n",
+           (unsigned)state->fram_corrupt_skip_count);
+    printf("fram_corrupt_last_reason: %s\n",
+           FramLogValidateResultToString(state->fram_corrupt_last_reason));
+    printf("fram_corrupt_last_slot: %u\n",
+           (unsigned)state->fram_corrupt_last_slot);
+    printf("fram_corrupt_last_addr: 0x%04x\n",
+           (unsigned)state->fram_corrupt_last_addr);
+    printf("fram_corrupt_last_magic: 0x%08" PRIx32 "\n",
+           state->fram_corrupt_last_magic);
+    printf("fram_corrupt_last_schema: %u\n",
+           (unsigned)state->fram_corrupt_last_schema);
+    printf("fram_corrupt_last_exp_crc: 0x%04x\n",
+           (unsigned)state->fram_corrupt_last_exp_crc);
+    printf("fram_corrupt_last_act_crc: 0x%04x\n",
+           (unsigned)state->fram_corrupt_last_act_crc);
+  }
   const uint32_t export_dropped = (g_runtime->export_dropped_count != NULL)
                                     ? *g_runtime->export_dropped_count
                                     : 0u;
@@ -691,7 +712,6 @@ CommandStatus(int argc, char** argv)
       : 0u;
   const runtime_cached_status_t* cached_status = RuntimeGetCachedStatus();
   runtime_health_snapshot_t health = { 0 };
-  runtime_state_t* state = RuntimeGetState();
   if (state != NULL) {
     RuntimeHealthRead(&state->health_cache, &health);
   }
@@ -1181,6 +1201,18 @@ CommandFram(int argc, char** argv)
         return 1;
       }
 
+      if (corrupted) {
+        uint16_t actual_crc = 0;
+        const fram_log_validate_result_t validate_result =
+          FramLogValidateRecord(&record, &actual_crc);
+        printf("record[%u]: corrupt=yes reason=%s exp_crc=0x%04x act_crc=0x%04x\n",
+               (unsigned)offset,
+               FramLogValidateResultToString(validate_result),
+               (unsigned)record.crc16_ccitt,
+               (unsigned)actual_crc);
+        continue;
+      }
+
       char time_string[32] = "unknown";
       if (record.timestamp_epoch_sec > 0) {
         const time_t epoch = (time_t)record.timestamp_epoch_sec;
@@ -1191,12 +1223,11 @@ CommandFram(int argc, char** argv)
       FormatRecordFlags(record.flags, flags_string, sizeof(flags_string));
       const bool pending = record.record_id > last_sd_id;
 
-      printf("record[%u]: id=%" PRIu64 " seq=%u pending=%s corrupt=%s\n",
+      printf("record[%u]: id=%" PRIu64 " seq=%u pending=%s corrupt=no\n",
              (unsigned)offset,
              record.record_id,
              (unsigned)record.sequence,
-             pending ? "yes" : "no",
-             corrupted ? "yes" : "no");
+             pending ? "yes" : "no");
       printf("  time: %s.%03d epoch=%" PRIi64 "\n",
              time_string,
              (int)record.timestamp_millis,

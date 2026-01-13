@@ -1701,6 +1701,28 @@ EnsureMqttClientState(runtime_state_t* state, bool should_run)
   UpdateMqttConnectionState(state);
 }
 
+static void
+RecordFramCorruption(runtime_state_t* state,
+                     uint32_t offset,
+                     uint32_t slot,
+                     uint32_t addr,
+                     fram_log_validate_result_t reason,
+                     const log_record_t* record,
+                     uint16_t actual_crc)
+{
+  if (state == NULL || record == NULL) {
+    return;
+  }
+  state->fram_corrupt_last_offset = offset;
+  state->fram_corrupt_last_slot = slot;
+  state->fram_corrupt_last_addr = addr;
+  state->fram_corrupt_last_magic = record->magic;
+  state->fram_corrupt_last_schema = record->schema_version;
+  state->fram_corrupt_last_exp_crc = record->crc16_ccitt;
+  state->fram_corrupt_last_act_crc = actual_crc;
+  state->fram_corrupt_last_reason = reason;
+}
+
 /**
  * @brief Execute EnsureSdSyncedForEpoch.
  * @param state Parameter state.
@@ -1741,6 +1763,13 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
              (unsigned)actual_crc);
     state->fram_log.saw_corruption = true;
     state->fram_corrupt_skip_count++;
+    RecordFramCorruption(state,
+                         0,
+                         slot,
+                         addr,
+                         validate_result,
+                         &oldest_record,
+                         actual_crc);
     esp_err_t skip_result = FramLogDiscardOldest(&state->fram_log);
     if (skip_result != ESP_OK) {
       return skip_result;
@@ -1844,6 +1873,14 @@ BuildBatchForDay(runtime_state_t* state,
                (unsigned)record.crc16_ccitt,
                (unsigned)actual_crc);
       state->fram_log.saw_corruption = true;
+      state->fram_corrupt_detect_count++;
+      RecordFramCorruption(state,
+                           offset,
+                           slot,
+                           addr,
+                           validate_result,
+                           &record,
+                           actual_crc);
       break;
     }
     if (peek_result != ESP_OK) {
