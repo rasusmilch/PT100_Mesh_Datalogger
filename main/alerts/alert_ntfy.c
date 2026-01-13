@@ -1,4 +1,5 @@
 #include "alerts/alert_ntfy.h"
+#include "alerts/alert_manager.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -76,6 +77,31 @@ FormatLeafId(uint64_t leaf_id, char* out, size_t out_size)
            mac[3],
            mac[4],
            mac[5]);
+}
+
+/**
+ * @brief Execute FormatMilliC.
+ * @param milli_c Parameter milli_c.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
+static void
+FormatMilliC(int32_t milli_c, char* out, size_t out_size)
+{
+  if (out == NULL || out_size == 0) {
+    return;
+  }
+  int64_t value = milli_c;
+  bool negative = value < 0;
+  int64_t abs_value = negative ? -value : value;
+  int64_t whole = abs_value / 1000;
+  int64_t frac = abs_value % 1000;
+  snprintf(out,
+           out_size,
+           "%s%" PRId64 ".%03" PRId64 "C",
+           negative ? "-" : "",
+           whole,
+           frac);
 }
 
 /**
@@ -211,21 +237,35 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
            leaf_id);
 
   switch (note->type) {
-    case 0:
+    case ALERT_TEMP_HIGH: {
+      char temp_str[24];
+      char limit_str[24];
+      FormatMilliC(note->payload.current_temp_milli_c,
+                   temp_str,
+                   sizeof(temp_str));
+      FormatMilliC(note->payload.limit_milli_c, limit_str, sizeof(limit_str));
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
-               "type: temp_high\nvalue: %.3fC\nthreshold: %.3fC\n",
-               note->payload.current_temp_milli_c / 1000.0,
-               note->payload.limit_milli_c / 1000.0);
+               "type: temp_high\nvalue: %s\nthreshold: %s\n",
+               temp_str,
+               limit_str);
       break;
-    case 1:
+    }
+    case ALERT_TEMP_LOW: {
+      char temp_str[24];
+      char limit_str[24];
+      FormatMilliC(note->payload.current_temp_milli_c,
+                   temp_str,
+                   sizeof(temp_str));
+      FormatMilliC(note->payload.limit_milli_c, limit_str, sizeof(limit_str));
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
-               "type: temp_low\nvalue: %.3fC\nthreshold: %.3fC\n",
-               note->payload.current_temp_milli_c / 1000.0,
-               note->payload.limit_milli_c / 1000.0);
+               "type: temp_low\nvalue: %s\nthreshold: %s\n",
+               temp_str,
+               limit_str);
       break;
-    case 2:
+    }
+    case ALERT_MISSING_RECORDS:
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
                "type: missing_records\ngap_ms: %" PRIu32
@@ -234,7 +274,7 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
                (uint32_t)note->payload.limit_milli_c,
                note->payload.last_seq);
       break;
-    case 3:
+    case ALERT_LEAF_OFFLINE:
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
                "type: leaf_offline\noffline_ms: %" PRIu32
@@ -242,17 +282,67 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
                note->payload.duration_ms,
                (uint32_t)note->payload.limit_milli_c);
       break;
-    case 4:
+    case ALERT_LEAF_RESTART:
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
                "type: leaf_restart\nlast_seq: %" PRIu32 "\n",
                note->payload.last_seq);
       break;
-    case 5:
+    case ALERT_ROOT_RESTART:
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
                "type: root_restart\n");
       break;
+    case ALERT_SYSTEM_BOOT:
+      snprintf(body + strlen(body),
+               sizeof(body) - strlen(body),
+               "type: system_boot\n");
+      break;
+    case ALERT_SYSTEM_MODE: {
+      const char* mode = "unknown";
+      if (note->payload.event_code == ALERT_SYSTEM_CODE_MODE_RUN) {
+        mode = "run";
+      } else if (note->payload.event_code == ALERT_SYSTEM_CODE_MODE_DIAG) {
+        mode = "diag";
+      }
+      snprintf(body + strlen(body),
+               sizeof(body) - strlen(body),
+               "type: system_mode\nmode: %s\n",
+               mode);
+      break;
+    }
+    case ALERT_SYSTEM_ERROR: {
+      const char* error = "unknown";
+      bool known = true;
+      switch (note->payload.event_code) {
+        case ALERT_SYSTEM_CODE_ERROR_SD_IO:
+          error = "sd_io";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_FRAM_OVERRUN:
+          error = "fram_overrun";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_RTD_FAULT:
+          error = "rtd_fault";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_TIME_INVALID:
+          error = "time_invalid";
+          break;
+        default:
+          known = false;
+          break;
+      }
+      snprintf(body + strlen(body),
+               sizeof(body) - strlen(body),
+               "type: system_error\nerror: %s\n",
+               error);
+      if (!known) {
+        snprintf(body + strlen(body),
+                 sizeof(body) - strlen(body),
+                 "error_code: %" PRIu32 "\n",
+                 note->payload.event_code);
+      }
+      break;
+    }
     default:
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),

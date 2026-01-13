@@ -26,6 +26,9 @@ typedef enum
   ALERT_LEAF_OFFLINE = 3,
   ALERT_LEAF_RESTART = 4,
   ALERT_ROOT_RESTART = 5,
+  ALERT_SYSTEM_BOOT = 6,
+  ALERT_SYSTEM_MODE = 7,
+  ALERT_SYSTEM_ERROR = 8,
   ALERT_TYPE_COUNT
 } alert_type_t;
 
@@ -305,6 +308,42 @@ void AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms);
  * @param now_ms Parameter now_ms.
  */
 void AlertManagerEmitRootRestart(alert_manager_t* manager, int64_t now_ms);
+
+/**
+ * @brief Execute AlertManagerEmitSystemBoot.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
+void AlertManagerEmitSystemBoot(alert_manager_t* manager,
+                                int64_t now_ms,
+                                int64_t now_epoch);
+
+/**
+ * @brief Execute AlertManagerEmitSystemMode.
+ * @param manager Parameter manager.
+ * @param mode_code Parameter mode_code.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
+void AlertManagerEmitSystemMode(alert_manager_t* manager,
+                                alert_system_code_t mode_code,
+                                int64_t now_ms,
+                                int64_t now_epoch);
+
+/**
+ * @brief Execute AlertManagerProcessSystemError.
+ * @param manager Parameter manager.
+ * @param error_code Parameter error_code.
+ * @param active Parameter active.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
+void AlertManagerProcessSystemError(alert_manager_t* manager,
+                                    alert_system_code_t error_code,
+                                    bool active,
+                                    int64_t now_ms,
+                                    int64_t now_epoch);
 
 /**
  * @brief Execute AlertManagerCopyLeaves.

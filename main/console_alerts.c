@@ -128,6 +128,18 @@ ParseAlertType(const char* text, alert_type_t* out)
     *out = ALERT_ROOT_RESTART;
     return true;
   }
+  if (strcmp(text, "boot") == 0) {
+    *out = ALERT_SYSTEM_BOOT;
+    return true;
+  }
+  if (strcmp(text, "mode") == 0) {
+    *out = ALERT_SYSTEM_MODE;
+    return true;
+  }
+  if (strcmp(text, "error") == 0) {
+    *out = ALERT_SYSTEM_ERROR;
+    return true;
+  }
   return false;
 }
 
@@ -152,6 +164,12 @@ AlertTypeToName(alert_type_t type)
       return "restart";
     case ALERT_ROOT_RESTART:
       return "root";
+    case ALERT_SYSTEM_BOOT:
+      return "boot";
+    case ALERT_SYSTEM_MODE:
+      return "mode";
+    case ALERT_SYSTEM_ERROR:
+      return "error";
     default:
       return "unknown";
   }

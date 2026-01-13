@@ -21,6 +21,18 @@ typedef enum
   ALERT_NTFY_FAILED = 2,
 } alert_ntfy_result_t;
 
+typedef enum
+{
+  ALERT_SYSTEM_CODE_NONE = 0,
+  ALERT_SYSTEM_CODE_BOOT = 1,
+  ALERT_SYSTEM_CODE_MODE_RUN = 2,
+  ALERT_SYSTEM_CODE_MODE_DIAG = 3,
+  ALERT_SYSTEM_CODE_ERROR_SD_IO = 10,
+  ALERT_SYSTEM_CODE_ERROR_FRAM_OVERRUN = 11,
+  ALERT_SYSTEM_CODE_ERROR_RTD_FAULT = 12,
+  ALERT_SYSTEM_CODE_ERROR_TIME_INVALID = 13,
+} alert_system_code_t;
+
 typedef struct
 {
   int32_t current_temp_milli_c;
@@ -32,6 +44,7 @@ typedef struct
   int64_t last_rx_uptime_ms;
   int64_t event_epoch;
   int64_t event_uptime_ms;
+  uint32_t event_code;
   uint32_t transitions;
 } alert_notification_payload_t;
 

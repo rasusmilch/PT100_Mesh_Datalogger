@@ -112,6 +112,57 @@ RuntimeNotifyAllRunTasks(runtime_state_t* state)
   RuntimeNotifyTask(state->wifi_direct_task);
 }
 
+static bool
+AlertManagerEligible(const runtime_state_t* state)
+{
+  if (state == NULL) {
+    return false;
+  }
+  if (state->node_role_active == APP_NODE_ROLE_ROOT) {
+    return true;
+  }
+  if (state->node_role_active != APP_NODE_ROLE_SENSOR) {
+    return false;
+  }
+  if (state->net_mode_active != APP_NET_MODE_DIRECT_WIFI) {
+    return false;
+  }
+  if (!WifiManagerIsConnected()) {
+    return false;
+  }
+  return !MeshTransportIsConnected(&state->mesh);
+}
+
+static bool
+AlertManagerSuppressed(const runtime_state_t* state)
+{
+  if (state == NULL) {
+    return true;
+  }
+  if (state->node_role_active == APP_NODE_ROLE_ROOT) {
+    return false;
+  }
+  if (state->node_role_active != APP_NODE_ROLE_SENSOR) {
+    return true;
+  }
+  if (state->net_mode_active != APP_NET_MODE_DIRECT_WIFI) {
+    return true;
+  }
+  return MeshTransportIsConnected(&state->mesh);
+}
+
+static bool
+AlertManagerCanSend(const runtime_state_t* state)
+{
+  if (!AlertManagerEligible(state)) {
+    return false;
+  }
+  if (state->node_role_active == APP_NODE_ROLE_ROOT) {
+    return true;
+  }
+  return WifiManagerIsConnected();
+}
+
 static void
 RuntimePauseSpiUsers(runtime_state_t* state, uint32_t timeout_ms)
 {
@@ -3158,6 +3209,8 @@ NetTxTask(void* context)
     }
 
     const int64_t now_ms = esp_timer_get_time() / 1000;
+    const bool alert_can_send = AlertManagerCanSend(state);
+    const bool alert_suppressed = AlertManagerSuppressed(state);
     bool did_work = false;
 
     if (state->node_role_active == APP_NODE_ROLE_ROOT) {
@@ -3170,9 +3223,11 @@ NetTxTask(void* context)
                                              &broker_next_attempt_ms,
                                              &broker_backoff_ms);
       }
-      if (AlertManagerIsConfigured(&state->alert_manager)) {
+      if (alert_can_send && AlertManagerIsConfigured(&state->alert_manager)) {
         did_work |= NetTxHandleAlertSend(
           state, now_ms, &alert_next_attempt_ms);
+      } else if (alert_suppressed) {
+        NetTxDrainAlertQueue(state);
       }
     } else {
       did_work |= NetTxHandleExportLeaf(state,
@@ -3180,6 +3235,12 @@ NetTxTask(void* context)
                                         &export_fail_start_ms,
                                         &export_next_attempt_ms,
                                         &export_backoff_ms);
+      if (alert_can_send && AlertManagerIsConfigured(&state->alert_manager)) {
+        did_work |= NetTxHandleAlertSend(
+          state, now_ms, &alert_next_attempt_ms);
+      } else if (alert_suppressed) {
+        NetTxDrainAlertQueue(state);
+      }
     }
 
     if (!did_work) {
@@ -4053,6 +4114,9 @@ ControlTask(void* context)
   static int64_t next_topology_ms = 0;
   static int64_t next_time_sync_ms = 0;
   static int64_t next_alert_tick_ms = 0;
+  static bool alert_boot_pending = true;
+  static alert_system_code_t pending_mode_code = ALERT_SYSTEM_CODE_NONE;
+  static runtime_phase_t last_phase = RUNTIME_PHASE_DIAGNOSTICS;
   uint32_t min_stack_hwm_bytes = UINT32_MAX;
 
   while (true) {
@@ -4089,6 +4153,50 @@ ControlTask(void* context)
       }
     }
 
+    const runtime_phase_t current_phase = state->runtime_phase;
+    if (current_phase != last_phase) {
+      if (current_phase == RUNTIME_PHASE_RUNNING) {
+        pending_mode_code = ALERT_SYSTEM_CODE_MODE_RUN;
+      } else if (current_phase == RUNTIME_PHASE_DIAGNOSTICS) {
+        pending_mode_code = ALERT_SYSTEM_CODE_MODE_DIAG;
+      }
+      last_phase = current_phase;
+    }
+
+    const bool alert_eligible = AlertManagerEligible(state);
+    if (alert_eligible) {
+      const int64_t now_epoch =
+        TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+      if (alert_boot_pending) {
+        AlertManagerEmitSystemBoot(
+          &state->alert_manager, now_ms, now_epoch);
+        alert_boot_pending = false;
+      }
+      if (pending_mode_code != ALERT_SYSTEM_CODE_NONE) {
+        AlertManagerEmitSystemMode(
+          &state->alert_manager, pending_mode_code, now_ms, now_epoch);
+        pending_mode_code = ALERT_SYSTEM_CODE_NONE;
+      }
+      AlertManagerProcessSystemError(
+        &state->alert_manager,
+        ALERT_SYSTEM_CODE_ERROR_SD_IO,
+        state->cached_status.sd_io_error_active,
+        now_ms,
+        now_epoch);
+      AlertManagerProcessSystemError(
+        &state->alert_manager,
+        ALERT_SYSTEM_CODE_ERROR_FRAM_OVERRUN,
+        state->cached_status.fram_overrun_active,
+        now_ms,
+        now_epoch);
+      AlertManagerProcessSystemError(
+        &state->alert_manager,
+        ALERT_SYSTEM_CODE_ERROR_RTD_FAULT,
+        state->cached_status.sensor_fault_present,
+        now_ms,
+        now_epoch);
+    }
+
     if (state->runtime_phase == RUNTIME_PHASE_RUNNING &&
         !state->stop_requested) {
       RuntimeHealthPublisherTick(state);
@@ -4103,13 +4211,15 @@ ControlTask(void* context)
         next_time_sync_ms = now_ms + 2000;
       }
 
-      if (state->node_role_active == APP_NODE_ROLE_ROOT &&
+      if (alert_eligible &&
           (next_alert_tick_ms == 0 || now_ms >= next_alert_tick_ms)) {
         const int64_t now_epoch =
           TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
         AlertManagerTick(
           &state->alert_manager, now_ms, now_epoch);
         next_alert_tick_ms = now_ms + 1000;
+      } else if (!alert_eligible) {
+        next_alert_tick_ms = 0;
       }
     } else {
       next_topology_ms = 0;

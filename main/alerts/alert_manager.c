@@ -93,6 +93,29 @@ FindOrAllocateLeaf(alert_manager_t* manager, uint64_t leaf_id)
 }
 
 /**
+ * @brief Execute FindOrAllocateLeafIndex.
+ * @param manager Parameter manager.
+ * @param leaf_id Parameter leaf_id.
+ * @param index_out Parameter index_out.
+ * @return Return the function result.
+ */
+static bool
+FindOrAllocateLeafIndex(alert_manager_t* manager,
+                        uint64_t leaf_id,
+                        size_t* index_out)
+{
+  if (manager == NULL || index_out == NULL) {
+    return false;
+  }
+  alert_leaf_state_t* leaf = FindOrAllocateLeaf(manager, leaf_id);
+  if (leaf == NULL) {
+    return false;
+  }
+  *index_out = (size_t)(leaf - manager->leaves);
+  return true;
+}
+
+/**
  * @brief Execute GetLeafConfig.
  * @param manager Parameter manager.
  * @param leaf_id Parameter leaf_id.
@@ -245,6 +268,52 @@ AlertManagerQueueNotification(alert_manager_t* manager,
   }
   manager->global_sent_in_window++;
   return true;
+}
+
+/**
+ * @brief Execute AlertManagerQueueOneShot.
+ * @param manager Parameter manager.
+ * @param state Parameter state.
+ * @param type Parameter type.
+ * @param severity Parameter severity.
+ * @param leaf_id Parameter leaf_id.
+ * @param payload Parameter payload.
+ * @param now_ms Parameter now_ms.
+ * @return Return the function result.
+ */
+static bool
+AlertManagerQueueOneShot(alert_manager_t* manager,
+                         alert_state_t* state,
+                         alert_type_t type,
+                         alert_severity_t severity,
+                         uint64_t leaf_id,
+                         const alert_notification_payload_t* payload,
+                         int64_t now_ms)
+{
+  if (manager == NULL) {
+    return false;
+  }
+  if (state != NULL && manager->config.per_key_cooldown_ms > 0 &&
+      (now_ms - state->last_notify_ms) <
+        (int64_t)manager->config.per_key_cooldown_ms) {
+    state->notify_suppressed_count++;
+    return false;
+  }
+  if (AlertManagerQueueNotification(manager,
+                                    state,
+                                    type,
+                                    severity,
+                                    false,
+                                    leaf_id,
+                                    payload,
+                                    now_ms)) {
+    if (state != NULL) {
+      state->last_notify_ms = now_ms;
+      state->last_severity = severity;
+    }
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -441,7 +510,9 @@ ApplyDefaults(alert_manager_t* manager)
   memset(manager->config.ntfy_token, 0, sizeof(manager->config.ntfy_token));
   manager->config.enable_mask =
     (1u << ALERT_MISSING_RECORDS) | (1u << ALERT_LEAF_OFFLINE) |
-    (1u << ALERT_LEAF_RESTART) | (1u << ALERT_ROOT_RESTART);
+    (1u << ALERT_LEAF_RESTART) | (1u << ALERT_ROOT_RESTART) |
+    (1u << ALERT_SYSTEM_BOOT) | (1u << ALERT_SYSTEM_MODE) |
+    (1u << ALERT_SYSTEM_ERROR);
   manager->config.per_key_cooldown_ms = 300000;
   manager->config.global_max_per_minute = 12;
   manager->config.missing_gap_ms = 15000;
@@ -1085,6 +1156,114 @@ AlertManagerEmitRootRestart(alert_manager_t* manager, int64_t now_ms)
     .payload = payload,
   };
   (void)AlertNtfyEnqueue(&manager->ntfy, &note);
+}
+
+/**
+ * @brief Execute AlertManagerEmitSystemBoot.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
+void
+AlertManagerEmitSystemBoot(alert_manager_t* manager,
+                           int64_t now_ms,
+                           int64_t now_epoch)
+{
+  if (manager == NULL) {
+    return;
+  }
+  const uint32_t mask = EffectiveEnableMask(manager, 0);
+  if ((mask & (1u << ALERT_SYSTEM_BOOT)) == 0u) {
+    return;
+  }
+  size_t leaf_index = 0;
+  if (!FindOrAllocateLeafIndex(manager, 0, &leaf_index)) {
+    return;
+  }
+  alert_notification_payload_t payload = { 0 };
+  FillPayloadBase(&payload, &manager->leaves[leaf_index], now_ms, now_epoch);
+  payload.event_code = ALERT_SYSTEM_CODE_BOOT;
+  (void)AlertManagerQueueOneShot(manager,
+                                 &manager->states[leaf_index][ALERT_SYSTEM_BOOT],
+                                 ALERT_SYSTEM_BOOT,
+                                 ALERT_SEV_INFO,
+                                 0,
+                                 &payload,
+                                 now_ms);
+}
+
+/**
+ * @brief Execute AlertManagerEmitSystemMode.
+ * @param manager Parameter manager.
+ * @param mode_code Parameter mode_code.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
+void
+AlertManagerEmitSystemMode(alert_manager_t* manager,
+                           alert_system_code_t mode_code,
+                           int64_t now_ms,
+                           int64_t now_epoch)
+{
+  if (manager == NULL) {
+    return;
+  }
+  const uint32_t mask = EffectiveEnableMask(manager, 0);
+  if ((mask & (1u << ALERT_SYSTEM_MODE)) == 0u) {
+    return;
+  }
+  size_t leaf_index = 0;
+  if (!FindOrAllocateLeafIndex(manager, 0, &leaf_index)) {
+    return;
+  }
+  alert_notification_payload_t payload = { 0 };
+  FillPayloadBase(&payload, &manager->leaves[leaf_index], now_ms, now_epoch);
+  payload.event_code = mode_code;
+  (void)AlertManagerQueueOneShot(manager,
+                                 &manager->states[leaf_index][ALERT_SYSTEM_MODE],
+                                 ALERT_SYSTEM_MODE,
+                                 ALERT_SEV_INFO,
+                                 0,
+                                 &payload,
+                                 now_ms);
+}
+
+/**
+ * @brief Execute AlertManagerProcessSystemError.
+ * @param manager Parameter manager.
+ * @param error_code Parameter error_code.
+ * @param active Parameter active.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
+void
+AlertManagerProcessSystemError(alert_manager_t* manager,
+                               alert_system_code_t error_code,
+                               bool active,
+                               int64_t now_ms,
+                               int64_t now_epoch)
+{
+  if (manager == NULL) {
+    return;
+  }
+  const uint32_t mask = EffectiveEnableMask(manager, 0);
+  if ((mask & (1u << ALERT_SYSTEM_ERROR)) == 0u) {
+    return;
+  }
+  size_t leaf_index = 0;
+  if (!FindOrAllocateLeafIndex(manager, 0, &leaf_index)) {
+    return;
+  }
+  alert_notification_payload_t payload = { 0 };
+  FillPayloadBase(&payload, &manager->leaves[leaf_index], now_ms, now_epoch);
+  payload.event_code = error_code;
+  ProcessAlert(manager,
+               leaf_index,
+               ALERT_SYSTEM_ERROR,
+               ALERT_SEV_CRIT,
+               active,
+               &payload,
+               now_ms);
 }
 
 /**
