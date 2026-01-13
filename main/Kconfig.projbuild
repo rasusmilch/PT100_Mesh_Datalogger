@@ -197,7 +197,7 @@ config APP_MAX31865_RREF_OHMS
   default 430
 
 config APP_RTD_R0_OHMS
-  int "RTD nominal resistance at 0°C (ohms)"
+  int "RTD nominal resistance at 0C (ohms)"
   range 10 100000
   default 100
 
@@ -244,7 +244,7 @@ config APP_MAX31865_CONVERSION_TABLE_PT100
   bool "ITS-90 PT100 table (binary search + interpolation)"
 
 config APP_MAX31865_CONVERSION_CVD_ITERATIVE
-  bool "Callendar–Van Dusen iterative solve"
+  bool "Callendar-Van Dusen iterative solve"
 
 endchoice
 
@@ -564,6 +564,35 @@ config APP_RUN_OVERRIDE_GPIO
     If set to a valid GPIO, holding the pin low at reset forces run boot mode
     regardless of the stored NVS boot mode. The input uses an internal pull-up.
 
-source "Kconfig.units_gpio"
+menu "Units GPIO"
+
+config APP_UNITS_GPIO_ENABLE
+  bool "Enable runtime units override via GPIO"
+  default n
+  help
+    When enabled, a GPIO input can override the display units at runtime
+    without reboot. The pin level selects Celsius or Fahrenheit.
+
+config APP_UNITS_GPIO_DEFAULT_PIN
+  int "Default units GPIO pin (-1 disables override)"
+  range -1 48
+  default -1
+  help
+    Default GPIO used for runtime unit switching. Set to -1 to disable.
+
+config APP_UNITS_GPIO_DEFAULT_PULL
+  int "Default units GPIO pull (0=none, 1=up, 2=down)"
+  range 0 2
+  default 1
+  help
+    Input pull configuration for the units GPIO.
+
+config APP_UNITS_GPIO_DEFAULT_LEVEL_FOR_C
+  bool "GPIO high level selects Celsius"
+  default n
+  help
+    When enabled, a HIGH pin level means Celsius; otherwise LOW selects Celsius.
+
+endmenu
 
 endmenu

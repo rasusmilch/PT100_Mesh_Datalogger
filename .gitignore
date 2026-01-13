@@ -38,6 +38,7 @@ sdkconfig.*.tmp
 !sdkconfig.defaults
 !sdkconfig.defaults.*
 !sdkconfig.defaults.**
+!sdk
 
 # ============================================================
 # IDF Component Manager (recommended for multi-machine)

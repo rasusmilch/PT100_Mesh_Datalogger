@@ -74,16 +74,16 @@ extern "C"
 
   // Set system time from an epoch value (UTC seconds). Optionally updates
   // DS3231.
-  /**
-   * @brief Execute TimeSyncSetSystemEpoch.
-   * @param epoch_seconds Parameter epoch_seconds.
-   * @param update_rtc Parameter update_rtc.
-   * @param time_sync Parameter time_sync.
-   * @return Return the function result.
+    /**
+   * @brief Set the system clock to a specified UTC epoch time and optionally update the DS3231.
+   * @param epoch_seconds UTC epoch seconds to set as the system time.
+   * @param update_rtc If true and time_sync is non-NULL, write the system time to the DS3231 RTC.
+   * @param time_sync Time sync context used for RTC access when update_rtc is true.
+   * @return ESP_OK on success.
    */
   esp_err_t TimeSyncSetSystemEpoch(int64_t epoch_seconds,
                                    bool update_rtc,
-                                   const time_sync_t* time_sync);
+                                   time_sync_t* time_sync);
 
   // Check if system clock is plausibly set (year >= 2023).
   /**

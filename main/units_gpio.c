@@ -40,9 +40,9 @@ static units_gpio_state_t g_units_gpio = {
 };
 
 /**
- * @brief Execute UnitsGpioIsValidPin.
- * @param pin Parameter pin.
- * @return Return the function result.
+ * @brief Check whether a configured pin number refers to a valid GPIO.
+ * @param pin GPIO number as a signed integer.
+ * @return true if the pin is non-negative and refers to a valid GPIO; otherwise false.
  */
 static bool
 UnitsGpioIsValidPin(int32_t pin)
@@ -50,7 +50,7 @@ UnitsGpioIsValidPin(int32_t pin)
   if (pin < 0) {
     return false;
   }
-  return gpio_is_valid_gpio((gpio_num_t)pin);
+  return GPIO_IS_VALID_GPIO((gpio_num_t)pin);
 }
 
 /**
