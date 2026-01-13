@@ -564,4 +564,6 @@ config APP_RUN_OVERRIDE_GPIO
     If set to a valid GPIO, holding the pin low at reset forces run boot mode
     regardless of the stored NVS boot mode. The input uses an internal pull-up.
 
+source "Kconfig.units_gpio"
+
 endmenu

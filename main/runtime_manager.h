@@ -71,6 +71,12 @@ extern "C" {
   const app_runtime_t* RuntimeGetRuntime(void);
 
 /**
+ * @brief Execute RuntimeGetEffectiveDisplayUnits.
+ * @return Return the function result.
+ */
+  app_display_units_t RuntimeGetEffectiveDisplayUnits(void);
+
+/**
  * @brief Execute RuntimeGetCachedStatus.
  * @return Return the function result.
  */
