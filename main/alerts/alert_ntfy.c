@@ -8,6 +8,9 @@
 
 #include "esp_http_client.h"
 #include "esp_log.h"
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+#include "esp_crt_bundle.h"
+#endif
 
 static const char* kTag = "alert_ntfy";
 
@@ -356,6 +359,9 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
     .url = url,
     .method = HTTP_METHOD_POST,
     .timeout_ms = 5000,
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+    .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
   };
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
