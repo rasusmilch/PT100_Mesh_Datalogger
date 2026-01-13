@@ -29,6 +29,82 @@ static int64_t s_last_sntp_success_epoch = 0;
 static int64_t s_last_rtc_set_epoch = 0;
 static bool s_esp_netif_sntp_initialized = false;
 
+static uint32_t
+TickNow(void)
+{
+  return (uint32_t)xTaskGetTickCount();
+}
+
+static bool
+TickIsDue(uint32_t now_ticks, uint32_t due_ticks)
+{
+  return (due_ticks == 0U) || ((int32_t)(now_ticks - due_ticks) >= 0);
+}
+
+static uint32_t
+Ds3231BackoffMs(uint32_t consecutive_failures)
+{
+  // Conservative backoff: avoid repeated I2C error logs if the RTC is absent.
+  if (consecutive_failures >= 6U) {
+    return 6U * 60U * 60U * 1000U; // 6 hours
+  }
+  if (consecutive_failures >= 3U) {
+    return 30U * 60U * 1000U; // 30 minutes
+  }
+  return 5U * 60U * 1000U; // 5 minutes
+}
+
+static void
+Ds3231ScheduleNextProbe(time_sync_t* time_sync)
+{
+  if (time_sync == NULL) {
+    return;
+  }
+  const uint32_t backoff_ms =
+    Ds3231BackoffMs(time_sync->ds3231_consecutive_failures);
+  const TickType_t backoff_ticks = pdMS_TO_TICKS(backoff_ms);
+  time_sync->ds3231_next_probe_ticks =
+    (uint32_t)(TickNow() + (uint32_t)backoff_ticks);
+}
+
+static esp_err_t
+Ds3231ProbeAndUpdateReady(time_sync_t* time_sync)
+{
+  if (time_sync == NULL || time_sync->bus == NULL ||
+      !time_sync->bus->initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  const uint32_t now_ticks = TickNow();
+  if (!TickIsDue(now_ticks, time_sync->ds3231_next_probe_ticks)) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const esp_err_t probe_result = i2c_master_probe(
+    time_sync->bus->handle, time_sync->ds3231_addr, 100 /* timeout_ms */);
+  if (probe_result == ESP_OK) {
+    time_sync->is_ds3231_ready = true;
+    time_sync->ds3231_consecutive_failures = 0;
+    time_sync->ds3231_next_probe_ticks = 0;
+    return ESP_OK;
+  }
+
+  time_sync->is_ds3231_ready = false;
+  time_sync->ds3231_consecutive_failures++;
+  Ds3231ScheduleNextProbe(time_sync);
+  return probe_result;
+}
+
+static void
+Ds3231MarkFault(time_sync_t* time_sync)
+{
+  if (time_sync == NULL) {
+    return;
+  }
+  time_sync->is_ds3231_ready = false;
+  time_sync->ds3231_consecutive_failures++;
+  Ds3231ScheduleNextProbe(time_sync);
+}
+
 /**
  * @brief Execute BcdToBinary.
  * @param bcd Parameter bcd.
@@ -127,7 +203,21 @@ TimeSyncInit(time_sync_t* time_sync, i2c_bus_t* i2c_bus, uint8_t ds3231_addr)
     return result;
   }
 
-  time_sync->is_ds3231_ready = true;
+  // Don't assume the DS3231 exists just because we could create a device
+  // handle.
+  time_sync->is_ds3231_ready = false;
+  time_sync->ds3231_next_probe_ticks = 0;
+  time_sync->ds3231_consecutive_failures = 0;
+
+  const esp_err_t probe_result = Ds3231ProbeAndUpdateReady(time_sync);
+  if (probe_result != ESP_OK) {
+    // Not fatal: the RTC may be optional on some builds.
+    ESP_LOGW(kTag,
+             "DS3231 not responding at 0x%02X: %s",
+             ds3231_addr,
+             esp_err_to_name(probe_result));
+  }
+
   return ESP_OK;
 }
 
@@ -160,6 +250,34 @@ Ds3231ReadTime(const time_sync_t* time_sync, struct tm* time_out)
   return ESP_OK;
 }
 
+static esp_err_t
+Ds3231ReadTimeWithRetries(time_sync_t* time_sync, struct tm* time_out)
+{
+  if (time_sync == NULL || time_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (!time_sync->is_ds3231_ready) {
+    (void)Ds3231ProbeAndUpdateReady(time_sync);
+  }
+  if (!time_sync->is_ds3231_ready) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const int kMaxAttempts = 2;
+  esp_err_t last_result = ESP_ERR_INVALID_STATE;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    last_result = Ds3231ReadTime(time_sync, time_out);
+    if (last_result == ESP_OK) {
+      return ESP_OK;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10U * (uint32_t)(attempt + 1)));
+  }
+
+  Ds3231MarkFault(time_sync);
+  return last_result;
+}
+
 /**
  * @brief Execute Ds3231WriteTime.
  * @param time_sync Parameter time_sync.
@@ -182,19 +300,47 @@ Ds3231WriteTime(const time_sync_t* time_sync, const struct tm* time_value)
     time_sync->ds3231_device, 0x00, regs, sizeof(regs));
 }
 
+static esp_err_t
+Ds3231WriteTimeWithRetries(time_sync_t* time_sync, const struct tm* time_value)
+{
+  if (time_sync == NULL || time_value == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (!time_sync->is_ds3231_ready) {
+    (void)Ds3231ProbeAndUpdateReady(time_sync);
+  }
+  if (!time_sync->is_ds3231_ready) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const int kMaxAttempts = 2;
+  esp_err_t last_result = ESP_ERR_INVALID_STATE;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    last_result = Ds3231WriteTime(time_sync, time_value);
+    if (last_result == ESP_OK) {
+      return ESP_OK;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10U * (uint32_t)(attempt + 1)));
+  }
+
+  Ds3231MarkFault(time_sync);
+  return last_result;
+}
+
 /**
  * @brief Execute TimeSyncSetSystemFromRtc.
  * @param time_sync Parameter time_sync.
  * @return Return the function result.
  */
 esp_err_t
-TimeSyncSetSystemFromRtc(const time_sync_t* time_sync)
+TimeSyncSetSystemFromRtc(time_sync_t* time_sync)
 {
-  if (time_sync == NULL || !time_sync->is_ds3231_ready) {
+  if (time_sync == NULL) {
     return ESP_ERR_INVALID_STATE;
   }
   struct tm rtc_time;
-  esp_err_t result = Ds3231ReadTime(time_sync, &rtc_time);
+  const esp_err_t result = Ds3231ReadTimeWithRetries(time_sync, &rtc_time);
   if (result != ESP_OK) {
     ESP_LOGW(kTag, "DS3231 read failed: %s", esp_err_to_name(result));
     return result;
@@ -233,9 +379,9 @@ TimeSyncSetSystemFromRtc(const time_sync_t* time_sync)
  * @return Return the function result.
  */
 esp_err_t
-TimeSyncSetRtcFromSystem(const time_sync_t* time_sync)
+TimeSyncSetRtcFromSystem(time_sync_t* time_sync)
 {
-  if (time_sync == NULL || !time_sync->is_ds3231_ready) {
+  if (time_sync == NULL) {
     return ESP_ERR_INVALID_STATE;
   }
   // The DS3231 is stored as UTC in this firmware. Local TZ/DST is applied only
@@ -248,7 +394,7 @@ TimeSyncSetRtcFromSystem(const time_sync_t* time_sync)
     return ESP_ERR_INVALID_STATE;
   }
 
-  esp_err_t result = Ds3231WriteTime(time_sync, &now_utc);
+  const esp_err_t result = Ds3231WriteTimeWithRetries(time_sync, &now_utc);
   if (result == ESP_OK) {
     s_last_rtc_set_epoch = (int64_t)now_seconds;
     ESP_LOGI(kTag, "RTC updated from system time");
