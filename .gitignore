@@ -83,16 +83,11 @@ Desktop.ini
 *.swp
 *.swo
 *~
-build/CMakeFiles/git-data/head-ref
 main/logger.zip
 main/logger_1.zip
 main.zip
 main.tar.gz
-build/CMakeFiles/CMakeConfigureLog.yaml
-build/CMakeFiles/git-data/grabRef.cmake
 *.patch
 *.tar.gz
 *.zip
 dependencies.yml
-build/CMakeFiles/git-data/HEAD
-build/CMakeFiles/git-data/grabRef.cmake
