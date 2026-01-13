@@ -45,6 +45,7 @@
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
 #include "wifi_service.h"
+#include "stack_monitor.h"
 
 static const char* kTag = "runtime";
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
@@ -61,6 +62,7 @@ static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
+static stack_monitor_t g_stack_monitor;
 
 static sd_append_verify_t
 ResolveSdVerifyMode(const runtime_state_t* state);
@@ -72,6 +74,19 @@ RuntimeNotifyTask(TaskHandle_t handle)
     return;
   }
   xTaskNotifyGive(handle);
+}
+
+static void
+RegisterStackMonitorTask(const char* name,
+                         TaskHandle_t* handle_ptr,
+                         uint32_t stack_alloc_bytes)
+{
+  if (!StackMonitorRegister(&g_stack_monitor,
+                            name,
+                            handle_ptr,
+                            stack_alloc_bytes)) {
+    ESP_LOGW(kTag, "Stack monitor registry full; skipping %s", name);
+  }
 }
 
 static void
@@ -1185,12 +1200,10 @@ HealthPublisherTask(void* context)
     // Debug: periodically log stack watermark to catch regressions.
     // const uint32_t now_ms = (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount());
     // if ((now_ms - last_watermark_log_ms) >= 30000u) {
-    //   const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
     //   const uint32_t watermark_bytes =
-    //     (uint32_t)watermark_words * (uint32_t)sizeof(StackType_t);
+    //     (uint32_t)uxTaskGetStackHighWaterMark(NULL);
     //   ESP_LOGI("runtime",
-    //            "health_pub stack watermark: %u words (%u bytes) free",
-    //            (unsigned)watermark_words,
+    //            "health_pub stack watermark: %u bytes free",
     //            (unsigned)watermark_bytes);
     //   last_watermark_log_ms = now_ms;
     // }
@@ -3151,17 +3164,17 @@ DirectWifiTask(void* context)
   const uint32_t max_delay_ms = 5 * 60 * 1000;
 
   // Track minimum stack high-water mark to confirm stack sizing under real
-  // workloads. uxTaskGetStackHighWaterMark() returns words, not bytes.
-  UBaseType_t min_stack_hwm_words = UINT32_MAX;
+  // workloads. uxTaskGetStackHighWaterMark() returns bytes in ESP-IDF.
+  uint32_t min_stack_hwm_bytes = UINT32_MAX;
 
   while (!state->stop_requested) {
-    const UBaseType_t hwm_words = uxTaskGetStackHighWaterMark(NULL);
-    if (hwm_words < min_stack_hwm_words) {
-      min_stack_hwm_words = hwm_words;
+    const uint32_t hwm_bytes =
+      (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    if (hwm_bytes < min_stack_hwm_bytes) {
+      min_stack_hwm_bytes = hwm_bytes;
       ESP_LOGI(kTag,
-               "wifi_direct stack watermark: %u words (%u bytes) free",
-               (unsigned)min_stack_hwm_words,
-               (unsigned)(min_stack_hwm_words * sizeof(StackType_t)));
+               "wifi_direct stack watermark: %u bytes free",
+               (unsigned)min_stack_hwm_bytes);
     }
 
     wifi_credentials_t creds;
@@ -3283,11 +3296,11 @@ TopologyTask(void* context)
   // const TickType_t watermark_log_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
   // TickType_t last_watermark_log_ticks = 0;
 
-  // const UBaseType_t initial_watermark_words =
-  // uxTaskGetStackHighWaterMark(NULL); ESP_LOGI(kTag,
-  //          "topology stack watermark: %u words (%u bytes) free",
-  //          (unsigned)initial_watermark_words,
-  //          (unsigned)(initial_watermark_words * sizeof(StackType_t)));
+  // const uint32_t initial_watermark_bytes =
+  //   (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+  // ESP_LOGI(kTag,
+  //          "topology stack watermark: %u bytes free",
+  //          (unsigned)initial_watermark_bytes);
 
   while (!state->stop_requested) {
     const char* role = AppSettingsRoleToString(state->settings.node_role);
@@ -3358,11 +3371,11 @@ TopologyTask(void* context)
     // if ((last_watermark_log_ticks == 0) ||
     //     ((now_ticks - last_watermark_log_ticks) >=
     //      watermark_log_period_ticks)) {
-    //   const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
+    //   const uint32_t watermark_bytes =
+    //     (uint32_t)uxTaskGetStackHighWaterMark(NULL);
     //   ESP_LOGI(kTag,
-    //            "topology stack watermark: %u words (%u bytes) free",
-    //            (unsigned)watermark_words,
-    //            (unsigned)(watermark_words * sizeof(StackType_t)));
+    //            "topology stack watermark: %u bytes free",
+    //            (unsigned)watermark_bytes);
     //   last_watermark_log_ticks = now_ticks;
     // }
     RuntimeInterruptibleDelayTicks(interval_ticks);
@@ -3843,6 +3856,7 @@ ControlTask(void* context)
       }
     }
 
+    StackMonitorMaybeSample(&g_stack_monitor);
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
@@ -4150,6 +4164,7 @@ RuntimeManagerInit(void)
 {
   MemGuardInit();
   InitializeRuntimeStruct();
+  StackMonitorInit(&g_stack_monitor, 10000);
   esp_err_t first_error = ESP_OK;
 
   g_state.sd_io_mutex = xSemaphoreCreateMutexStatic(&g_state.sd_io_mutex_buf);
@@ -4244,12 +4259,21 @@ RuntimeManagerInit(void)
 #if CONFIG_APP_MAX7219_ENABLE
   esp_err_t display_result = InitializeMax7219Display(&g_state);
   if (display_result == ESP_OK && g_state.display_initialized) {
+    const uint32_t kDisplayTaskStackBytes = 4096;
     BaseType_t display_created = xTaskCreate(
-      &DisplayTask, "display", 4096, &g_state, 2, &g_state.display_task);
+      &DisplayTask,
+      "display",
+      kDisplayTaskStackBytes,
+      &g_state,
+      2,
+      &g_state.display_task);
     if (display_created != pdPASS) {
       g_state.display_initialized = false;
       g_state.display_task = NULL;
       ESP_LOGW(kTag, "Display task create failed");
+    } else {
+      RegisterStackMonitorTask(
+        "display", &g_state.display_task, kDisplayTaskStackBytes);
     }
   }
 #endif
@@ -4485,14 +4509,23 @@ RuntimeManagerInit(void)
     }
   }
 
-  BaseType_t control_created = xTaskCreate(
-    &ControlTask, "control", 3072, &g_state, 3, &g_state.control_task);
+  const uint32_t kControlTaskStackBytes = 12288;
+  BaseType_t control_created =
+    xTaskCreate(&ControlTask,
+                "control",
+                kControlTaskStackBytes,
+                &g_state,
+                3,
+                &g_state.control_task);
   if (control_created != pdPASS) {
     g_state.control_task = NULL;
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
     }
     ESP_LOGE(kTag, "Failed to create control task");
+  } else {
+    RegisterStackMonitorTask(
+      "control", &g_state.control_task, kControlTaskStackBytes);
   }
 
   g_state.system_running = true;
@@ -4891,36 +4924,64 @@ wifi_direct_start_done:
   BaseType_t bridge_created = pdPASS;
   BaseType_t broker_created = pdPASS;
 
+  const uint32_t kHealthPublisherStackBytes = 4096;
+  const uint32_t kWifiDirectStackBytes = 4096;
+  const uint32_t kSensorStackBytes = 6144;
+  const uint32_t kExportStackBytes = 6144;
+  const uint32_t kExportNetworkStackBytes = 2048;
+  const uint32_t kBridgeStackBytes = 2048;
+  const uint32_t kBrokerStackBytes = 2048;
+  const uint32_t kTimeSyncStackBytes = 2048;
+  const uint32_t kTopologyStackBytes = 4096;
+  const uint32_t kAlertMonitorStackBytes = 2048;
+  const uint32_t kAlertSenderStackBytes = 2048;
+
   health_publish_created = xTaskCreate(&HealthPublisherTask,
                                        "health_pub",
-                                       4096,
+                                       kHealthPublisherStackBytes,
                                        &g_state,
                                        3,
                                        &g_state.health_publisher_task);
   if (health_publish_created != pdPASS) {
     g_state.health_publisher_task = NULL;
     ESP_LOGE(kTag, "Failed to create task health_pub");
+  } else {
+    RegisterStackMonitorTask("health_pub",
+                             &g_state.health_publisher_task,
+                             kHealthPublisherStackBytes);
   }
 
   if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
     wifi_direct_created = xTaskCreate(&DirectWifiTask,
                                       "wifi_direct",
-                                      4096,
+                                      kWifiDirectStackBytes,
                                       &g_state,
                                       3,
                                       &g_state.wifi_direct_task);
     if (wifi_direct_created != pdPASS) {
       g_state.wifi_direct_task = NULL;
       ESP_LOGE(kTag, "Failed to create task wifi_direct");
+    } else {
+      RegisterStackMonitorTask("wifi_direct",
+                               &g_state.wifi_direct_task,
+                               kWifiDirectStackBytes);
     }
   }
 
   if (role == APP_NODE_ROLE_SENSOR) {
     sensor_created = xTaskCreate(
-      &SensorTask, "sensor", 6144, &g_state, 5, &g_state.sensor_task);
+      &SensorTask,
+      "sensor",
+      kSensorStackBytes,
+      &g_state,
+      5,
+      &g_state.sensor_task);
     if (sensor_created != pdPASS) {
       g_state.sensor_task = NULL;
       ESP_LOGE(kTag, "Failed to create task sensor");
+    } else {
+      RegisterStackMonitorTask(
+        "sensor", &g_state.sensor_task, kSensorStackBytes);
     }
     g_state.storage_task =
       xTaskCreateStatic(&StorageTask,
@@ -4934,28 +4995,43 @@ wifi_direct_start_done:
     if (storage_created != pdPASS) {
       g_state.storage_task = NULL;
       ESP_LOGE(kTag, "Failed to create task storage");
+    } else {
+      RegisterStackMonitorTask(
+        "storage", &g_state.storage_task, kStorageTaskStackBytes);
     }
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     export_created = xTaskCreate(
-      &ExportTask, "export", 6144, &g_state, 4, &g_state.export_task);
+      &ExportTask,
+      "export",
+      kExportStackBytes,
+      &g_state,
+      4,
+      &g_state.export_task);
     if (export_created != pdPASS) {
       g_state.export_task = NULL;
       ESP_LOGE(kTag, "Failed to create task export");
+    } else {
+      RegisterStackMonitorTask(
+        "export", &g_state.export_task, kExportStackBytes);
     }
   }
 
   if (role != APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active) {
     export_network_created = xTaskCreate(&ExportNetworkTask,
                                          "export_net",
-                                         2048,
+                                         kExportNetworkStackBytes,
                                          &g_state,
                                          4,
                                          &g_state.export_network_task);
     if (export_network_created != pdPASS) {
       g_state.export_network_task = NULL;
       ESP_LOGE(kTag, "Failed to create task export_net");
+    } else {
+      RegisterStackMonitorTask("export_net",
+                               &g_state.export_network_task,
+                               kExportNetworkStackBytes);
     }
   }
 
@@ -4963,10 +5039,18 @@ wifi_direct_start_done:
       (bridge_uses_serial ||
        (bridge_uses_broker && g_state.mqtt_enabled_active))) {
     bridge_created = xTaskCreate(
-      &RootBridgeTask, "bridge", 2048, &g_state, 4, &g_state.bridge_task);
+      &RootBridgeTask,
+      "bridge",
+      kBridgeStackBytes,
+      &g_state,
+      4,
+      &g_state.bridge_task);
     if (bridge_created != pdPASS) {
       g_state.bridge_task = NULL;
       ESP_LOGE(kTag, "Failed to create task bridge");
+    } else {
+      RegisterStackMonitorTask(
+        "bridge", &g_state.bridge_task, kBridgeStackBytes);
     }
   }
 
@@ -4974,30 +5058,49 @@ wifi_direct_start_done:
       bridge_uses_broker) {
     broker_created = xTaskCreate(&BrokerPublishTask,
                                  "broker_pub",
-                                 2048,
+                                 kBrokerStackBytes,
                                  &g_state,
                                  4,
                                  &g_state.broker_task);
     if (broker_created != pdPASS) {
       g_state.broker_task = NULL;
       ESP_LOGE(kTag, "Failed to create task broker_pub");
+    } else {
+      RegisterStackMonitorTask(
+        "broker_pub", &g_state.broker_task, kBrokerStackBytes);
     }
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     time_created = xTaskCreate(
-      &TimeSyncTask, "time_sync", 2048, &g_state, 4, &g_state.time_sync_task);
+      &TimeSyncTask,
+      "time_sync",
+      kTimeSyncStackBytes,
+      &g_state,
+      4,
+      &g_state.time_sync_task);
     if (time_created != pdPASS) {
       g_state.time_sync_task = NULL;
       ESP_LOGE(kTag, "Failed to create task time_sync");
+    } else {
+      RegisterStackMonitorTask(
+        "time_sync", &g_state.time_sync_task, kTimeSyncStackBytes);
     }
   }
 
   topology_created = xTaskCreate(
-    &TopologyTask, "topology", 4096, &g_state, 3, &g_state.topology_task);
+    &TopologyTask,
+    "topology",
+    kTopologyStackBytes,
+    &g_state,
+    3,
+    &g_state.topology_task);
   if (topology_created != pdPASS) {
     g_state.topology_task = NULL;
     ESP_LOGE(kTag, "Failed to create task topology");
+  } else {
+    RegisterStackMonitorTask(
+      "topology", &g_state.topology_task, kTopologyStackBytes);
   }
 
   BaseType_t alert_monitor_created = pdPASS;
@@ -5013,23 +5116,31 @@ wifi_direct_start_done:
                               .task_handle = &g_state.alert_sender_task };
     alert_monitor_created = xTaskCreate(&AlertManagerMonitorTask,
                                         "alert_mon",
-                                        2048,
+                                        kAlertMonitorStackBytes,
                                         &g_state.alert_monitor_context,
                                         3,
                                         &g_state.alert_monitor_task);
     if (alert_monitor_created != pdPASS) {
       g_state.alert_monitor_task = NULL;
       ESP_LOGE(kTag, "Failed to create task alert_mon");
+    } else {
+      RegisterStackMonitorTask("alert_mon",
+                               &g_state.alert_monitor_task,
+                               kAlertMonitorStackBytes);
     }
     alert_sender_created = xTaskCreate(&AlertManagerSenderTask,
                                        "alert_send",
-                                       2048,
+                                       kAlertSenderStackBytes,
                                        &g_state.alert_sender_context,
                                        3,
                                        &g_state.alert_sender_task);
     if (alert_sender_created != pdPASS) {
       g_state.alert_sender_task = NULL;
       ESP_LOGE(kTag, "Failed to create task alert_send");
+    } else {
+      RegisterStackMonitorTask("alert_send",
+                               &g_state.alert_sender_task,
+                               kAlertSenderStackBytes);
     }
     AlertManagerEmitRootRestart(&g_state.alert_manager,
                                 esp_timer_get_time() / 1000);
@@ -5486,6 +5597,16 @@ void
 RuntimeSetSdAppendFailureOnce(bool enabled)
 {
   g_state.sd_force_unmount_on_append = enabled;
+}
+
+/**
+ * @brief Execute RuntimePrintStackMonitor.
+ * @param headroom_bytes Parameter headroom_bytes.
+ */
+void
+RuntimePrintStackMonitor(uint32_t headroom_bytes)
+{
+  StackMonitorPrint(&g_stack_monitor, headroom_bytes);
 }
 
 /**

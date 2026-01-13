@@ -839,6 +839,46 @@ CommandStatus(int argc, char** argv)
   return 0;
 }
 
+static void
+PrintStackUsage(void)
+{
+  printf("usage: stack [show] [--headroom BYTES]\n");
+}
+
+/**
+ * @brief Execute CommandStack.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandStack(int argc, char** argv)
+{
+  uint32_t headroom_bytes = 1024;
+
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "show") == 0) {
+      continue;
+    }
+    if (strcmp(argv[i], "--headroom") == 0) {
+      if ((i + 1) >= argc) {
+        printf("--headroom requires a byte count\n");
+        PrintStackUsage();
+        return 2;
+      }
+      headroom_bytes = (uint32_t)strtoul(argv[++i], NULL, 10);
+      continue;
+    }
+
+    printf("unknown option: %s\n", argv[i]);
+    PrintStackUsage();
+    return 2;
+  }
+
+  RuntimePrintStackMonitor(headroom_bytes);
+  return 0;
+}
+
 /**
  * @brief Execute CommandDisplay.
  * @param argc Parameter argc.
@@ -3951,6 +3991,14 @@ RegisterCommands(void)
     .func = &CommandStatus,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&status_cmd));
+
+  const esp_console_cmd_t stack_cmd = {
+    .command = "stack",
+    .help = "Stack usage: stack [show] [--headroom BYTES]",
+    .hint = NULL,
+    .func = &CommandStack,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&stack_cmd));
 
   const esp_console_cmd_t disp_cmd = {
     .command = "disp",
