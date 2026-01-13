@@ -14,6 +14,26 @@
 
 static const char* kTag = "console_alerts";
 static app_runtime_t* g_runtime = NULL;
+static const char* const kAlertTypeNames[] = { "high",   "low",   "missing", "offline",
+                                               "restart", "root", "boot",    "mode",
+                                               "error",  "all" };
+static const size_t kAlertTypeNameCount =
+  sizeof(kAlertTypeNames) / sizeof(kAlertTypeNames[0]);
+
+/**
+ * @brief Print valid alert type strings to stdout.
+ */
+static void
+PrintAlertTypes(void)
+{
+  for (size_t i = 0; i < kAlertTypeNameCount; ++i) {
+    if (i > 0) {
+      printf(" ");
+    }
+    printf("%s", kAlertTypeNames[i]);
+  }
+  printf("\n");
+}
 
 /**
  * @brief Execute FindLeafOverride.
@@ -342,21 +362,25 @@ CommandAlert(int argc, char** argv)
 
   if (argc < 2) {
     if (is_root) {
-      printf("usage: alert status | alert list | alert enable <type|all> <on|off> [leaf]\n"
+      printf("usage: alert status | alert list | alert types | alert enable <high|low|missing|offline|restart|root|boot|mode|error|all> <on|off> [leaf]\n"
              "       alert set limit <leaf|default> <high|low> <value><C|F>\n"
              "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <value><C|F>\n"
              "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
              "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
-             "       alert clear <type|all> [leaf]\n");
+             "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all> [leaf]\n"
+             "note: ntfy token is optional (only needed for protected topics)\n");
     } else {
-      printf("usage: alert status | alert enable <type|all> <on|off>\n"
+      printf("usage: alert status | alert types | alert enable <high|low|missing|offline|restart|root|boot|mode|error|all> <on|off>\n"
              "       alert set limit default <high|low> <value><C|F>\n"
              "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <value><C|F>\n"
              "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
              "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
-             "       alert clear <type|all>\n"
-             "note: leaf overrides and 'alert list' require node role root\n");
+             "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all>\n"
+             "note: leaf overrides and 'alert list' require node role root\n"
+             "note: ntfy token is optional (only needed for protected topics)\n");
     }
+    printf("valid types: ");
+    PrintAlertTypes();
     return 1;
   }
 
@@ -375,9 +399,16 @@ CommandAlert(int argc, char** argv)
     PrintLeafList(manager);
     return 0;
   }
+  if (strcmp(action, "types") == 0) {
+    PrintAlertTypes();
+    return 0;
+  }
   if (strcmp(action, "enable") == 0) {
     if (argc < 4) {
-      printf("usage: alert enable <type|all> <on|off> [leaf]\n");
+      printf("usage: alert enable <high|low|missing|offline|restart|root|boot|mode|error|all> <on|off> [leaf]\n");
+      printf("valid types: ");
+      PrintAlertTypes();
+      printf("note: high/low are temperature thresholds; others are system/health events\n");
       return 1;
     }
     const char* type_str = argv[2];
@@ -385,7 +416,10 @@ CommandAlert(int argc, char** argv)
     bool enable = (strcmp(state_str, "on") == 0);
     bool disable = (strcmp(state_str, "off") == 0);
     if (!enable && !disable) {
-      printf("invalid enable state\n");
+      printf("usage: alert enable <high|low|missing|offline|restart|root|boot|mode|error|all> <on|off> [leaf]\n");
+      printf("valid types: ");
+      PrintAlertTypes();
+      printf("note: high/low are temperature thresholds; others are system/health events\n");
       return 1;
     }
     bool per_leaf = false;
@@ -416,6 +450,8 @@ CommandAlert(int argc, char** argv)
     alert_type_t type;
     if (!ParseAlertType(type_str, &type)) {
       printf("invalid type\n");
+      printf("valid types: ");
+      PrintAlertTypes();
       return 1;
     }
     bool ok = AlertManagerEnableType(manager, type, enable, leaf_id, per_leaf);
@@ -515,12 +551,14 @@ CommandAlert(int argc, char** argv)
   if (strcmp(action, "ntfy") == 0) {
     if (argc < 3) {
       printf("usage: alert ntfy set url|topic|token <value>|clear | alert ntfy test\n");
+      printf("note: ntfy token is optional (only needed for protected topics)\n");
       return 1;
     }
     const char* sub = argv[2];
     if (strcmp(sub, "set") == 0) {
       if (argc < 5) {
         printf("usage: alert ntfy set url|topic|token <value>|clear\n");
+        printf("note: ntfy token is optional (only needed for protected topics)\n");
         return 1;
       }
       const char* field = argv[3];
@@ -576,7 +614,9 @@ CommandAlert(int argc, char** argv)
   }
   if (strcmp(action, "clear") == 0) {
     if (argc < 3) {
-      printf("usage: alert clear <type|all> [leaf]\n");
+      printf("usage: alert clear <high|low|missing|offline|restart|root|boot|mode|error|all> [leaf]\n");
+      printf("valid types: ");
+      PrintAlertTypes();
       return 1;
     }
     const char* type_str = argv[2];
@@ -584,6 +624,8 @@ CommandAlert(int argc, char** argv)
     if (strcmp(type_str, "all") != 0) {
       if (!ParseAlertType(type_str, &type)) {
         printf("invalid type\n");
+        printf("valid types: ");
+        PrintAlertTypes();
         return 1;
       }
     }
@@ -619,7 +661,7 @@ ConsoleAlertsRegister(app_runtime_t* runtime)
   g_runtime = runtime;
   const esp_console_cmd_t alert_cmd = {
     .command = "alert",
-    .help = "Alerting commands: alert status | alert list | alert enable ...",
+    .help = "Alerting commands: alert status | alert list | alert types | alert enable ...",
     .hint = NULL,
     .func = &CommandAlert,
   };
