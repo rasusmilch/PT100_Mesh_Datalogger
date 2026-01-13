@@ -65,7 +65,8 @@ static void
 ResetWifiState(bool* connected,
                TickType_t* next_connect_ticks,
                TickType_t* next_time_sync_ticks,
-               uint32_t* retry_delay_ms)
+               uint32_t* retry_delay_ms,
+               uint32_t* time_sync_retry_ms)
 {
   if (connected != NULL) {
     *connected = false;
@@ -78,6 +79,9 @@ ResetWifiState(bool* connected,
   }
   if (retry_delay_ms != NULL) {
     *retry_delay_ms = 30 * 1000;
+  }
+  if (time_sync_retry_ms != NULL) {
+    *time_sync_retry_ms = 30 * 1000;
   }
 }
 
@@ -109,7 +113,9 @@ NetSupervisorTask(void* context)
   TickType_t next_connect_ticks = 0;
   TickType_t next_time_sync_ticks = 0;
   uint32_t retry_delay_ms = 30 * 1000;
+  uint32_t time_sync_retry_ms = 30 * 1000;
   const uint32_t max_retry_delay_ms = 5 * 60 * 1000;
+  const uint32_t max_time_sync_retry_ms = 5 * 60 * 1000;
 
   for (;;) {
     const TickType_t now_ticks = xTaskGetTickCount();
@@ -135,7 +141,11 @@ NetSupervisorTask(void* context)
       }
       active_mode = NET_SUP_MODE_NONE;
       ResetWifiState(
-        &connected, &next_connect_ticks, &next_time_sync_ticks, &retry_delay_ms);
+        &connected,
+        &next_connect_ticks,
+        &next_time_sync_ticks,
+        &retry_delay_ms,
+        &time_sync_retry_ms);
       ESP_LOGI(kTag,
                "Net mode change -> %s",
                AppSettingsNetModeToString(desired_net_mode));
@@ -150,7 +160,8 @@ NetSupervisorTask(void* context)
           ResetWifiState(&connected,
                          &next_connect_ticks,
                          &next_time_sync_ticks,
-                         &retry_delay_ms);
+                         &retry_delay_ms,
+                         &time_sync_retry_ms);
           ESP_LOGI(kTag, "Wi-Fi service acquired (mode=%d)", (int)svc_mode);
         } else {
           ESP_LOGW(kTag,
@@ -168,7 +179,8 @@ NetSupervisorTask(void* context)
         ResetWifiState(&connected,
                        &next_connect_ticks,
                        &next_time_sync_ticks,
-                       &retry_delay_ms);
+                       &retry_delay_ms,
+                       &time_sync_retry_ms);
       }
     }
 
@@ -178,6 +190,7 @@ NetSupervisorTask(void* context)
       const bool has_creds = creds.has_ssid;
 
       connected = WifiManagerIsConnected();
+      const bool connection_changed = (connected != last_connected);
       MaybeLogConnectionChange(connected, &last_connected);
 
       if (!has_creds) {
@@ -188,7 +201,8 @@ NetSupervisorTask(void* context)
         ResetWifiState(&connected,
                        &next_connect_ticks,
                        &next_time_sync_ticks,
-                       &retry_delay_ms);
+                       &retry_delay_ms,
+                       &time_sync_retry_ms);
       } else if (!connected) {
         if (next_connect_ticks == 0 ||
             (int32_t)(now_ticks - next_connect_ticks) >= 0) {
@@ -201,6 +215,7 @@ NetSupervisorTask(void* context)
             retry_delay_ms = 30 * 1000;
             next_connect_ticks = 0;
             next_time_sync_ticks = now_ticks;
+            time_sync_retry_ms = 30 * 1000;
           } else {
             retry_delay_ms = (retry_delay_ms < max_retry_delay_ms / 2)
                                ? retry_delay_ms * 2
@@ -208,6 +223,9 @@ NetSupervisorTask(void* context)
             next_connect_ticks = now_ticks + pdMS_TO_TICKS(retry_delay_ms);
           }
         }
+      } else if (connection_changed) {
+        next_time_sync_ticks = now_ticks;
+        time_sync_retry_ms = 30 * 1000;
       }
 
       if (connected && next_time_sync_ticks != 0 &&
@@ -234,21 +252,24 @@ NetSupervisorTask(void* context)
 
         const uint32_t time_sync_period_s =
           AppNetConfigGetTimeSyncPeriodSeconds();
-        if (time_sync_period_s == 0) {
-          next_time_sync_ticks = 0;
-        } else {
-          TickType_t period_ticks =
-            pdMS_TO_TICKS((uint64_t)time_sync_period_s * 1000ULL);
-          if (period_ticks == 0) {
-            period_ticks = pdMS_TO_TICKS(60 * 1000);
-          }
-          if (sntp_result != ESP_OK) {
-            const TickType_t retry_ticks = pdMS_TO_TICKS(30 * 1000);
-            if (period_ticks > retry_ticks) {
-              period_ticks = retry_ticks;
+        if (sntp_result == ESP_OK) {
+          time_sync_retry_ms = 30 * 1000;
+          if (time_sync_period_s == 0) {
+            next_time_sync_ticks = 0;
+          } else {
+            TickType_t period_ticks =
+              pdMS_TO_TICKS((uint64_t)time_sync_period_s * 1000ULL);
+            if (period_ticks == 0) {
+              period_ticks = pdMS_TO_TICKS(60 * 1000);
             }
+            next_time_sync_ticks = now_ticks + period_ticks;
           }
-          next_time_sync_ticks = now_ticks + period_ticks;
+        } else {
+          const uint32_t retry_ms = time_sync_retry_ms;
+          time_sync_retry_ms = (time_sync_retry_ms < max_time_sync_retry_ms / 2)
+                                 ? time_sync_retry_ms * 2
+                                 : max_time_sync_retry_ms;
+          next_time_sync_ticks = now_ticks + pdMS_TO_TICKS(retry_ms);
         }
       }
     }
