@@ -45,6 +45,7 @@
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
 #include "wifi_service.h"
+#include "stack_monitor.h"
 
 static const char* kTag = "runtime";
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
@@ -60,7 +61,9 @@ static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
+static const int64_t kNetTxStallDropMs = 30000;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
+static stack_monitor_t g_stack_monitor;
 
 static sd_append_verify_t
 ResolveSdVerifyMode(const runtime_state_t* state);
@@ -75,6 +78,19 @@ RuntimeNotifyTask(TaskHandle_t handle)
 }
 
 static void
+RegisterStackMonitorTask(const char* name,
+                         TaskHandle_t* handle_ptr,
+                         uint32_t stack_alloc_bytes)
+{
+  if (!StackMonitorRegister(&g_stack_monitor,
+                            name,
+                            handle_ptr,
+                            stack_alloc_bytes)) {
+    ESP_LOGW(kTag, "Stack monitor registry full; skipping %s", name);
+  }
+}
+
+static void
 RuntimeNotifyAllRunTasks(runtime_state_t* state)
 {
   if (state == NULL) {
@@ -83,15 +99,8 @@ RuntimeNotifyAllRunTasks(runtime_state_t* state)
   RuntimeNotifyTask(state->sensor_task);
   RuntimeNotifyTask(state->storage_task);
   RuntimeNotifyTask(state->export_task);
-  RuntimeNotifyTask(state->export_network_task);
-  RuntimeNotifyTask(state->broker_task);
-  RuntimeNotifyTask(state->bridge_task);
-  RuntimeNotifyTask(state->health_publisher_task);
-  RuntimeNotifyTask(state->alert_monitor_task);
-  RuntimeNotifyTask(state->alert_sender_task);
+  RuntimeNotifyTask(state->net_tx_task);
   RuntimeNotifyTask(state->wifi_direct_task);
-  RuntimeNotifyTask(state->topology_task);
-  RuntimeNotifyTask(state->time_sync_task);
 }
 
 static void
@@ -391,6 +400,12 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
                                sd_drain_stats_t* out_stats);
 static void
 ControlTask(void* context);
+static void
+ControlTickTimeSync(runtime_state_t* state);
+static void
+ControlTickTopology(runtime_state_t* state, int64_t now_ms);
+static void
+NetTxTask(void* context);
 
 static void
 EnsureSdMounted(void);
@@ -1167,41 +1182,6 @@ DisplayTask(void* context)
 }
 
 /**
- * @brief Execute HealthPublisherTask.
- * @param context Parameter context.
- * @note FreeRTOS task entry for the HealthPublisherTask task.
- */
-static void
-HealthPublisherTask(void* context)
-{
-  runtime_state_t* state = (runtime_state_t*)context;
-  const TickType_t tick_delay = pdMS_TO_TICKS(50);
-
-  // uint32_t last_watermark_log_ms = 0;
-
-  while (!state->stop_requested) {
-    RuntimeHealthPublisherTick(state);
-
-    // Debug: periodically log stack watermark to catch regressions.
-    // const uint32_t now_ms = (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount());
-    // if ((now_ms - last_watermark_log_ms) >= 30000u) {
-    //   const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
-    //   const uint32_t watermark_bytes =
-    //     (uint32_t)watermark_words * (uint32_t)sizeof(StackType_t);
-    //   ESP_LOGI("runtime",
-    //            "health_pub stack watermark: %u words (%u bytes) free",
-    //            (unsigned)watermark_words,
-    //            (unsigned)watermark_bytes);
-    //   last_watermark_log_ms = now_ms;
-    // }
-    vTaskDelay(tick_delay);
-  }
-
-  state->health_publisher_task = NULL;
-  vTaskDelete(NULL);
-}
-
-/**
  * @brief Execute SetRunLogPolicy.
  */
 static void
@@ -1701,6 +1681,28 @@ EnsureMqttClientState(runtime_state_t* state, bool should_run)
   UpdateMqttConnectionState(state);
 }
 
+static void
+RecordFramCorruption(runtime_state_t* state,
+                     uint32_t offset,
+                     uint32_t slot,
+                     uint32_t addr,
+                     fram_log_validate_result_t reason,
+                     const log_record_t* record,
+                     uint16_t actual_crc)
+{
+  if (state == NULL || record == NULL) {
+    return;
+  }
+  state->fram_corrupt_last_offset = offset;
+  state->fram_corrupt_last_slot = slot;
+  state->fram_corrupt_last_addr = addr;
+  state->fram_corrupt_last_magic = record->magic;
+  state->fram_corrupt_last_schema = record->schema_version;
+  state->fram_corrupt_last_exp_crc = record->crc16_ccitt;
+  state->fram_corrupt_last_act_crc = actual_crc;
+  state->fram_corrupt_last_reason = reason;
+}
+
 /**
  * @brief Execute EnsureSdSyncedForEpoch.
  * @param state Parameter state.
@@ -1741,6 +1743,13 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
              (unsigned)actual_crc);
     state->fram_log.saw_corruption = true;
     state->fram_corrupt_skip_count++;
+    RecordFramCorruption(state,
+                         0,
+                         slot,
+                         addr,
+                         validate_result,
+                         &oldest_record,
+                         actual_crc);
     esp_err_t skip_result = FramLogDiscardOldest(&state->fram_log);
     if (skip_result != ESP_OK) {
       return skip_result;
@@ -1844,6 +1853,14 @@ BuildBatchForDay(runtime_state_t* state,
                (unsigned)record.crc16_ccitt,
                (unsigned)actual_crc);
       state->fram_log.saw_corruption = true;
+      state->fram_corrupt_detect_count++;
+      RecordFramCorruption(state,
+                           offset,
+                           slot,
+                           addr,
+                           validate_result,
+                           &record,
+                           actual_crc);
       break;
     }
     if (peek_result != ESP_OK) {
@@ -2535,47 +2552,116 @@ ExportTask(void* context)
   vTaskDelete(NULL);
 }
 
-/**
- * @brief Execute ExportNetworkTask.
- * @param context Parameter context.
- * @note FreeRTOS task entry for the ExportNetworkTask task.
- */
-static void
-ExportNetworkTask(void* context)
+static bool
+NetTxDropExportHead(runtime_state_t* state)
 {
-  runtime_state_t* state = (runtime_state_t*)context;
+  if (state == NULL || state->export_outbox == NULL) {
+    return false;
+  }
+  export_record_item_t* dequeued = NULL;
+  if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE) {
+    if (dequeued != NULL) {
+      MemPoolFree(&g_export_outbox_pool, dequeued);
+    }
+    return true;
+  }
+  return false;
+}
 
-  while (!state->stop_requested ||
-         (state->export_outbox != NULL &&
-          uxQueueMessagesWaiting(state->export_outbox) > 0)) {
-    if (state->export_outbox == NULL) {
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(200));
-      continue;
+static bool
+NetTxDropBrokerHead(runtime_state_t* state)
+{
+  if (state == NULL || state->broker_outbox == NULL) {
+    return false;
+  }
+  broker_publish_item_t* dequeued = NULL;
+  if (xQueueReceive(state->broker_outbox, &dequeued, 0) == pdTRUE) {
+    if (dequeued != NULL) {
+      MemPoolFree(&g_broker_outbox_pool, dequeued);
     }
-    export_record_item_t* item = NULL;
-    if (xQueuePeek(state->export_outbox, &item, pdMS_TO_TICKS(500)) != pdTRUE) {
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(100));
-      continue;
-    }
-    if (item == NULL) {
-      (void)xQueueReceive(state->export_outbox, &item, 0);
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
-      continue;
-    }
+    return true;
+  }
+  return false;
+}
 
-    if (state->net_mode_active == APP_NET_MODE_MESH) {
-      if (!MeshTransportIsConnected(&state->mesh)) {
-        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
-        continue;
-      }
+static void
+NetTxStallDropExport(runtime_state_t* state)
+{
+  if (!NetTxDropExportHead(state)) {
+    return;
+  }
+  state->export_drop_count++;
+  UpdateCachedUint32(state,
+                     &state->cached_status.export_drop_count,
+                     state->export_drop_count);
+  if (LogRateLimitAllow(&state->last_export_drop_log_ms,
+                        kExportLogRateLimitMs)) {
+    ESP_LOGW(kTag, "export outbox stalled; dropping oldest record");
+  }
+}
+
+static void
+NetTxStallDropBroker(runtime_state_t* state)
+{
+  if (!NetTxDropBrokerHead(state)) {
+    return;
+  }
+  state->broker_drop_count++;
+  UpdateCachedUint32(state,
+                     &state->cached_status.broker_drop_count,
+                     state->broker_drop_count);
+  if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
+                        kExportLogRateLimitMs)) {
+    ESP_LOGW(kTag, "broker outbox stalled; dropping oldest record");
+  }
+}
+
+static void
+NetTxBackoffUpdate(uint32_t* backoff_ms,
+                   int64_t* next_attempt_ms,
+                   int64_t now_ms)
+{
+  if (backoff_ms == NULL || next_attempt_ms == NULL) {
+    return;
+  }
+  if (*backoff_ms == 0) {
+    *backoff_ms = 200;
+  } else {
+    *backoff_ms = (*backoff_ms < 2000) ? (*backoff_ms * 2) : 2000;
+  }
+  *next_attempt_ms = now_ms + (int64_t)(*backoff_ms);
+}
+
+static bool
+NetTxHandleExportLeaf(runtime_state_t* state,
+                      int64_t now_ms,
+                      int64_t* fail_start_ms,
+                      int64_t* next_attempt_ms,
+                      uint32_t* backoff_ms)
+{
+  if (state == NULL || state->export_outbox == NULL) {
+    return false;
+  }
+  if (next_attempt_ms != NULL && now_ms < *next_attempt_ms) {
+    return false;
+  }
+
+  export_record_item_t* item = NULL;
+  if (xQueuePeek(state->export_outbox, &item, 0) != pdTRUE) {
+    return false;
+  }
+  if (item == NULL) {
+    (void)xQueueReceive(state->export_outbox, &item, 0);
+    return true;
+  }
+
+  bool sent = false;
+  if (state->net_mode_active == APP_NET_MODE_MESH) {
+    if (MeshTransportIsConnected(&state->mesh)) {
       const esp_err_t send_result = MeshTransportSendPublishRecord(
         &state->mesh, item->src_mac, &item->record);
       if (send_result == ESP_OK) {
-        export_record_item_t* dequeued = NULL;
-        if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE &&
-            dequeued != NULL) {
-          MemPoolFree(&g_export_outbox_pool, dequeued);
-        }
+        sent = true;
       } else {
         state->export_send_fail_count++;
         UpdateCachedUint32(state,
@@ -2583,280 +2669,447 @@ ExportNetworkTask(void* context)
                            state->export_send_fail_count);
         if (LogRateLimitAllow(&state->last_export_fail_log_ms,
                               kExportLogRateLimitMs)) {
-          ESP_LOGW(
-            kTag, "mesh export send failed: %s", esp_err_to_name(send_result));
+          ESP_LOGW(kTag,
+                   "mesh export send failed: %s",
+                   esp_err_to_name(send_result));
         }
-        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
       }
-      continue;
     }
-
-    const bool should_mqtt = state->mqtt_enabled_active &&
-                             state->net_mode_active == APP_NET_MODE_DIRECT_WIFI;
+  } else {
+    const bool should_mqtt =
+      state->mqtt_enabled_active &&
+      state->net_mode_active == APP_NET_MODE_DIRECT_WIFI;
     EnsureMqttClientState(state, should_mqtt);
-    if (!state->mqtt_client_connected) {
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
-      continue;
-    }
-
-    char node_id[32] = { 0 };
-    FormatMacString(item->src_mac, node_id, sizeof(node_id));
-    char topic[128] = { 0 };
-    if (!BuildMqttTopic(
-          state->mqtt_topic_prefix_active, node_id, topic, sizeof(topic))) {
-      state->export_send_fail_count++;
-      UpdateCachedUint32(state,
-                         &state->cached_status.export_send_fail_count,
-                         state->export_send_fail_count);
-      export_record_item_t* dequeued = NULL;
-      if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE &&
-          dequeued != NULL) {
-        MemPoolFree(&g_export_outbox_pool, dequeued);
-      }
-      continue;
-    }
-
-    size_t payload_len = 0;
-    char payload[256] = { 0 };
-    if (!BuildMqttPayload(
-          &item->record, node_id, payload, sizeof(payload), &payload_len)) {
-      state->export_send_fail_count++;
-      UpdateCachedUint32(state,
-                         &state->cached_status.export_send_fail_count,
-                         state->export_send_fail_count);
-      export_record_item_t* dequeued = NULL;
-      if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE &&
-          dequeued != NULL) {
-        MemPoolFree(&g_export_outbox_pool, dequeued);
-      }
-      continue;
-    }
-
-    const esp_err_t publish_result =
-      MqttClientWrapPublish(&state->mqtt_client,
-                            topic,
-                            payload,
-                            (int)payload_len,
-                            state->mqtt_qos_active,
-                            state->mqtt_retain_active ? 1 : 0);
-    if (publish_result == ESP_OK) {
-      export_record_item_t* dequeued = NULL;
-      if (xQueueReceive(state->export_outbox, &dequeued, 0) == pdTRUE &&
-          dequeued != NULL) {
-        MemPoolFree(&g_export_outbox_pool, dequeued);
-      }
-    } else {
-      state->export_send_fail_count++;
-      UpdateCachedUint32(state,
-                         &state->cached_status.export_send_fail_count,
-                         state->export_send_fail_count);
-      if (LogRateLimitAllow(&state->last_export_fail_log_ms,
-                            kExportLogRateLimitMs)) {
-        ESP_LOGW(kTag, "MQTT publish failed");
-      }
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
-    }
-  }
-
-  state->export_network_task = NULL;
-  vTaskDelete(NULL);
-}
-
-/**
- * @brief Execute RootBridgeTask.
- * @param context Parameter context.
- * @note FreeRTOS task entry for the RootBridgeTask task.
- */
-static void
-RootBridgeTask(void* context)
-{
-  runtime_state_t* state = (runtime_state_t*)context;
-
-  while (!state->stop_requested ||
-         (state->export_outbox != NULL &&
-          uxQueueMessagesWaiting(state->export_outbox) > 0)) {
-    export_record_item_t* item = NULL;
-    if (state->export_outbox != NULL &&
-        xQueueReceive(state->export_outbox, &item, pdMS_TO_TICKS(500)) ==
-          pdTRUE) {
-      if (item == NULL) {
-        continue;
-      }
+    if (state->mqtt_client_connected) {
       char node_id[32] = { 0 };
       FormatMacString(item->src_mac, node_id, sizeof(node_id));
+      char topic[128] = { 0 };
+      if (!BuildMqttTopic(
+            state->mqtt_topic_prefix_active, node_id, topic, sizeof(topic))) {
+        state->export_send_fail_count++;
+        UpdateCachedUint32(state,
+                           &state->cached_status.export_send_fail_count,
+                           state->export_send_fail_count);
+        NetTxDropExportHead(state);
+        if (fail_start_ms != NULL) {
+          *fail_start_ms = 0;
+        }
+        if (backoff_ms != NULL) {
+          *backoff_ms = 0;
+        }
+        if (next_attempt_ms != NULL) {
+          *next_attempt_ms = 0;
+        }
+        return true;
+      }
 
-      char payload[256] = { 0 };
       size_t payload_len = 0;
+      char payload[256] = { 0 };
       if (!BuildMqttPayload(
             &item->record, node_id, payload, sizeof(payload), &payload_len)) {
         state->export_send_fail_count++;
         UpdateCachedUint32(state,
                            &state->cached_status.export_send_fail_count,
                            state->export_send_fail_count);
-        MemPoolFree(&g_export_outbox_pool, item);
-        continue;
+        NetTxDropExportHead(state);
+        if (fail_start_ms != NULL) {
+          *fail_start_ms = 0;
+        }
+        if (backoff_ms != NULL) {
+          *backoff_ms = 0;
+        }
+        if (next_attempt_ms != NULL) {
+          *next_attempt_ms = 0;
+        }
+        return true;
       }
 
-      if (BridgeModeUsesSerial(state->mqtt_bridge_mode_active)) {
-        if (!TryEmitBridgeCsvHeader(state)) {
-          vTaskDelay(pdMS_TO_TICKS(50));
-          MemPoolFree(&g_export_outbox_pool, item);
-          continue;
-        }
-        size_t written = 0;
-        const esp_err_t write_result =
-          DataPortWrite(payload, payload_len, &written);
-        if (write_result != ESP_OK || written != payload_len) {
-          state->export_send_fail_count++;
-          UpdateCachedUint32(state,
-                             &state->cached_status.export_send_fail_count,
-                             state->export_send_fail_count);
-          if (LogRateLimitAllow(&state->last_export_fail_log_ms,
-                                kExportLogRateLimitMs)) {
-            ESP_LOGW(kTag, "serial bridge write failed");
-          }
-        }
-      }
-
-      if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active) &&
-          state->mqtt_enabled_active) {
-        if (state->broker_outbox == NULL) {
-          state->broker_drop_count++;
-          UpdateCachedUint32(state,
-                             &state->cached_status.broker_drop_count,
-                             state->broker_drop_count);
-          if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
-                                kExportLogRateLimitMs)) {
-            ESP_LOGW(kTag, "broker outbox unavailable; dropping publish");
-          }
-          MemPoolFree(&g_export_outbox_pool, item);
-          continue;
-        }
-        broker_publish_item_t* publish_item =
-          (broker_publish_item_t*)MemPoolAlloc(&g_broker_outbox_pool);
-        if (publish_item == NULL) {
-          state->broker_drop_count++;
-          UpdateCachedUint32(state,
-                             &state->cached_status.broker_drop_count,
-                             state->broker_drop_count);
-          if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
-                                kExportLogRateLimitMs)) {
-            ESP_LOGW(kTag, "broker outbox pool empty; dropping publish");
-          }
-          MemPoolFree(&g_export_outbox_pool, item);
-          continue;
-        }
-        memset(publish_item, 0, sizeof(*publish_item));
-        if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
-                            node_id,
-                            publish_item->topic,
-                            sizeof(publish_item->topic))) {
-          state->broker_send_fail_count++;
-          UpdateCachedUint32(state,
-                             &state->cached_status.broker_send_fail_count,
-                             state->broker_send_fail_count);
-          MemPoolFree(&g_broker_outbox_pool, publish_item);
-          MemPoolFree(&g_export_outbox_pool, item);
-          continue;
-        }
-        if (payload_len >= sizeof(publish_item->payload)) {
-          state->broker_send_fail_count++;
-          UpdateCachedUint32(state,
-                             &state->cached_status.broker_send_fail_count,
-                             state->broker_send_fail_count);
-          MemPoolFree(&g_broker_outbox_pool, publish_item);
-          MemPoolFree(&g_export_outbox_pool, item);
-          continue;
-        }
-        memcpy(publish_item->payload, payload, payload_len);
-        publish_item->payload_len = (uint16_t)payload_len;
-
-        if (state->broker_outbox != NULL &&
-            xQueueSend(state->broker_outbox, &publish_item, 0) != pdTRUE) {
-          state->broker_drop_count++;
-          UpdateCachedUint32(state,
-                             &state->cached_status.broker_drop_count,
-                             state->broker_drop_count);
-          if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
-                                kExportLogRateLimitMs)) {
-            ESP_LOGW(kTag, "broker outbox full; dropping publish");
-          }
-          MemPoolFree(&g_broker_outbox_pool, publish_item);
+      const esp_err_t publish_result =
+        MqttClientWrapPublish(&state->mqtt_client,
+                              topic,
+                              payload,
+                              (int)payload_len,
+                              state->mqtt_qos_active,
+                              state->mqtt_retain_active ? 1 : 0);
+      if (publish_result == ESP_OK) {
+        sent = true;
+      } else {
+        state->export_send_fail_count++;
+        UpdateCachedUint32(state,
+                           &state->cached_status.export_send_fail_count,
+                           state->export_send_fail_count);
+        if (LogRateLimitAllow(&state->last_export_fail_log_ms,
+                              kExportLogRateLimitMs)) {
+          ESP_LOGW(kTag, "MQTT publish failed");
         }
       }
-      MemPoolFree(&g_export_outbox_pool, item);
     }
   }
 
-  state->bridge_task = NULL;
-  vTaskDelete(NULL);
+  if (sent) {
+    NetTxDropExportHead(state);
+    if (fail_start_ms != NULL) {
+      *fail_start_ms = 0;
+    }
+    if (backoff_ms != NULL) {
+      *backoff_ms = 0;
+    }
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = 0;
+    }
+    return true;
+  }
+
+  if (fail_start_ms != NULL) {
+    if (*fail_start_ms == 0) {
+      *fail_start_ms = now_ms;
+    } else if (now_ms - *fail_start_ms >= kNetTxStallDropMs) {
+      NetTxStallDropExport(state);
+      *fail_start_ms = 0;
+    }
+  }
+  NetTxBackoffUpdate(backoff_ms, next_attempt_ms, now_ms);
+  return true;
 }
 
-/**
- * @brief Execute BrokerPublishTask.
- * @param context Parameter context.
- * @note FreeRTOS task entry for the BrokerPublishTask task.
- */
-static void
-BrokerPublishTask(void* context)
+static bool
+NetTxHandleBridgeRoot(runtime_state_t* state)
 {
-  runtime_state_t* state = (runtime_state_t*)context;
+  if (state == NULL || state->export_outbox == NULL ||
+      !state->root_publish_consumer_active) {
+    return false;
+  }
 
-  while (!state->stop_requested ||
-         (state->broker_outbox != NULL &&
-          uxQueueMessagesWaiting(state->broker_outbox) > 0)) {
-    if (state->broker_outbox == NULL) {
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(200));
-      continue;
-    }
+  export_record_item_t* item = NULL;
+  if (xQueueReceive(state->export_outbox, &item, 0) != pdTRUE) {
+    return false;
+  }
+  if (item == NULL) {
+    return true;
+  }
 
-    broker_publish_item_t* item = NULL;
-    if (xQueuePeek(state->broker_outbox, &item, pdMS_TO_TICKS(500)) != pdTRUE) {
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(100));
-      continue;
-    }
-    if (item == NULL) {
-      (void)xQueueReceive(state->broker_outbox, &item, 0);
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
-      continue;
-    }
+  char node_id[32] = { 0 };
+  FormatMacString(item->src_mac, node_id, sizeof(node_id));
 
-    const bool should_mqtt =
-      state->mqtt_enabled_active &&
-      BridgeModeUsesBroker(state->mqtt_bridge_mode_active);
-    EnsureMqttClientState(state, should_mqtt);
-    if (!state->mqtt_client_connected) {
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
-      continue;
-    }
+  char payload[256] = { 0 };
+  size_t payload_len = 0;
+  if (!BuildMqttPayload(
+        &item->record, node_id, payload, sizeof(payload), &payload_len)) {
+    state->export_send_fail_count++;
+    UpdateCachedUint32(state,
+                       &state->cached_status.export_send_fail_count,
+                       state->export_send_fail_count);
+    MemPoolFree(&g_export_outbox_pool, item);
+    return true;
+  }
 
-    const esp_err_t publish_result =
-      MqttClientWrapPublish(&state->mqtt_client,
-                            item->topic,
-                            item->payload,
-                            (int)item->payload_len,
-                            state->mqtt_qos_active,
-                            state->mqtt_retain_active ? 1 : 0);
-    if (publish_result == ESP_OK) {
-      broker_publish_item_t* dequeued = NULL;
-      if (xQueueReceive(state->broker_outbox, &dequeued, 0) == pdTRUE &&
-          dequeued != NULL) {
-        MemPoolFree(&g_broker_outbox_pool, dequeued);
+  if (BridgeModeUsesSerial(state->mqtt_bridge_mode_active)) {
+    if (!TryEmitBridgeCsvHeader(state)) {
+      MemPoolFree(&g_export_outbox_pool, item);
+      return true;
+    }
+    size_t written = 0;
+    const esp_err_t write_result =
+      DataPortWrite(payload, payload_len, &written);
+    if (write_result != ESP_OK || written != payload_len) {
+      state->export_send_fail_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.export_send_fail_count,
+                         state->export_send_fail_count);
+      if (LogRateLimitAllow(&state->last_export_fail_log_ms,
+                            kExportLogRateLimitMs)) {
+        ESP_LOGW(kTag, "serial bridge write failed");
       }
-    } else {
+    }
+  }
+
+  if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active) &&
+      state->mqtt_enabled_active) {
+    if (state->broker_outbox == NULL) {
+      state->broker_drop_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.broker_drop_count,
+                         state->broker_drop_count);
+      if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
+                            kExportLogRateLimitMs)) {
+        ESP_LOGW(kTag, "broker outbox unavailable; dropping publish");
+      }
+      MemPoolFree(&g_export_outbox_pool, item);
+      return true;
+    }
+    broker_publish_item_t* publish_item =
+      (broker_publish_item_t*)MemPoolAlloc(&g_broker_outbox_pool);
+    if (publish_item == NULL) {
+      state->broker_drop_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.broker_drop_count,
+                         state->broker_drop_count);
+      if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
+                            kExportLogRateLimitMs)) {
+        ESP_LOGW(kTag, "broker outbox pool empty; dropping publish");
+      }
+      MemPoolFree(&g_export_outbox_pool, item);
+      return true;
+    }
+    memset(publish_item, 0, sizeof(*publish_item));
+    if (!BuildMqttTopic(state->mqtt_topic_prefix_active,
+                        node_id,
+                        publish_item->topic,
+                        sizeof(publish_item->topic))) {
       state->broker_send_fail_count++;
       UpdateCachedUint32(state,
                          &state->cached_status.broker_send_fail_count,
                          state->broker_send_fail_count);
-      if (LogRateLimitAllow(&state->last_broker_fail_log_ms,
+      MemPoolFree(&g_broker_outbox_pool, publish_item);
+      MemPoolFree(&g_export_outbox_pool, item);
+      return true;
+    }
+    if (payload_len >= sizeof(publish_item->payload)) {
+      state->broker_send_fail_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.broker_send_fail_count,
+                         state->broker_send_fail_count);
+      MemPoolFree(&g_broker_outbox_pool, publish_item);
+      MemPoolFree(&g_export_outbox_pool, item);
+      return true;
+    }
+    memcpy(publish_item->payload, payload, payload_len);
+    publish_item->payload_len = (uint16_t)payload_len;
+
+    if (xQueueSend(state->broker_outbox, &publish_item, 0) != pdTRUE) {
+      state->broker_drop_count++;
+      UpdateCachedUint32(state,
+                         &state->cached_status.broker_drop_count,
+                         state->broker_drop_count);
+      if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
                             kExportLogRateLimitMs)) {
-        ESP_LOGW(kTag, "broker publish failed");
+        ESP_LOGW(kTag, "broker outbox full; dropping publish");
       }
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(500));
+      MemPoolFree(&g_broker_outbox_pool, publish_item);
+    }
+  }
+  MemPoolFree(&g_export_outbox_pool, item);
+  return true;
+}
+
+static bool
+NetTxHandleBrokerPublish(runtime_state_t* state,
+                         int64_t now_ms,
+                         int64_t* fail_start_ms,
+                         int64_t* next_attempt_ms,
+                         uint32_t* backoff_ms)
+{
+  if (state == NULL || state->broker_outbox == NULL) {
+    return false;
+  }
+  if (next_attempt_ms != NULL && now_ms < *next_attempt_ms) {
+    return false;
+  }
+
+  broker_publish_item_t* item = NULL;
+  if (xQueuePeek(state->broker_outbox, &item, 0) != pdTRUE) {
+    return false;
+  }
+  if (item == NULL) {
+    NetTxDropBrokerHead(state);
+    return true;
+  }
+
+  const bool should_mqtt =
+    state->mqtt_enabled_active &&
+    BridgeModeUsesBroker(state->mqtt_bridge_mode_active);
+  EnsureMqttClientState(state, should_mqtt);
+  if (!state->mqtt_client_connected) {
+    if (fail_start_ms != NULL) {
+      if (*fail_start_ms == 0) {
+        *fail_start_ms = now_ms;
+      } else if (now_ms - *fail_start_ms >= kNetTxStallDropMs) {
+        NetTxStallDropBroker(state);
+        *fail_start_ms = 0;
+      }
+    }
+    NetTxBackoffUpdate(backoff_ms, next_attempt_ms, now_ms);
+    return true;
+  }
+
+  const esp_err_t publish_result =
+    MqttClientWrapPublish(&state->mqtt_client,
+                          item->topic,
+                          item->payload,
+                          (int)item->payload_len,
+                          state->mqtt_qos_active,
+                          state->mqtt_retain_active ? 1 : 0);
+  if (publish_result == ESP_OK) {
+    NetTxDropBrokerHead(state);
+    if (fail_start_ms != NULL) {
+      *fail_start_ms = 0;
+    }
+    if (backoff_ms != NULL) {
+      *backoff_ms = 0;
+    }
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = 0;
+    }
+    return true;
+  }
+
+  state->broker_send_fail_count++;
+  UpdateCachedUint32(state,
+                     &state->cached_status.broker_send_fail_count,
+                     state->broker_send_fail_count);
+  if (LogRateLimitAllow(&state->last_broker_fail_log_ms,
+                        kExportLogRateLimitMs)) {
+    ESP_LOGW(kTag, "broker publish failed");
+  }
+  if (fail_start_ms != NULL) {
+    if (*fail_start_ms == 0) {
+      *fail_start_ms = now_ms;
+    } else if (now_ms - *fail_start_ms >= kNetTxStallDropMs) {
+      NetTxStallDropBroker(state);
+      *fail_start_ms = 0;
+    }
+  }
+  NetTxBackoffUpdate(backoff_ms, next_attempt_ms, now_ms);
+  return true;
+}
+
+static bool
+NetTxHandleAlertSend(runtime_state_t* state,
+                     int64_t now_ms,
+                     int64_t* next_attempt_ms)
+{
+  if (state == NULL || !AlertManagerIsConfigured(&state->alert_manager)) {
+    return false;
+  }
+  if (state->alert_manager.ntfy.queue == NULL) {
+    return false;
+  }
+  if (next_attempt_ms != NULL && now_ms < *next_attempt_ms) {
+    return false;
+  }
+
+  alert_notification_t note;
+  if (xQueueReceive(state->alert_manager.ntfy.queue, &note, 0) != pdTRUE) {
+    return false;
+  }
+
+  alert_ntfy_config_t cfg = {
+    .url = state->alert_manager.config.ntfy_url,
+    .topic = state->alert_manager.config.ntfy_topic,
+    .token = state->alert_manager.config.ntfy_token,
+    .root_id = state->alert_manager.root_id_string,
+  };
+
+  int status = 0;
+  esp_err_t err = ESP_OK;
+  alert_ntfy_result_t result =
+    AlertNtfySend(&state->alert_manager.ntfy, &cfg, &note, &status, &err);
+
+  if (result == ALERT_NTFY_OK) {
+    state->alert_manager.ntfy.send_success++;
+    state->alert_manager.ntfy.last_http_status = status;
+    state->alert_manager.ntfy.last_err = err;
+    state->alert_manager.ntfy.backoff_ms = 0;
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = 0;
+    }
+    return true;
+  }
+
+  if (result == ALERT_NTFY_SKIPPED) {
+    state->alert_manager.ntfy.last_err = err;
+    return true;
+  }
+
+  state->alert_manager.ntfy.send_fail++;
+  state->alert_manager.ntfy.last_http_status = status;
+  state->alert_manager.ntfy.last_err = err;
+  state->alert_manager.ntfy.backoff_ms =
+    (state->alert_manager.ntfy.backoff_ms == 0)
+      ? 1000
+      : (state->alert_manager.ntfy.backoff_ms * 2);
+  if (state->alert_manager.ntfy.backoff_ms > 30000) {
+    state->alert_manager.ntfy.backoff_ms = 30000;
+  }
+  if (!state->stop_requested) {
+    (void)AlertNtfyEnqueue(&state->alert_manager.ntfy, &note);
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms =
+        now_ms + (int64_t)state->alert_manager.ntfy.backoff_ms;
+    }
+  }
+  return true;
+}
+
+static void
+NetTxDrainAlertQueue(runtime_state_t* state)
+{
+  if (state == NULL || state->alert_manager.ntfy.queue == NULL) {
+    return;
+  }
+  alert_notification_t note;
+  while (xQueueReceive(state->alert_manager.ntfy.queue, &note, 0) == pdTRUE) {
+    (void)note;
+  }
+}
+
+static void
+NetTxTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+  int64_t export_fail_start_ms = 0;
+  int64_t broker_fail_start_ms = 0;
+  int64_t export_next_attempt_ms = 0;
+  int64_t broker_next_attempt_ms = 0;
+  int64_t alert_next_attempt_ms = 0;
+  uint32_t export_backoff_ms = 0;
+  uint32_t broker_backoff_ms = 0;
+  uint32_t min_stack_hwm_bytes = UINT32_MAX;
+
+  while (!state->stop_requested) {
+    const uint32_t hwm_bytes =
+      (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    if (hwm_bytes < min_stack_hwm_bytes) {
+      min_stack_hwm_bytes = hwm_bytes;
+      ESP_LOGI(kTag,
+               "net_tx stack watermark: %u bytes free",
+               (unsigned)min_stack_hwm_bytes);
+    }
+
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    bool did_work = false;
+
+    if (state->node_role_active == APP_NODE_ROLE_ROOT) {
+      did_work |= NetTxHandleBridgeRoot(state);
+      if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active) &&
+          state->mqtt_enabled_active) {
+        did_work |= NetTxHandleBrokerPublish(state,
+                                             now_ms,
+                                             &broker_fail_start_ms,
+                                             &broker_next_attempt_ms,
+                                             &broker_backoff_ms);
+      }
+      if (AlertManagerIsConfigured(&state->alert_manager)) {
+        did_work |= NetTxHandleAlertSend(
+          state, now_ms, &alert_next_attempt_ms);
+      }
+    } else {
+      did_work |= NetTxHandleExportLeaf(state,
+                                        now_ms,
+                                        &export_fail_start_ms,
+                                        &export_next_attempt_ms,
+                                        &export_backoff_ms);
+    }
+
+    if (!did_work) {
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
     }
   }
 
-  state->broker_task = NULL;
+  DrainExportOutboxQueue(state);
+  DrainBrokerOutboxQueue(state);
+  NetTxDrainAlertQueue(state);
+  state->net_tx_task = NULL;
   vTaskDelete(NULL);
 }
 
@@ -3045,57 +3298,35 @@ StorageTask(void* context)
   vTaskDelete(NULL);
 }
 
-/**
- * @brief Execute TimeSyncTask.
- * @param context Parameter context.
- * @note FreeRTOS task entry for the TimeSyncTask task.
- */
 static void
-TimeSyncTask(void* context)
+ControlTickTimeSync(runtime_state_t* state)
 {
-  runtime_state_t* state = (runtime_state_t*)context;
+  if (state == NULL) {
+    return;
+  }
+
+  const bool time_valid = TimeSyncIsSystemTimeValid();
+  UpdateTimeHealthState(state, time_valid);
+  const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
+  UpdateCachedBool(
+    state, &state->cached_status.mesh_connected, mesh_connected);
+  UpdateCachedInt32(state,
+                    &state->cached_status.mesh_level,
+                    state->mesh.last_level);
 
   if (state->settings.node_role == APP_NODE_ROLE_SENSOR) {
-    while (!TimeSyncIsSystemTimeValid() && !state->stop_requested) {
-      const bool time_valid = TimeSyncIsSystemTimeValid();
-      UpdateTimeHealthState(state, time_valid);
-      const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
-      UpdateCachedBool(
-        state, &state->cached_status.mesh_connected, mesh_connected);
-      UpdateCachedInt32(
-        state, &state->cached_status.mesh_level, state->mesh.last_level);
-      if (mesh_connected) {
-        (void)MeshTransportRequestTime(&state->mesh);
-      }
-      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(10 * 1000));
+    if (!time_valid && mesh_connected) {
+      (void)MeshTransportRequestTime(&state->mesh);
     }
+    return;
   }
 
   if (state->settings.node_role == APP_NODE_ROLE_ROOT) {
-    while (!state->stop_requested) {
-      const bool time_valid = TimeSyncIsSystemTimeValid();
-      UpdateTimeHealthState(state, time_valid);
-      const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
-      UpdateCachedBool(
-        state, &state->cached_status.mesh_connected, mesh_connected);
-      UpdateCachedInt32(
-        state, &state->cached_status.mesh_level, state->mesh.last_level);
-      if (time_valid && mesh_connected) {
-        const int64_t now_seconds = (int64_t)time(NULL);
-        (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
-      }
-      uint64_t period_ms =
-        (uint64_t)AppNetConfigGetTimeSyncPeriodSeconds() * 1000ULL;
-      if (period_ms < 1000ULL) {
-        period_ms = 1000ULL;
-      }
-      const TickType_t period_ticks = pdMS_TO_TICKS(period_ms);
-      RuntimeInterruptibleDelayTicks(period_ticks);
+    if (time_valid && mesh_connected) {
+      const int64_t now_seconds = (int64_t)time(NULL);
+      (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
     }
   }
-
-  state->time_sync_task = NULL;
-  vTaskDelete(NULL);
 }
 
 /**
@@ -3113,17 +3344,17 @@ DirectWifiTask(void* context)
   const uint32_t max_delay_ms = 5 * 60 * 1000;
 
   // Track minimum stack high-water mark to confirm stack sizing under real
-  // workloads. uxTaskGetStackHighWaterMark() returns words, not bytes.
-  UBaseType_t min_stack_hwm_words = UINT32_MAX;
+  // workloads. uxTaskGetStackHighWaterMark() returns bytes in ESP-IDF.
+  uint32_t min_stack_hwm_bytes = UINT32_MAX;
 
   while (!state->stop_requested) {
-    const UBaseType_t hwm_words = uxTaskGetStackHighWaterMark(NULL);
-    if (hwm_words < min_stack_hwm_words) {
-      min_stack_hwm_words = hwm_words;
+    const uint32_t hwm_bytes =
+      (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    if (hwm_bytes < min_stack_hwm_bytes) {
+      min_stack_hwm_bytes = hwm_bytes;
       ESP_LOGI(kTag,
-               "wifi_direct stack watermark: %u words (%u bytes) free",
-               (unsigned)min_stack_hwm_words,
-               (unsigned)(min_stack_hwm_words * sizeof(StackType_t)));
+               "wifi_direct stack watermark: %u bytes free",
+               (unsigned)min_stack_hwm_bytes);
     }
 
     wifi_credentials_t creds;
@@ -3226,119 +3457,83 @@ DirectWifiTask(void* context)
   vTaskDelete(NULL);
 }
 
-/**
- * @brief Execute TopologyTask.
- * @param context Parameter context.
- * @note FreeRTOS task entry for the TopologyTask task.
- */
 static void
-TopologyTask(void* context)
+ControlTickTopology(runtime_state_t* state, int64_t now_ms)
 {
-  runtime_state_t* state = (runtime_state_t*)context;
-  const TickType_t interval_ticks = pdMS_TO_TICKS(30 * 1000);
-  const TickType_t warn_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
-  TickType_t last_disconnected_warn_ticks = 0;
-
-  // Only emit the topology status line when something changes. This avoids
-  // spamming the CSV/console output with repeated identical lines.
-  bool have_prev_status = false;
-  char prev_role[16] = { 0 };
-  bool prev_allow_children = false;
-  int prev_layer = -9999;
-  char prev_parent_str[20] = { 0 };
-  uint32_t prev_child_count = 0;
-  int prev_rssi = -9999;
-
-  // const TickType_t watermark_log_period_ticks = pdMS_TO_TICKS(5 * 60 * 1000);
-  // TickType_t last_watermark_log_ticks = 0;
-
-  // const UBaseType_t initial_watermark_words =
-  // uxTaskGetStackHighWaterMark(NULL); ESP_LOGI(kTag,
-  //          "topology stack watermark: %u words (%u bytes) free",
-  //          (unsigned)initial_watermark_words,
-  //          (unsigned)(initial_watermark_words * sizeof(StackType_t)));
-
-  while (!state->stop_requested) {
-    const char* role = AppSettingsRoleToString(state->settings.node_role);
-    const uint32_t child_count = esp_mesh_lite_get_mesh_node_number();
-    int layer = -1;
-    int rssi = 0;
-    char parent_str[20] = "unknown";
-
-    if (MeshTransportIsStarted(&state->mesh)) {
-      layer = esp_mesh_lite_get_level();
-      mesh_lite_ap_record_t ap_record = { 0 };
-      if (esp_mesh_lite_get_ap_record(&ap_record) == ESP_OK) {
-        FormatMacString(ap_record.bssid, parent_str, sizeof(parent_str));
-        rssi = ap_record.rssi;
-      }
-    }
-    UpdateCachedInt32(state, &state->cached_status.mesh_level, layer);
-    UpdateCachedInt32(state, &state->cached_status.mesh_rssi, rssi);
-    UpdateCachedBool(state, &state->cached_status.mesh_connected, (layer > 0));
-
-    // Replace the vendor/wifi spam with a single rate-limited warning.
-    const bool connected_now = (layer > 0);
-    if (connected_now) {
-      last_disconnected_warn_ticks = 0;
-    } else if (MeshTransportIsStarted(&state->mesh)) {
-      const TickType_t now_ticks = xTaskGetTickCount();
-      const bool should_warn =
-        (last_disconnected_warn_ticks == 0) ||
-        ((now_ticks - last_disconnected_warn_ticks) >= warn_period_ticks);
-      if (should_warn) {
-        ESP_LOGW(kTag,
-                 "Mesh not connected (layer=%d). Still scanning for AP/root...",
-                 layer);
-        last_disconnected_warn_ticks = now_ticks;
-      }
-    }
-
-    if (!state->log_quiet) {
-      const bool allow_children = state->settings.allow_children;
-      const bool changed =
-        (!have_prev_status) ||
-        (strncmp(prev_role, role, sizeof(prev_role)) != 0) ||
-        (prev_allow_children != allow_children) || (prev_layer != layer) ||
-        (strncmp(prev_parent_str, parent_str, sizeof(prev_parent_str)) != 0) ||
-        (prev_child_count != child_count) || (prev_rssi != rssi);
-
-      if (changed) {
-        printf("topology role=%s allow_children=%u layer=%d parent=%s "
-               "children=%u rssi=%d\n",
-               role,
-               allow_children ? 1u : 0u,
-               layer,
-               parent_str,
-               (unsigned)child_count,
-               rssi);
-
-        strlcpy(prev_role, role, sizeof(prev_role));
-        prev_allow_children = allow_children;
-        prev_layer = layer;
-        strlcpy(prev_parent_str, parent_str, sizeof(prev_parent_str));
-        prev_child_count = child_count;
-        prev_rssi = rssi;
-        have_prev_status = true;
-      }
-    }
-
-    // const TickType_t now_ticks = xTaskGetTickCount();
-    // if ((last_watermark_log_ticks == 0) ||
-    //     ((now_ticks - last_watermark_log_ticks) >=
-    //      watermark_log_period_ticks)) {
-    //   const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
-    //   ESP_LOGI(kTag,
-    //            "topology stack watermark: %u words (%u bytes) free",
-    //            (unsigned)watermark_words,
-    //            (unsigned)(watermark_words * sizeof(StackType_t)));
-    //   last_watermark_log_ticks = now_ticks;
-    // }
-    RuntimeInterruptibleDelayTicks(interval_ticks);
+  if (state == NULL) {
+    return;
   }
 
-  state->topology_task = NULL;
-  vTaskDelete(NULL);
+  static int64_t s_last_disconnected_warn_ms = 0;
+  static bool s_have_prev_status = false;
+  static char s_prev_role[16] = { 0 };
+  static bool s_prev_allow_children = false;
+  static int s_prev_layer = -9999;
+  static char s_prev_parent_str[20] = { 0 };
+  static uint32_t s_prev_child_count = 0;
+  static int s_prev_rssi = -9999;
+
+  const char* role = AppSettingsRoleToString(state->settings.node_role);
+  const uint32_t child_count = esp_mesh_lite_get_mesh_node_number();
+  int layer = -1;
+  int rssi = 0;
+  char parent_str[20] = "unknown";
+
+  if (MeshTransportIsStarted(&state->mesh)) {
+    layer = esp_mesh_lite_get_level();
+    mesh_lite_ap_record_t ap_record = { 0 };
+    if (esp_mesh_lite_get_ap_record(&ap_record) == ESP_OK) {
+      FormatMacString(ap_record.bssid, parent_str, sizeof(parent_str));
+      rssi = ap_record.rssi;
+    }
+  }
+  UpdateCachedInt32(state, &state->cached_status.mesh_level, layer);
+  UpdateCachedInt32(state, &state->cached_status.mesh_rssi, rssi);
+  UpdateCachedBool(state, &state->cached_status.mesh_connected, (layer > 0));
+
+  const bool connected_now = (layer > 0);
+  if (connected_now) {
+    s_last_disconnected_warn_ms = 0;
+  } else if (MeshTransportIsStarted(&state->mesh)) {
+    const bool should_warn = (s_last_disconnected_warn_ms == 0) ||
+                             ((now_ms - s_last_disconnected_warn_ms) >=
+                              (5 * 60 * 1000));
+    if (should_warn) {
+      ESP_LOGW(kTag,
+               "Mesh not connected (layer=%d). Still scanning for AP/root...",
+               layer);
+      s_last_disconnected_warn_ms = now_ms;
+    }
+  }
+
+  if (!state->log_quiet) {
+    const bool allow_children = state->settings.allow_children;
+    const bool changed =
+      (!s_have_prev_status) ||
+      (strncmp(s_prev_role, role, sizeof(s_prev_role)) != 0) ||
+      (s_prev_allow_children != allow_children) || (s_prev_layer != layer) ||
+      (strncmp(s_prev_parent_str, parent_str, sizeof(s_prev_parent_str)) != 0) ||
+      (s_prev_child_count != child_count) || (s_prev_rssi != rssi);
+
+    if (changed) {
+      printf("topology role=%s allow_children=%u layer=%d parent=%s "
+             "children=%u rssi=%d\n",
+             role,
+             allow_children ? 1u : 0u,
+             layer,
+             parent_str,
+             (unsigned)child_count,
+             rssi);
+
+      strlcpy(s_prev_role, role, sizeof(s_prev_role));
+      s_prev_allow_children = allow_children;
+      s_prev_layer = layer;
+      strlcpy(s_prev_parent_str, parent_str, sizeof(s_prev_parent_str));
+      s_prev_child_count = child_count;
+      s_prev_rssi = rssi;
+      s_have_prev_status = true;
+    }
+  }
 }
 
 /**
@@ -3774,8 +3969,13 @@ static void
 ControlTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
+  static int64_t next_topology_ms = 0;
+  static int64_t next_time_sync_ms = 0;
+  static int64_t next_alert_tick_ms = 0;
+  uint32_t min_stack_hwm_bytes = UINT32_MAX;
 
   while (true) {
+    const int64_t now_ms = esp_timer_get_time() / 1000;
     bool request_start = false;
     bool request_stop = false;
     taskENTER_CRITICAL(&state->request_lock);
@@ -3808,6 +4008,43 @@ ControlTask(void* context)
       }
     }
 
+    if (state->runtime_phase == RUNTIME_PHASE_RUNNING &&
+        !state->stop_requested) {
+      RuntimeHealthPublisherTick(state);
+
+      if (next_topology_ms == 0 || now_ms >= next_topology_ms) {
+        ControlTickTopology(state, now_ms);
+        next_topology_ms = now_ms + (30 * 1000);
+      }
+
+      if (next_time_sync_ms == 0 || now_ms >= next_time_sync_ms) {
+        ControlTickTimeSync(state);
+        next_time_sync_ms = now_ms + 2000;
+      }
+
+      if (state->node_role_active == APP_NODE_ROLE_ROOT &&
+          (next_alert_tick_ms == 0 || now_ms >= next_alert_tick_ms)) {
+        const int64_t now_epoch =
+          TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+        AlertManagerTick(
+          &state->alert_manager, now_ms, now_epoch);
+        next_alert_tick_ms = now_ms + 1000;
+      }
+    } else {
+      next_topology_ms = 0;
+      next_time_sync_ms = 0;
+      next_alert_tick_ms = 0;
+    }
+
+    const uint32_t hwm_bytes =
+      (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    if (hwm_bytes < min_stack_hwm_bytes) {
+      min_stack_hwm_bytes = hwm_bytes;
+      ESP_LOGI(
+        kTag, "control stack watermark: %u bytes free", (unsigned)hwm_bytes);
+    }
+
+    StackMonitorMaybeSample(&g_stack_monitor);
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
@@ -3920,6 +4157,7 @@ RuntimeGetDisplayCsGpio(void)
   return CONFIG_APP_MAX7219_CS_GPIO;
 }
 
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
 static bool
 DisplayShareConfigMatchesApp(void)
 {
@@ -3927,6 +4165,7 @@ DisplayShareConfigMatchesApp(void)
          RuntimeGetDisplayMosiGpio() == CONFIG_APP_SPI_MOSI_GPIO &&
          RuntimeGetDisplaySclkGpio() == CONFIG_APP_SPI_SCLK_GPIO;
 }
+#endif  // CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
 
 static int
 SpiHostToId(spi_host_device_t host)
@@ -4112,6 +4351,7 @@ RuntimeManagerInit(void)
 {
   MemGuardInit();
   InitializeRuntimeStruct();
+  StackMonitorInit(&g_stack_monitor, 10000);
   esp_err_t first_error = ESP_OK;
 
   g_state.sd_io_mutex = xSemaphoreCreateMutexStatic(&g_state.sd_io_mutex_buf);
@@ -4206,12 +4446,21 @@ RuntimeManagerInit(void)
 #if CONFIG_APP_MAX7219_ENABLE
   esp_err_t display_result = InitializeMax7219Display(&g_state);
   if (display_result == ESP_OK && g_state.display_initialized) {
+    const uint32_t kDisplayTaskStackBytes = 4096;
     BaseType_t display_created = xTaskCreate(
-      &DisplayTask, "display", 4096, &g_state, 2, &g_state.display_task);
+      &DisplayTask,
+      "display",
+      kDisplayTaskStackBytes,
+      &g_state,
+      2,
+      &g_state.display_task);
     if (display_created != pdPASS) {
       g_state.display_initialized = false;
       g_state.display_task = NULL;
       ESP_LOGW(kTag, "Display task create failed");
+    } else {
+      RegisterStackMonitorTask(
+        "display", &g_state.display_task, kDisplayTaskStackBytes);
     }
   }
 #endif
@@ -4444,14 +4693,23 @@ RuntimeManagerInit(void)
     }
   }
 
-  BaseType_t control_created = xTaskCreate(
-    &ControlTask, "control", 3072, &g_state, 3, &g_state.control_task);
+  const uint32_t kControlTaskStackBytes = 12288;
+  BaseType_t control_created =
+    xTaskCreate(&ControlTask,
+                "control",
+                kControlTaskStackBytes,
+                &g_state,
+                3,
+                &g_state.control_task);
   if (control_created != pdPASS) {
     g_state.control_task = NULL;
     if (first_error == ESP_OK) {
       first_error = ESP_ERR_NO_MEM;
     }
     ESP_LOGE(kTag, "Failed to create control task");
+  } else {
+    RegisterStackMonitorTask(
+      "control", &g_state.control_task, kControlTaskStackBytes);
   }
 
   g_state.system_running = true;
@@ -4602,23 +4860,15 @@ RuntimeStart(void)
     return ESP_OK;
   }
   if (g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-      g_state.time_sync_task != NULL || g_state.topology_task != NULL ||
-      g_state.health_publisher_task != NULL ||
-      g_state.wifi_direct_task != NULL) {
+      g_state.net_tx_task != NULL || g_state.wifi_direct_task != NULL) {
     if (g_state.sensor_task != NULL) {
       ESP_LOGW(kTag, "Start blocked: sensor_task still alive");
     }
     if (g_state.storage_task != NULL) {
       ESP_LOGW(kTag, "Start blocked: storage_task still alive");
     }
-    if (g_state.time_sync_task != NULL) {
-      ESP_LOGW(kTag, "Start blocked: time_sync_task still alive");
-    }
-    if (g_state.topology_task != NULL) {
-      ESP_LOGW(kTag, "Start blocked: topology_task still alive");
-    }
-    if (g_state.health_publisher_task != NULL) {
-      ESP_LOGW(kTag, "Start blocked: health_publisher_task still alive");
+    if (g_state.net_tx_task != NULL) {
+      ESP_LOGW(kTag, "Start blocked: net_tx_task still alive");
     }
     if (g_state.wifi_direct_task != NULL) {
       ESP_LOGW(kTag, "Start blocked: wifi_direct_task still alive");
@@ -4840,44 +5090,44 @@ wifi_direct_start_done:
   BaseType_t sensor_created = pdPASS;
   BaseType_t storage_created = pdPASS;
   BaseType_t export_created = pdPASS;
-  BaseType_t export_network_created = pdPASS;
-  BaseType_t time_created = pdPASS;
-  BaseType_t topology_created = pdPASS;
-  BaseType_t health_publish_created = pdPASS;
+  BaseType_t net_tx_created = pdPASS;
   BaseType_t wifi_direct_created = pdPASS;
-  BaseType_t bridge_created = pdPASS;
-  BaseType_t broker_created = pdPASS;
 
-  health_publish_created = xTaskCreate(&HealthPublisherTask,
-                                       "health_pub",
-                                       4096,
-                                       &g_state,
-                                       3,
-                                       &g_state.health_publisher_task);
-  if (health_publish_created != pdPASS) {
-    g_state.health_publisher_task = NULL;
-    ESP_LOGE(kTag, "Failed to create task health_pub");
-  }
+  const uint32_t kWifiDirectStackBytes = 4096;
+  const uint32_t kSensorStackBytes = 6144;
+  const uint32_t kExportStackBytes = 6144;
 
   if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
     wifi_direct_created = xTaskCreate(&DirectWifiTask,
                                       "wifi_direct",
-                                      4096,
+                                      kWifiDirectStackBytes,
                                       &g_state,
                                       3,
                                       &g_state.wifi_direct_task);
     if (wifi_direct_created != pdPASS) {
       g_state.wifi_direct_task = NULL;
       ESP_LOGE(kTag, "Failed to create task wifi_direct");
+    } else {
+      RegisterStackMonitorTask("wifi_direct",
+                               &g_state.wifi_direct_task,
+                               kWifiDirectStackBytes);
     }
   }
 
   if (role == APP_NODE_ROLE_SENSOR) {
     sensor_created = xTaskCreate(
-      &SensorTask, "sensor", 6144, &g_state, 5, &g_state.sensor_task);
+      &SensorTask,
+      "sensor",
+      kSensorStackBytes,
+      &g_state,
+      5,
+      &g_state.sensor_task);
     if (sensor_created != pdPASS) {
       g_state.sensor_task = NULL;
       ESP_LOGE(kTag, "Failed to create task sensor");
+    } else {
+      RegisterStackMonitorTask(
+        "sensor", &g_state.sensor_task, kSensorStackBytes);
     }
     g_state.storage_task =
       xTaskCreateStatic(&StorageTask,
@@ -4891,136 +5141,67 @@ wifi_direct_start_done:
     if (storage_created != pdPASS) {
       g_state.storage_task = NULL;
       ESP_LOGE(kTag, "Failed to create task storage");
+    } else {
+      RegisterStackMonitorTask(
+        "storage", &g_state.storage_task, kStorageTaskStackBytes);
     }
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
     export_created = xTaskCreate(
-      &ExportTask, "export", 6144, &g_state, 4, &g_state.export_task);
+      &ExportTask,
+      "export",
+      kExportStackBytes,
+      &g_state,
+      4,
+      &g_state.export_task);
     if (export_created != pdPASS) {
       g_state.export_task = NULL;
       ESP_LOGE(kTag, "Failed to create task export");
-    }
-  }
-
-  if (role != APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active) {
-    export_network_created = xTaskCreate(&ExportNetworkTask,
-                                         "export_net",
-                                         2048,
-                                         &g_state,
-                                         4,
-                                         &g_state.export_network_task);
-    if (export_network_created != pdPASS) {
-      g_state.export_network_task = NULL;
-      ESP_LOGE(kTag, "Failed to create task export_net");
-    }
-  }
-
-  if (role == APP_NODE_ROLE_ROOT &&
-      (bridge_uses_serial ||
-       (bridge_uses_broker && g_state.mqtt_enabled_active))) {
-    bridge_created = xTaskCreate(
-      &RootBridgeTask, "bridge", 2048, &g_state, 4, &g_state.bridge_task);
-    if (bridge_created != pdPASS) {
-      g_state.bridge_task = NULL;
-      ESP_LOGE(kTag, "Failed to create task bridge");
-    }
-  }
-
-  if (role == APP_NODE_ROLE_ROOT && g_state.mqtt_enabled_active &&
-      bridge_uses_broker) {
-    broker_created = xTaskCreate(&BrokerPublishTask,
-                                 "broker_pub",
-                                 2048,
-                                 &g_state,
-                                 4,
-                                 &g_state.broker_task);
-    if (broker_created != pdPASS) {
-      g_state.broker_task = NULL;
-      ESP_LOGE(kTag, "Failed to create task broker_pub");
+    } else {
+      RegisterStackMonitorTask(
+        "export", &g_state.export_task, kExportStackBytes);
     }
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
-    time_created = xTaskCreate(
-      &TimeSyncTask, "time_sync", 2048, &g_state, 4, &g_state.time_sync_task);
-    if (time_created != pdPASS) {
-      g_state.time_sync_task = NULL;
-      ESP_LOGE(kTag, "Failed to create task time_sync");
+    net_tx_created = xTaskCreate(&NetTxTask,
+                                 "net_tx",
+                                 kNetTxTaskStackBytes,
+                                 &g_state,
+                                 3,
+                                 &g_state.net_tx_task);
+    if (net_tx_created != pdPASS) {
+      g_state.net_tx_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task net_tx");
+    } else {
+      RegisterStackMonitorTask(
+        "net_tx", &g_state.net_tx_task, kNetTxTaskStackBytes);
     }
   }
 
-  topology_created = xTaskCreate(
-    &TopologyTask, "topology", 4096, &g_state, 3, &g_state.topology_task);
-  if (topology_created != pdPASS) {
-    g_state.topology_task = NULL;
-    ESP_LOGE(kTag, "Failed to create task topology");
-  }
-
-  BaseType_t alert_monitor_created = pdPASS;
-  BaseType_t alert_sender_created = pdPASS;
   if (role == APP_NODE_ROLE_ROOT) {
-    g_state.alert_monitor_context =
-      (alert_task_context_t){ .manager = &g_state.alert_manager,
-                              .stop_requested = &g_state.stop_requested,
-                              .task_handle = &g_state.alert_monitor_task };
-    g_state.alert_sender_context =
-      (alert_task_context_t){ .manager = &g_state.alert_manager,
-                              .stop_requested = &g_state.stop_requested,
-                              .task_handle = &g_state.alert_sender_task };
-    alert_monitor_created = xTaskCreate(&AlertManagerMonitorTask,
-                                        "alert_mon",
-                                        2048,
-                                        &g_state.alert_monitor_context,
-                                        3,
-                                        &g_state.alert_monitor_task);
-    if (alert_monitor_created != pdPASS) {
-      g_state.alert_monitor_task = NULL;
-      ESP_LOGE(kTag, "Failed to create task alert_mon");
-    }
-    alert_sender_created = xTaskCreate(&AlertManagerSenderTask,
-                                       "alert_send",
-                                       2048,
-                                       &g_state.alert_sender_context,
-                                       3,
-                                       &g_state.alert_sender_task);
-    if (alert_sender_created != pdPASS) {
-      g_state.alert_sender_task = NULL;
-      ESP_LOGE(kTag, "Failed to create task alert_send");
-    }
     AlertManagerEmitRootRestart(&g_state.alert_manager,
                                 esp_timer_get_time() / 1000);
   }
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
-      export_created != pdPASS || export_network_created != pdPASS ||
-      time_created != pdPASS || topology_created != pdPASS ||
-      health_publish_created != pdPASS || wifi_direct_created != pdPASS ||
-      bridge_created != pdPASS || broker_created != pdPASS ||
-      alert_monitor_created != pdPASS || alert_sender_created != pdPASS) {
+      export_created != pdPASS || net_tx_created != pdPASS ||
+      wifi_direct_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.logger_running = false;
     UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);
     UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-            g_state.export_task != NULL ||
-            g_state.export_network_task != NULL ||
-            g_state.time_sync_task != NULL || g_state.topology_task != NULL ||
-            g_state.health_publisher_task != NULL ||
-            g_state.wifi_direct_task != NULL || g_state.bridge_task != NULL ||
-            g_state.broker_task != NULL || g_state.alert_monitor_task != NULL ||
-            g_state.alert_sender_task != NULL) &&
+            g_state.export_task != NULL || g_state.net_tx_task != NULL ||
+            g_state.wifi_direct_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
     if (g_state.sensor_task == NULL && g_state.storage_task == NULL &&
-        g_state.export_task == NULL && g_state.export_network_task == NULL &&
-        g_state.time_sync_task == NULL && g_state.topology_task == NULL &&
-        g_state.health_publisher_task == NULL &&
-        g_state.wifi_direct_task == NULL && g_state.bridge_task == NULL &&
-        g_state.broker_task == NULL && g_state.alert_monitor_task == NULL &&
-        g_state.alert_sender_task == NULL) {
+        g_state.export_task == NULL && g_state.net_tx_task == NULL &&
+        g_state.wifi_direct_task == NULL) {
       g_state.stop_requested = false;
       UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
     }
@@ -5058,22 +5239,15 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
 
   const TickType_t wait_start = xTaskGetTickCount();
   while ((state->sensor_task != NULL || state->storage_task != NULL ||
-          state->export_task != NULL || state->export_network_task != NULL ||
-          state->time_sync_task != NULL || state->topology_task != NULL ||
-          state->health_publisher_task != NULL ||
-          state->wifi_direct_task != NULL || state->bridge_task != NULL ||
-          state->broker_task != NULL || state->alert_monitor_task != NULL ||
-          state->alert_sender_task != NULL) &&
+          state->export_task != NULL || state->net_tx_task != NULL ||
+          state->wifi_direct_task != NULL) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 15000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 
   if (state->sensor_task != NULL || state->storage_task != NULL ||
-      state->export_task != NULL || state->export_network_task != NULL ||
-      state->time_sync_task != NULL || state->topology_task != NULL ||
-      state->health_publisher_task != NULL || state->wifi_direct_task != NULL ||
-      state->bridge_task != NULL || state->broker_task != NULL ||
-      state->alert_monitor_task != NULL || state->alert_sender_task != NULL) {
+      state->export_task != NULL || state->net_tx_task != NULL ||
+      state->wifi_direct_task != NULL) {
     if (state->sensor_task != NULL) {
       ESP_LOGW(kTag,
                "Stop timeout: sensor_task still running (%p)",
@@ -5089,50 +5263,15 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
                "Stop timeout: export_task still running (%p)",
                state->export_task);
     }
-    if (state->export_network_task != NULL) {
+    if (state->net_tx_task != NULL) {
       ESP_LOGW(kTag,
-               "Stop timeout: export_network_task still running (%p)",
-               state->export_network_task);
-    }
-    if (state->time_sync_task != NULL) {
-      ESP_LOGW(kTag,
-               "Stop timeout: time_sync_task still running (%p)",
-               state->time_sync_task);
-    }
-    if (state->topology_task != NULL) {
-      ESP_LOGW(kTag,
-               "Stop timeout: topology_task still running (%p)",
-               state->topology_task);
-    }
-    if (state->health_publisher_task != NULL) {
-      ESP_LOGW(kTag,
-               "Stop timeout: health_publisher_task still running (%p)",
-               state->health_publisher_task);
+               "Stop timeout: net_tx_task still running (%p)",
+               state->net_tx_task);
     }
     if (state->wifi_direct_task != NULL) {
       ESP_LOGW(kTag,
                "Stop timeout: wifi_direct_task still running (%p)",
                state->wifi_direct_task);
-    }
-    if (state->bridge_task != NULL) {
-      ESP_LOGW(kTag,
-               "Stop timeout: bridge_task still running (%p)",
-               state->bridge_task);
-    }
-    if (state->broker_task != NULL) {
-      ESP_LOGW(kTag,
-               "Stop timeout: broker_task still running (%p)",
-               state->broker_task);
-    }
-    if (state->alert_monitor_task != NULL) {
-      ESP_LOGW(kTag,
-               "Stop timeout: alert_monitor_task still running (%p)",
-               state->alert_monitor_task);
-    }
-    if (state->alert_sender_task != NULL) {
-      ESP_LOGW(kTag,
-               "Stop timeout: alert_sender_task still running (%p)",
-               state->alert_sender_task);
     }
     return ESP_ERR_TIMEOUT;
   }
@@ -5194,9 +5333,9 @@ RuntimeStopAllTasks(runtime_state_t* state)
 
   // Leave the MAX7219 display initialized during stop; only deinit on shutdown.
 
-  if (state->sensor.is_initialized) {
-    (void)Max31865ReaderDeinit(&state->sensor);
-  }
+  // Keep MAX31865 initialized in diagnostics mode so calibration commands can
+  // read the RTD when logging is stopped. Full deinit is only done on reboot or
+  // an explicit shutdown path (if added later).
   return ESP_OK;
 }
 
@@ -5210,6 +5349,10 @@ RuntimeStop(void)
   g_state.runtime_phase = RUNTIME_PHASE_STOPPING;
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
   esp_err_t finalize_result = RuntimeStopAllTasks(&g_state);
+  if (!heap_caps_check_integrity_all(true)) {
+    ESP_LOGE(kTag, "Heap corruption detected after RuntimeStop");
+    abort();
+  }
   g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
   return (stop_result != ESP_OK) ? stop_result : finalize_result;
 }
@@ -5439,6 +5582,16 @@ void
 RuntimeSetSdAppendFailureOnce(bool enabled)
 {
   g_state.sd_force_unmount_on_append = enabled;
+}
+
+/**
+ * @brief Execute RuntimePrintStackMonitor.
+ * @param headroom_bytes Parameter headroom_bytes.
+ */
+void
+RuntimePrintStackMonitor(uint32_t headroom_bytes)
+{
+  StackMonitorPrint(&g_stack_monitor, headroom_bytes);
 }
 
 /**

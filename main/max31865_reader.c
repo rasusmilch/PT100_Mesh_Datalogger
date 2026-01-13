@@ -1,5 +1,6 @@
 #include "max31865_reader.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -432,6 +433,19 @@ Max31865ReaderInit(max31865_reader_t* reader,
   if (reader == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+
+  if (reader->spi_device != NULL || reader->dma_tx_buf != NULL ||
+      reader->dma_rx_buf != NULL || reader->is_initialized) {
+    ESP_LOGW(kTag, "Reinitializing MAX31865; cleaning stale handles");
+    esp_err_t cleanup_result = Max31865ReaderDeinit(reader);
+    if (cleanup_result != ESP_OK) {
+      ESP_LOGE(
+        kTag,
+        "MAX31865 deinit failed before reinit: %s",
+        esp_err_to_name(cleanup_result));
+      return cleanup_result;
+    }
+  }
   memset(reader, 0, sizeof(*reader));
 
   // MAX31865 uses SPI mode 1 (CPOL=0, CPHA=1).
@@ -514,11 +528,14 @@ Max31865ReaderInit(max31865_reader_t* reader,
   }
 
   reader->is_initialized = true;
+  const int32_t rref_mohm = (int32_t)llround(reader->rref_ohm * 1000.0);
+  const int32_t r0_mohm = (int32_t)llround(reader->rtd_nominal_ohm * 1000.0);
   ESP_LOGI(
     kTag,
-    "Initialized MAX31865 (Rref=%.2fΩ R0=%.2fΩ wires=%u filter=%uHz mode=%s)",
-    reader->rref_ohm,
-    reader->rtd_nominal_ohm,
+    "Initialized MAX31865 (Rref_mohm=%" PRId32 " R0_mohm=%" PRId32
+    " wires=%u filter=%uHz mode=%s)",
+    rref_mohm,
+    r0_mohm,
     (unsigned)reader->wires,
     (unsigned)reader->filter_hz,
     (reader->conversion == kMax31865ConversionCvdIterative) ? "CVD" : "TABLE");

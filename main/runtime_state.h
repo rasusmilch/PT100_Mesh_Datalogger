@@ -131,6 +131,7 @@ extern "C" {
   {
     kLogQueueDepth = 64,
     kStorageTaskStackBytes = 8192, // bytes
+    kNetTxTaskStackBytes = 10240, // bytes
   };
 
   typedef struct runtime_state_t
@@ -189,7 +190,16 @@ extern "C" {
     uint64_t last_overrun_records_total;
     uint64_t last_overrun_logged_total;
     uint64_t fram_overrun_ack_total;
+    uint32_t fram_corrupt_detect_count;
     uint32_t fram_corrupt_skip_count;
+    uint32_t fram_corrupt_last_offset;
+    uint32_t fram_corrupt_last_slot;
+    uint32_t fram_corrupt_last_addr;
+    uint32_t fram_corrupt_last_magic;
+    uint16_t fram_corrupt_last_schema;
+    uint16_t fram_corrupt_last_exp_crc;
+    uint16_t fram_corrupt_last_act_crc;
+    fram_log_validate_result_t fram_corrupt_last_reason;
 
     // Sensor fault logging state (rate-limited).
     bool last_sensor_fault_present;
@@ -205,20 +215,10 @@ extern "C" {
     StackType_t storage_task_stack[kStorageTaskStackBytes /
                                    sizeof(StackType_t)];
     TaskHandle_t export_task;
-    TaskHandle_t export_network_task;
-    TaskHandle_t time_sync_task;
-    TaskHandle_t topology_task;
     TaskHandle_t display_task;
-    TaskHandle_t health_publisher_task;
     TaskHandle_t wifi_direct_task;
-    TaskHandle_t bridge_task;
-    TaskHandle_t broker_task;
     TaskHandle_t control_task;
-    TaskHandle_t alert_monitor_task;
-    TaskHandle_t alert_sender_task;
-
-    alert_task_context_t alert_monitor_context;
-    alert_task_context_t alert_sender_context;
+    TaskHandle_t net_tx_task;
 
     bool initialized;
     bool system_running;
