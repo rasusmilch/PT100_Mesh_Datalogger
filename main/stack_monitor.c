@@ -170,11 +170,15 @@ StackMonitorMaybeSample(stack_monitor_t* monitor)
 }
 
 /**
- * @brief Print a tab-separated stack usage report with recommended stack sizes.
+ * @brief Print a fixed-width stack usage report with recommended stack sizes.
  *
  * The report includes each entry's configured allocation, last and minimum
  * observed free stack bytes, peak used bytes, and a recommended stack size
  * computed as (peak_used + headroom) rounded up to 256 bytes.
+ *
+ * The task name column width is chosen based on the longest task name
+ * registered in @p monitor, clamped to 24 characters. Names longer than the
+ * chosen width are truncated.
  *
  * @param monitor Pointer to the monitor to print.
  * @param headroom_bytes Extra bytes added to peak usage when computing the
@@ -187,7 +191,30 @@ StackMonitorPrint(const stack_monitor_t* monitor, uint32_t headroom_bytes)
     return;
   }
 
-  printf("task\talloc\tlast_free\tmin_free\tpeak_used\trecommended\n");
+  size_t task_col_width = strlen("task");
+  for (size_t i = 0; i < monitor->entry_count; ++i) {
+    const stack_monitor_entry_t* entry = &monitor->entries[i];
+    if (entry->task_name == NULL) {
+      continue;
+    }
+    const size_t name_len = strlen(entry->task_name);
+    if (name_len > task_col_width) {
+      task_col_width = name_len;
+    }
+  }
+  if (task_col_width > 24U) {
+    task_col_width = 24U;
+  }
+
+  const int task_w = (int)task_col_width;
+  printf("%-*s %10s %10s %10s %10s %12s\n",
+         task_w,
+         "task",
+         "alloc",
+         "last_free",
+         "min_free",
+         "peak_used",
+         "recommended");
   for (size_t i = 0; i < monitor->entry_count; ++i) {
     const stack_monitor_entry_t* entry = &monitor->entries[i];
     uint32_t min_free_bytes = entry->min_free_bytes;
@@ -198,9 +225,12 @@ StackMonitorPrint(const stack_monitor_t* monitor, uint32_t headroom_bytes)
     const uint32_t recommended_bytes =
       RoundUpBytes(peak_used_bytes + headroom_bytes, 256U);
 
-    printf("%s\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%" PRIu32
-           "\n",
-           entry->task_name,
+    const char* name = (entry->task_name != NULL) ? entry->task_name : "";
+    printf("%-*.*s %10" PRIu32 " %10" PRIu32 " %10" PRIu32 " %10" PRIu32
+           " %12" PRIu32 "\n",
+           task_w,
+           task_w,
+           name,
            entry->stack_alloc_bytes,
            entry->last_free_bytes,
            min_free_bytes,
