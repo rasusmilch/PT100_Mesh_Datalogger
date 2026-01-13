@@ -9,6 +9,7 @@ static const char* kWifiNamespace = "pt100_logger";
 static const char* kLegacyWifiNamespace = "app";
 static const char* kWifiSsidKey = "wifi_ssid";
 static const char* kWifiPassKey = "wifi_pass";
+static uint32_t s_wifi_credentials_revision = 0;
 
 static bool
 ReadNvsString(nvs_handle_t handle, const char* key, char* out, size_t out_len)
@@ -119,6 +120,9 @@ WifiCredentialsSave(const char* ssid, const char* password)
   }
 
   nvs_close(handle);
+  if (result == ESP_OK) {
+    s_wifi_credentials_revision++;
+  }
   return result;
 }
 
@@ -147,6 +151,9 @@ WifiCredentialsClear(void)
   }
   result = nvs_commit(handle);
   nvs_close(handle);
+  if (result == ESP_OK) {
+    s_wifi_credentials_revision++;
+  }
   return result;
 }
 
@@ -215,6 +222,16 @@ WifiCredentialsHasSsid(void)
     return true;
   }
   return false;
+}
+
+/**
+ * @brief Execute WifiCredentialsGetRevision.
+ * @return Return the function result.
+ */
+uint32_t
+WifiCredentialsGetRevision(void)
+{
+  return s_wifi_credentials_revision;
 }
 
 /**

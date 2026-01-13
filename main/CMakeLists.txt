@@ -34,6 +34,7 @@ idf_component_register(
     "mesh_transport.c"
     "mem_guard.c"
     "mem_pool.c"
+    "net_supervisor.c"
     "runtime_health.c"
     "runtime_health_publisher.c"
     "runtime_manager.c"

@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -43,6 +44,12 @@ extern "C" {
  * @return Return the function result.
  */
   bool WifiCredentialsHasSsid(void);
+
+/**
+ * @brief Execute WifiCredentialsGetRevision.
+ * @return Return the function result.
+ */
+  uint32_t WifiCredentialsGetRevision(void);
 
 /**
  * @brief Execute WifiCredentialsMaskPassword.

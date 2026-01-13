@@ -33,6 +33,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "net_supervisor.h"
 #include "runtime_health.h"
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
@@ -129,30 +130,10 @@ DisplayAttentionItemToName(display_attention_item_t item)
   }
 }
 
-static bool
-IsRuntimeWifiDirectMode(void)
-{
-  if (!RuntimeIsRunning()) {
-    return false;
-  }
-  if (g_runtime == NULL || g_runtime->settings == NULL) {
-    return false;
-  }
-
-  const app_net_mode_t effective_net_mode =
-    (g_runtime->settings->node_role == APP_NODE_ROLE_ROOT)
-      ? APP_NET_MODE_MESH
-      : g_runtime->settings->net_mode;
-  return effective_net_mode == APP_NET_MODE_DIRECT_WIFI;
-}
-
 static void
-MaybeNudgeWifiDirectTask(void)
+NotifyNetSupervisor(void)
 {
-  if (!IsRuntimeWifiDirectMode()) {
-    return;
-  }
-  RuntimeNudgeWifiDirectTask();
+  NetSupervisorNotifyUpdate();
 }
 
 /**
@@ -348,9 +329,7 @@ PrintWifiUsage(void)
     "notes:\n"
     "  - wifi cfg set ... writes to NVS and persists across reboot.\n"
     "  - wifi cfg defaults clears NVS overrides (revert to Kconfig defaults).\n"
-    "  - After changing wifi cfg values, restart the runtime to apply:\n"
-    "      run stop\n"
-    "      run start\n"
+    "  - Changes are applied by the network supervisor when possible.\n"
     "  - time_sync_s is clamped to 5..3600 seconds.\n"
     "  - wifi ntp sync performs a one-off sync; it does not change NVS\n"
     "    unless you also use wifi cfg set sntp/time_sync_s.\n");
@@ -2738,19 +2717,18 @@ CommandNet(int argc, char** argv)
   if (strcmp(action, "show") == 0) {
     printf("net_mode: %s\n",
            AppSettingsNetModeToString(g_runtime->settings->net_mode));
-    printf("note: takes effect on next run start (run stop; run start)\n");
     return 0;
   }
 
   if (strcmp(action, "set") == 0) {
     if (g_net_args.mode->count != 1) {
-      printf("usage: net set mesh|wifi\n");
+      printf("usage: net set mesh|wifi|none\n");
       return 1;
     }
     const char* mode_value = g_net_args.mode->sval[0];
     app_net_mode_t mode = APP_NET_MODE_MESH;
     if (!AppSettingsParseNetMode(mode_value, &mode)) {
-      printf("usage: net set mesh|wifi\n");
+      printf("usage: net set mesh|wifi|none\n");
       return 1;
     }
     g_runtime->settings->net_mode = mode;
@@ -2761,13 +2739,11 @@ CommandNet(int argc, char** argv)
     }
     printf("OK\n");
     printf("net_mode set to %s\n", AppSettingsNetModeToString(mode));
-    if (RuntimeIsRunning()) {
-      printf("note: run stop; run start to apply\n");
-    }
+    NotifyNetSupervisor();
     return 0;
   }
 
-  printf("unknown action. usage: net show | net set mesh|wifi\n");
+  printf("unknown action. usage: net show | net set mesh|wifi|none\n");
   return 1;
 }
 
@@ -2826,7 +2802,7 @@ CommandWifi(int argc, char** argv)
       return 1;
     }
     printf("OK\n");
-    MaybeNudgeWifiDirectTask();
+    NotifyNetSupervisor();
     return 0;
   }
 
@@ -3119,10 +3095,7 @@ CommandWifi(int argc, char** argv)
       }
 
       printf("OK\n");
-      MaybeNudgeWifiDirectTask();
-      if (RuntimeIsRunning()) {
-        printf("note: run stop; run start to apply\n");
-      }
+      NotifyNetSupervisor();
       return 0;
     }
 
@@ -4212,11 +4185,11 @@ RegisterCommands(void)
 
   g_net_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_net_args.mode =
-    arg_str0(NULL, NULL, "<mesh|wifi>", "Network mode (mesh|wifi)");
+    arg_str0(NULL, NULL, "<mesh|wifi|none>", "Network mode (mesh|wifi|none)");
   g_net_args.end = arg_end(2);
   const esp_console_cmd_t net_cmd = {
     .command = "net",
-    .help = "net show | net set mesh|wifi",
+    .help = "net show | net set mesh|wifi|none",
     .hint = NULL,
     .func = &CommandNet,
     .argtable = &g_net_args,

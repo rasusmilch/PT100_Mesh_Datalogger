@@ -3334,7 +3334,7 @@ ControlTickTimeSync(runtime_state_t* state)
  * @param context Parameter context.
  * @note FreeRTOS task entry for the DirectWifiTask task.
  */
-static void
+static void __attribute__((unused))
 DirectWifiTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
@@ -5038,7 +5038,7 @@ RuntimeStart(void)
     }
   }
 mesh_start_done:
-  if (effective_net_mode != APP_NET_MODE_MESH) {
+  if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
     RuntimeDiagHeapCheck(&g_state, "Wi-Fi direct start (before)", false);
     esp_err_t wifi_result =
       WifiServiceAcquire(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
@@ -5093,25 +5093,11 @@ wifi_direct_start_done:
   BaseType_t net_tx_created = pdPASS;
   BaseType_t wifi_direct_created = pdPASS;
 
-  const uint32_t kWifiDirectStackBytes = 4096;
   const uint32_t kSensorStackBytes = 6144;
   const uint32_t kExportStackBytes = 6144;
 
   if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
-    wifi_direct_created = xTaskCreate(&DirectWifiTask,
-                                      "wifi_direct",
-                                      kWifiDirectStackBytes,
-                                      &g_state,
-                                      3,
-                                      &g_state.wifi_direct_task);
-    if (wifi_direct_created != pdPASS) {
-      g_state.wifi_direct_task = NULL;
-      ESP_LOGE(kTag, "Failed to create task wifi_direct");
-    } else {
-      RegisterStackMonitorTask("wifi_direct",
-                               &g_state.wifi_direct_task,
-                               kWifiDirectStackBytes);
-    }
+    ESP_LOGI(kTag, "Wi-Fi direct handled by net supervisor");
   }
 
   if (role == APP_NODE_ROLE_SENSOR) {

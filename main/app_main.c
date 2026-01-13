@@ -4,6 +4,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "net_supervisor.h"
 #include "nvs_flash.h"
 #include "run_gpio.h"
 #include "runtime_manager.h"
@@ -83,6 +84,11 @@ AppInitTask(void* context)
 
   g_runtime = RuntimeGetRuntime();
   if (g_runtime != NULL) {
+    esp_err_t net_result = NetSupervisorStart(g_runtime);
+    if (net_result != ESP_OK) {
+      ESP_LOGE(
+        kTag, "Net supervisor start failed: %s", esp_err_to_name(net_result));
+    }
     ESP_ERROR_CHECK(ConsoleCommandsStart((app_runtime_t*)g_runtime, boot_mode));
     RunGpioInit();
   } else {
