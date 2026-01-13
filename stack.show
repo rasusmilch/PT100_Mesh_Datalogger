@@ -1,0 +1,11 @@
+pt100> stack show
+task             alloc  last_free   min_free  peak_used  recommended
+display           4096       1544       1544       2552         3584
+control          12288       8728       8728       3560         4608
+health_pub        4096       2600       2600       1496         2560
+wifi_direct       4096       1248       1248       2848         4096
+sensor            6144       4148       4148       1996         3072
+storage           8192       4512       4512       3680         4864
+export            6144       3680       3680       2464         3584
+time_sync         2048       2048       2048          0         1024
+topology          4096       2944       2944       1152         2304
