@@ -3955,6 +3955,7 @@ RuntimeGetDisplayCsGpio(void)
   return CONFIG_APP_MAX7219_CS_GPIO;
 }
 
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
 static bool
 DisplayShareConfigMatchesApp(void)
 {
@@ -3962,6 +3963,7 @@ DisplayShareConfigMatchesApp(void)
          RuntimeGetDisplayMosiGpio() == CONFIG_APP_SPI_MOSI_GPIO &&
          RuntimeGetDisplaySclkGpio() == CONFIG_APP_SPI_SCLK_GPIO;
 }
+#endif  // CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
 
 static int
 SpiHostToId(spi_host_device_t host)
@@ -5259,7 +5261,10 @@ RuntimeStop(void)
   g_state.runtime_phase = RUNTIME_PHASE_STOPPING;
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
   esp_err_t finalize_result = RuntimeStopAllTasks(&g_state);
-  ESP_ERROR_CHECK_HEAP_CORRUPTION();
+  if (!heap_caps_check_integrity_all(true)) {
+    ESP_LOGE(kTag, "Heap corruption detected after RuntimeStop");
+    abort();
+  }
   g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
   return (stop_result != ESP_OK) ? stop_result : finalize_result;
 }
