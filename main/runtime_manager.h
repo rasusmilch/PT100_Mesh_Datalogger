@@ -197,6 +197,12 @@ extern "C" {
   void RuntimeSetSdAppendFailureOnce(bool enabled);
 
 /**
+ * @brief Execute RuntimePrintStackMonitor.
+ * @param headroom_bytes Parameter headroom_bytes.
+ */
+  void RuntimePrintStackMonitor(uint32_t headroom_bytes);
+
+/**
  * @brief Execute RuntimeSdIsDegraded.
  * @return Return the function result.
  */
