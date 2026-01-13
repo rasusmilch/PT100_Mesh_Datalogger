@@ -186,6 +186,21 @@ PrintStatus(const alert_manager_t* manager)
     return;
   }
   const alert_config_t* cfg = &manager->config;
+  int32_t hyst_whole = cfg->hysteresis_milli_c / 1000;
+  int32_t hyst_frac = cfg->hysteresis_milli_c % 1000;
+  if (hyst_frac < 0) {
+    hyst_frac = -hyst_frac;
+  }
+  int32_t high_whole = cfg->default_high_milli_c / 1000;
+  int32_t high_frac = cfg->default_high_milli_c % 1000;
+  if (high_frac < 0) {
+    high_frac = -high_frac;
+  }
+  int32_t low_whole = cfg->default_low_milli_c / 1000;
+  int32_t low_frac = cfg->default_low_milli_c % 1000;
+  if (low_frac < 0) {
+    low_frac = -low_frac;
+  }
   printf("ntfy: url=%s topic=%s token=%s\n",
          cfg->ntfy_url[0] ? cfg->ntfy_url : "<unset>",
          cfg->ntfy_topic[0] ? cfg->ntfy_topic : "<unset>",
@@ -195,14 +210,17 @@ PrintStatus(const alert_manager_t* manager)
          cfg->per_key_cooldown_ms,
          cfg->global_max_per_minute);
   printf("missing_gap_ms=%" PRIu32 " offline_ms=%" PRIu32
-         " hold_ms=%" PRIu32 " hyst=%.3fC\n",
+         " hold_ms=%" PRIu32 " hyst=%" PRIi32 ".%03" PRIi32 "C\n",
          cfg->missing_gap_ms,
          cfg->offline_ms,
          cfg->hold_ms,
-         cfg->hysteresis_milli_c / 1000.0);
-  printf("default_limits: high=%.3fC low=%.3fC\n",
-         cfg->default_high_milli_c / 1000.0,
-         cfg->default_low_milli_c / 1000.0);
+         hyst_whole,
+         hyst_frac);
+  printf("default_limits: high=%" PRIi32 ".%03" PRIi32 "C low=%" PRIi32 ".%03" PRIi32 "C\n",
+         high_whole,
+         high_frac,
+         low_whole,
+         low_frac);
   printf("queue: depth=%" PRIu32 " dropped=%" PRIu32
          " send_ok=%" PRIu32 " send_fail=%" PRIu32 " last_status=%d\n",
          (uint32_t)uxQueueMessagesWaiting(manager->ntfy.queue),
@@ -251,15 +269,33 @@ PrintLeafList(const alert_manager_t* manager)
       high_limit = override->high_limit_milli_c;
       low_limit = override->low_limit_milli_c;
     }
-    printf("  %s online=%u temp=%.3fC last_seq=%" PRIu32
-           " last_rx_ms=%" PRIi64 " limits=[%.2fC/%.2fC]\n",
+    const int32_t temp_whole = leaves[i].last_temp_milli_c / 1000;
+    int32_t temp_frac = leaves[i].last_temp_milli_c % 1000;
+    if (temp_frac < 0) {
+      temp_frac = -temp_frac;
+    }
+    const int32_t high_whole = high_limit / 1000;
+    int32_t high_frac = high_limit % 1000;
+    if (high_frac < 0) {
+      high_frac = -high_frac;
+    }
+    const int32_t low_whole = low_limit / 1000;
+    int32_t low_frac = low_limit % 1000;
+    if (low_frac < 0) {
+      low_frac = -low_frac;
+    }
+    printf("  %s online=%u temp=%" PRIi32 ".%03" PRIi32 "C last_seq=%" PRIu32
+           " last_rx_ms=%" PRIi64 " limits=[%" PRIi32 ".%03" PRIi32 "C/%" PRIi32 ".%03" PRIi32 "C]\n",
            leaf_str,
            leaves[i].online ? 1u : 0u,
-           leaves[i].last_temp_milli_c / 1000.0,
+           temp_whole,
+           temp_frac,
            leaves[i].last_seq,
            leaves[i].last_rx_uptime_ms,
-           high_limit / 1000.0,
-           low_limit / 1000.0);
+           high_whole,
+           high_frac,
+           low_whole,
+           low_frac);
   }
 }
 
@@ -275,18 +311,25 @@ CommandAlert(int argc, char** argv)
   if (g_runtime == NULL || g_runtime->alert_manager == NULL) {
     return 1;
   }
-  if (g_runtime->settings->node_role != APP_NODE_ROLE_ROOT) {
-    printf("alert commands are only available on the root node\n");
-    return 1;
-  }
+  const bool is_root = (g_runtime->settings->node_role == APP_NODE_ROLE_ROOT);
 
   if (argc < 2) {
-    printf("usage: alert status | alert list | alert enable <type|all> <on|off> [leaf]\n"
-           "       alert set limit <leaf|default> <high|low> <value><C|F>\n"
-           "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <value><C|F>\n"
-           "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
-           "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
-           "       alert clear <type|all> [leaf]\n");
+    if (is_root) {
+      printf("usage: alert status | alert list | alert enable <type|all> <on|off> [leaf]\n"
+             "       alert set limit <leaf|default> <high|low> <value><C|F>\n"
+             "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <value><C|F>\n"
+             "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
+             "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
+             "       alert clear <type|all> [leaf]\n");
+    } else {
+      printf("usage: alert status | alert enable <type|all> <on|off>\n"
+             "       alert set limit default <high|low> <value><C|F>\n"
+             "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <value><C|F>\n"
+             "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
+             "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
+             "       alert clear <type|all>\n"
+             "note: leaf overrides and 'alert list' require node role root\n");
+    }
     return 1;
   }
 
@@ -298,6 +341,10 @@ CommandAlert(int argc, char** argv)
     return 0;
   }
   if (strcmp(action, "list") == 0) {
+    if (!is_root) {
+      printf("alert list is only available on the root node\n");
+      return 1;
+    }
     PrintLeafList(manager);
     return 0;
   }
@@ -317,6 +364,10 @@ CommandAlert(int argc, char** argv)
     bool per_leaf = false;
     uint64_t leaf_id = 0;
     if (argc > 4) {
+      if (!is_root) {
+        printf("leaf overrides are only available on the root node\n");
+        return 1;
+      }
       per_leaf = ParseLeafId(argv[4], &leaf_id);
       if (!per_leaf) {
         printf("invalid leaf id\n");
@@ -373,6 +424,10 @@ CommandAlert(int argc, char** argv)
       if (strcmp(target, "default") == 0) {
         ok = AlertManagerSetDefaultLimit(manager, is_high, milli_c);
       } else {
+        if (!is_root) {
+          printf("leaf overrides are only available on the root node\n");
+          return 1;
+        }
         uint64_t leaf_id = 0;
         if (!ParseLeafId(target, &leaf_id)) {
           printf("invalid leaf id\n");
@@ -508,6 +563,10 @@ CommandAlert(int argc, char** argv)
     bool all_leaves = true;
     uint64_t leaf_id = 0;
     if (argc > 3) {
+      if (!is_root) {
+        printf("leaf selection is only available on the root node\n");
+        return 1;
+      }
       all_leaves = false;
       if (!ParseLeafId(argv[3], &leaf_id)) {
         printf("invalid leaf id\n");
