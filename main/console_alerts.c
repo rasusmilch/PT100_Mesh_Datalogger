@@ -367,7 +367,8 @@ CommandAlert(int argc, char** argv)
              "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <value><C|F>\n"
              "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
              "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
-             "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all> [leaf]\n");
+             "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all> [leaf]\n"
+             "note: ntfy token is optional (only needed for protected topics)\n");
     } else {
       printf("usage: alert status | alert types | alert enable <high|low|missing|offline|restart|root|boot|mode|error|all> <on|off>\n"
              "       alert set limit default <high|low> <value><C|F>\n"
@@ -375,7 +376,8 @@ CommandAlert(int argc, char** argv)
              "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
              "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
              "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all>\n"
-             "note: leaf overrides and 'alert list' require node role root\n");
+             "note: leaf overrides and 'alert list' require node role root\n"
+             "note: ntfy token is optional (only needed for protected topics)\n");
     }
     printf("valid types: ");
     PrintAlertTypes();
@@ -549,12 +551,14 @@ CommandAlert(int argc, char** argv)
   if (strcmp(action, "ntfy") == 0) {
     if (argc < 3) {
       printf("usage: alert ntfy set url|topic|token <value>|clear | alert ntfy test\n");
+      printf("note: ntfy token is optional (only needed for protected topics)\n");
       return 1;
     }
     const char* sub = argv[2];
     if (strcmp(sub, "set") == 0) {
       if (argc < 5) {
         printf("usage: alert ntfy set url|topic|token <value>|clear\n");
+        printf("note: ntfy token is optional (only needed for protected topics)\n");
         return 1;
       }
       const char* field = argv[3];
