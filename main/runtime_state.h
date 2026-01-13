@@ -131,6 +131,7 @@ extern "C" {
   {
     kLogQueueDepth = 64,
     kStorageTaskStackBytes = 8192, // bytes
+    kNetTxTaskStackBytes = 10240, // bytes
   };
 
   typedef struct runtime_state_t
@@ -214,20 +215,10 @@ extern "C" {
     StackType_t storage_task_stack[kStorageTaskStackBytes /
                                    sizeof(StackType_t)];
     TaskHandle_t export_task;
-    TaskHandle_t export_network_task;
-    TaskHandle_t time_sync_task;
-    TaskHandle_t topology_task;
     TaskHandle_t display_task;
-    TaskHandle_t health_publisher_task;
     TaskHandle_t wifi_direct_task;
-    TaskHandle_t bridge_task;
-    TaskHandle_t broker_task;
     TaskHandle_t control_task;
-    TaskHandle_t alert_monitor_task;
-    TaskHandle_t alert_sender_task;
-
-    alert_task_context_t alert_monitor_context;
-    alert_task_context_t alert_sender_context;
+    TaskHandle_t net_tx_task;
 
     bool initialized;
     bool system_running;
