@@ -432,6 +432,19 @@ Max31865ReaderInit(max31865_reader_t* reader,
   if (reader == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+
+  if (reader->spi_device != NULL || reader->dma_tx_buf != NULL ||
+      reader->dma_rx_buf != NULL || reader->is_initialized) {
+    ESP_LOGW(kTag, "Reinitializing MAX31865; cleaning stale handles");
+    esp_err_t cleanup_result = Max31865ReaderDeinit(reader);
+    if (cleanup_result != ESP_OK) {
+      ESP_LOGE(
+        kTag,
+        "MAX31865 deinit failed before reinit: %s",
+        esp_err_to_name(cleanup_result));
+      return cleanup_result;
+    }
+  }
   memset(reader, 0, sizeof(*reader));
 
   // MAX31865 uses SPI mode 1 (CPOL=0, CPHA=1).
