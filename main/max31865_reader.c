@@ -1,5 +1,6 @@
 #include "max31865_reader.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -527,11 +528,14 @@ Max31865ReaderInit(max31865_reader_t* reader,
   }
 
   reader->is_initialized = true;
+  const int32_t rref_mohm = (int32_t)llround(reader->rref_ohm * 1000.0);
+  const int32_t r0_mohm = (int32_t)llround(reader->rtd_nominal_ohm * 1000.0);
   ESP_LOGI(
     kTag,
-    "Initialized MAX31865 (Rref=%.2fΩ R0=%.2fΩ wires=%u filter=%uHz mode=%s)",
-    reader->rref_ohm,
-    reader->rtd_nominal_ohm,
+    "Initialized MAX31865 (Rref_mohm=%" PRId32 " R0_mohm=%" PRId32
+    " wires=%u filter=%uHz mode=%s)",
+    rref_mohm,
+    r0_mohm,
     (unsigned)reader->wires,
     (unsigned)reader->filter_hz,
     (reader->conversion == kMax31865ConversionCvdIterative) ? "CVD" : "TABLE");
