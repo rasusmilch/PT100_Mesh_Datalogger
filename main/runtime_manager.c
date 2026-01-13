@@ -1722,8 +1722,8 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   if (peek_result == ESP_ERR_INVALID_RESPONSE) {
     const uint32_t record_index = state->fram_log.read_index;
     const uint32_t slot = record_index % state->fram_log.capacity_records;
-    const uint32_t addr = state->fram_log.record_region_offset +
-                          slot * sizeof(log_record_t);
+    const uint32_t addr =
+      state->fram_log.record_region_offset + slot * sizeof(log_record_t);
     uint16_t actual_crc = 0;
     const fram_log_validate_result_t validate_result =
       FramLogValidateRecord(&oldest_record, &actual_crc);
@@ -1825,8 +1825,8 @@ BuildBatchForDay(runtime_state_t* state,
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       const uint32_t record_index = state->fram_log.read_index + offset;
       const uint32_t slot = record_index % state->fram_log.capacity_records;
-      const uint32_t addr = state->fram_log.record_region_offset +
-                            slot * sizeof(log_record_t);
+      const uint32_t addr =
+        state->fram_log.record_region_offset + slot * sizeof(log_record_t);
       uint16_t actual_crc = 0;
       const fram_log_validate_result_t validate_result =
         FramLogValidateRecord(&record, &actual_crc);
@@ -1857,12 +1857,11 @@ BuildBatchForDay(runtime_state_t* state,
     }
 
     size_t line_len = 0;
-    if (!CsvFormatRow(
-          &record,
-          state->node_id_string,
-          g_sd_csv_line_buffer,
-          sizeof(g_sd_csv_line_buffer),
-          &line_len)) {
+    if (!CsvFormatRow(&record,
+                      state->node_id_string,
+                      g_sd_csv_line_buffer,
+                      sizeof(g_sd_csv_line_buffer),
+                      &line_len)) {
       return ESP_ERR_NO_MEM;
     }
     if (used + line_len > buffer_size) {
@@ -3176,9 +3175,16 @@ DirectWifiTask(void* context)
       if (sntp_server != NULL && sntp_server[0] != '\0') {
         sntp_result = TimeSyncStartSntpAndWait(sntp_server, 30 * 1000);
         if (sntp_result == ESP_OK) {
-          (void)TimeSyncSetRtcFromSystem(&state->time_sync);
+          const esp_err_t rtc_result =
+            TimeSyncSetRtcFromSystem(&state->time_sync);
           state->wifi_direct_time_synced = true;
-          ESP_LOGI(kTag, "Time synchronized (SNTP -> RTC UTC)");
+          if (rtc_result == ESP_OK) {
+            ESP_LOGI(kTag, "Time synchronized (SNTP -> RTC UTC)");
+          } else {
+            ESP_LOGW(kTag,
+                     "Time synchronized (SNTP), but RTC update failed: %s",
+                     esp_err_to_name(rtc_result));
+          }
         } else {
           ESP_LOGW(kTag, "SNTP sync failed: %s", esp_err_to_name(sntp_result));
         }
@@ -3414,8 +3420,7 @@ DrainFramToSd(runtime_state_t* state,
     ClearSdIoError(state);
     UpdateCachedBool(
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
-    UpdateCachedBool(
-      state, &state->cached_status.sd_safe_to_remove, false);
+    UpdateCachedBool(state, &state->cached_status.sd_safe_to_remove, false);
   }
 
   const int32_t drain_records_per_pass = (max_records_per_pass > 0)
@@ -3539,12 +3544,10 @@ drain_done:
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
     if (result == ESP_OK && unmount_result == ESP_OK &&
         !state->sd_logger.is_mounted) {
-      UpdateCachedBool(
-        state, &state->cached_status.sd_safe_to_remove, true);
+      UpdateCachedBool(state, &state->cached_status.sd_safe_to_remove, true);
       printf("SD: unmounted; safe to remove\n");
     } else {
-      UpdateCachedBool(
-        state, &state->cached_status.sd_safe_to_remove, false);
+      UpdateCachedBool(state, &state->cached_status.sd_safe_to_remove, false);
     }
   } else if (mounted_here && !state->sd_logger.is_mounted) {
     UpdateCachedBool(
@@ -3581,8 +3584,7 @@ RuntimeStopForceSdUnmount(runtime_state_t* state,
   const bool locked = RuntimeSdIoLock(state, kSdIoLockTimeoutTicks);
   if (!locked) {
     ESP_LOGW(
-      kTag,
-      "SD STOP INCOMPLETE: SD I/O lock timeout; skipping forced unmount");
+      kTag, "SD STOP INCOMPLETE: SD I/O lock timeout; skipping forced unmount");
   } else {
     state->sd_flush_in_progress = true;
 
@@ -3982,17 +3984,16 @@ InitializeMax7219Display(runtime_state_t* state)
 
 #if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
   if (!DisplayShareConfigMatchesApp()) {
-    ESP_LOGE(
-      kTag,
-      "MAX7219 share enabled but pins/host differ "
-      "(app host=%d mosi=%d sclk=%d, display host=%d mosi=%d sclk=%d); "
-      "disable display or unshare SPI buses",
-      SpiHostToId(GetSpiHost()),
-      CONFIG_APP_SPI_MOSI_GPIO,
-      CONFIG_APP_SPI_SCLK_GPIO,
-      SpiHostToId(RuntimeGetDisplaySpiHost()),
-      RuntimeGetDisplayMosiGpio(),
-      RuntimeGetDisplaySclkGpio());
+    ESP_LOGE(kTag,
+             "MAX7219 share enabled but pins/host differ "
+             "(app host=%d mosi=%d sclk=%d, display host=%d mosi=%d sclk=%d); "
+             "disable display or unshare SPI buses",
+             SpiHostToId(GetSpiHost()),
+             CONFIG_APP_SPI_MOSI_GPIO,
+             CONFIG_APP_SPI_SCLK_GPIO,
+             SpiHostToId(RuntimeGetDisplaySpiHost()),
+             RuntimeGetDisplayMosiGpio(),
+             RuntimeGetDisplaySclkGpio());
     return ESP_ERR_INVALID_STATE;
   }
 #endif
@@ -4337,8 +4338,7 @@ RuntimeManagerInit(void)
   UpdateCachedBool(
     &g_state, &g_state.cached_status.sd_mounted, g_state.sd_logger.is_mounted);
   if (g_state.sd_logger.is_mounted) {
-    UpdateCachedBool(
-      &g_state, &g_state.cached_status.sd_safe_to_remove, false);
+    UpdateCachedBool(&g_state, &g_state.cached_status.sd_safe_to_remove, false);
   }
 
   esp_err_t sensor_result = InitializeMax31865Sensor(&g_state, spi_host);
@@ -4374,8 +4374,8 @@ RuntimeManagerInit(void)
 
   bool export_pool_ready = false;
   if (g_export_outbox_pool_storage == NULL) {
-    const size_t export_pool_bytes = MemPoolGetRequiredBytes(
-      sizeof(export_record_item_t), kExportOutboxDepth);
+    const size_t export_pool_bytes =
+      MemPoolGetRequiredBytes(sizeof(export_record_item_t), kExportOutboxDepth);
     g_export_outbox_pool_storage = (uint8_t*)AppMalloc(export_pool_bytes);
   }
   if (g_export_outbox_pool_storage != NULL &&
@@ -4396,11 +4396,10 @@ RuntimeManagerInit(void)
       g_export_outbox_queue_storage = (uint8_t*)AllocatePreferPsram(
         kExportOutboxDepth * sizeof(export_record_item_t*));
     }
-    g_state.export_outbox =
-      xQueueCreateStatic(kExportOutboxDepth,
-                         sizeof(export_record_item_t*),
-                         g_export_outbox_queue_storage,
-                         &g_export_outbox_queue_struct);
+    g_state.export_outbox = xQueueCreateStatic(kExportOutboxDepth,
+                                               sizeof(export_record_item_t*),
+                                               g_export_outbox_queue_storage,
+                                               &g_export_outbox_queue_struct);
     if (g_state.export_outbox == NULL) {
       if (first_error == ESP_OK) {
         first_error = ESP_ERR_NO_MEM;
@@ -4433,11 +4432,10 @@ RuntimeManagerInit(void)
       g_broker_outbox_queue_storage = (uint8_t*)AllocatePreferPsram(
         kBrokerOutboxDepth * sizeof(broker_publish_item_t*));
     }
-    g_state.broker_outbox =
-      xQueueCreateStatic(kBrokerOutboxDepth,
-                         sizeof(broker_publish_item_t*),
-                         g_broker_outbox_queue_storage,
-                         &g_broker_outbox_queue_struct);
+    g_state.broker_outbox = xQueueCreateStatic(kBrokerOutboxDepth,
+                                               sizeof(broker_publish_item_t*),
+                                               g_broker_outbox_queue_storage,
+                                               &g_broker_outbox_queue_struct);
     if (g_state.broker_outbox == NULL) {
       if (first_error == ESP_OK) {
         first_error = ESP_ERR_NO_MEM;
@@ -4486,8 +4484,7 @@ EnsureSdMountedLocked(runtime_state_t* state)
   } else {
     ClearSdIoError(state);
     if (state->sd_logger.is_mounted) {
-      UpdateCachedBool(
-        state, &state->cached_status.sd_safe_to_remove, false);
+      UpdateCachedBool(state, &state->cached_status.sd_safe_to_remove, false);
     }
   }
   UpdateCachedBool(
@@ -4547,8 +4544,7 @@ SdWithTemporaryMount(runtime_state_t* state, runtime_sd_op_fn_t op, void* ctx)
     ClearSdIoError(state);
     UpdateCachedBool(
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
-    UpdateCachedBool(
-      state, &state->cached_status.sd_safe_to_remove, false);
+    UpdateCachedBool(state, &state->cached_status.sd_safe_to_remove, false);
   }
 
   esp_err_t result = op(&g_runtime, ctx);
