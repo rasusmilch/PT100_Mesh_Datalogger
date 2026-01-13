@@ -4682,12 +4682,6 @@ RuntimeStart(void)
     return ESP_ERR_NO_MEM;
   }
 
-  if (g_state.sensor.spi_device != NULL) {
-    ESP_LOGW(kTag, "RTD reader had stale SPI handle; removing before init");
-    (void)spi_bus_remove_device(g_state.sensor.spi_device);
-    g_state.sensor.spi_device = NULL;
-  }
-
   if (!g_state.sensor.is_initialized) {
     esp_err_t sensor_result = InitializeMax31865Sensor(&g_state, GetSpiHost());
     if (sensor_result != ESP_OK) {
@@ -5243,11 +5237,9 @@ RuntimeStopAllTasks(runtime_state_t* state)
 
   // Leave the MAX7219 display initialized during stop; only deinit on shutdown.
 
-  if (state->sensor.spi_device != NULL || state->sensor.dma_tx_buf != NULL ||
-      state->sensor.dma_rx_buf != NULL || state->sensor.is_initialized) {
-    (void)Max31865ReaderDeinit(&state->sensor);
-  }
-  memset(&state->sensor, 0, sizeof(state->sensor));
+  // Keep MAX31865 initialized in diagnostics mode so calibration commands can
+  // read the RTD when logging is stopped. Full deinit is only done on reboot or
+  // an explicit shutdown path (if added later).
   return ESP_OK;
 }
 
