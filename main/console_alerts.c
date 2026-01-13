@@ -229,20 +229,47 @@ PrintStatus(const alert_manager_t* manager)
          manager->ntfy.send_fail,
          manager->ntfy.last_http_status);
 
-  alert_state_t states[ALERT_MAX_LEAVES * ALERT_TYPE_COUNT];
-  alert_type_t types[ALERT_MAX_LEAVES * ALERT_TYPE_COUNT];
-  uint64_t leaf_ids[ALERT_MAX_LEAVES * ALERT_TYPE_COUNT];
-  const size_t count = AlertManagerCopyActiveAlerts(
-    manager, states, types, leaf_ids, ALERT_MAX_LEAVES * ALERT_TYPE_COUNT);
-  printf("active alerts: %u\n", (unsigned)count);
-  for (size_t i = 0; i < count; ++i) {
-    char leaf_str[24];
-    AlertManagerFormatLeafId(leaf_ids[i], leaf_str, sizeof(leaf_str));
-    printf("  %s %s transitions=%" PRIu32 " last_change_ms=%" PRIi64 "\n",
-           leaf_str,
-           AlertTypeToName(types[i]),
-           states[i].transitions,
-           states[i].last_change_ms);
+  size_t active_count = 0;
+  for (size_t leaf_index = 0; leaf_index < ALERT_MAX_LEAVES; ++leaf_index) {
+    if (!manager->leaves[leaf_index].in_use) {
+      continue;
+    }
+    for (size_t type_index = 0; type_index < ALERT_TYPE_COUNT; ++type_index) {
+      if (manager->states[leaf_index][type_index].active) {
+        ++active_count;
+      }
+    }
+  }
+  printf("active alerts: %u\n", (unsigned)active_count);
+
+  const size_t print_limit = 16;
+  size_t printed = 0;
+  for (size_t leaf_index = 0; leaf_index < ALERT_MAX_LEAVES; ++leaf_index) {
+    if (!manager->leaves[leaf_index].in_use) {
+      continue;
+    }
+    for (size_t type_index = 0; type_index < ALERT_TYPE_COUNT; ++type_index) {
+      const alert_state_t* state = &manager->states[leaf_index][type_index];
+      if (!state->active) {
+        continue;
+      }
+      if (printed < print_limit) {
+        char leaf_str[24];
+        AlertManagerFormatLeafId(manager->leaves[leaf_index].leaf_id,
+                                 leaf_str,
+                                 sizeof(leaf_str));
+        printf("  %s %s transitions=%" PRIu32 " last_change_ms=%" PRIi64 "\n",
+               leaf_str,
+               AlertTypeToName((alert_type_t)type_index),
+               state->transitions,
+               state->last_change_ms);
+        ++printed;
+      }
+    }
+  }
+
+  if (active_count > printed) {
+    printf("  ... (%u more)\n", (unsigned)(active_count - printed));
   }
 }
 
