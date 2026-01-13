@@ -65,6 +65,15 @@ static const int64_t kNetTxStallDropMs = 30000;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
 
+static void
+RootRecordRxCallback(const pt100_mesh_addr_t* from,
+                     const log_record_t* record,
+                     void* context);
+static void
+RootPublishRecordRxCallback(const uint8_t src_mac[6],
+                            const log_record_t* record,
+                            void* context);
+
 static sd_append_verify_t
 ResolveSdVerifyMode(const runtime_state_t* state);
 
@@ -1432,6 +1441,78 @@ SnapshotActiveSettings(runtime_state_t* state)
   state->mqtt_qos_active = state->settings.mqtt_qos;
   state->mqtt_retain_active = state->settings.mqtt_retain;
   state->mqtt_bridge_mode_active = state->settings.mqtt_bridge_mode;
+}
+
+static esp_err_t
+RuntimeStartMeshTransport(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (state->mesh_started && MeshTransportIsStarted(&state->mesh)) {
+    return ESP_OK;
+  }
+
+  const bool is_root = (state->settings.node_role == APP_NODE_ROLE_ROOT);
+  const bool allow_children = state->settings.allow_children;
+  const bool router_disabled = AppNetConfigGetMeshDisableRouter();
+  const char* router_ssid = "";
+  const char* router_password = "";
+  if (is_root && !router_disabled) {
+    wifi_credentials_t creds;
+    WifiCredentialsLoad(&creds);
+    if (creds.has_ssid) {
+      router_ssid = creds.ssid;
+      router_password = creds.password;
+    }
+  }
+
+  esp_err_t mesh_result =
+    MeshTransportStart(&state->mesh,
+                       is_root,
+                       allow_children,
+                       router_ssid,
+                       router_password,
+                       is_root ? &RootRecordRxCallback : NULL,
+                       NULL,
+                       (is_root && state->root_publish_consumer_active)
+                         ? &RootPublishRecordRxCallback
+                         : NULL,
+                       NULL,
+                       &state->time_sync);
+  if (mesh_result == ESP_OK) {
+    state->mesh_started = true;
+  } else {
+    state->mesh_started = false;
+  }
+  return mesh_result;
+}
+
+static void
+RuntimeStopMeshTransport(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  if (!state->mesh_started && !MeshTransportIsStarted(&state->mesh)) {
+    return;
+  }
+  (void)MeshTransportStop(&state->mesh);
+  state->mesh_started = false;
+}
+
+esp_err_t
+RuntimeApplyNetMode(app_net_mode_t mode)
+{
+  const app_net_mode_t effective_mode =
+    (g_state.settings.node_role == APP_NODE_ROLE_ROOT) ? APP_NET_MODE_MESH
+                                                       : mode;
+  g_state.net_mode_active = effective_mode;
+  if (effective_mode == APP_NET_MODE_MESH) {
+    return RuntimeStartMeshTransport(&g_state);
+  }
+  RuntimeStopMeshTransport(&g_state);
+  return ESP_OK;
 }
 
 /**
@@ -4982,76 +5063,14 @@ RuntimeStart(void)
     }
   }
 
-  const bool router_disabled = AppNetConfigGetMeshDisableRouter();
-
   RuntimeEnableDataStreaming(true);
 
-  if (effective_net_mode == APP_NET_MODE_MESH) {
-    // Only the root should ever be configured with upstream router credentials.
-    // Non-root nodes should focus on joining the Mesh-Lite network.
-    const char* router_ssid = "";
-    const char* router_password = "";
-    if (is_root && !router_disabled) {
-      wifi_credentials_t creds;
-      WifiCredentialsLoad(&creds);
-      if (creds.has_ssid) {
-        router_ssid = creds.ssid;
-        router_password = creds.password;
-      }
-    }
-
-    if (!g_state.mesh_started) {
-      RuntimeDiagHeapCheck(&g_state, "Wi-Fi mesh start (before)", false);
-      esp_err_t wifi_result = WifiServiceAcquire(WIFI_SERVICE_MODE_MESH);
-      RuntimeDiagHeapCheck(&g_state, "Wi-Fi mesh start (after)", false);
-      if (wifi_result != ESP_OK) {
-        ESP_LOGE(
-          kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
-        g_state.mesh_started = false;
-        goto mesh_start_done;
-      }
-
-      esp_err_t mesh_result =
-        MeshTransportStart(&g_state.mesh,
-                           is_root,
-                           allow_children,
-                           router_ssid,
-                           router_password,
-                           is_root ? &RootRecordRxCallback : NULL,
-                           NULL,
-                           (is_root && g_state.root_publish_consumer_active)
-                             ? &RootPublishRecordRxCallback
-                             : NULL,
-                           NULL,
-                           &g_state.time_sync);
-      if (mesh_result == ESP_OK) {
-        g_state.mesh_started = true;
-      } else {
-        ESP_LOGE(kTag, "Mesh start failed: %s", esp_err_to_name(mesh_result));
-        RuntimeDiagHeapCheck(
-          &g_state, "Wi-Fi mesh stop (start fail before)", false);
-        (void)WifiServiceRelease();
-        RuntimeDiagHeapCheck(
-          &g_state, "Wi-Fi mesh stop (start fail after)", false);
-        g_state.mesh_started = false;
-      }
-    }
+  esp_err_t net_apply_result = RuntimeApplyNetMode(g_state.settings.net_mode);
+  if (net_apply_result != ESP_OK && effective_net_mode == APP_NET_MODE_MESH) {
+    ESP_LOGE(kTag,
+             "Mesh start failed: %s",
+             esp_err_to_name(net_apply_result));
   }
-mesh_start_done:
-  if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
-    RuntimeDiagHeapCheck(&g_state, "Wi-Fi direct start (before)", false);
-    esp_err_t wifi_result =
-      WifiServiceAcquire(WIFI_SERVICE_MODE_DIAGNOSTIC_STA);
-    RuntimeDiagHeapCheck(&g_state, "Wi-Fi direct start (after)", false);
-    if (wifi_result != ESP_OK) {
-      ESP_LOGE(
-        kTag, "Wi-Fi service start failed: %s", esp_err_to_name(wifi_result));
-      g_state.wifi_direct_started = false;
-      goto wifi_direct_start_done;
-    }
-    g_state.wifi_direct_started = true;
-  }
-wifi_direct_start_done:
 
   if (g_state.mesh_started && g_state.mesh.is_root &&
       effective_net_mode == APP_NET_MODE_MESH) {
@@ -5279,11 +5298,7 @@ RuntimeStopAllTasks(runtime_state_t* state)
   }
 
   if (state->mesh_started) {
-    (void)MeshTransportStop(&state->mesh);
-    state->mesh_started = false;
-    RuntimeDiagHeapCheck(state, "Wi-Fi mesh stop (before)", false);
-    (void)WifiServiceRelease();
-    RuntimeDiagHeapCheck(state, "Wi-Fi mesh stop (after)", false);
+    RuntimeStopMeshTransport(state);
   }
   if (state->wifi_direct_started) {
     RuntimeDiagHeapCheck(state, "Wi-Fi direct stop (before)", false);

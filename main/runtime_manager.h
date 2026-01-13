@@ -101,6 +101,13 @@ extern "C" {
   bool RuntimeIsRunning(void);
 
 /**
+ * @brief Execute RuntimeApplyNetMode.
+ * @param mode Parameter mode.
+ * @return Return the function result.
+ */
+  esp_err_t RuntimeApplyNetMode(app_net_mode_t mode);
+
+/**
  * @brief Execute EnterRunMode.
  * @return Return the function result.
  */
