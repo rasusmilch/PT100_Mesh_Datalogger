@@ -35,6 +35,21 @@ PackMacToId(const uint8_t mac[6])
 #endif
 
 /**
+ * @brief Resolve pseudo leaf id (0) to the local device leaf id.
+ * @param manager Alert manager instance.
+ * @param leaf_id Input leaf id.
+ * @return Canonical leaf id used for internal tracking.
+ */
+static uint64_t
+ResolveLeafId(const alert_manager_t* manager, uint64_t leaf_id)
+{
+  if (leaf_id == 0 && manager != NULL && manager->local_leaf_id != 0) {
+    return manager->local_leaf_id;
+  }
+  return leaf_id;
+}
+
+/**
  * @brief Execute FindLeaf.
  * @param manager Parameter manager.
  * @param leaf_id Parameter leaf_id.
@@ -46,6 +61,7 @@ FindLeaf(alert_manager_t* manager, uint64_t leaf_id)
   if (manager == NULL) {
     return NULL;
   }
+  leaf_id = ResolveLeafId(manager, leaf_id);
   for (size_t i = 0; i < ALERT_MAX_LEAVES; ++i) {
     if (manager->leaves[i].in_use && manager->leaves[i].leaf_id == leaf_id) {
       return &manager->leaves[i];
@@ -66,6 +82,7 @@ FindOrAllocateLeaf(alert_manager_t* manager, uint64_t leaf_id)
   if (manager == NULL) {
     return NULL;
   }
+  leaf_id = ResolveLeafId(manager, leaf_id);
   alert_leaf_state_t* existing = FindLeaf(manager, leaf_id);
   if (existing != NULL) {
     return existing;
@@ -130,6 +147,7 @@ GetLeafConfig(const alert_manager_t* manager,
   if (manager == NULL || out == NULL) {
     return false;
   }
+  leaf_id = ResolveLeafId(manager, leaf_id);
   for (size_t i = 0; i < manager->config.leaf_override_count; ++i) {
     if (manager->config.leaf_overrides[i].leaf_id == leaf_id) {
       *out = manager->config.leaf_overrides[i];
@@ -151,6 +169,7 @@ GetOrCreateLeafConfig(alert_manager_t* manager, uint64_t leaf_id)
   if (manager == NULL) {
     return NULL;
   }
+  leaf_id = ResolveLeafId(manager, leaf_id);
   for (size_t i = 0; i < manager->config.leaf_override_count; ++i) {
     if (manager->config.leaf_overrides[i].leaf_id == leaf_id) {
       return &manager->config.leaf_overrides[i];
@@ -175,6 +194,7 @@ GetOrCreateLeafConfig(alert_manager_t* manager, uint64_t leaf_id)
 static uint32_t
 EffectiveEnableMask(const alert_manager_t* manager, uint64_t leaf_id)
 {
+  leaf_id = ResolveLeafId(manager, leaf_id);
   alert_leaf_config_t leaf_config;
   if (GetLeafConfig(manager, leaf_id, &leaf_config) &&
       leaf_config.has_enable_mask) {
@@ -293,7 +313,8 @@ AlertManagerQueueOneShot(alert_manager_t* manager,
   if (manager == NULL) {
     return false;
   }
-  if (state != NULL && manager->config.per_key_cooldown_ms > 0 &&
+  if (state != NULL && state->last_notify_ms != 0 &&
+      manager->config.per_key_cooldown_ms > 0 &&
       (now_ms - state->last_notify_ms) <
         (int64_t)manager->config.per_key_cooldown_ms) {
     state->notify_suppressed_count++;
@@ -530,15 +551,19 @@ ApplyDefaults(alert_manager_t* manager)
  * @brief Execute AlertManagerInit.
  * @param manager Parameter manager.
  * @param root_id_string Parameter root_id_string.
+ * @param local_leaf_id Parameter local_leaf_id.
  */
 void
-AlertManagerInit(alert_manager_t* manager, const char* root_id_string)
+AlertManagerInit(alert_manager_t* manager,
+                 const char* root_id_string,
+                 uint64_t local_leaf_id)
 {
   if (manager == NULL) {
     return;
   }
   memset(manager, 0, sizeof(*manager));
   manager->root_id_string = root_id_string;
+  manager->local_leaf_id = local_leaf_id;
   ApplyDefaults(manager);
   AlertNtfyInit(&manager->ntfy);
 }
@@ -633,6 +658,7 @@ AlertManagerOnSample(alert_manager_t* manager,
   if (manager == NULL || record == NULL) {
     return;
   }
+  leaf_id = ResolveLeafId(manager, leaf_id);
   alert_leaf_state_t* leaf = FindOrAllocateLeaf(manager, leaf_id);
   if (leaf == NULL) {
     return;
@@ -655,8 +681,11 @@ AlertManagerOnSample(alert_manager_t* manager,
                                   &payload,
                                   now_ms);
   }
+  const bool cal_valid =
+    (record->flags & LOG_RECORD_FLAG_CAL_VALID) != 0u;
   leaf->last_seq = record->sequence;
-  leaf->last_temp_milli_c = record->temp_milli_c;
+  leaf->last_temp_milli_c =
+    cal_valid ? record->temp_milli_c : record->raw_temp_milli_c;
   leaf->last_rx_uptime_ms = now_ms;
   leaf->last_rx_epoch = (record->timestamp_epoch_sec > 0)
                           ? record->timestamp_epoch_sec
@@ -681,6 +710,7 @@ AlertManagerOnLeafOnline(alert_manager_t* manager,
   if (manager == NULL) {
     return;
   }
+  leaf_id = ResolveLeafId(manager, leaf_id);
   alert_leaf_state_t* leaf = FindOrAllocateLeaf(manager, leaf_id);
   if (leaf == NULL) {
     return;
@@ -1116,6 +1146,7 @@ AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms)
   if (manager == NULL) {
     return;
   }
+  const uint64_t leaf_id = ResolveLeafId(manager, 0);
   alert_notification_payload_t payload = { 0 };
   payload.event_uptime_ms = now_ms;
   payload.event_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
@@ -1124,7 +1155,7 @@ AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms)
     .type = ALERT_ROOT_RESTART,
     .severity = ALERT_SEV_INFO,
     .resolved = false,
-    .leaf_id = 0,
+    .leaf_id = leaf_id,
     .payload = payload,
   };
   (void)AlertNtfyEnqueue(&manager->ntfy, &note);
@@ -1144,6 +1175,7 @@ AlertManagerEmitRootRestart(alert_manager_t* manager, int64_t now_ms)
   if ((manager->config.enable_mask & (1u << ALERT_ROOT_RESTART)) == 0u) {
     return;
   }
+  const uint64_t leaf_id = ResolveLeafId(manager, 0);
   alert_notification_payload_t payload = { 0 };
   payload.event_uptime_ms = now_ms;
   payload.event_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
@@ -1152,7 +1184,7 @@ AlertManagerEmitRootRestart(alert_manager_t* manager, int64_t now_ms)
     .type = ALERT_ROOT_RESTART,
     .severity = ALERT_SEV_INFO,
     .resolved = false,
-    .leaf_id = 0,
+    .leaf_id = leaf_id,
     .payload = payload,
   };
   (void)AlertNtfyEnqueue(&manager->ntfy, &note);
@@ -1172,12 +1204,13 @@ AlertManagerEmitSystemBoot(alert_manager_t* manager,
   if (manager == NULL) {
     return;
   }
-  const uint32_t mask = EffectiveEnableMask(manager, 0);
+  const uint64_t leaf_id = ResolveLeafId(manager, 0);
+  const uint32_t mask = EffectiveEnableMask(manager, leaf_id);
   if ((mask & (1u << ALERT_SYSTEM_BOOT)) == 0u) {
     return;
   }
   size_t leaf_index = 0;
-  if (!FindOrAllocateLeafIndex(manager, 0, &leaf_index)) {
+  if (!FindOrAllocateLeafIndex(manager, leaf_id, &leaf_index)) {
     return;
   }
   alert_notification_payload_t payload = { 0 };
@@ -1187,7 +1220,7 @@ AlertManagerEmitSystemBoot(alert_manager_t* manager,
                                  &manager->states[leaf_index][ALERT_SYSTEM_BOOT],
                                  ALERT_SYSTEM_BOOT,
                                  ALERT_SEV_INFO,
-                                 0,
+                                 leaf_id,
                                  &payload,
                                  now_ms);
 }
@@ -1208,12 +1241,13 @@ AlertManagerEmitSystemMode(alert_manager_t* manager,
   if (manager == NULL) {
     return;
   }
-  const uint32_t mask = EffectiveEnableMask(manager, 0);
+  const uint64_t leaf_id = ResolveLeafId(manager, 0);
+  const uint32_t mask = EffectiveEnableMask(manager, leaf_id);
   if ((mask & (1u << ALERT_SYSTEM_MODE)) == 0u) {
     return;
   }
   size_t leaf_index = 0;
-  if (!FindOrAllocateLeafIndex(manager, 0, &leaf_index)) {
+  if (!FindOrAllocateLeafIndex(manager, leaf_id, &leaf_index)) {
     return;
   }
   alert_notification_payload_t payload = { 0 };
@@ -1223,7 +1257,7 @@ AlertManagerEmitSystemMode(alert_manager_t* manager,
                                  &manager->states[leaf_index][ALERT_SYSTEM_MODE],
                                  ALERT_SYSTEM_MODE,
                                  ALERT_SEV_INFO,
-                                 0,
+                                 leaf_id,
                                  &payload,
                                  now_ms);
 }
@@ -1246,12 +1280,13 @@ AlertManagerProcessSystemError(alert_manager_t* manager,
   if (manager == NULL) {
     return;
   }
-  const uint32_t mask = EffectiveEnableMask(manager, 0);
+  const uint64_t leaf_id = ResolveLeafId(manager, 0);
+  const uint32_t mask = EffectiveEnableMask(manager, leaf_id);
   if ((mask & (1u << ALERT_SYSTEM_ERROR)) == 0u) {
     return;
   }
   size_t leaf_index = 0;
-  if (!FindOrAllocateLeafIndex(manager, 0, &leaf_index)) {
+  if (!FindOrAllocateLeafIndex(manager, leaf_id, &leaf_index)) {
     return;
   }
   alert_notification_payload_t payload = { 0 };

@@ -75,6 +75,9 @@ RootPublishRecordRxCallback(const uint8_t src_mac[6],
                             const log_record_t* record,
                             void* context);
 
+static uint64_t
+PackMacToLeafId(const uint8_t mac[6]);
+
 static sd_append_verify_t
 ResolveSdVerifyMode(const runtime_state_t* state);
 
@@ -1733,10 +1736,7 @@ RootRecordRxCallback(const pt100_mesh_addr_t* from,
   if (g_state.settings.node_role == APP_NODE_ROLE_ROOT) {
     int64_t now_ms = esp_timer_get_time() / 1000;
     int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-    uint64_t leaf_id = 0;
-    for (int i = 0; i < 6; ++i) {
-      leaf_id = (leaf_id << 8) | from->addr[i];
-    }
+    uint64_t leaf_id = PackMacToLeafId(from->addr);
     AlertManagerOnSample(
       &g_state.alert_manager, leaf_id, record, now_ms, now_epoch);
   }
@@ -1762,6 +1762,21 @@ RootPublishRecordRxCallback(const uint8_t src_mac[6],
     return;
   }
   EnqueueExportOutbox(&g_state, src_mac, record);
+}
+
+/**
+ * @brief Execute PackMacToLeafId.
+ * @param mac Parameter mac.
+ * @return Return the function result.
+ */
+static uint64_t
+PackMacToLeafId(const uint8_t mac[6])
+{
+  uint64_t leaf_id = 0;
+  for (int i = 0; i < 6; ++i) {
+    leaf_id = (leaf_id << 8) | mac[i];
+  }
+  return leaf_id;
 }
 
 /**
@@ -3280,6 +3295,11 @@ StorageTask(void* context)
         ESP_LOGE(
           kTag, "Failed to assign record id: %s", esp_err_to_name(id_result));
       }
+      const int64_t now_ms = esp_timer_get_time() / 1000;
+      const int64_t now_epoch =
+        TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+      AlertManagerOnSample(
+        &state->alert_manager, state->local_leaf_id, &record, now_ms, now_epoch);
 
       if (state->fram_i2c.initialized) {
         esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
@@ -4572,6 +4592,7 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "esp_read_mac failed: %s", esp_err_to_name(mac_result));
   }
   memcpy(g_state.local_mac, mac, sizeof(g_state.local_mac));
+  g_state.local_leaf_id = PackMacToLeafId(mac);
   FormatMacString(mac, g_state.node_id_string, sizeof(g_state.node_id_string));
 
   esp_err_t settings_result = AppSettingsLoad(&g_state.settings);
@@ -4614,7 +4635,8 @@ RuntimeManagerInit(void)
     &g_state, &g_state.cached_status.sd_card_present, sd_card_present);
   RuntimeHealthPublisherTick(&g_state);
 
-  AlertManagerInit(&g_state.alert_manager, g_state.node_id_string);
+  AlertManagerInit(
+    &g_state.alert_manager, g_state.node_id_string, g_state.local_leaf_id);
   (void)AlertManagerLoadConfig(&g_state.alert_manager);
 
   const spi_host_device_t spi_host = GetSpiHost();
