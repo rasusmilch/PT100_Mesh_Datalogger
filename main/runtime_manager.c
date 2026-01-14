@@ -2551,28 +2551,23 @@ SensorTask(void* context)
     }
 
     esp_err_t result = ESP_OK;
-    bool use_ema = false;
-    double effective_temp_c = 0.0;
-    double effective_res_ohm = 0.0;
+    double raw_temp_c = 0.0;
+    double raw_res_ohm = 0.0;
     if (ema_enabled) {
       const double alpha = (double)alpha_permille / 1000.0;
-      double ema_temp_c = 0.0;
-      result = Max31865ReadEmaUpdate(&state->sensor,
-                                     alpha,
-                                     &sample,
-                                     &ema_temp_c);
-      if (result == ESP_OK && !sample.fault_present) {
-        effective_temp_c = state->sensor.ema_temp_c;
-        effective_res_ohm = state->sensor.ema_resistance_ohm;
-        use_ema = true;
-      } else {
-        effective_temp_c = sample.temperature_c;
-        effective_res_ohm = sample.resistance_ohm;
-      }
+      result = Max31865ReadEmaUpdate(&state->sensor, alpha, &sample, NULL);
     } else {
       result = Max31865ReadOnce(&state->sensor, &sample);
-      effective_temp_c = sample.temperature_c;
-      effective_res_ohm = sample.resistance_ohm;
+    }
+    if (result == ESP_OK) {
+      raw_temp_c = sample.temperature_c;
+      raw_res_ohm = sample.resistance_ohm;
+    }
+
+    double disp_raw_temp_c = raw_temp_c;
+    if (result == ESP_OK && !sample.fault_present && ema_enabled &&
+        state->sensor.ema_valid) {
+      disp_raw_temp_c = state->sensor.ema_temp_c;
     }
 
     log_record_t record;
@@ -2585,21 +2580,33 @@ SensorTask(void* context)
     record.timestamp_epoch_sec = time_valid ? epoch_sec : (int64_t)0;
     record.timestamp_millis = time_valid ? millis : 0;
 
+    int32_t disp_raw_milli_c = 0;
+    int32_t disp_cal_milli_c = 0;
+    int32_t disp_selected_milli_c = 0;
     if (result == ESP_OK) {
-      const double cal_c = CalibrationModelEvaluateWithPoints(
+      const double raw_cal_c = CalibrationModelEvaluateWithPoints(
         &state->settings.calibration,
-        effective_temp_c,
+        raw_temp_c,
         state->settings.calibration_points,
         state->settings.calibration_points_count);
-      record.raw_temp_milli_c = (int32_t)llround(effective_temp_c * 1000.0);
-      CalWindowPushRawSample(record.raw_temp_milli_c);
-      record.temp_milli_c = (int32_t)llround(cal_c * 1000.0);
+      record.raw_temp_milli_c = (int32_t)llround(raw_temp_c * 1000.0);
+      record.temp_milli_c = (int32_t)llround(raw_cal_c * 1000.0);
       record.resistance_milli_ohm =
-        (int32_t)llround(effective_res_ohm * 1000.0);
+        (int32_t)llround(raw_res_ohm * 1000.0);
+
+      const double disp_cal_c = CalibrationModelEvaluateWithPoints(
+        &state->settings.calibration,
+        disp_raw_temp_c,
+        state->settings.calibration_points,
+        state->settings.calibration_points_count);
+      disp_raw_milli_c = (int32_t)llround(disp_raw_temp_c * 1000.0);
+      disp_cal_milli_c = (int32_t)llround(disp_cal_c * 1000.0);
+      disp_selected_milli_c = state->settings.calibration.is_valid
+                                ? disp_cal_milli_c
+                                : disp_raw_milli_c;
+      CalWindowPushRawSample(disp_raw_milli_c);
       if (sample.fault_present) {
         record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
-      } else if (use_ema) {
-        record.flags |= LOG_RECORD_FLAG_RTD_EMA;
       }
     } else {
       record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
@@ -2678,20 +2685,21 @@ SensorTask(void* context)
       record.flags |= LOG_RECORD_FLAG_MESH_CONNECTED;
     }
 
-    int32_t temp_milli_c = record.temp_milli_c;
-    if (!state->settings.calibration.is_valid) {
-      temp_milli_c = record.raw_temp_milli_c;
-    }
     const bool temp_valid = (result == ESP_OK && !sample.fault_present);
 
     taskENTER_CRITICAL(&state->last_temp_lock);
-    state->last_temp_milli_c = temp_milli_c;
+    state->last_temp_milli_c = disp_selected_milli_c;
     state->last_temp_valid = temp_valid;
     state->last_flags = record.flags;
     state->last_update_ticks = xTaskGetTickCount();
     taskEXIT_CRITICAL(&state->last_temp_lock);
 
-    (void)xQueueSend(state->log_queue, &record, 0);
+    sensor_sample_msg_t msg = {
+      .record = record,
+      .disp_raw_temp_milli_c = disp_raw_milli_c,
+      .disp_cal_temp_milli_c = disp_cal_milli_c,
+    };
+    (void)xQueueSend(state->log_queue, &msg, 0);
     RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(period_ms));
   }
 
@@ -3323,10 +3331,11 @@ StorageTask(void* context)
 
   while (!state->stop_requested ||
          uxQueueMessagesWaiting(state->log_queue) > 0) {
-    log_record_t record;
+    sensor_sample_msg_t msg;
     const bool received =
-      (xQueueReceive(state->log_queue, &record, pdMS_TO_TICKS(500)) == pdTRUE);
+      (xQueueReceive(state->log_queue, &msg, pdMS_TO_TICKS(500)) == pdTRUE);
     if (received) {
+      log_record_t record = msg.record;
       esp_err_t id_result = FramLogAssignRecordIds(&state->fram_log, &record);
       if (id_result != ESP_OK) {
         ESP_LOGE(
@@ -3335,8 +3344,14 @@ StorageTask(void* context)
       const int64_t now_ms = esp_timer_get_time() / 1000;
       const int64_t now_epoch =
         TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-      AlertManagerOnSample(
-        &state->alert_manager, state->local_leaf_id, &record, now_ms, now_epoch);
+      log_record_t alert_record = record;
+      alert_record.raw_temp_milli_c = msg.disp_raw_temp_milli_c;
+      alert_record.temp_milli_c = msg.disp_cal_temp_milli_c;
+      AlertManagerOnSample(&state->alert_manager,
+                           state->local_leaf_id,
+                           &alert_record,
+                           now_ms,
+                           now_epoch);
 
       if (state->fram_i2c.initialized) {
         esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
@@ -4859,7 +4874,7 @@ RuntimeManagerInit(void)
   }
 
   g_state.log_queue = xQueueCreateStatic(kLogQueueDepth,
-                                         sizeof(log_record_t),
+                                         sizeof(sensor_sample_msg_t),
                                          g_state.log_queue_storage,
                                          &g_state.log_queue_struct);
   if (g_state.log_queue == NULL) {
