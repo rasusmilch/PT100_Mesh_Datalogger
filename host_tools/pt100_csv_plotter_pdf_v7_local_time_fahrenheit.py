@@ -725,8 +725,9 @@ def _build_figure(
     # Compute smoothing on the full series first (so downsampling doesn't bias the trend).
     smoothed_series: Optional[pd.Series] = None
     window_size = 0
-    if options.smooth and y_name in ("cal_temp_c", "raw_temp_c"):
-        window_size = min(151, max(3, total_points // 40))
+    valid_points = int(y_series.notna().sum())
+    if options.smooth and valid_points >= 3:
+        window_size = min(151, max(3, valid_points // 40))
         smoothed_series = y_series.rolling(
             window=window_size,
             center=True,
@@ -1135,7 +1136,11 @@ class PlotterApp:
 
         tk.Checkbutton(frm, text="Overlay raw_temp_c", variable=self.overlay_raw).grid(row=row, column=1, sticky="w")
         row += 1
-        tk.Checkbutton(frm, text="Smooth (rolling mean)", variable=self.smooth).grid(row=row, column=1, sticky="w")
+        tk.Checkbutton(frm, text="Smooth (rolling mean, numeric series)", variable=self.smooth).grid(
+            row=row,
+            column=1,
+            sticky="w",
+        )
         row += 1
         tk.Checkbutton(frm, text="Downsample large datasets (preserve spikes)", variable=self.enable_downsample).grid(row=row, column=1, sticky="w")
         row += 1
