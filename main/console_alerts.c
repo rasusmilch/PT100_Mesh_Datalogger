@@ -87,27 +87,79 @@ ParseLeafId(const char* text, uint64_t* out)
 }
 
 /**
- * @brief Execute ParseTemp.
- * @param text Parameter text.
- * @param out_milli_c Parameter out_milli_c.
- * @return Return the function result.
+ * @brief Parse an absolute temperature value (e.g. limits).
+ * @param text Input string formatted as <value><C|F>.
+ * @param out_milli_c Output in milli-degrees C.
+ * @return true on success, false otherwise.
  */
 static bool
-ParseTemp(const char* text, int32_t* out_milli_c)
+ParseTempAbsolute(const char* text, int32_t* out_milli_c)
 {
   if (text == NULL || out_milli_c == NULL) {
     return false;
   }
   char* end = NULL;
   double value = strtod(text, &end);
-  if (end == text || *end == '\0') {
+  if (end == text) {
+    return false;
+  }
+  while (*end != '\0' && isspace((unsigned char)*end)) {
+    ++end;
+  }
+  if (*end == '\0') {
     return false;
   }
   char unit = (char)toupper((unsigned char)*end);
   if (unit != 'C' && unit != 'F') {
     return false;
   }
+  ++end;
+  while (*end != '\0' && isspace((unsigned char)*end)) {
+    ++end;
+  }
+  if (*end != '\0') {
+    return false;
+  }
   double value_c = (unit == 'F') ? ((value - 32.0) * 5.0 / 9.0) : value;
+  *out_milli_c = (int32_t)llround(value_c * 1000.0);
+  return true;
+}
+
+/**
+ * @brief Parse a temperature delta value (e.g. hysteresis).
+ * @param text Input string formatted as <delta><C|F>.
+ * @param out_milli_c Output delta in milli-degrees C.
+ * @return true on success, false otherwise.
+ */
+static bool
+ParseTempDelta(const char* text, int32_t* out_milli_c)
+{
+  if (text == NULL || out_milli_c == NULL) {
+    return false;
+  }
+  char* end = NULL;
+  double value = strtod(text, &end);
+  if (end == text) {
+    return false;
+  }
+  while (*end != '\0' && isspace((unsigned char)*end)) {
+    ++end;
+  }
+  if (*end == '\0') {
+    return false;
+  }
+  char unit = (char)toupper((unsigned char)*end);
+  if (unit != 'C' && unit != 'F') {
+    return false;
+  }
+  ++end;
+  while (*end != '\0' && isspace((unsigned char)*end)) {
+    ++end;
+  }
+  if (*end != '\0') {
+    return false;
+  }
+  double value_c = (unit == 'F') ? (value * 5.0 / 9.0) : value;
   *out_milli_c = (int32_t)llround(value_c * 1000.0);
   return true;
 }
@@ -161,6 +213,21 @@ ParseAlertType(const char* text, alert_type_t* out)
     return true;
   }
   return false;
+}
+
+/**
+ * @brief Check whether subcommand refers to hysteresis.
+ * @param text Subcommand string.
+ * @return true if matches hyst/hyster/hysteresis.
+ */
+static bool
+IsHystSubcommand(const char* text)
+{
+  if (text == NULL) {
+    return false;
+  }
+  return (strcmp(text, "hyst") == 0 || strcmp(text, "hyster") == 0
+          || strcmp(text, "hysteresis") == 0);
 }
 
 /**
@@ -364,7 +431,7 @@ CommandAlert(int argc, char** argv)
     if (is_root) {
       printf("usage: alert status | alert list | alert types | alert enable <high|low|missing|offline|restart|root|boot|mode|error|all> <on|off> [leaf]\n"
              "       alert set limit <leaf|default> <high|low> <value><C|F>\n"
-             "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <value><C|F>\n"
+             "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <delta><C|F>\n"
              "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
              "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
              "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all> [leaf]\n"
@@ -372,7 +439,7 @@ CommandAlert(int argc, char** argv)
     } else {
       printf("usage: alert status | alert types | alert enable <high|low|missing|offline|restart|root|boot|mode|error|all> <on|off>\n"
              "       alert set limit default <high|low> <value><C|F>\n"
-             "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <value><C|F>\n"
+             "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <delta><C|F>\n"
              "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
              "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
              "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all>\n"
@@ -473,7 +540,7 @@ CommandAlert(int argc, char** argv)
       const char* which = argv[4];
       const char* value = argv[5];
       int32_t milli_c = 0;
-      if (!ParseTemp(value, &milli_c)) {
+      if (!ParseTempAbsolute(value, &milli_c)) {
         printf("invalid temp\n");
         return 1;
       }
@@ -531,14 +598,14 @@ CommandAlert(int argc, char** argv)
       printf("alert set hold_ms %s\n", ok ? "ok" : "failed");
       return ok ? 0 : 1;
     }
-    if (strcmp(sub, "hyst") == 0) {
+    if (IsHystSubcommand(sub)) {
       if (argc != 4) {
-        printf("usage: alert set hyst <value><C|F>\n");
+        printf("usage: alert set hyst <delta><C|F>\n");
         return 1;
       }
       int32_t milli_c = 0;
-      if (!ParseTemp(argv[3], &milli_c)) {
-        printf("invalid hysteresis\n");
+      if (!ParseTempDelta(argv[3], &milli_c)) {
+        printf("invalid hysteresis (expected <value><C|F>, e.g. 0.2C or 0.2F)\n");
         return 1;
       }
       bool ok = AlertManagerSetHysteresis(manager, milli_c);
