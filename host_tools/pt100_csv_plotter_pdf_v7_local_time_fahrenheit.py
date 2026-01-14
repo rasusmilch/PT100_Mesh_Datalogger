@@ -32,13 +32,15 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.widgets import RangeSlider
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
@@ -46,6 +48,11 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Spacer, Paragraph, Image, Table, TableStyle
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - fallback for older Python
+    ZoneInfo = None
 
 
 @dataclass
@@ -56,6 +63,42 @@ class LoadedLog:
     tzinfo: Optional[datetime.tzinfo]
     source_files: List[str]
     dropped_no_time_rows: int
+
+
+@dataclass
+class DisplayTimeConfig:
+    display_tz: Optional[datetime.tzinfo]
+    display_tz_label: str
+
+
+@dataclass
+class StatsOptions:
+    show_min: bool
+    show_max: bool
+    show_avg: bool
+    show_std_band: bool
+
+
+@dataclass
+class HighlightOptions:
+    highlight_outside_std: bool
+    upper_limit: Optional[float]
+    lower_limit: Optional[float]
+    highlight_above: bool
+    highlight_below: bool
+
+
+@dataclass
+class PlotOptions:
+    overlay_raw_temp: bool
+    smooth: bool
+    enable_downsample: bool
+    max_plot_points: int
+    temp_unit: str
+    stats: StatsOptions
+    highlights: HighlightOptions
+    display_time_config: DisplayTimeConfig
+    time_source: str
 
 
 def _human_series_label(series_name: str, temp_unit: str = "C") -> str:
@@ -85,6 +128,92 @@ def _human_series_label(series_name: str, temp_unit: str = "C") -> str:
     }
     return mapping.get(series_name, series_name)
 
+
+def _get_local_tz() -> Optional[datetime.tzinfo]:
+    try:
+        from dateutil import tz as dateutil_tz
+
+        return dateutil_tz.tzlocal()
+    except Exception:
+        return datetime.datetime.now().astimezone().tzinfo
+
+
+def _resolve_display_tz(value: str) -> Optional[datetime.tzinfo]:
+    value = (value or "").strip()
+    if not value or value.lower().startswith("local"):
+        return _get_local_tz()
+    if value.upper() == "UTC":
+        if ZoneInfo is not None:
+            return ZoneInfo("UTC")
+        return datetime.timezone.utc
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(value)
+        except Exception:
+            pass
+    try:
+        from dateutil import tz as dateutil_tz
+
+        return dateutil_tz.gettz(value)
+    except Exception:
+        return None
+
+
+def _format_tz_offset(offset: Optional[datetime.timedelta]) -> str:
+    if offset is None:
+        return "UTC+00:00"
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
+
+
+def _format_display_tz_label(
+    display_tz: Optional[datetime.tzinfo],
+    start_dt: Optional[datetime.datetime],
+    end_dt: Optional[datetime.datetime],
+) -> str:
+    if display_tz is None or start_dt is None or end_dt is None:
+        return "n/a"
+
+    start_tz = start_dt.tzname() or "Local"
+    end_tz = end_dt.tzname() or "Local"
+    start_offset = _format_tz_offset(start_dt.utcoffset())
+    end_offset = _format_tz_offset(end_dt.utcoffset())
+
+    if start_tz != end_tz or start_offset != end_offset:
+        return f"{start_tz} ({start_offset}) / {end_tz} ({end_offset})"
+    return f"{start_tz} ({start_offset})"
+
+
+def _convert_time_series_to_display_tz(
+    time_series: pd.Series,
+    display_tz: Optional[datetime.tzinfo],
+    time_source: str,
+) -> pd.Series:
+    parsed = pd.to_datetime(time_series, errors="coerce")
+    if display_tz is None:
+        return parsed
+
+    try:
+        if parsed.dt.tz is not None:
+            return parsed.dt.tz_convert(display_tz)
+    except Exception:
+        return parsed
+
+    if time_source == "epoch_utc":
+        localized = parsed.dt.tz_localize(datetime.timezone.utc)
+        return localized.dt.tz_convert(display_tz)
+
+    if time_source in ("iso8601_local", "mixed"):
+        local_tz = _get_local_tz()
+        if local_tz is None:
+            return parsed
+        localized = parsed.dt.tz_localize(local_tz)
+        return localized.dt.tz_convert(display_tz)
+
+    return parsed
 
 def _convert_temperature_series(series_c: pd.Series, temp_unit: str) -> pd.Series:
     """Convert a temperature series from °C to the desired display unit.
@@ -138,6 +267,7 @@ def _normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
 
 def _pick_time_source(
     df: pd.DataFrame,
+    local_tz: Optional[datetime.tzinfo],
 ) -> Tuple[pd.DataFrame, str, str, Optional[datetime.tzinfo], int]:
     """Choose the best available X-axis source and create either '__time' (datetime)
     or '__x' (numeric).
@@ -178,18 +308,24 @@ def _pick_time_source(
 
     if iso_series is not None and iso_series.notna().any():
         first_ts = iso_series.dropna().iloc[0]
-        tzinfo = getattr(first_ts, "tzinfo", None)
+        tzinfo = getattr(first_ts, "tzinfo", None) or local_tz
+        combined_time = iso_series
+        try:
+            if tzinfo is not None and combined_time.dt.tz is None:
+                combined_time = combined_time.dt.tz_localize(tzinfo)
+            elif tzinfo is not None and combined_time.dt.tz is not None:
+                combined_time = combined_time.dt.tz_convert(tzinfo)
+        except Exception:
+            pass
 
         if epoch_series is not None and epoch_series.notna().any():
             if tzinfo is not None:
                 epoch_converted = epoch_series.dt.tz_convert(tzinfo)
             else:
                 epoch_converted = epoch_series.dt.tz_localize(None)
-
-            combined_time = iso_series.copy().fillna(epoch_converted)
+            combined_time = combined_time.copy().fillna(epoch_converted)
             time_source = "mixed" if iso_series.isna().any() else "iso8601_local"
         else:
-            combined_time = iso_series
             time_source = "iso8601_local"
 
         df = df.copy()
@@ -219,39 +355,6 @@ def _pick_time_source(
     raise ValueError(
         "No usable X-axis found. Need iso8601_local (parseable), epoch_utc (>0), or record_id."
     )
-
-
-def _to_local_time_series(time_series: pd.Series) -> pd.Series:
-    """Convert/attach timestamps so they display in the machine's local timezone.
-
-    - If the series is timezone-aware, it is converted to the local timezone.
-    - If the series is naive, it is assumed to already be local time and is localized.
-
-    Args:
-        time_series: Series of datetimes (or datetime-like strings).
-
-    Returns:
-        Time series with a local timezone attached.
-    """
-    parsed = pd.to_datetime(time_series, errors="coerce")
-    local_tz = None
-    try:
-        from dateutil import tz as dateutil_tz
-
-        local_tz = dateutil_tz.tzlocal()
-    except Exception:
-        local_tz = datetime.datetime.now().astimezone().tzinfo
-
-    if local_tz is None:
-        return parsed
-
-    try:
-        if parsed.dt.tz is not None:
-            return parsed.dt.tz_convert(local_tz)
-        return parsed.dt.tz_localize(local_tz)
-    except Exception:
-        # If anything goes sideways (mixed tz, etc.), fall back to the parsed values.
-        return parsed
 
 
 def _parse_user_time(text: str) -> Optional[datetime.datetime]:
@@ -284,6 +387,7 @@ def _validate_and_trim_by_minute(
     time_column: str,
     start_text: str,
     end_text: str,
+    time_series: Optional[pd.Series] = None,
 ) -> Tuple[pd.DataFrame, str, str, str]:
     """Trim strictly against minute buckets that exist in the log.
 
@@ -304,7 +408,8 @@ def _validate_and_trim_by_minute(
         summary = f"{start_label} → {end_label} ({len(df):,} rows)"
         return df.copy(), start_label, end_label, summary
 
-    time_series = pd.to_datetime(df[time_column], errors="coerce")
+    if time_series is None:
+        time_series = pd.to_datetime(df[time_column], errors="coerce")
     if time_series.isna().all():
         raise ValueError("Time column could not be parsed.")
 
@@ -348,8 +453,9 @@ def _validate_and_trim_by_minute(
     if trimmed.empty:
         raise ValueError("Trimming resulted in 0 rows.")
 
-    actual_start = pd.to_datetime(trimmed[time_column]).min()
-    actual_end = pd.to_datetime(trimmed[time_column]).max()
+    trimmed_times = time_series.loc[trimmed.index]
+    actual_start = pd.to_datetime(trimmed_times).min()
+    actual_end = pd.to_datetime(trimmed_times).max()
     start_label = actual_start.strftime("%Y-%m-%d %H:%M")
     end_label = actual_end.strftime("%Y-%m-%d %H:%M")
     summary = f"{start_label} → {end_label} ({len(trimmed):,} rows)"
@@ -368,10 +474,13 @@ def _load_csv_files(file_paths: List[str]) -> LoadedLog:
         dataframes.append(df)
 
     combined = pd.concat(dataframes, ignore_index=True)
-    combined, time_column, time_source, tzinfo, dropped_no_time_rows = _pick_time_source(combined)
+    local_tz = _get_local_tz()
+    combined, time_column, time_source, tzinfo, dropped_no_time_rows = _pick_time_source(
+        combined,
+        local_tz=local_tz,
+    )
 
     if time_column == "__time":
-        combined[time_column] = _to_local_time_series(combined[time_column])
         combined = combined.sort_values(by=time_column).reset_index(drop=True)
     else:
         # record_id fallback: numeric X axis
@@ -398,6 +507,13 @@ def _compute_basic_stats(series: pd.Series) -> Dict[str, str]:
         "max": f"{numeric.max():.3f}",
         "std": f"{numeric.std(ddof=0):.3f}",
     }
+
+
+def _compute_numeric_stats(series: pd.Series) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+    numeric = pd.to_numeric(series, errors="coerce").dropna()
+    if numeric.empty:
+        return None, None, None, None
+    return float(numeric.min()), float(numeric.mean()), float(numeric.max()), float(numeric.std(ddof=0))
 
 
 def _downsample_positions_minmax(series_list: List[pd.Series], max_plot_points: int) -> np.ndarray:
@@ -449,13 +565,9 @@ def _build_figure(
     df: pd.DataFrame,
     time_column: str,
     y_name: str,
-    overlay_raw_temp: bool,
-    smooth: bool,
     plot_title: str,
     suptitle: Optional[str],
-    enable_downsample: bool,
-    max_plot_points: int,
-    temp_unit: str,
+    options: PlotOptions,
 ) -> Tuple[plt.Figure, int, int]:
     """Build a Matplotlib figure for the selected series.
 
@@ -463,13 +575,9 @@ def _build_figure(
         df: Trimmed dataframe.
         time_column: '__time' (datetime) or '__x' (numeric record_id fallback).
         y_name: Column name for the primary Y series.
-        overlay_raw_temp: Whether to overlay raw_temp_c (when available).
-        smooth: Whether to apply a rolling-mean smoothing curve (temperature series only).
         plot_title: Title for the axes.
         suptitle: Optional figure-level subtitle (e.g., nodes and time range).
-        enable_downsample: Enable downsampling to reduce plotted points.
-        max_plot_points: Approximate maximum number of plotted points.
-        temp_unit: Temperature unit for display ('C' or 'F').
+        options: Plot options including smoothing, overlays, and time zone display settings.
 
     Returns:
         (figure, plotted_point_count, total_point_count)
@@ -478,20 +586,28 @@ def _build_figure(
 
     x_values = df[time_column]
     if time_column == "__time":
-        x_values = pd.to_datetime(x_values, errors="coerce")
+        x_values = _convert_time_series_to_display_tz(
+            df[time_column],
+            display_tz=options.display_time_config.display_tz,
+            time_source=options.time_source,
+        )
 
     y_series_c = pd.to_numeric(df[y_name], errors="coerce")
-    y_series = _convert_temperature_series(y_series_c, temp_unit) if y_name in ("cal_temp_c", "raw_temp_c") else y_series_c
+    y_series = (
+        _convert_temperature_series(y_series_c, options.temp_unit)
+        if y_name in ("cal_temp_c", "raw_temp_c")
+        else y_series_c
+    )
 
     raw_temp_series: Optional[pd.Series] = None
-    if overlay_raw_temp and "raw_temp_c" in df.columns and y_name != "raw_temp_c":
+    if options.overlay_raw_temp and "raw_temp_c" in df.columns and y_name != "raw_temp_c":
         raw_temp_c = pd.to_numeric(df["raw_temp_c"], errors="coerce")
-        raw_temp_series = _convert_temperature_series(raw_temp_c, temp_unit)
+        raw_temp_series = _convert_temperature_series(raw_temp_c, options.temp_unit)
 
     # Compute smoothing on the full series first (so downsampling doesn't bias the trend).
     smoothed_series: Optional[pd.Series] = None
     window_size = 0
-    if smooth and y_name in ("cal_temp_c", "raw_temp_c"):
+    if options.smooth and y_name in ("cal_temp_c", "raw_temp_c"):
         window_size = min(151, max(3, total_points // 40))
         smoothed_series = y_series.rolling(
             window=window_size,
@@ -500,13 +616,13 @@ def _build_figure(
         ).mean()
 
     plot_positions = np.arange(total_points, dtype=np.int64)
-    if enable_downsample and total_points > max_plot_points:
+    if options.enable_downsample and total_points > options.max_plot_points:
         series_for_downsample: List[pd.Series] = [y_series]
         if raw_temp_series is not None:
             series_for_downsample.append(raw_temp_series)
         plot_positions = _downsample_positions_minmax(
             series_list=series_for_downsample,
-            max_plot_points=max_plot_points,
+            max_plot_points=options.max_plot_points,
         )
 
     x_plot = x_values.iloc[plot_positions]
@@ -519,17 +635,84 @@ def _build_figure(
     if suptitle:
         fig.suptitle(suptitle, fontsize=10)
 
-    ax.set_xlabel(_human_time_label(time_column))
-    ax.set_ylabel(_human_series_label(y_name, temp_unit=temp_unit))
+    if time_column == "__time" and options.display_time_config.display_tz_label not in ("", "n/a"):
+        ax.set_xlabel(f"{_human_time_label(time_column)} ({options.display_time_config.display_tz_label})")
+    else:
+        ax.set_xlabel(_human_time_label(time_column))
+    ax.set_ylabel(_human_series_label(y_name, temp_unit=options.temp_unit))
 
-    if smooth and smoothed_series is not None:
-        ax.plot(x_plot, y_plot, linewidth=0.7, alpha=0.7, label="raw")
-        ax.plot(x_plot, smoothed_series.iloc[plot_positions], linewidth=2.0, label="smoothed")
+    if options.smooth and smoothed_series is not None:
+        ax.plot(x_plot, y_plot, linewidth=0.7, alpha=0.7, label="data")
+        ax.plot(x_plot, smoothed_series.iloc[plot_positions], linewidth=2.0, label="rolling mean")
     else:
         ax.plot(x_plot, y_plot, linewidth=1.2, label="data")
 
     if raw_temp_series is not None:
-        ax.plot(x_plot, raw_temp_series.iloc[plot_positions], linewidth=0.9, alpha=0.7, label="raw_temp (overlay)")
+        ax.plot(x_plot, raw_temp_series.iloc[plot_positions], linewidth=0.9, alpha=0.7, label="raw_temp_c (data)")
+
+    is_temperature = y_name in ("cal_temp_c", "raw_temp_c")
+    if is_temperature:
+        stats_min, stats_avg, stats_max, stats_std = _compute_numeric_stats(y_series)
+        if stats_avg is not None:
+            if options.stats.show_min and stats_min is not None:
+                ax.axhline(stats_min, color="#8b0000", linestyle="--", linewidth=1.0, label="min")
+            if options.stats.show_max and stats_max is not None:
+                ax.axhline(stats_max, color="#8b0000", linestyle="--", linewidth=1.0, label="max")
+            if options.stats.show_avg:
+                ax.axhline(stats_avg, color="#1f77b4", linestyle="-.", linewidth=1.2, label="avg")
+            if options.stats.show_std_band and stats_std is not None:
+                ax.fill_between(
+                    x_plot,
+                    stats_avg - stats_std,
+                    stats_avg + stats_std,
+                    color="#1f77b4",
+                    alpha=0.12,
+                    label="±1σ",
+                )
+
+        y_min, y_max = ax.get_ylim()
+        highlight_applied = False
+        if options.highlights.highlight_outside_std and stats_avg is not None and stats_std is not None:
+            outside = (y_plot < stats_avg - stats_std) | (y_plot > stats_avg + stats_std)
+            ax.fill_between(
+                x_plot,
+                y_min,
+                y_max,
+                where=outside,
+                color="#ff7f0e",
+                alpha=0.12,
+                label="outside ±1σ",
+            )
+            highlight_applied = True
+
+        if options.highlights.highlight_above and options.highlights.upper_limit is not None:
+            above = y_plot > options.highlights.upper_limit
+            ax.fill_between(
+                x_plot,
+                y_min,
+                y_max,
+                where=above,
+                color="#d62728",
+                alpha=0.12,
+                label="above upper",
+            )
+            highlight_applied = True
+
+        if options.highlights.highlight_below and options.highlights.lower_limit is not None:
+            below = y_plot < options.highlights.lower_limit
+            ax.fill_between(
+                x_plot,
+                y_min,
+                y_max,
+                where=below,
+                color="#9467bd",
+                alpha=0.12,
+                label="below lower",
+            )
+            highlight_applied = True
+
+        if highlight_applied:
+            ax.set_ylim(y_min, y_max)
 
     ax.legend()
 
@@ -750,6 +933,8 @@ class PlotterApp:
 
         self.start_time_text = tk.StringVar(value="")
         self.end_time_text = tk.StringVar(value="")
+        self.display_tz_choice = tk.StringVar(value="Local")
+        self.scenario_choice = tk.StringVar(value="General")
 
         self.y_choice = tk.StringVar(value="cal_temp_c")
         self.temp_f = tk.BooleanVar(value=False)
@@ -759,6 +944,16 @@ class PlotterApp:
         self.max_plot_points = tk.IntVar(value=20000)
         self.pdf_plot_dpi = tk.IntVar(value=600)
         self.pdf_vector = tk.BooleanVar(value=False)
+        self.stats_show_min = tk.BooleanVar(value=False)
+        self.stats_show_max = tk.BooleanVar(value=False)
+        self.stats_show_avg = tk.BooleanVar(value=False)
+        self.stats_show_std = tk.BooleanVar(value=False)
+        self.highlight_outside_std = tk.BooleanVar(value=False)
+        self.highlight_above = tk.BooleanVar(value=False)
+        self.highlight_below = tk.BooleanVar(value=False)
+        self.highlight_upper_limit = tk.StringVar(value="")
+        self.highlight_lower_limit = tk.StringVar(value="")
+        self._warned_aggregated = False
 
         self._build_ui()
 
@@ -777,30 +972,86 @@ class PlotterApp:
             row=1, column=1, sticky="w", pady=(6, 0)
         )
 
-        tk.Label(frm, text='Start time (YYYY-MM-DD HH:MM):').grid(row=2, column=0, sticky="w", pady=(12, 0))
-        tk.Entry(frm, textvariable=self.start_time_text, width=26).grid(row=2, column=1, sticky="w", pady=(12, 0))
+        row = 2
+        tk.Label(frm, text='Start time (YYYY-MM-DD HH:MM):').grid(row=row, column=0, sticky="w", pady=(12, 0))
+        tk.Entry(frm, textvariable=self.start_time_text, width=26).grid(row=row, column=1, sticky="w", pady=(12, 0))
+        row += 1
 
-        tk.Label(frm, text='End time (YYYY-MM-DD HH:MM):').grid(row=3, column=0, sticky="w", pady=(6, 0))
-        tk.Entry(frm, textvariable=self.end_time_text, width=26).grid(row=3, column=1, sticky="w", pady=(6, 0))
+        tk.Label(frm, text='End time (YYYY-MM-DD HH:MM):').grid(row=row, column=0, sticky="w", pady=(6, 0))
+        tk.Entry(frm, textvariable=self.end_time_text, width=26).grid(row=row, column=1, sticky="w", pady=(6, 0))
+        row += 1
 
-        tk.Label(frm, text="Y-axis series:").grid(row=4, column=0, sticky="w", pady=(12, 0))
+        tk.Button(frm, text="Select range…", command=self.open_range_selector).grid(row=row, column=1, sticky="w", pady=(4, 0))
+        row += 1
+
+        tk.Label(frm, text="Display time zone:").grid(row=row, column=0, sticky="w", pady=(10, 0))
+        tz_choices = ["Local", "UTC"]
+        tz_combo = ttk.Combobox(frm, textvariable=self.display_tz_choice, values=tz_choices, width=24)
+        tz_combo.grid(row=row, column=1, sticky="w", pady=(10, 0))
+        row += 1
+
+        tk.Label(frm, text="Scenario:").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        scenario_combo = ttk.Combobox(frm, textvariable=self.scenario_choice, values=["General", "Thermal cycling"], width=20)
+        scenario_combo.grid(row=row, column=1, sticky="w", pady=(6, 0))
+        scenario_combo.bind("<<ComboboxSelected>>", self._handle_scenario_change)
+        row += 1
+
+        tk.Label(frm, text="Y-axis series:").grid(row=row, column=0, sticky="w", pady=(12, 0))
         series_choices = ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms", "record_id", "seq"]
-        tk.OptionMenu(frm, self.y_choice, *series_choices).grid(row=4, column=1, sticky="w", pady=(12, 0))
-        tk.Checkbutton(frm, text="Display temperature in °F", variable=self.temp_f).grid(row=5, column=1, sticky="w")
+        tk.OptionMenu(frm, self.y_choice, *series_choices).grid(row=row, column=1, sticky="w", pady=(12, 0))
+        row += 1
+        tk.Checkbutton(frm, text="Display temperature in °F", variable=self.temp_f).grid(row=row, column=1, sticky="w")
+        row += 1
 
+        tk.Checkbutton(frm, text="Overlay raw_temp_c", variable=self.overlay_raw).grid(row=row, column=1, sticky="w")
+        row += 1
+        tk.Checkbutton(frm, text="Smooth (rolling mean)", variable=self.smooth).grid(row=row, column=1, sticky="w")
+        row += 1
+        tk.Checkbutton(frm, text="Downsample large datasets (preserve spikes)", variable=self.enable_downsample).grid(row=row, column=1, sticky="w")
+        row += 1
 
-        tk.Checkbutton(frm, text="Overlay raw_temp_c", variable=self.overlay_raw).grid(row=6, column=1, sticky="w")
-        tk.Checkbutton(frm, text="Smooth (rolling mean)", variable=self.smooth).grid(row=7, column=1, sticky="w")
-        tk.Checkbutton(frm, text="Downsample large datasets (preserve spikes)", variable=self.enable_downsample).grid(row=8, column=1, sticky="w")
+        stats_frame = tk.LabelFrame(frm, text="Statistics", padx=8, pady=6)
+        stats_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        tk.Checkbutton(stats_frame, text="Show minimum", variable=self.stats_show_min).grid(row=0, column=0, sticky="w")
+        tk.Checkbutton(stats_frame, text="Show maximum", variable=self.stats_show_max).grid(row=0, column=1, sticky="w")
+        tk.Checkbutton(stats_frame, text="Show average", variable=self.stats_show_avg).grid(row=1, column=0, sticky="w")
+        tk.Checkbutton(stats_frame, text="Show standard deviation band (±1σ)", variable=self.stats_show_std).grid(
+            row=1,
+            column=1,
+            sticky="w",
+        )
+        row += 1
 
-        tk.Label(frm, text="Max plot points:").grid(row=9, column=0, sticky="e")
-        tk.Entry(frm, textvariable=self.max_plot_points, width=10).grid(row=9, column=1, sticky="w")
+        highlight_frame = tk.LabelFrame(frm, text="Out-of-bounds highlighting", padx=8, pady=6)
+        highlight_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        tk.Checkbutton(
+            highlight_frame,
+            text="Highlight outside mean ± 1σ",
+            variable=self.highlight_outside_std,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Checkbutton(highlight_frame, text="Highlight above upper", variable=self.highlight_above).grid(
+            row=1, column=0, sticky="w"
+        )
+        tk.Entry(highlight_frame, textvariable=self.highlight_upper_limit, width=10).grid(row=1, column=1, sticky="w")
+        tk.Checkbutton(highlight_frame, text="Highlight below lower", variable=self.highlight_below).grid(
+            row=2, column=0, sticky="w"
+        )
+        tk.Entry(highlight_frame, textvariable=self.highlight_lower_limit, width=10).grid(row=2, column=1, sticky="w")
+        row += 1
 
-        tk.Label(frm, text="PDF plot DPI (raster):").grid(row=10, column=0, sticky="e")
-        tk.Entry(frm, textvariable=self.pdf_plot_dpi, width=10).grid(row=10, column=1, sticky="w")
-        tk.Checkbutton(frm, text="Vector PDF (plot + summary as vector)", variable=self.pdf_vector).grid(row=11, column=1, sticky="w")
+        tk.Label(frm, text="Max plot points:").grid(row=row, column=0, sticky="e", pady=(10, 0))
+        tk.Entry(frm, textvariable=self.max_plot_points, width=10).grid(row=row, column=1, sticky="w", pady=(10, 0))
+        row += 1
 
-        btn_row = 12
+        tk.Label(frm, text="PDF plot DPI (raster):").grid(row=row, column=0, sticky="e")
+        tk.Entry(frm, textvariable=self.pdf_plot_dpi, width=10).grid(row=row, column=1, sticky="w")
+        row += 1
+        tk.Checkbutton(frm, text="Vector PDF (plot + summary as vector)", variable=self.pdf_vector).grid(
+            row=row, column=1, sticky="w"
+        )
+        row += 1
+
+        btn_row = row
 
         self.plot_btn = tk.Button(frm, text="Plot", command=self.plot, state=tk.DISABLED)
         self.plot_btn.grid(row=btn_row, column=0, sticky="w", pady=(15, 0))
@@ -822,6 +1073,99 @@ class PlotterApp:
         )
         self.note_label.grid(row=btn_row + 2, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
+    def _handle_scenario_change(self, _event: Optional[tk.Event] = None) -> None:
+        if self.scenario_choice.get() == "Thermal cycling":
+            self.stats_show_avg.set(False)
+            self.stats_show_std.set(False)
+            self.highlight_outside_std.set(False)
+
+    def _parse_optional_float(self, value: str, label: str) -> Optional[float]:
+        text = (value or "").strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            raise ValueError(f"Invalid {label} limit: {text}")
+
+    def _get_display_time_config(
+        self,
+        start_dt: Optional[datetime.datetime],
+        end_dt: Optional[datetime.datetime],
+    ) -> DisplayTimeConfig:
+        tz_value = self.display_tz_choice.get()
+        display_tz = _resolve_display_tz(tz_value)
+        if display_tz is None:
+            raise ValueError(f"Invalid time zone: {tz_value}")
+        label = _format_display_tz_label(display_tz, start_dt, end_dt)
+        return DisplayTimeConfig(display_tz=display_tz, display_tz_label=label)
+
+    def _autofill_time_range(self) -> None:
+        if not self.loaded:
+            return
+        if self.loaded.time_column != "__time":
+            self.start_time_text.set("")
+            self.end_time_text.set("")
+            return
+        display_tz = _resolve_display_tz(self.display_tz_choice.get())
+        if display_tz is None:
+            return
+        display_series = _convert_time_series_to_display_tz(
+            self.loaded.dataframe[self.loaded.time_column],
+            display_tz=display_tz,
+            time_source=self.loaded.time_source,
+        )
+        minutes = display_series.dt.floor("min")
+        if minutes.isna().all():
+            return
+        start_min = minutes.min()
+        end_min = minutes.max()
+        self.start_time_text.set(start_min.strftime("%Y-%m-%d %H:%M"))
+        self.end_time_text.set(end_min.strftime("%Y-%m-%d %H:%M"))
+
+    def _detect_aggregated(self, time_series: pd.Series) -> bool:
+        if time_series.empty:
+            return False
+        diffs = pd.to_datetime(time_series).sort_values().diff().dropna()
+        if diffs.empty:
+            return False
+        median_seconds = diffs.dt.total_seconds().median()
+        return bool(median_seconds >= 60)
+
+    def _collect_plot_options(
+        self,
+        display_time_config: DisplayTimeConfig,
+        smooth: bool,
+        overlay_raw: bool,
+    ) -> PlotOptions:
+        stats = StatsOptions(
+            show_min=self.stats_show_min.get(),
+            show_max=self.stats_show_max.get(),
+            show_avg=self.stats_show_avg.get(),
+            show_std_band=self.stats_show_std.get(),
+        )
+        highlight_upper = self._parse_optional_float(self.highlight_upper_limit.get(), "upper")
+        highlight_lower = self._parse_optional_float(self.highlight_lower_limit.get(), "lower")
+        highlights = HighlightOptions(
+            highlight_outside_std=self.highlight_outside_std.get() and stats.show_std_band,
+            upper_limit=highlight_upper,
+            lower_limit=highlight_lower,
+            highlight_above=self.highlight_above.get(),
+            highlight_below=self.highlight_below.get(),
+        )
+        temp_unit = "F" if self.temp_f.get() else "C"
+        return PlotOptions(
+            overlay_raw_temp=overlay_raw,
+            smooth=smooth,
+            enable_downsample=self.enable_downsample.get(),
+            max_plot_points=int(self.max_plot_points.get()),
+            temp_unit=temp_unit,
+            stats=stats,
+            highlights=highlights,
+            display_time_config=display_time_config,
+            time_source=self.loaded.time_source if self.loaded else "unknown",
+        )
+
     def _load_paths(self, file_paths: List[str]) -> None:
         if not file_paths:
             return
@@ -841,6 +1185,8 @@ class PlotterApp:
         self.plot_btn.config(state=tk.NORMAL)
         self.save_trim_btn.config(state=tk.NORMAL)
         self.pdf_btn.config(state=tk.NORMAL)
+        self._warned_aggregated = False
+        self._autofill_time_range()
 
         if self.loaded.dropped_no_time_rows:
             messagebox.showinfo(
@@ -865,23 +1211,164 @@ class PlotterApp:
             return
         self._load_paths(file_paths)
 
-    def _get_trimmed_df(self) -> Tuple[pd.DataFrame, str, str, str]:
+    def open_range_selector(self) -> None:
+        if not self.loaded:
+            messagebox.showerror("Range Selector", "No data loaded.")
+            return
+
+        df = self.loaded.dataframe
+        time_column = self.loaded.time_column
+        y_name = self.y_choice.get()
+        y_series = pd.to_numeric(df.get(y_name, pd.Series(dtype=float)), errors="coerce")
+
+        display_tz = _resolve_display_tz(self.display_tz_choice.get())
+        if time_column == "__time":
+            if display_tz is None:
+                messagebox.showerror("Range Selector", f"Invalid time zone: {self.display_tz_choice.get()}")
+                return
+            display_series = _convert_time_series_to_display_tz(
+                df[time_column],
+                display_tz=display_tz,
+                time_source=self.loaded.time_source,
+            )
+            x_values = mdates.date2num(display_series)
+            present_minutes = display_series.dt.floor("min")
+            start_dt = pd.to_datetime(display_series).min()
+            end_dt = pd.to_datetime(display_series).max()
+            display_config = self._get_display_time_config(start_dt=start_dt, end_dt=end_dt)
+            x_label = f"{_human_time_label(time_column)} ({display_config.display_tz_label})"
+        else:
+            display_series = None
+            x_values = pd.to_numeric(df[time_column], errors="coerce").to_numpy(dtype=float, copy=False)
+            present_minutes = None
+            display_config = DisplayTimeConfig(display_tz=None, display_tz_label="n/a")
+            x_label = _human_time_label(time_column)
+
+        if len(x_values) == 0 or np.all(np.isnan(x_values)):
+            messagebox.showerror("Range Selector", "No usable X values for range selection.")
+            return
+
+        valid_mask = np.isfinite(x_values)
+        x_values = x_values[valid_mask]
+        y_series = y_series.to_numpy(dtype=float, copy=False)[valid_mask]
+
+        fig = plt.Figure(figsize=(7.4, 3.4))
+        ax = fig.add_subplot(111)
+        ax.plot(x_values, y_series, linewidth=0.8, alpha=0.8, label="preview")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(_human_series_label(y_name, temp_unit="F" if self.temp_f.get() else "C"))
+        ax.grid(True)
+
+        selector_window = tk.Toplevel(self.root)
+        selector_window.title("Select range")
+        canvas = FigureCanvasTkAgg(fig, master=selector_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        slider_ax = fig.add_axes([0.15, 0.03, 0.7, 0.04])
+        slider = RangeSlider(slider_ax, "Range", float(np.min(x_values)), float(np.max(x_values)))
+        if time_column == "__time" and display_tz is not None:
+            try:
+                start_candidate = _parse_user_time(self.start_time_text.get())
+                end_candidate = _parse_user_time(self.end_time_text.get())
+                if start_candidate and end_candidate:
+                    start_ts = pd.Timestamp(start_candidate)
+                    end_ts = pd.Timestamp(end_candidate)
+                    if start_ts.tzinfo is None:
+                        start_ts = start_ts.tz_localize(display_tz)
+                    if end_ts.tzinfo is None:
+                        end_ts = end_ts.tz_localize(display_tz)
+                    slider.set_val((mdates.date2num(start_ts), mdates.date2num(end_ts)))
+            except Exception:
+                pass
+
+        def _format_dt_label(value: float) -> str:
+            if time_column != "__time":
+                return f"{int(round(value))}"
+            dt_val = mdates.num2date(value, tz=display_tz)
+            return dt_val.strftime("%Y-%m-%d %H:%M")
+
+        start_label_var = tk.StringVar(value=_format_dt_label(slider.val[0]))
+        end_label_var = tk.StringVar(value=_format_dt_label(slider.val[1]))
+
+        def _update_labels(val: Tuple[float, float]) -> None:
+            start_label_var.set(_format_dt_label(val[0]))
+            end_label_var.set(_format_dt_label(val[1]))
+
+        def _on_slider_change(val: Tuple[float, float]) -> None:
+            ax.set_xlim(val)
+            _update_labels(val)
+            canvas.draw_idle()
+
+        slider.on_changed(_on_slider_change)
+
+        label_frame = tk.Frame(selector_window, padx=8, pady=6)
+        label_frame.pack(fill="x")
+        tk.Label(label_frame, text="Start:").grid(row=0, column=0, sticky="w")
+        tk.Label(label_frame, textvariable=start_label_var).grid(row=0, column=1, sticky="w")
+        tk.Label(label_frame, text="End:").grid(row=1, column=0, sticky="w")
+        tk.Label(label_frame, textvariable=end_label_var).grid(row=1, column=1, sticky="w")
+
+        def _apply_range() -> None:
+            if time_column != "__time" or present_minutes is None:
+                self.start_time_text.set("")
+                self.end_time_text.set("")
+                messagebox.showinfo(
+                    "Range Selection",
+                    "This log uses record_id; time trimming is unavailable. The slider is for visual preview only.",
+                )
+                selector_window.destroy()
+                return
+            start_dt = mdates.num2date(slider.val[0], tz=display_tz)
+            end_dt = mdates.num2date(slider.val[1], tz=display_tz)
+            start_text = _nearest_minute_string(pd.DatetimeIndex(present_minutes.unique()).sort_values(), start_dt)
+            end_text = _nearest_minute_string(pd.DatetimeIndex(present_minutes.unique()).sort_values(), end_dt)
+            self.start_time_text.set(start_text)
+            self.end_time_text.set(end_text)
+            selector_window.destroy()
+
+        action_frame = tk.Frame(selector_window, padx=8, pady=6)
+        action_frame.pack(fill="x")
+        tk.Button(action_frame, text="Apply range", command=_apply_range).pack(side="left")
+        tk.Button(action_frame, text="Close", command=selector_window.destroy).pack(side="left", padx=6)
+
+    def _get_trimmed_df(self) -> Tuple[pd.DataFrame, str, str, str, DisplayTimeConfig, Optional[pd.Series]]:
         if not self.loaded:
             raise ValueError("No data loaded.")
+        display_series = None
+        display_tz = None
+        if self.loaded.time_column == "__time":
+            display_tz = _resolve_display_tz(self.display_tz_choice.get())
+            if display_tz is None:
+                raise ValueError(f"Invalid time zone: {self.display_tz_choice.get()}")
+            display_series = _convert_time_series_to_display_tz(
+                self.loaded.dataframe[self.loaded.time_column],
+                display_tz=display_tz,
+                time_source=self.loaded.time_source,
+            )
         trimmed, start_label, end_label, summary = _validate_and_trim_by_minute(
             df=self.loaded.dataframe,
             time_column=self.loaded.time_column,
             start_text=self.start_time_text.get(),
             end_text=self.end_time_text.get(),
+            time_series=display_series,
         )
-        return trimmed, start_label, end_label, summary
+        if display_series is not None:
+            display_series = display_series.loc[trimmed.index]
+            display_config = self._get_display_time_config(
+                start_dt=pd.to_datetime(display_series).min(),
+                end_dt=pd.to_datetime(display_series).max(),
+            )
+        else:
+            display_config = DisplayTimeConfig(display_tz=None, display_tz_label="n/a")
+        return trimmed, start_label, end_label, summary, display_config, display_series
 
     def save_trimmed_csv(self) -> None:
         if not self.loaded:
             messagebox.showerror("Save Error", "No data loaded.")
             return
         try:
-            trimmed, start_label, end_label, summary = self._get_trimmed_df()
+            trimmed, start_label, end_label, summary, _display_config, _display_series = self._get_trimmed_df()
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -908,7 +1395,7 @@ class PlotterApp:
             messagebox.showerror("Plot Error", "No data loaded.")
             return
         try:
-            df, start_label, end_label, _summary = self._get_trimmed_df()
+            df, start_label, end_label, _summary, display_config, display_series = self._get_trimmed_df()
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -918,24 +1405,38 @@ class PlotterApp:
             messagebox.showerror("Plot Error", f"Column not found: {y_name}")
             return
 
+        overlay_raw = self.overlay_raw.get()
+        if overlay_raw and "raw_temp_c" not in df.columns:
+            self.overlay_raw.set(False)
+            overlay_raw = False
+            messagebox.showinfo("Overlay Disabled", "raw_temp_c is not available in this dataset.")
+
+        smooth = self.smooth.get()
+        if display_series is not None and self._detect_aggregated(display_series):
+            if smooth and not self._warned_aggregated:
+                messagebox.showinfo("Smoothing Disabled", "Input appears aggregated; smoothing disabled.")
+                self._warned_aggregated = True
+            smooth = False
+
         nodes = _node_ids_from_df(df)
-        temp_unit = "F" if self.temp_f.get() else "C"
         range_label = f"{start_label} → {end_label}"
 
-        plot_title = _human_series_label(y_name, temp_unit=temp_unit)
+        plot_title = _human_series_label(y_name, temp_unit="F" if self.temp_f.get() else "C")
         suptitle = f"Nodes: {nodes} — {range_label}" if nodes != "n/a" else range_label
+
+        try:
+            options = self._collect_plot_options(display_config, smooth=smooth, overlay_raw=overlay_raw)
+        except Exception as exc:
+            messagebox.showerror("Plot Error", str(exc))
+            return
 
         fig, _plot_points, _total_points = _build_figure(
             df=df,
             time_column=self.loaded.time_column,
             y_name=y_name,
-            overlay_raw_temp=self.overlay_raw.get(),
-            smooth=self.smooth.get(),
             plot_title=plot_title,
             suptitle=suptitle,
-            enable_downsample=self.enable_downsample.get(),
-            max_plot_points=int(self.max_plot_points.get()),
-            temp_unit=temp_unit,
+            options=options,
         )
         plt.show()
 
@@ -944,7 +1445,7 @@ class PlotterApp:
             messagebox.showerror("PDF Error", "No data loaded.")
             return
         try:
-            df, start_label, end_label, summary = self._get_trimmed_df()
+            df, start_label, end_label, summary, display_config, display_series = self._get_trimmed_df()
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -953,6 +1454,19 @@ class PlotterApp:
         if y_name not in df.columns:
             messagebox.showerror("PDF Error", f"Column not found: {y_name}")
             return
+
+        overlay_raw = self.overlay_raw.get()
+        if overlay_raw and "raw_temp_c" not in df.columns:
+            self.overlay_raw.set(False)
+            overlay_raw = False
+            messagebox.showinfo("Overlay Disabled", "raw_temp_c is not available in this dataset.")
+
+        smooth = self.smooth.get()
+        if display_series is not None and self._detect_aggregated(display_series):
+            if smooth and not self._warned_aggregated:
+                messagebox.showinfo("Smoothing Disabled", "Input appears aggregated; smoothing disabled.")
+                self._warned_aggregated = True
+            smooth = False
 
         today = datetime.date.today().isoformat()
         default_name = f"pt100_report_{today}.pdf"
@@ -980,17 +1494,19 @@ class PlotterApp:
         temp_unit = "F" if self.temp_f.get() else "C"
         plot_title = _human_series_label(y_name, temp_unit=temp_unit)
 
+        try:
+            options = self._collect_plot_options(display_config, smooth=smooth, overlay_raw=overlay_raw)
+        except Exception as exc:
+            messagebox.showerror("PDF Error", str(exc))
+            return
+
         fig, plot_points, total_points = _build_figure(
             df=df,
             time_column=self.loaded.time_column,
             y_name=y_name,
-            overlay_raw_temp=self.overlay_raw.get(),
-            smooth=self.smooth.get(),
             plot_title=plot_title,
             suptitle=None,
-            enable_downsample=self.enable_downsample.get(),
-            max_plot_points=int(self.max_plot_points.get()),
-            temp_unit=temp_unit,
+            options=options,
         )
 
         y_series_c = pd.to_numeric(df.get(y_name, pd.Series(dtype=float)), errors="coerce")
@@ -1003,14 +1519,37 @@ class PlotterApp:
 
         series_label = _human_series_label(y_name, temp_unit=temp_unit)
 
+        overlays = []
+        if y_name in ("cal_temp_c", "raw_temp_c"):
+            if options.stats.show_min:
+                overlays.append("min")
+            if options.stats.show_max:
+                overlays.append("max")
+            if options.stats.show_avg:
+                overlays.append("avg")
+            if options.stats.show_std_band:
+                overlays.append("±1σ")
+            highlights = []
+            if options.highlights.highlight_outside_std:
+                highlights.append("outside ±1σ")
+            if options.highlights.highlight_above and options.highlights.upper_limit is not None:
+                highlights.append(f"> {options.highlights.upper_limit:g}")
+            if options.highlights.highlight_below and options.highlights.lower_limit is not None:
+                highlights.append(f"< {options.highlights.lower_limit:g}")
+            if highlights:
+                overlays.append(f"highlight: {', '.join(highlights)}")
+
         summary_rows = [
             ["Field", "Value"],
             ["Time source", self.loaded.time_source],
+            ["Time zone", display_config.display_tz_label],
             ["Start", start_label],
             ["End", end_label],
             ["Series", series_label],
             ["min / avg / max / std", f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
         ]
+        if overlays:
+            summary_rows.append(["Overlays", ", ".join(overlays)])
 
         try:
             if use_vector_pdf:
