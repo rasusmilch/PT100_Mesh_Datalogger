@@ -57,7 +57,6 @@ idf_component_register(
     esp_event
     esp_timer
     esp_http_client
-    esp_crt_bundle
     console
     vfs
     fatfs
