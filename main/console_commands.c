@@ -49,8 +49,8 @@
 #include "linenoise/linenoise.h"
 #include "mem_guard.h"
 #include "runtime_manager.h"
-#include "sdkconfig.h"
 #include "sd_card_detect.h"
+#include "sdkconfig.h"
 #include "time_sync.h"
 #include "units_gpio.h"
 #include "wifi_credentials.h"
@@ -156,9 +156,8 @@ PrintRtdEmaSettings(const app_settings_t* settings,
     return;
   }
   char alpha_buffer[8] = { 0 };
-  FormatPermille(settings->rtd_ema_alpha_permille,
-                 alpha_buffer,
-                 sizeof(alpha_buffer));
+  FormatPermille(
+    settings->rtd_ema_alpha_permille, alpha_buffer, sizeof(alpha_buffer));
   printf("rtd_ema_enabled: %s\n", settings->rtd_ema_enabled ? "yes" : "no");
   printf("rtd_ema_alpha: %s\n", alpha_buffer);
   if (reader != NULL) {
@@ -807,13 +806,10 @@ CommandStatus(int argc, char** argv)
          (unsigned)health.heap_internal_min_largest_free_block_bytes);
   printf("heap_internal_frag_percent: %u\n",
          (unsigned)health.heap_internal_frag_percent);
-  printf("heap_internal_warn: %s\n",
-         health.heap_internal_warn ? "yes" : "no");
-  printf("heap_internal_crit: %s\n",
-         health.heap_internal_crit ? "yes" : "no");
+  printf("heap_internal_warn: %s\n", health.heap_internal_warn ? "yes" : "no");
+  printf("heap_internal_crit: %s\n", health.heap_internal_crit ? "yes" : "no");
 #if CONFIG_APP_HEAP_PSRAM_MONITOR_ENABLE
-  printf("heap_psram_free_bytes: %u\n",
-         (unsigned)health.heap_psram_free_bytes);
+  printf("heap_psram_free_bytes: %u\n", (unsigned)health.heap_psram_free_bytes);
   printf("heap_psram_largest_free_block_bytes: %u\n",
          (unsigned)health.heap_psram_largest_free_block_bytes);
   printf("heap_psram_min_free_bytes: %u\n",
@@ -1130,8 +1126,9 @@ CommandDisplay(int argc, char** argv)
 static void
 PrintUnitsUsage(void)
 {
-  printf("usage: units set C|F | units gpio show | units gpio set pin <n> | "
-         "units gpio set pull <up|down|none> | units gpio set c_level <high|low>\n");
+  printf(
+    "usage: units set C|F | units gpio show | units gpio set pin <n> | "
+    "units gpio set pull <up|down|none> | units gpio set c_level <high|low>\n");
 }
 
 /**
@@ -1193,8 +1190,9 @@ CommandUnits(int argc, char** argv)
                               : "n/a");
       printf("units_gpio_effective: %s\n",
              AppSettingsDisplayUnitsToString(status.effective_units));
-      printf("units_saved: %s\n",
-             AppSettingsDisplayUnitsToString(g_runtime->settings->display_units));
+      printf(
+        "units_saved: %s\n",
+        AppSettingsDisplayUnitsToString(g_runtime->settings->display_units));
       return 0;
     }
     if (strcmp(gpio_action, "set") == 0) {
@@ -1490,11 +1488,12 @@ CommandFram(int argc, char** argv)
         uint16_t actual_crc = 0;
         const fram_log_validate_result_t validate_result =
           FramLogValidateRecord(&record, &actual_crc);
-        printf("record[%u]: corrupt=yes reason=%s exp_crc=0x%04x act_crc=0x%04x\n",
-               (unsigned)offset,
-               FramLogValidateResultToString(validate_result),
-               (unsigned)record.crc16_ccitt,
-               (unsigned)actual_crc);
+        printf(
+          "record[%u]: corrupt=yes reason=%s exp_crc=0x%04x act_crc=0x%04x\n",
+          (unsigned)offset,
+          FramLogValidateResultToString(validate_result),
+          (unsigned)record.crc16_ccitt,
+          (unsigned)actual_crc);
         continue;
       }
 
@@ -4315,9 +4314,8 @@ RegisterCommands(void)
 
   const esp_console_cmd_t rtd_cmd = {
     .command = "rtd",
-    .help =
-      "RTD settings: rtd show | rtd ema show | rtd ema on|off | rtd ema "
-      "alpha <0.0..1.0>",
+    .help = "RTD settings: rtd show | rtd ema show | rtd ema on|off | rtd ema "
+            "alpha <0.0..1.0>",
     .hint = NULL,
     .func = &CommandRtd,
   };
@@ -4351,9 +4349,13 @@ RegisterCommands(void)
     .command = "cal",
     .help =
       "Calibration: cal clear | cal add <raw_c> <actual_c> | cal list | cal "
-      "show | cal apply [--mode linear|piecewise|polyN] [--allow_wide_slope] | "
-      "cal live [--every_ms 500] [--seconds 10] | cal capture <actual_temp_c> "
-      "[--stable_stddev_c 0.05] [--min_seconds 5] [--timeout_seconds 120]\n"
+      "show |\n"
+      "             cal apply [--mode linear|piecewise|polyN] "
+      "[--allow_wide_slope] |\n"
+      "             cal live [--every_ms 500] [--seconds 10] | cal capture "
+      "<actual_temp_c>\n"
+      "             [--stable_stddev_c 0.05] [--min_seconds 5] "
+      "[--timeout_seconds 120]\n"
       "Workflow:\n"
       "        - cal clear\n"
       "        - let node settle at reference temp\n"
@@ -4362,11 +4364,11 @@ RegisterCommands(void)
       "        - move to another reference\n"
       "        - cal capture 100.00 ...\n"
       "        - cal apply\n"
-      "        - cal show.\n"
-      "Notes: *may want to use boilpt command*; capture uses windowed"
-      "average after stability; live/capture show raw vs average; apply uses"
-      "least-squares and reports residuals; calibration invalidates when "
-      "conversion mode, wire count, filter Hz, Rref, R0, or PT100 table "
+      "        - cal show.\n\n"
+      "Notes: *may want to use boilpt command*; capture uses windowed\n"
+      "average after stability; live/capture show raw vs average; apply uses\n"
+      "least-squares and reports residuals; calibration invalidates when\n"
+      "conversion mode, wire count, filter Hz, Rref, R0, or PT100 table\n"
       "changes.\n\n",
     .hint = NULL,
     .func = &CommandCal,
