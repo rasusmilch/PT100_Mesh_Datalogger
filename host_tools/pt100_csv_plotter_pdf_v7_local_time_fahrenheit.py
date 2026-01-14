@@ -86,6 +86,7 @@ class HighlightOptions:
     lower_limit: Optional[float]
     highlight_above: bool
     highlight_below: bool
+    apply_to_rolling_mean: bool
 
 
 @dataclass
@@ -566,7 +567,7 @@ def _mask_to_spans(x_values: pd.Series, mask: np.ndarray) -> List[Tuple[object, 
     """Convert a boolean mask into contiguous spans on the X axis.
 
     NaN values in the mask are treated as False. Single-point spans expand to the
-    next sample when possible so the span has non-zero width.
+    next distinct sample when possible so the span has non-zero width.
     """
     mask_series = pd.Series(mask).fillna(False)
     mask_bool = mask_series.to_numpy(dtype=bool, copy=False)
@@ -582,9 +583,75 @@ def _mask_to_spans(x_values: pd.Series, mask: np.ndarray) -> List[Tuple[object, 
     for start_idx, end_idx in zip(starts, ends):
         if start_idx > last_index:
             continue
-        end_target = min(end_idx + 1, last_index)
-        spans.append((x_values.iloc[start_idx], x_values.iloc[end_target]))
-    return spans
+        end_target = min(end_idx, last_index)
+        x0 = x_values.iloc[start_idx]
+        x1 = _next_distinct_x_value(x_values, end_target)
+        if pd.isna(x0) or pd.isna(x1):
+            continue
+        spans.append((x0, x1))
+
+    return _merge_spans(spans, _median_sample_delta(x_values))
+
+
+def _next_distinct_x_value(x_values: pd.Series, end_idx: int) -> object:
+    last_index = len(x_values) - 1
+    if end_idx > last_index:
+        end_idx = last_index
+    end_value = x_values.iloc[end_idx]
+    next_idx = min(end_idx + 1, last_index)
+    while next_idx <= last_index and x_values.iloc[next_idx] == end_value:
+        next_idx += 1
+    if next_idx <= last_index:
+        return x_values.iloc[next_idx]
+    return _nudge_span_end(end_value)
+
+
+def _nudge_span_end(value: object) -> object:
+    if isinstance(value, (pd.Timestamp, datetime.datetime, np.datetime64)):
+        return pd.Timestamp(value) + pd.Timedelta(seconds=1)
+    try:
+        return value + 1
+    except Exception:
+        return value
+
+
+def _median_sample_delta(x_values: pd.Series) -> Optional[object]:
+    diffs = pd.Series(x_values).diff().dropna()
+    if diffs.empty:
+        return None
+    try:
+        diffs = diffs[diffs > 0]
+    except Exception:
+        pass
+    if diffs.empty:
+        return None
+    return diffs.median()
+
+
+def _merge_spans(
+    spans: List[Tuple[object, object]],
+    gap_threshold: Optional[object],
+) -> List[Tuple[object, object]]:
+    if not spans:
+        return []
+    spans_sorted = sorted(spans, key=lambda span: span[0])
+    merged = [spans_sorted[0]]
+    for start, end in spans_sorted[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end or _gap_within_threshold(start, last_end, gap_threshold):
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _gap_within_threshold(start: object, end: object, gap_threshold: Optional[object]) -> bool:
+    if gap_threshold is None:
+        return False
+    try:
+        return (start - end) <= gap_threshold
+    except Exception:
+        return False
 
 
 def _add_highlight_spans(
@@ -605,6 +672,9 @@ def _add_highlight_spans(
             x1,
             color=color,
             alpha=alpha,
+            linewidth=0,
+            edgecolor="none",
+            antialiased=False,
             label=label if idx == 0 else "_nolegend_",
         )
 
@@ -718,19 +788,25 @@ def _build_figure(
                     label="±1σ",
                 )
 
+        highlight_series = y_series
+        highlight_basis = "data"
+        if options.highlights.apply_to_rolling_mean and smoothed_series is not None:
+            highlight_series = smoothed_series
+            highlight_basis = "rolling mean"
+
         if options.highlights.highlight_outside_std and stats_avg is not None and stats_std is not None:
-            outside_full = (y_series < stats_avg - stats_std) | (y_series > stats_avg + stats_std)
+            outside_full = (highlight_series < stats_avg - stats_std) | (highlight_series > stats_avg + stats_std)
             _add_highlight_spans(
                 ax,
                 x_values,
                 outside_full,
-                label="outside ±1σ",
+                label=f"outside ±1σ ({highlight_basis})",
                 color="#ff7f0e",
                 alpha=0.12,
             )
 
         if options.highlights.highlight_above and options.highlights.upper_limit is not None:
-            above_full = y_series > options.highlights.upper_limit
+            above_full = highlight_series > options.highlights.upper_limit
             _add_highlight_spans(
                 ax,
                 x_values,
@@ -741,7 +817,7 @@ def _build_figure(
             )
 
         if options.highlights.highlight_below and options.highlights.lower_limit is not None:
-            below_full = y_series < options.highlights.lower_limit
+            below_full = highlight_series < options.highlights.lower_limit
             _add_highlight_spans(
                 ax,
                 x_values,
@@ -986,6 +1062,7 @@ class PlotterApp:
         self.stats_show_avg = tk.BooleanVar(value=False)
         self.stats_show_std = tk.BooleanVar(value=False)
         self.highlight_outside_std = tk.BooleanVar(value=False)
+        self.highlight_apply_to_rolling_mean = tk.BooleanVar(value=False)
         self.highlight_above = tk.BooleanVar(value=False)
         self.highlight_below = tk.BooleanVar(value=False)
         self.highlight_upper_limit = tk.StringVar(value="")
@@ -1066,14 +1143,19 @@ class PlotterApp:
             text="Highlight outside mean ± 1σ",
             variable=self.highlight_outside_std,
         ).grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Checkbutton(
+            highlight_frame,
+            text="Compute highlight mask from rolling mean (if enabled)",
+            variable=self.highlight_apply_to_rolling_mean,
+        ).grid(row=1, column=0, columnspan=2, sticky="w")
         tk.Checkbutton(highlight_frame, text="Highlight above upper", variable=self.highlight_above).grid(
-            row=1, column=0, sticky="w"
-        )
-        tk.Entry(highlight_frame, textvariable=self.highlight_upper_limit, width=10).grid(row=1, column=1, sticky="w")
-        tk.Checkbutton(highlight_frame, text="Highlight below lower", variable=self.highlight_below).grid(
             row=2, column=0, sticky="w"
         )
-        tk.Entry(highlight_frame, textvariable=self.highlight_lower_limit, width=10).grid(row=2, column=1, sticky="w")
+        tk.Entry(highlight_frame, textvariable=self.highlight_upper_limit, width=10).grid(row=2, column=1, sticky="w")
+        tk.Checkbutton(highlight_frame, text="Highlight below lower", variable=self.highlight_below).grid(
+            row=3, column=0, sticky="w"
+        )
+        tk.Entry(highlight_frame, textvariable=self.highlight_lower_limit, width=10).grid(row=3, column=1, sticky="w")
         row += 1
 
         tk.Label(frm, text="Max plot points:").grid(row=row, column=0, sticky="e", pady=(10, 0))
@@ -1189,6 +1271,7 @@ class PlotterApp:
             lower_limit=highlight_lower,
             highlight_above=self.highlight_above.get(),
             highlight_below=self.highlight_below.get(),
+            apply_to_rolling_mean=self.highlight_apply_to_rolling_mean.get(),
         )
         temp_unit = "F" if self.temp_f.get() else "C"
         return PlotOptions(
@@ -1568,7 +1651,8 @@ class PlotterApp:
                 overlays.append("±1σ")
             highlights = []
             if options.highlights.highlight_outside_std:
-                highlights.append("outside ±1σ")
+                basis_label = "rolling mean" if options.highlights.apply_to_rolling_mean and options.smooth else "data"
+                highlights.append(f"outside ±1σ ({basis_label})")
             if options.highlights.highlight_above and options.highlights.upper_limit is not None:
                 highlights.append(f"> {options.highlights.upper_limit:g}")
             if options.highlights.highlight_below and options.highlights.lower_limit is not None:
