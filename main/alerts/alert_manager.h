@@ -102,6 +102,7 @@ extern "C"
     alert_state_t states[ALERT_MAX_LEAVES][ALERT_TYPE_COUNT];
     alert_ntfy_t ntfy;
     const char* root_id_string;
+    uint64_t local_leaf_id;
     uint32_t global_window_start_ms;
     uint32_t global_sent_in_window;
   } alert_manager_t;
@@ -117,8 +118,11 @@ extern "C"
    * @brief Execute AlertManagerInit.
    * @param manager Parameter manager.
    * @param root_id_string Parameter root_id_string.
+   * @param local_leaf_id Parameter local_leaf_id.
    */
-  void AlertManagerInit(alert_manager_t* manager, const char* root_id_string);
+  void AlertManagerInit(alert_manager_t* manager,
+                        const char* root_id_string,
+                        uint64_t local_leaf_id);
 
   /**
    * @brief Execute AlertManagerLoadConfig.

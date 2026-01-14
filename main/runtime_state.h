@@ -208,6 +208,7 @@ extern "C" {
 
     char node_id_string[32];
     uint8_t local_mac[6];
+    uint64_t local_leaf_id;
 
     TaskHandle_t sensor_task;
     TaskHandle_t storage_task;
