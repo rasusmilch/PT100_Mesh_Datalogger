@@ -15,6 +15,18 @@
 static const char* kTag = "alert_ntfy";
 
 /**
+ * @brief Reduce log noise from ESP-IDF certificate bundle validation.
+ *
+ * This suppresses repetitive INFO logs (e.g. "Certificate validated") while
+ * retaining WARN/ERROR logs for real TLS/certificate problems.
+ */
+static void
+AlertNtfyApplyTlsLogPolicy(void)
+{
+  esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_WARN);
+}
+
+/**
  * @brief Execute FormatEpoch.
  * @param epoch_seconds Parameter epoch_seconds.
  * @param out Parameter out.
@@ -143,6 +155,8 @@ AppendTimeLine(const alert_notification_payload_t* payload,
 void
 AlertNtfyInit(alert_ntfy_t* ntfy)
 {
+  AlertNtfyApplyTlsLogPolicy();
+
   if (ntfy == NULL) {
     return;
   }
