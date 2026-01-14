@@ -784,7 +784,7 @@ def _build_figure(
                     stats_avg - stats_std,
                     stats_avg + stats_std,
                     color="#1f77b4",
-                    alpha=0.12,
+                    alpha=0.16,
                     label="±1σ",
                 )
 
@@ -802,9 +802,17 @@ def _build_figure(
                 outside_full,
                 label=f"outside ±1σ ({highlight_basis})",
                 color="#ff7f0e",
-                alpha=0.12,
+                alpha=0.16,
             )
 
+        if options.highlights.upper_limit is not None:
+            ax.axhline(
+                options.highlights.upper_limit,
+                color="#d62728",
+                linestyle="--",
+                linewidth=1.2,
+                label="upper limit",
+            )
         if options.highlights.highlight_above and options.highlights.upper_limit is not None:
             above_full = highlight_series > options.highlights.upper_limit
             _add_highlight_spans(
@@ -813,9 +821,17 @@ def _build_figure(
                 above_full,
                 label="above upper",
                 color="#d62728",
-                alpha=0.12,
+                alpha=0.16,
             )
 
+        if options.highlights.lower_limit is not None:
+            ax.axhline(
+                options.highlights.lower_limit,
+                color="#9467bd",
+                linestyle="--",
+                linewidth=1.2,
+                label="lower limit",
+            )
         if options.highlights.highlight_below and options.highlights.lower_limit is not None:
             below_full = highlight_series < options.highlights.lower_limit
             _add_highlight_spans(
@@ -824,7 +840,7 @@ def _build_figure(
                 below_full,
                 label="below lower",
                 color="#9467bd",
-                alpha=0.12,
+                alpha=0.16,
             )
 
     ax.legend()
@@ -1378,6 +1394,7 @@ class PlotterApp:
         ax.set_xlabel(x_label)
         ax.set_ylabel(_human_series_label(y_name, temp_unit="F" if self.temp_f.get() else "C"))
         ax.grid(True)
+        fig.subplots_adjust(bottom=0.22)
 
         selector_window = tk.Toplevel(self.root)
         selector_window.title("Select range")
@@ -1385,8 +1402,9 @@ class PlotterApp:
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        slider_ax = fig.add_axes([0.15, 0.03, 0.7, 0.04])
+        slider_ax = fig.add_axes([0.15, 0.10, 0.7, 0.04])
         slider = RangeSlider(slider_ax, "Range", float(np.min(x_values)), float(np.max(x_values)))
+        slider.valtext.set_visible(False)
         if time_column == "__time" and display_tz is not None:
             try:
                 start_candidate = _parse_user_time(self.start_time_text.get())
