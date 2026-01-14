@@ -137,6 +137,35 @@ NotifyNetSupervisor(void)
   NetSupervisorNotifyUpdate();
 }
 
+static void
+FormatPermille(uint16_t permille, char* buffer, size_t buffer_size)
+{
+  if (buffer == NULL || buffer_size == 0) {
+    return;
+  }
+  const unsigned int whole = permille / 1000u;
+  const unsigned int frac = permille % 1000u;
+  snprintf(buffer, buffer_size, "%u.%03u", whole, frac);
+}
+
+static void
+PrintRtdEmaSettings(const app_settings_t* settings,
+                    const max31865_reader_t* reader)
+{
+  if (settings == NULL) {
+    return;
+  }
+  char alpha_buffer[8] = { 0 };
+  FormatPermille(settings->rtd_ema_alpha_permille,
+                 alpha_buffer,
+                 sizeof(alpha_buffer));
+  printf("rtd_ema_enabled: %s\n", settings->rtd_ema_enabled ? "yes" : "no");
+  printf("rtd_ema_alpha: %s\n", alpha_buffer);
+  if (reader != NULL) {
+    printf("rtd_ema_valid: %s\n", reader->ema_valid ? "yes" : "no");
+  }
+}
+
 /**
  * @brief Execute ParseDisplayAttentionName.
  * @param value Parameter value.
@@ -592,6 +621,7 @@ CommandStatus(int argc, char** argv)
        settings->mqtt_bridge_mode == MQTT_BRIDGE_BOTH);
     printf("broker_bridge_active: %s\n", broker_bridge_active ? "yes" : "no");
   }
+  PrintRtdEmaSettings(settings, g_runtime->sensor);
 
   // Ensure the TZ rules are loaded before formatting local time.
   // (TZ is applied via AppSettingsApplyTimeZone() at boot and by the tz/dst
@@ -817,6 +847,100 @@ CommandStatus(int argc, char** argv)
   printf("cal_points: %u\n",
          (unsigned)g_runtime->settings->calibration_points_count);
   return 0;
+}
+
+/**
+ * @brief Execute CommandRtd.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandRtd(int argc, char** argv)
+{
+  if (g_runtime == NULL) {
+    return 1;
+  }
+  if (argc < 2) {
+    printf("usage: rtd show | rtd ema show | rtd ema on|off | rtd ema alpha "
+           "<0.0..1.0>\n");
+    return 1;
+  }
+
+  app_settings_t* settings = g_runtime->settings;
+  const char* action = argv[1];
+
+  if (strcmp(action, "show") == 0) {
+    PrintRtdEmaSettings(settings, g_runtime->sensor);
+    return 0;
+  }
+
+  if (strcmp(action, "ema") != 0) {
+    printf("usage: rtd show | rtd ema show | rtd ema on|off | rtd ema alpha "
+           "<0.0..1.0>\n");
+    return 1;
+  }
+
+  if (argc < 3) {
+    printf("usage: rtd ema show | rtd ema on|off | rtd ema alpha <0.0..1.0>\n");
+    return 1;
+  }
+
+  const char* subaction = argv[2];
+  if (strcmp(subaction, "show") == 0) {
+    PrintRtdEmaSettings(settings, g_runtime->sensor);
+    return 0;
+  }
+
+  if (strcmp(subaction, "on") == 0 || strcmp(subaction, "off") == 0) {
+    if (argc != 3) {
+      printf("usage: rtd ema on|off\n");
+      return 1;
+    }
+    const bool enabled = (strcmp(subaction, "on") == 0);
+    settings->rtd_ema_enabled = enabled;
+    esp_err_t result = AppSettingsSaveRtdEmaEnabled(enabled);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("rtd_ema_enabled set to %s\n", enabled ? "on" : "off");
+    return 0;
+  }
+
+  if (strcmp(subaction, "alpha") == 0) {
+    if (argc != 4) {
+      printf("usage: rtd ema alpha <0.0..1.0>\n");
+      return 1;
+    }
+    char* end = NULL;
+    const double value = strtod(argv[3], &end);
+    if (end == argv[3] || *end != '\0' || value <= 0.0 || value > 1.0) {
+      printf("usage: rtd ema alpha <0.0..1.0>\n");
+      return 1;
+    }
+    long long permille = llround(value * 1000.0);
+    if (permille < 1) {
+      permille = 1;
+    } else if (permille > 1000) {
+      permille = 1000;
+    }
+    const uint16_t permille_u16 = (uint16_t)permille;
+    settings->rtd_ema_alpha_permille = permille_u16;
+    esp_err_t result = AppSettingsSaveRtdEmaAlphaPermille(permille_u16);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    char alpha_buffer[8] = { 0 };
+    FormatPermille(permille_u16, alpha_buffer, sizeof(alpha_buffer));
+    printf("rtd_ema_alpha set to %s\n", alpha_buffer);
+    return 0;
+  }
+
+  printf("usage: rtd show | rtd ema show | rtd ema on|off | rtd ema alpha "
+         "<0.0..1.0>\n");
+  return 1;
 }
 
 static void
@@ -1229,6 +1353,7 @@ FormatRecordFlags(uint16_t flags, char* out, size_t out_size)
     { LOG_RECORD_FLAG_MESH_CONNECTED, "mesh_connected" },
     { LOG_RECORD_FLAG_SENSOR_FAULT, "sensor_fault" },
     { LOG_RECORD_FLAG_FRAM_FULL, "fram_full" },
+    { LOG_RECORD_FLAG_RTD_EMA, "rtd_ema" },
   };
 
   size_t used = 0;
@@ -4187,6 +4312,16 @@ RegisterCommands(void)
     .func = &CommandMqtt,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&mqtt_cmd));
+
+  const esp_console_cmd_t rtd_cmd = {
+    .command = "rtd",
+    .help =
+      "RTD settings: rtd show | rtd ema show | rtd ema on|off | rtd ema "
+      "alpha <0.0..1.0>",
+    .hint = NULL,
+    .func = &CommandRtd,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&rtd_cmd));
 
   g_cal_args.action =
     arg_str1(NULL, NULL, "<action>", "clear|add|list|show|apply|live|capture");
