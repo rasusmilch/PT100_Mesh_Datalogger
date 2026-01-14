@@ -205,6 +205,7 @@ extern "C" {
     bool last_sensor_fault_present;
     uint8_t last_sensor_fault_status;
     TickType_t last_sensor_fault_log_ticks;
+    bool last_rtd_ema_enabled;
 
     char node_id_string[32];
     uint8_t local_mac[6];

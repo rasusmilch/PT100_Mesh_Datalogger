@@ -784,17 +784,20 @@ Max31865ReadEmaUpdate(max31865_reader_t* reader,
   }
   max31865_sample_t sample;
   esp_err_t res = Max31865ReadOnce(reader, &sample);
-  if (res != ESP_OK || sample.fault_present) {
-    if (res == ESP_OK) {
-      FillSample(sample_out,
-                 sample.adc_code,
-                 sample.resistance_ohm,
-                 sample.temperature_c,
-                 sample.fault_status);
-      return ESP_ERR_INVALID_RESPONSE;
-    }
+  if (res != ESP_OK) {
     memset(sample_out, 0, sizeof(*sample_out));
     return res;
+  }
+  if (sample.fault_present) {
+    FillSample(sample_out,
+               sample.adc_code,
+               sample.resistance_ohm,
+               sample.temperature_c,
+               sample.fault_status);
+    if (ema_temp_out != NULL) {
+      *ema_temp_out = reader->ema_temp_c;
+    }
+    return ESP_OK;
   }
 
   if (!reader->ema_valid) {

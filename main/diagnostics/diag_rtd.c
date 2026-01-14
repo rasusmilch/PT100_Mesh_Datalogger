@@ -1,6 +1,7 @@
 #include "diagnostics/diag_rtd.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -191,8 +192,16 @@ RunDiagRtd(const app_runtime_t* runtime,
   max31865_sample_t ema_sample;
   double ema_temp = 0.0;
   memset(&ema_sample, 0, sizeof(ema_sample));
+  uint16_t ema_permille = 200;
+  if (runtime->settings != NULL) {
+    ema_permille = runtime->settings->rtd_ema_alpha_permille;
+    if (ema_permille < 1 || ema_permille > 1000) {
+      ema_permille = 200;
+    }
+  }
+  const double ema_alpha = (double)ema_permille / 1000.0;
   esp_err_t ema_result =
-    Max31865ReadEmaUpdate(runtime->sensor, 0.2, &ema_sample, &ema_temp);
+    Max31865ReadEmaUpdate(runtime->sensor, ema_alpha, &ema_sample, &ema_temp);
   char ema_fault[64] = { 0 };
   Max31865FormatFault(ema_sample.fault_status, ema_fault, sizeof(ema_fault));
 
@@ -201,7 +210,8 @@ RunDiagRtd(const app_runtime_t* runtime,
                  total_steps,
                  "ema update",
                  ema_result,
-                 "sample_temp=%.3fC ema_temp=%.3fC fault=%s",
+                 "alpha=%.3f sample_temp=%.3fC ema_temp=%.3fC fault=%s",
+                 ema_alpha,
                  ema_sample.temperature_c,
                  ema_temp,
                  ema_fault);

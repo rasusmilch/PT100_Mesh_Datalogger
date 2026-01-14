@@ -34,6 +34,8 @@ static const char* kKeyCalContextFilter = "cal_ctx_filter";
 static const char* kKeyCalContextRref = "cal_ctx_rref";
 static const char* kKeyCalContextR0 = "cal_ctx_r0";
 static const char* kKeyCalContextTableVer = "cal_ctx_table";
+static const char* kKeyRtdEmaEnabled = "rtd_ema_en";
+static const char* kKeyRtdEmaAlphaPermille = "rtd_ema_alpha";
 static const char* kKeyTzPosix = "tz_posix";
 static const char* kKeyDstEnabled = "dst_enabled";
 static const char* kKeyNodeRole = "node_role";
@@ -291,6 +293,8 @@ ApplyDefaults(app_settings_t* settings)
   settings->calibration_context_valid = false;
   settings->calibration_points_count = 0;
   memset(settings->calibration_points, 0, sizeof(settings->calibration_points));
+  settings->rtd_ema_enabled = false;
+  settings->rtd_ema_alpha_permille = 200;
   snprintf(settings->tz_posix,
            sizeof(settings->tz_posix),
            "%s",
@@ -544,6 +548,18 @@ AppSettingsLoad(app_settings_t* settings_out)
     memset(&settings_out->calibration_context, 0,
            sizeof(settings_out->calibration_context));
     settings_out->calibration_context_valid = false;
+  }
+
+  uint8_t rtd_ema_enabled = settings_out->rtd_ema_enabled ? 1 : 0;
+  result = nvs_get_u8(handle, kKeyRtdEmaEnabled, &rtd_ema_enabled);
+  if (result == ESP_OK && rtd_ema_enabled <= 1) {
+    settings_out->rtd_ema_enabled = (rtd_ema_enabled == 1);
+  }
+
+  uint32_t rtd_ema_alpha = settings_out->rtd_ema_alpha_permille;
+  result = nvs_get_u32(handle, kKeyRtdEmaAlphaPermille, &rtd_ema_alpha);
+  if (result == ESP_OK && rtd_ema_alpha >= 1 && rtd_ema_alpha <= 1000) {
+    settings_out->rtd_ema_alpha_permille = (uint16_t)rtd_ema_alpha;
   }
 
   size_t tz_len = sizeof(settings_out->tz_posix);
@@ -964,6 +980,51 @@ AppSettingsSaveCalibrationPoints(const calibration_point_t* points,
       }
     }
   }
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+/**
+ * @brief Execute AppSettingsSaveRtdEmaEnabled.
+ * @param enabled Parameter enabled.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveRtdEmaEnabled(bool enabled)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u8(handle, kKeyRtdEmaEnabled, enabled ? 1 : 0);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+/**
+ * @brief Execute AppSettingsSaveRtdEmaAlphaPermille.
+ * @param permille Parameter permille.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveRtdEmaAlphaPermille(uint16_t permille)
+{
+  if (permille < 1 || permille > 1000) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u32(handle, kKeyRtdEmaAlphaPermille, permille);
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }

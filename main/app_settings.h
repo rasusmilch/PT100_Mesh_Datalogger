@@ -83,6 +83,8 @@ extern "C"
     bool calibration_context_valid;
     calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
     uint8_t calibration_points_count;
+    bool rtd_ema_enabled;
+    uint16_t rtd_ema_alpha_permille;
     char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
     bool dst_enabled;
     app_node_role_t node_role;
@@ -171,6 +173,22 @@ extern "C"
   esp_err_t AppSettingsSaveCalibrationPoints(
     const calibration_point_t* points,
     size_t points_count);
+
+  // Persists updated RTD EMA enabled flag.
+/**
+ * @brief Execute AppSettingsSaveRtdEmaEnabled.
+ * @param enabled Parameter enabled.
+ * @return Return the function result.
+ */
+  esp_err_t AppSettingsSaveRtdEmaEnabled(bool enabled);
+
+  // Persists updated RTD EMA alpha (permille).
+/**
+ * @brief Execute AppSettingsSaveRtdEmaAlphaPermille.
+ * @param permille Parameter permille.
+ * @return Return the function result.
+ */
+  esp_err_t AppSettingsSaveRtdEmaAlphaPermille(uint16_t permille);
 
   // Persists updated timezone string + DST toggle.
 /**

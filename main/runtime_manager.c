@@ -2538,7 +2538,42 @@ SensorTask(void* context)
 
     max31865_sample_t sample;
     memset(&sample, 0, sizeof(sample));
-    esp_err_t result = Max31865ReadOnce(&state->sensor, &sample);
+    const bool ema_enabled = state->settings.rtd_ema_enabled;
+    uint16_t alpha_permille = state->settings.rtd_ema_alpha_permille;
+    if (alpha_permille < 1) {
+      alpha_permille = 1;
+    } else if (alpha_permille > 1000) {
+      alpha_permille = 1000;
+    }
+    if (ema_enabled != state->last_rtd_ema_enabled) {
+      state->sensor.ema_valid = false;
+      state->last_rtd_ema_enabled = ema_enabled;
+    }
+
+    esp_err_t result = ESP_OK;
+    bool use_ema = false;
+    double effective_temp_c = 0.0;
+    double effective_res_ohm = 0.0;
+    if (ema_enabled) {
+      const double alpha = (double)alpha_permille / 1000.0;
+      double ema_temp_c = 0.0;
+      result = Max31865ReadEmaUpdate(&state->sensor,
+                                     alpha,
+                                     &sample,
+                                     &ema_temp_c);
+      if (result == ESP_OK && !sample.fault_present) {
+        effective_temp_c = state->sensor.ema_temp_c;
+        effective_res_ohm = state->sensor.ema_resistance_ohm;
+        use_ema = true;
+      } else {
+        effective_temp_c = sample.temperature_c;
+        effective_res_ohm = sample.resistance_ohm;
+      }
+    } else {
+      result = Max31865ReadOnce(&state->sensor, &sample);
+      effective_temp_c = sample.temperature_c;
+      effective_res_ohm = sample.resistance_ohm;
+    }
 
     log_record_t record;
     memset(&record, 0, sizeof(record));
@@ -2553,16 +2588,18 @@ SensorTask(void* context)
     if (result == ESP_OK) {
       const double cal_c = CalibrationModelEvaluateWithPoints(
         &state->settings.calibration,
-        sample.temperature_c,
+        effective_temp_c,
         state->settings.calibration_points,
         state->settings.calibration_points_count);
-      record.raw_temp_milli_c = (int32_t)llround(sample.temperature_c * 1000.0);
+      record.raw_temp_milli_c = (int32_t)llround(effective_temp_c * 1000.0);
       CalWindowPushRawSample(record.raw_temp_milli_c);
       record.temp_milli_c = (int32_t)llround(cal_c * 1000.0);
       record.resistance_milli_ohm =
-        (int32_t)llround(sample.resistance_ohm * 1000.0);
+        (int32_t)llround(effective_res_ohm * 1000.0);
       if (sample.fault_present) {
         record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
+      } else if (use_ema) {
+        record.flags |= LOG_RECORD_FLAG_RTD_EMA;
       }
     } else {
       record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
@@ -4603,6 +4640,7 @@ RuntimeManagerInit(void)
     ESP_LOGE(
       kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
+  g_state.last_rtd_ema_enabled = g_state.settings.rtd_ema_enabled;
   AppSettingsApplyTimeZone(&g_state.settings);
   UnitsGpioInit(&g_state.settings);
 
