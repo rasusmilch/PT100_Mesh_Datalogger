@@ -801,15 +801,14 @@ Max31865ReadEmaUpdate(max31865_reader_t* reader,
   }
 
   if (!reader->ema_valid) {
-    reader->ema_temp_c = sample.temperature_c;
     reader->ema_resistance_ohm = sample.resistance_ohm;
     reader->ema_valid = true;
   } else {
-    reader->ema_temp_c =
-      alpha * sample.temperature_c + (1.0 - alpha) * reader->ema_temp_c;
     reader->ema_resistance_ohm = alpha * sample.resistance_ohm +
                                  (1.0 - alpha) * reader->ema_resistance_ohm;
   }
+  reader->ema_temp_c =
+    ResistanceToTemperature(reader, reader->ema_resistance_ohm);
 
   FillSample(sample_out,
              sample.adc_code,

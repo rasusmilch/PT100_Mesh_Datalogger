@@ -144,7 +144,7 @@ extern "C"
                                  max31865_sample_t* averaged_out,
                                  max31865_sampling_stats_t* stats_out);
 
-  // Update an EMA filter with the latest reading. ema_temp_out may be NULL.
+  // Update an EMA filter with the latest resistance. ema_temp_out may be NULL.
 /**
  * @brief Execute Max31865ReadEmaUpdate.
  * @param reader Parameter reader.
