@@ -1066,6 +1066,7 @@ class PlotterApp:
         self.scenario_choice = tk.StringVar(value="General")
 
         self.y_choice = tk.StringVar(value="cal_temp_c")
+        self.series_choices = ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms"]
         self.temp_f = tk.BooleanVar(value=False)
         self.overlay_raw = tk.BooleanVar(value=False)
         self.smooth = tk.BooleanVar(value=True)
@@ -1127,8 +1128,7 @@ class PlotterApp:
         row += 1
 
         tk.Label(frm, text="Y-axis series:").grid(row=row, column=0, sticky="w", pady=(12, 0))
-        series_choices = ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms", "record_id", "seq"]
-        tk.OptionMenu(frm, self.y_choice, *series_choices).grid(row=row, column=1, sticky="w", pady=(12, 0))
+        tk.OptionMenu(frm, self.y_choice, *self.series_choices).grid(row=row, column=1, sticky="w", pady=(12, 0))
         row += 1
         tk.Checkbutton(frm, text="Display temperature in °F", variable=self.temp_f).grid(row=row, column=1, sticky="w")
         row += 1
@@ -1302,6 +1302,16 @@ class PlotterApp:
             time_source=self.loaded.time_source if self.loaded else "unknown",
         )
 
+    def _ensure_valid_y_choice(self) -> None:
+        if not self.loaded:
+            return
+        available = [name for name in self.series_choices if name in self.loaded.dataframe.columns]
+        if not available:
+            return
+        preferred = "cal_temp_c" if "cal_temp_c" in available else available[0]
+        if self.y_choice.get() not in available:
+            self.y_choice.set(preferred)
+
     def _load_paths(self, file_paths: List[str]) -> None:
         if not file_paths:
             return
@@ -1322,6 +1332,7 @@ class PlotterApp:
         self.save_trim_btn.config(state=tk.NORMAL)
         self.pdf_btn.config(state=tk.NORMAL)
         self._warned_aggregated = False
+        self._ensure_valid_y_choice()
         self._autofill_time_range()
 
         if self.loaded.dropped_no_time_rows:
@@ -1367,7 +1378,8 @@ class PlotterApp:
                 display_tz=display_tz,
                 time_source=self.loaded.time_source,
             )
-            x_values = mdates.date2num(display_series)
+            x_plot = display_series.to_numpy()
+            x_slider = mdates.date2num(display_series)
             present_minutes = display_series.dt.floor("min")
             start_dt = pd.to_datetime(display_series).min()
             end_dt = pd.to_datetime(display_series).max()
@@ -1375,26 +1387,35 @@ class PlotterApp:
             x_label = f"{_human_time_label(time_column)} ({display_config.display_tz_label})"
         else:
             display_series = None
-            x_values = pd.to_numeric(df[time_column], errors="coerce").to_numpy(dtype=float, copy=False)
+            x_slider = pd.to_numeric(df[time_column], errors="coerce").to_numpy(dtype=float, copy=False)
+            x_plot = x_slider
             present_minutes = None
             display_config = DisplayTimeConfig(display_tz=None, display_tz_label="n/a")
             x_label = _human_time_label(time_column)
 
-        if len(x_values) == 0 or np.all(np.isnan(x_values)):
+        if len(x_slider) == 0 or np.all(np.isnan(x_slider)):
             messagebox.showerror("Range Selector", "No usable X values for range selection.")
             return
 
-        valid_mask = np.isfinite(x_values)
-        x_values = x_values[valid_mask]
+        valid_mask = np.isfinite(x_slider)
+        x_slider = x_slider[valid_mask]
+        if time_column == "__time":
+            x_plot = np.asarray(x_plot)[valid_mask]
+        else:
+            x_plot = x_slider
         y_series = y_series.to_numpy(dtype=float, copy=False)[valid_mask]
 
         fig = plt.Figure(figsize=(7.4, 3.4))
         ax = fig.add_subplot(111)
-        ax.plot(x_values, y_series, linewidth=0.8, alpha=0.8, label="preview")
+        ax.plot(x_plot, y_series, linewidth=0.8, alpha=0.8, label="preview")
         ax.set_xlabel(x_label)
         ax.set_ylabel(_human_series_label(y_name, temp_unit="F" if self.temp_f.get() else "C"))
         ax.grid(True)
-        fig.subplots_adjust(bottom=0.22)
+        if time_column == "__time":
+            locator = mdates.AutoDateLocator(minticks=4, maxticks=10)
+            ax.xaxis.set_major_locator(locator)
+            ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=display_tz))
+        fig.tight_layout()
 
         selector_window = tk.Toplevel(self.root)
         selector_window.title("Select range")
@@ -1402,9 +1423,17 @@ class PlotterApp:
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        slider_ax = fig.add_axes([0.15, 0.10, 0.7, 0.04])
-        slider = RangeSlider(slider_ax, "Range", float(np.min(x_values)), float(np.max(x_values)))
+        slider_frame = tk.Frame(selector_window, padx=8, pady=0)
+        slider_frame.pack(fill="x")
+        slider_fig = plt.Figure(figsize=(7.4, 0.65))
+        slider_ax = slider_fig.add_axes([0.08, 0.35, 0.84, 0.45])
+        slider_canvas = FigureCanvasTkAgg(slider_fig, master=slider_frame)
+        slider_canvas.draw()
+        slider_canvas.get_tk_widget().pack(fill="x")
+
+        slider = RangeSlider(slider_ax, "Range", float(np.min(x_slider)), float(np.max(x_slider)))
         slider.valtext.set_visible(False)
+        slider.valtext.set_text("")
         if time_column == "__time" and display_tz is not None:
             try:
                 start_candidate = _parse_user_time(self.start_time_text.get())
@@ -1434,8 +1463,14 @@ class PlotterApp:
             end_label_var.set(_format_dt_label(val[1]))
 
         def _on_slider_change(val: Tuple[float, float]) -> None:
-            ax.set_xlim(val)
+            if time_column == "__time":
+                x0_dt = mdates.num2date(val[0], tz=display_tz)
+                x1_dt = mdates.num2date(val[1], tz=display_tz)
+                ax.set_xlim(x0_dt, x1_dt)
+            else:
+                ax.set_xlim(val)
             _update_labels(val)
+            slider.valtext.set_text("")
             canvas.draw_idle()
 
         slider.on_changed(_on_slider_change)
