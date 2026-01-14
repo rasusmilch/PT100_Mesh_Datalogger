@@ -561,6 +561,54 @@ def _downsample_positions_minmax(series_list: List[pd.Series], max_plot_points: 
     # Ensure uniqueness and strict ordering.
     return np.unique(np.asarray(selected_positions, dtype=np.int64))
 
+
+def _mask_to_spans(x_values: pd.Series, mask: np.ndarray) -> List[Tuple[object, object]]:
+    """Convert a boolean mask into contiguous spans on the X axis.
+
+    NaN values in the mask are treated as False. Single-point spans expand to the
+    next sample when possible so the span has non-zero width.
+    """
+    mask_series = pd.Series(mask).fillna(False)
+    mask_bool = mask_series.to_numpy(dtype=bool, copy=False)
+    if mask_bool.size == 0:
+        return []
+
+    padded = np.concatenate(([False], mask_bool, [False]))
+    starts = np.flatnonzero(padded[1:] & ~padded[:-1])
+    ends = np.flatnonzero(~padded[1:] & padded[:-1]) - 1
+
+    spans: List[Tuple[object, object]] = []
+    last_index = len(x_values) - 1
+    for start_idx, end_idx in zip(starts, ends):
+        if start_idx > last_index:
+            continue
+        end_target = min(end_idx + 1, last_index)
+        spans.append((x_values.iloc[start_idx], x_values.iloc[end_target]))
+    return spans
+
+
+def _add_highlight_spans(
+    ax: plt.Axes,
+    x_values: pd.Series,
+    mask: np.ndarray,
+    *,
+    label: str,
+    color: str,
+    alpha: float,
+) -> None:
+    spans = _mask_to_spans(x_values, mask)
+    if not spans:
+        return
+    for idx, (x0, x1) in enumerate(spans):
+        ax.axvspan(
+            x0,
+            x1,
+            color=color,
+            alpha=alpha,
+            label=label if idx == 0 else "_nolegend_",
+        )
+
+
 def _build_figure(
     df: pd.DataFrame,
     time_column: str,
@@ -670,49 +718,38 @@ def _build_figure(
                     label="±1σ",
                 )
 
-        y_min, y_max = ax.get_ylim()
-        highlight_applied = False
         if options.highlights.highlight_outside_std and stats_avg is not None and stats_std is not None:
-            outside = (y_plot < stats_avg - stats_std) | (y_plot > stats_avg + stats_std)
-            ax.fill_between(
-                x_plot,
-                y_min,
-                y_max,
-                where=outside,
+            outside_full = (y_series < stats_avg - stats_std) | (y_series > stats_avg + stats_std)
+            _add_highlight_spans(
+                ax,
+                x_values,
+                outside_full,
+                label="outside ±1σ",
                 color="#ff7f0e",
                 alpha=0.12,
-                label="outside ±1σ",
             )
-            highlight_applied = True
 
         if options.highlights.highlight_above and options.highlights.upper_limit is not None:
-            above = y_plot > options.highlights.upper_limit
-            ax.fill_between(
-                x_plot,
-                y_min,
-                y_max,
-                where=above,
+            above_full = y_series > options.highlights.upper_limit
+            _add_highlight_spans(
+                ax,
+                x_values,
+                above_full,
+                label="above upper",
                 color="#d62728",
                 alpha=0.12,
-                label="above upper",
             )
-            highlight_applied = True
 
         if options.highlights.highlight_below and options.highlights.lower_limit is not None:
-            below = y_plot < options.highlights.lower_limit
-            ax.fill_between(
-                x_plot,
-                y_min,
-                y_max,
-                where=below,
+            below_full = y_series < options.highlights.lower_limit
+            _add_highlight_spans(
+                ax,
+                x_values,
+                below_full,
+                label="below lower",
                 color="#9467bd",
                 alpha=0.12,
-                label="below lower",
             )
-            highlight_applied = True
-
-        if highlight_applied:
-            ax.set_ylim(y_min, y_max)
 
     ax.legend()
 
