@@ -83,6 +83,13 @@ extern "C"
     bool calibration_context_valid;
     calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
     uint8_t calibration_points_count;
+    // Calibration tracking (UTC-based)
+    int64_t cal_last_utc;
+    int64_t cal_last_override_utc;
+    uint16_t cal_due_count;
+    uint8_t cal_due_unit;
+    uint16_t cal_due_override_count;
+    uint8_t cal_due_override_unit;
     bool rtd_ema_enabled;
     uint16_t rtd_ema_alpha_permille;
     char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
@@ -153,6 +160,14 @@ extern "C"
   esp_err_t AppSettingsSaveCalibrationWithContext(
     const calibration_model_t* model,
     const calibration_context_t* context);
+
+  // Persists calibration tracking/due-date metadata.
+/**
+ * @brief Execute AppSettingsSaveCalibrationSchedule.
+ * @param settings Parameter settings.
+ * @return Return the function result.
+ */
+  esp_err_t AppSettingsSaveCalibrationSchedule(const app_settings_t* settings);
 
 /**
  * @brief Execute AppSettingsBuildCalibrationContextFromReader.

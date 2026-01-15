@@ -12,6 +12,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "pt100_table.h"
+#include "time_civil.h"
 
 static const char* kTag = "settings";
 
@@ -23,6 +24,12 @@ static const char* kKeySdBatchBytes = "sd_batch_bytes";
 static const char* kKeyCalDegree = "cal_deg";
 static const char* kKeyCalMode = "cal_mode";
 static const char* kKeyCalCoeffs = "cal_coeffs";
+static const char* kKeyCalLastUtc = "cal_last_utc";
+static const char* kKeyCalLastOverrideUtc = "cal_last_ovr";
+static const char* kKeyCalDueCount = "cal_due_cnt";
+static const char* kKeyCalDueUnit = "cal_due_unit";
+static const char* kKeyCalDueOverrideCount = "cal_due_ovr_cnt";
+static const char* kKeyCalDueOverrideUnit = "cal_due_ovr_unit";
 // NVS key names are limited to 15 characters (not including the NUL).
 // Keep this <= 15 to avoid ESP_ERR_NVS_KEY_TOO_LONG.
 static const char* kKeyCalPointsCount = "cal_pt_count";
@@ -293,6 +300,12 @@ ApplyDefaults(app_settings_t* settings)
   settings->calibration_context_valid = false;
   settings->calibration_points_count = 0;
   memset(settings->calibration_points, 0, sizeof(settings->calibration_points));
+  settings->cal_last_utc = 0;
+  settings->cal_last_override_utc = 0;
+  settings->cal_due_count = 0;
+  settings->cal_due_unit = 0;
+  settings->cal_due_override_count = 0;
+  settings->cal_due_override_unit = 0;
   settings->rtd_ema_enabled = false;
   settings->rtd_ema_alpha_permille = 200;
   snprintf(settings->tz_posix,
@@ -436,6 +449,23 @@ LoadCalibrationContext(nvs_handle_t handle, calibration_context_t* context_out)
   return true;
 }
 
+static void
+ValidateCalibrationDueSettings(uint16_t* count, uint8_t* unit)
+{
+  if (count == NULL || unit == NULL) {
+    return;
+  }
+  if (*count == 0) {
+    *unit = 0;
+    return;
+  }
+  if (*unit < (uint8_t)CAL_DUE_UNIT_DAYS ||
+      *unit > (uint8_t)CAL_DUE_UNIT_YEARS) {
+    *count = 0;
+    *unit = 0;
+  }
+}
+
 /**
  * @brief Execute OpenNvs.
  * @param handle_out Parameter handle_out.
@@ -549,6 +579,50 @@ AppSettingsLoad(app_settings_t* settings_out)
            sizeof(settings_out->calibration_context));
     settings_out->calibration_context_valid = false;
   }
+
+  int64_t cal_last_utc = settings_out->cal_last_utc;
+  result = nvs_get_i64(handle, kKeyCalLastUtc, &cal_last_utc);
+  if (result == ESP_OK && cal_last_utc >= 0) {
+    settings_out->cal_last_utc = cal_last_utc;
+  }
+
+  int64_t cal_last_override_utc = settings_out->cal_last_override_utc;
+  result = nvs_get_i64(handle, kKeyCalLastOverrideUtc, &cal_last_override_utc);
+  if (result == ESP_OK && cal_last_override_utc >= 0) {
+    settings_out->cal_last_override_utc = cal_last_override_utc;
+  }
+
+  uint16_t cal_due_count = settings_out->cal_due_count;
+  result = nvs_get_u16(handle, kKeyCalDueCount, &cal_due_count);
+  if (result == ESP_OK) {
+    settings_out->cal_due_count = cal_due_count;
+  }
+
+  uint8_t cal_due_unit = settings_out->cal_due_unit;
+  result = nvs_get_u8(handle, kKeyCalDueUnit, &cal_due_unit);
+  if (result == ESP_OK) {
+    settings_out->cal_due_unit = cal_due_unit;
+  }
+  ValidateCalibrationDueSettings(&settings_out->cal_due_count,
+                                 &settings_out->cal_due_unit);
+
+  uint16_t cal_due_override_count = settings_out->cal_due_override_count;
+  result = nvs_get_u16(handle,
+                       kKeyCalDueOverrideCount,
+                       &cal_due_override_count);
+  if (result == ESP_OK) {
+    settings_out->cal_due_override_count = cal_due_override_count;
+  }
+
+  uint8_t cal_due_override_unit = settings_out->cal_due_override_unit;
+  result = nvs_get_u8(handle,
+                      kKeyCalDueOverrideUnit,
+                      &cal_due_override_unit);
+  if (result == ESP_OK) {
+    settings_out->cal_due_override_unit = cal_due_override_unit;
+  }
+  ValidateCalibrationDueSettings(&settings_out->cal_due_override_count,
+                                 &settings_out->cal_due_override_unit);
 
   uint8_t rtd_ema_enabled = settings_out->rtd_ema_enabled ? 1 : 0;
   result = nvs_get_u8(handle, kKeyRtdEmaEnabled, &rtd_ema_enabled);
@@ -912,6 +986,60 @@ AppSettingsSaveCalibrationWithContext(const calibration_model_t* model,
   if (result == ESP_OK) {
     result =
       nvs_set_u32(handle, kKeyCalContextTableVer, context->table_version);
+  }
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+/**
+ * @brief Execute AppSettingsSaveCalibrationSchedule.
+ * @param settings Parameter settings.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveCalibrationSchedule(const app_settings_t* settings)
+{
+  if (settings == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  uint16_t due_count = settings->cal_due_count;
+  uint8_t due_unit = settings->cal_due_unit;
+  uint16_t due_override_count = settings->cal_due_override_count;
+  uint8_t due_override_unit = settings->cal_due_override_unit;
+  ValidateCalibrationDueSettings(&due_count, &due_unit);
+  ValidateCalibrationDueSettings(&due_override_count, &due_override_unit);
+
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_i64(handle, kKeyCalLastUtc, settings->cal_last_utc);
+  if (result == ESP_OK) {
+    result = nvs_set_i64(handle,
+                         kKeyCalLastOverrideUtc,
+                         settings->cal_last_override_utc);
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_u16(handle, kKeyCalDueCount, due_count);
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, kKeyCalDueUnit, due_unit);
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_u16(handle,
+                         kKeyCalDueOverrideCount,
+                         due_override_count);
+  }
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle,
+                        kKeyCalDueOverrideUnit,
+                        due_override_unit);
   }
   if (result == ESP_OK) {
     result = nvs_commit(handle);
