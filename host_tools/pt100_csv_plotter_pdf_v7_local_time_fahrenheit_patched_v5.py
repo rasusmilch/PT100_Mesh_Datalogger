@@ -23,12 +23,12 @@ Run:
 
 from __future__ import annotations
 
-import re
 import datetime
 import glob
 import math
 import os
 import tempfile
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -54,6 +54,86 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover - fallback for older Python
     ZoneInfo = None
+
+
+# --- CSV log_record flags (from main/log_record.h) -------------------------
+# We keep a built-in fallback so this host tool can run standalone.
+# If the project header is present, we parse it at runtime to stay in sync.
+
+# Known flag labels (short name -> human label).
+_FLAG_LABELS: Dict[str, str] = {
+    "TIME_VALID": "Time valid",
+    "CAL_VALID": "Calibration valid",
+    "SD_ERROR": "SD error flagged",
+    "MESH_CONNECTED": "Mesh connected",
+    "SENSOR_FAULT": "Sensor fault",
+    "FRAM_FULL": "FRAM full",
+    "RTD_EMA": "RTD EMA used",
+}
+
+# Flags that represent an error condition when set.
+_ERROR_FLAG_SHORT_NAMES = {"SD_ERROR", "SENSOR_FAULT", "FRAM_FULL"}
+
+# Built-in fallback definitions (mask -> short name).
+_FALLBACK_FLAG_DEFS: List[Tuple[int, str]] = [
+    (1 << 0, "TIME_VALID"),
+    (1 << 1, "CAL_VALID"),
+    (1 << 2, "SD_ERROR"),
+    (1 << 3, "MESH_CONNECTED"),
+    (1 << 4, "SENSOR_FAULT"),
+    (1 << 5, "FRAM_FULL"),
+    (1 << 6, "RTD_EMA"),
+]
+
+
+def _load_flag_definitions_from_header() -> List[Tuple[int, str]]:
+    """Load log record flag bitmasks from the ESP32 project's header.
+
+    Returns:
+        A list of (mask, short_name) pairs. If the header is not found or cannot
+        be parsed, returns the built-in fallback definitions.
+    """
+    header_candidates = [
+        Path(__file__).resolve().parent / "log_record.h",
+        Path(__file__).resolve().parents[1] / "main" / "log_record.h",
+        Path.cwd() / "log_record.h",
+        Path.cwd() / "main" / "log_record.h",
+    ]
+    header_path: Optional[Path] = None
+    for candidate in header_candidates:
+        if candidate.exists():
+            header_path = candidate
+            break
+
+    if header_path is None:
+        return list(_FALLBACK_FLAG_DEFS)
+
+    try:
+        header_text = header_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return list(_FALLBACK_FLAG_DEFS)
+
+    # Match lines like:
+    #   LOG_RECORD_FLAG_TIME_VALID = 1u << 0,
+    pattern = re.compile(r"\bLOG_RECORD_FLAG_([A-Z0-9_]+)\s*=\s*1u\s*<<\s*(\d+)\s*,")
+    parsed: List[Tuple[int, str]] = []
+    for match in pattern.finditer(header_text):
+        short_name = match.group(1).strip()
+        shift = int(match.group(2))
+        if 0 <= shift < 16:
+            parsed.append((1 << shift, short_name))
+
+    # If parsing failed, fall back.
+    if not parsed:
+        return list(_FALLBACK_FLAG_DEFS)
+
+    # Sort by bit position to keep output stable.
+    parsed.sort(key=lambda pair: pair[0])
+    return parsed
+
+
+# Resolved definitions used by this tool.
+_LOG_RECORD_FLAG_DEFS: List[Tuple[int, str]] = _load_flag_definitions_from_header()
 
 
 @dataclass
@@ -250,7 +330,12 @@ def _human_time_label(time_column: str) -> str:
 
 
 def _normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize schema differences so plotting works across schema versions."""
+    """Normalize schema differences so plotting works across schema versions.
+
+    This tool needs a consistent set of column names and data types across CSV
+    schema versions. In particular, the 'flags' column is parsed as an integer
+    bitmask (accepting either decimal or hex strings like '0x0042').
+    """
     df = df.copy()
 
     if "schema_ver" in df.columns:
@@ -264,7 +349,35 @@ def _normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df["record_id"] = pd.NA
 
+    if "flags" in df.columns:
+        def _parse_flags_cell(value: object) -> Optional[int]:
+            if value is None or (isinstance(value, float) and math.isnan(value)):
+                return None
+            if isinstance(value, (int, np.integer)):
+                return int(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return None
+                try:
+                    return int(text, 0)
+                except ValueError:
+                    return None
+            try:
+                return int(value)  # type: ignore[arg-type]
+            except Exception:
+                return None
+
+        parsed_flags = df["flags"].apply(_parse_flags_cell)
+        df["flags"] = pd.array(parsed_flags, dtype="Int64")
+    else:
+        df["flags"] = pd.array([pd.NA] * len(df), dtype="Int64")
+
+    if "node_id" not in df.columns:
+        df["node_id"] = ""
+
     return df
+
 
 
 def _pick_time_source(
@@ -511,6 +624,168 @@ def _compute_basic_stats(series: pd.Series) -> Dict[str, str]:
     }
 
 
+
+def _format_flags_summary(df: pd.DataFrame) -> str:
+    """Build a concise summary of *problem* log_record flags.
+
+    This intentionally hides informational flags (for example, MESH_CONNECTED).
+    If no problems are detected in the selected data, this returns 'n/a' so the
+    report omits the row entirely.
+
+    Args:
+        df: Log dataframe (already normalized).
+
+    Returns:
+        A multi-line string suitable for the PDF summary table, or 'n/a' if the
+        CSV does not contain usable flags or if no problems are present.
+    """
+    if "flags" not in df.columns:
+        return "n/a"
+
+    flags_series = df["flags"]
+    if flags_series is None:
+        return "n/a"
+
+    # Normalize to nullable integers.
+    try:
+        flags_numeric = pd.to_numeric(flags_series, errors="coerce")
+    except Exception:
+        return "n/a"
+
+    flags_int = flags_numeric.dropna().astype("int64")
+    total = int(flags_int.shape[0])
+    if total <= 0:
+        return "n/a"
+
+    def _pct(count: int) -> str:
+        return f"{(100.0 * float(count) / float(total)):.1f}%"
+
+    problem_lines: List[str] = []
+
+    for mask, short_name in _LOG_RECORD_FLAG_DEFS:
+        # Explicitly ignore mesh-connected status; it's not actionable in reports.
+        if short_name == "MESH_CONNECTED":
+            continue
+
+        set_count = int(((flags_int & mask) != 0).sum())
+
+        if short_name == "TIME_VALID":
+            invalid = total - set_count
+            if invalid:
+                problem_lines.append(f"Time invalid: {invalid}/{total} ({_pct(invalid)})")
+            continue
+
+        if short_name == "CAL_VALID":
+            invalid = total - set_count
+            if invalid:
+                problem_lines.append(f"Calibration invalid: {invalid}/{total} ({_pct(invalid)})")
+            continue
+
+        if short_name in _ERROR_FLAG_SHORT_NAMES:
+            if set_count:
+                label = _FLAG_LABELS.get(short_name, short_name)
+                problem_lines.append(f"{label}: {set_count}/{total} ({_pct(set_count)})")
+            continue
+
+        # Hide non-problem/informational flags (e.g., RTD_EMA).
+        continue
+
+    if not problem_lines:
+        return "n/a"
+
+    return "\n".join(problem_lines)
+
+
+
+
+def _range_is_fully_calibrated(df: pd.DataFrame) -> bool:
+    """Return True if *all* rows in df are marked CAL_VALID.
+
+    This tool treats calibration as all-or-nothing. If any row in the selected
+    range is missing CAL_VALID, we consider the range uncalibrated.
+    """
+    if "flags" not in df.columns:
+        return False
+
+    flags_series = df["flags"]
+    # If any flags are missing, we can't prove calibration coverage.
+    if flags_series.isna().any():
+        return False
+
+    cal_mask = None
+    for mask, short_name in _LOG_RECORD_FLAG_DEFS:
+        if short_name == "CAL_VALID":
+            cal_mask = int(mask)
+            break
+    if cal_mask is None:
+        cal_mask = 1 << 1
+
+    try:
+        flags_int = flags_series.astype("int64")
+    except Exception:
+        return False
+
+    return bool(((flags_int & cal_mask) != 0).all())
+
+
+def _apply_flag_filters_for_stats(
+    df: pd.DataFrame,
+    y_series: pd.Series,
+    y_name: str,
+) -> Tuple[pd.Series, List[str]]:
+    """Filter obviously-invalid samples from statistics based on log flags.
+
+    We keep the plot series as-is (so faults remain visible), but compute
+    statistics on samples that are likely meaningful.
+
+    Rules:
+      - Exclude SENSOR_FAULT from stats for all series.
+      - For cal_temp_c, also require CAL_VALID.
+
+    Args:
+        df: Dataframe with a parsed Int64 'flags' column.
+        y_series: Display-series values aligned to df.
+        y_name: Column name being summarized.
+
+    Returns:
+        (filtered_series, notes) where notes describes what was excluded.
+    """
+    if "flags" not in df.columns:
+        return y_series, []
+
+    flags_series = df["flags"]
+    flags_numeric = pd.to_numeric(flags_series, errors="coerce").fillna(0).astype("int64")
+    include_mask = pd.Series(True, index=df.index)
+
+    # Find masks (from header parsing, if available).
+    sensor_fault_mask = 0
+    cal_valid_mask = 0
+    for mask, short_name in _LOG_RECORD_FLAG_DEFS:
+        if short_name == "SENSOR_FAULT":
+            sensor_fault_mask = mask
+        if short_name == "CAL_VALID":
+            cal_valid_mask = mask
+
+    notes: List[str] = []
+
+    if sensor_fault_mask:
+        excluded_fault = (flags_numeric & sensor_fault_mask) != 0
+        excluded_count = int(excluded_fault.sum())
+        if excluded_count:
+            include_mask &= ~excluded_fault
+            notes.append(f"excluded SENSOR_FAULT rows: {excluded_count}")
+
+    if y_name == "cal_temp_c" and cal_valid_mask:
+        invalid_cal = (flags_numeric & cal_valid_mask) == 0
+        invalid_count = int(invalid_cal.sum())
+        if invalid_count:
+            include_mask &= ~invalid_cal
+            notes.append(f"excluded CAL_VALID==0 rows: {invalid_count}")
+
+    filtered = y_series[include_mask]
+    return filtered, notes
+
+
 def _compute_numeric_stats(series: pd.Series) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
@@ -671,10 +946,9 @@ def _add_highlight_spans(
         ax.axvspan(
             x0,
             x1,
-            color=color,
+            facecolor=color,
             alpha=alpha,
             linewidth=0,
-            edgecolor="none",
             antialiased=False,
             label=label if idx == 0 else "_nolegend_",
         )
@@ -712,6 +986,7 @@ def _build_figure(
         )
 
     y_series_c = pd.to_numeric(df[y_name], errors="coerce")
+    # Temperature unit conversion only applies to temperature series.
     y_series = (
         _convert_temperature_series(y_series_c, options.temp_unit)
         if y_name in ("cal_temp_c", "raw_temp_c")
@@ -887,6 +1162,7 @@ def _export_pdf_report(
     summary_rows: List[List[str]],
     title: str,
     subtitle: str,
+    warning_text: Optional[str] = None,
 ) -> None:
     half_inch = 0.5 * inch
     doc = SimpleDocTemplate(
@@ -913,6 +1189,16 @@ def _export_pdf_report(
         textColor=colors.grey,
         spaceAfter=14,
     )
+
+    styles_warn = ParagraphStyle(
+        "WarnStyle",
+        fontName="Helvetica-Bold",
+        fontSize=13.5,
+        leading=16,
+        alignment=TA_CENTER,
+        textColor=colors.red,
+        spaceAfter=12,
+    )
     styles_body = ParagraphStyle(
         "BodyStyle",
         fontName="Helvetica",
@@ -923,6 +1209,10 @@ def _export_pdf_report(
     elements: List[object] = []
     elements.append(Paragraph(title, styles_title))
     elements.append(Paragraph(subtitle, styles_sub))
+    if warning_text:
+        warning_html = warning_text.replace("\n", "<br/>")
+        elements.append(Paragraph(warning_html, styles_warn))
+
 
     table = Table(summary_rows, colWidths=[2.3 * inch, 4.7 * inch])
     table.setStyle(
@@ -962,6 +1252,7 @@ def _export_pdf_report_vector(
     summary_rows: List[List[str]],
     title: str,
     subtitle: str,
+    warning_text: Optional[str] = None,
 ) -> None:
     """Export a vector PDF using Matplotlib's PDF backend.
 
@@ -1008,7 +1299,25 @@ def _export_pdf_report_vector(
             transform=ax.transAxes,
         )
 
-        # Build a Matplotlib table (kept as vector text/lines in the PDF).
+        
+        table_bbox = [0.0, 0.25, 1.0, 0.70]
+        if warning_text:
+            ax.text(
+                0.5,
+                0.96,
+                warning_text,
+                ha="center",
+                va="top",
+                fontsize=12,
+                fontweight="bold",
+                color="red",
+                transform=ax.transAxes,
+                wrap=True,
+            )
+            # Leave extra room above the table for the warning.
+            table_bbox = [0.0, 0.25, 1.0, 0.60]
+
+# Build a Matplotlib table (kept as vector text/lines in the PDF).
         # summary_rows includes a header row: ["Field", "Value"].
         cell_text = summary_rows[1:] if len(summary_rows) > 1 else []
         col_labels = summary_rows[0] if summary_rows else ["Field", "Value"]
@@ -1019,7 +1328,7 @@ def _export_pdf_report_vector(
             cellLoc="left",
             colLoc="left",
             loc="upper left",
-            bbox=[0.0, 0.25, 1.0, 0.70],
+            bbox=table_bbox,
         )
         table.auto_set_font_size(False)
         table.set_fontsize(9)
@@ -1314,8 +1623,22 @@ class PlotterApp:
         available = [name for name in self.series_choices if name in self.loaded.dataframe.columns]
         if not available:
             return
-        preferred = "cal_temp_c" if "cal_temp_c" in available else available[0]
-        if self.y_choice.get() not in available:
+
+        # Default to calibrated temperature ONLY when the entire loaded range is marked CAL_VALID.
+        range_fully_calibrated = _range_is_fully_calibrated(self.loaded.dataframe)
+
+        if "cal_temp_c" in available and range_fully_calibrated:
+            preferred = "cal_temp_c"
+        elif "raw_temp_c" in available:
+            preferred = "raw_temp_c"
+        else:
+            preferred = available[0]
+
+        current = self.y_choice.get()
+        if current not in available:
+            self.y_choice.set(preferred)
+            return
+        if current == "cal_temp_c" and not range_fully_calibrated and preferred != "cal_temp_c":
             self.y_choice.set(preferred)
 
     def _load_paths(self, file_paths: List[str]) -> None:
@@ -1579,9 +1902,15 @@ class PlotterApp:
             messagebox.showerror("Trim Error", str(exc))
             return
 
-        y_name = self.y_choice.get()
-        if y_name not in df.columns:
-            messagebox.showerror("Plot Error", f"Column not found: {y_name}")
+        requested_y_name = self.y_choice.get()
+        y_name_effective = requested_y_name
+
+        if requested_y_name == "cal_temp_c" and not _range_is_fully_calibrated(df):
+            if "raw_temp_c" in df.columns:
+                y_name_effective = "raw_temp_c"
+
+        if y_name_effective not in df.columns:
+            messagebox.showerror("Plot Error", f"Column not found: {y_name_effective}")
             return
 
         overlay_raw = self.overlay_raw.get()
@@ -1600,7 +1929,7 @@ class PlotterApp:
         nodes = _node_ids_from_df(df)
         range_label = f"{start_label} → {end_label}"
 
-        plot_title = _human_series_label(y_name, temp_unit="F" if self.temp_f.get() else "C")
+        plot_title = _human_series_label(y_name_effective, temp_unit="F" if self.temp_f.get() else "C")
         suptitle = f"Nodes: {nodes} — {range_label}" if nodes != "n/a" else range_label
 
         try:
@@ -1612,7 +1941,7 @@ class PlotterApp:
         fig, _plot_points, _total_points = _build_figure(
             df=df,
             time_column=self.loaded.time_column,
-            y_name=y_name,
+            y_name=y_name_effective,
             plot_title=plot_title,
             suptitle=suptitle,
             options=options,
@@ -1629,9 +1958,31 @@ class PlotterApp:
             messagebox.showerror("Trim Error", str(exc))
             return
 
-        y_name = self.y_choice.get()
-        if y_name not in df.columns:
-            messagebox.showerror("PDF Error", f"Column not found: {y_name}")
+        requested_y_name = self.y_choice.get()
+        y_name_effective = requested_y_name
+
+        # Treat calibration as all-or-nothing. If CAL_VALID is not set for every
+        # sample in the selected range, we consider the range uncalibrated.
+        range_fully_calibrated = _range_is_fully_calibrated(df)
+
+        warning_text: Optional[str] = None
+        if requested_y_name in ("raw_temp_c", "cal_temp_c") and not range_fully_calibrated:
+            warning_text = (
+                "NOT CALIBRATED — CAL_VALID flag is not set for all samples in the selected range."
+            )
+
+        # If the user requested calibrated temperature but calibration is not present,
+        # fall back to raw temperature for plotting/reporting.
+        if requested_y_name == "cal_temp_c" and not range_fully_calibrated:
+            if "raw_temp_c" in df.columns:
+                y_name_effective = "raw_temp_c"
+                warning_text = (
+                    "NOT CALIBRATED — CAL_VALID flag is not set for all samples in the selected range. "
+                    "Using RAW temperature."
+                )
+
+        if y_name_effective not in df.columns:
+            messagebox.showerror("PDF Error", f"Column not found: {y_name_effective}")
             return
 
         overlay_raw = self.overlay_raw.get()
@@ -1671,7 +2022,7 @@ class PlotterApp:
         subtitle = f"Nodes: {nodes} — {range_label}"
 
         temp_unit = "F" if self.temp_f.get() else "C"
-        plot_title = _human_series_label(y_name, temp_unit=temp_unit)
+        plot_title = _human_series_label(y_name_effective, temp_unit=temp_unit)
 
         try:
             options = self._collect_plot_options(display_config, smooth=smooth, overlay_raw=overlay_raw)
@@ -1682,24 +2033,26 @@ class PlotterApp:
         fig, plot_points, total_points = _build_figure(
             df=df,
             time_column=self.loaded.time_column,
-            y_name=y_name,
+            y_name=y_name_effective,
             plot_title=plot_title,
             suptitle=None,
             options=options,
         )
 
-        y_series_c = pd.to_numeric(df.get(y_name, pd.Series(dtype=float)), errors="coerce")
+        y_series_c = pd.to_numeric(df.get(y_name_effective, pd.Series(dtype=float)), errors="coerce")
         y_series_disp = (
             _convert_temperature_series(y_series_c, temp_unit)
-            if y_name in ("cal_temp_c", "raw_temp_c")
+            if y_name_effective in ("cal_temp_c", "raw_temp_c")
             else y_series_c
         )
-        stats = _compute_basic_stats(y_series_disp)
+        stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name_effective)
+        stats = _compute_basic_stats(stats_series)
+        flags_summary = _format_flags_summary(df)
 
-        series_label = _human_series_label(y_name, temp_unit=temp_unit)
+        series_label = _human_series_label(y_name_effective, temp_unit=temp_unit)
 
         overlays = []
-        if y_name in ("cal_temp_c", "raw_temp_c"):
+        if y_name_effective in ("cal_temp_c", "raw_temp_c"):
             if options.stats.show_min:
                 overlays.append("min")
             if options.stats.show_max:
@@ -1726,10 +2079,17 @@ class PlotterApp:
             ["Start", start_label],
             ["End", end_label],
             ["Series", series_label],
+            ["Calibration", "Calibrated" if range_fully_calibrated else "NOT calibrated"],
             ["min / avg / max / std", f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
         ]
-        if overlays:
-            summary_rows.append(["Overlays", ", ".join(overlays)])
+        if flags_summary != "n/a":
+            summary_rows.append(["Flag issues", flags_summary])
+        if stats_notes:
+            summary_rows.append(["Stats filtering", "; ".join(stats_notes)])
+
+        # Intentionally omit any "Overlays" row from the PDF summary. The report
+        # should stay focused on time span, series, calibration, statistics, and
+        # any flag issues.
 
         try:
             if use_vector_pdf:
@@ -1740,6 +2100,7 @@ class PlotterApp:
                     summary_rows=summary_rows,
                     title=title,
                     subtitle=subtitle,
+                    warning_text=warning_text,
                 )
             else:
                 assert fig_png_path is not None
@@ -1751,6 +2112,7 @@ class PlotterApp:
                     summary_rows=summary_rows,
                     title=title,
                     subtitle=subtitle,
+                    warning_text=warning_text,
                 )
         except Exception as exc:
             messagebox.showerror("PDF Error", str(exc))

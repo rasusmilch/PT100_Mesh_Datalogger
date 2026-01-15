@@ -23,6 +23,7 @@ Run:
 
 from __future__ import annotations
 
+import re
 import datetime
 import glob
 import math
@@ -988,7 +989,7 @@ def _build_figure(
     y_series_c = pd.to_numeric(df[y_name], errors="coerce")
     y_series = (
         _convert_temperature_series(y_series_c, options.temp_unit)
-        if y_name_effective in ("cal_temp_c", "raw_temp_c")
+        if y_name in ("cal_temp_c", "raw_temp_c")
         else y_series_c
     )
 
