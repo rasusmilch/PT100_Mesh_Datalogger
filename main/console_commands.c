@@ -62,6 +62,41 @@ static const char* kTag = "console";
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
 /**
+ * @brief Print the compact calibration schedule and due status block.
+ * @param settings Current settings.
+ * @param state Current runtime state (may be NULL).
+ */
+static void
+PrintCalibrationStatusBlock(const app_settings_t* settings,
+                            const runtime_state_t* state);
+
+/**
+ * @brief Print detailed calibration schedule and due status information.
+ * @param settings Current settings.
+ * @param state Current runtime state (may be NULL).
+ */
+static void
+PrintCalibrationStatusDetailed(const app_settings_t* settings,
+                               const runtime_state_t* state);
+
+/**
+ * @brief Parse a UTC date string in YYYY-MM-DD format into an epoch seconds value.
+ * @param value Input string.
+ * @param epoch_out Output epoch seconds (UTC midnight).
+ * @return true on success.
+ */
+static bool
+ParseUtcDateString(const char* value, int64_t* epoch_out);
+
+/**
+ * @brief Parse calibration due unit string (days|months|years).
+ * @param value Input string.
+ * @param unit_out Output unit enum value.
+ * @return true on success.
+ */
+static bool
+ParseCalDueUnit(const char* value, uint8_t* unit_out);
+/**
  * @brief Execute MaybePushCalRawSampleFromSensor.
  */
 static void
