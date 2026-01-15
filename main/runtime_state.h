@@ -134,6 +134,13 @@ extern "C" {
     kNetTxTaskStackBytes = 10240, // bytes
   };
 
+  typedef struct
+  {
+    log_record_t record;
+    int32_t disp_raw_temp_milli_c;
+    int32_t disp_cal_temp_milli_c;
+  } sensor_sample_msg_t;
+
   typedef struct runtime_state_t
   {
     app_settings_t settings;
@@ -159,7 +166,7 @@ extern "C" {
 
     QueueHandle_t log_queue;
     StaticQueue_t log_queue_struct;
-    uint8_t log_queue_storage[kLogQueueDepth * sizeof(log_record_t)];
+    uint8_t log_queue_storage[kLogQueueDepth * sizeof(sensor_sample_msg_t)];
     QueueHandle_t export_queue;
     QueueHandle_t export_outbox;
     QueueHandle_t broker_outbox;
