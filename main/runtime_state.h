@@ -36,6 +36,9 @@ extern "C" {
     bool time_valid;
     int32_t utc_offset_sec;
     bool dst_in_effect;
+    bool cal_due_check_suspended;
+    bool cal_overdue;
+    bool cal_time_stable;
 
     // mesh (written by mesh task/module)
     bool mesh_connected;
@@ -213,6 +216,10 @@ extern "C" {
     uint8_t last_sensor_fault_status;
     TickType_t last_sensor_fault_log_ticks;
     bool last_rtd_ema_enabled;
+    bool cal_due_check_suspended;
+    bool cal_overdue;
+    bool cal_time_stable;
+    int64_t cal_last_time_valid_utc;
 
     char node_id_string[32];
     uint8_t local_mac[6];

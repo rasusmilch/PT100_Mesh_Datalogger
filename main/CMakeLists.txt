@@ -48,6 +48,7 @@ idf_component_register(
     "wifi_service.c"
     "wifi_manager.c"
     "wifi_scan_wrap.c"
+    "time_civil.c"
     "time_sync.c"
   INCLUDE_DIRS "."
   REQUIRES

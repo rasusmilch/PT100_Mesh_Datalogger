@@ -41,6 +41,7 @@
 #include "runtime_state.h"
 #include "sd_logger.h"
 #include "sdkconfig.h"
+#include "time_civil.h"
 #include "units_gpio.h"
 #include "time_sync.h"
 #include "wifi_credentials.h"
@@ -58,6 +59,7 @@ static const uint32_t kSdFlushMinIntervalMs = 200;
 static const uint32_t kSdDetectPollIntervalMs = 250;
 static const uint32_t kExportQueueDepth = 64;
 static const uint32_t kExportOutboxDepth = CONFIG_APP_EXPORT_OUTBOX_DEPTH;
+static const int64_t kCalTimeStableDelaySec = 60;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
@@ -963,13 +965,15 @@ UpdateTimeHealthState(runtime_state_t* state, bool time_valid)
     return;
   }
   UpdateCachedBool(state, &state->cached_status.time_valid, time_valid);
+  const int64_t now_utc = time_valid ? (int64_t)time(NULL) : 0;
+  UpdateCalibrationDueState(state, time_valid, now_utc);
   if (!time_valid) {
     UpdateCachedInt32(state, &state->cached_status.utc_offset_sec, 0);
     UpdateCachedBool(state, &state->cached_status.dst_in_effect, false);
     return;
   }
 
-  const time_t now = time(NULL);
+  const time_t now = (time_t)now_utc;
   struct tm utc_as_local;
   struct tm local_time;
   gmtime_r(&now, &utc_as_local);
@@ -980,6 +984,65 @@ UpdateTimeHealthState(runtime_state_t* state, bool time_valid)
     state, &state->cached_status.utc_offset_sec, (int32_t)utc_offset_sec);
   UpdateCachedBool(
     state, &state->cached_status.dst_in_effect, (local_time.tm_isdst > 0));
+}
+
+static void
+UpdateCalibrationDueState(runtime_state_t* state,
+                          bool time_valid,
+                          int64_t now_utc)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  if (time_valid) {
+    if (!state->cal_time_stable) {
+      if (state->cal_last_time_valid_utc == 0) {
+        state->cal_last_time_valid_utc = now_utc;
+      }
+      if (now_utc - state->cal_last_time_valid_utc >=
+          kCalTimeStableDelaySec) {
+        state->cal_time_stable = true;
+      }
+    } else {
+      state->cal_last_time_valid_utc = now_utc;
+    }
+  } else {
+    state->cal_time_stable = false;
+    state->cal_last_time_valid_utc = 0;
+  }
+
+  const bool cal_due_check_suspended = !time_valid || !state->cal_time_stable;
+  bool cal_overdue = false;
+  if (!cal_due_check_suspended) {
+    const int64_t last_cal = (state->settings.cal_last_override_utc != 0)
+                               ? state->settings.cal_last_override_utc
+                               : state->settings.cal_last_utc;
+    const uint16_t freq_count =
+      (state->settings.cal_due_override_count != 0)
+        ? state->settings.cal_due_override_count
+        : state->settings.cal_due_count;
+    const uint8_t freq_unit =
+      (state->settings.cal_due_override_unit != 0)
+        ? state->settings.cal_due_override_unit
+        : state->settings.cal_due_unit;
+    if (last_cal != 0 && freq_count != 0) {
+      const int64_t due_utc =
+        CalComputeDueDateUtc(last_cal, freq_count, (cal_due_unit_t)freq_unit);
+      const int64_t today_midnight = GetUtcMidnightEpochNow();
+      cal_overdue = (due_utc != 0 && today_midnight > due_utc);
+    }
+  }
+
+  state->cal_due_check_suspended = cal_due_check_suspended;
+  state->cal_overdue = cal_overdue;
+  UpdateCachedBool(state,
+                   &state->cached_status.cal_due_check_suspended,
+                   cal_due_check_suspended);
+  UpdateCachedBool(
+    state, &state->cached_status.cal_overdue, state->cal_overdue);
+  UpdateCachedBool(
+    state, &state->cached_status.cal_time_stable, state->cal_time_stable);
 }
 
 /**
@@ -1227,11 +1290,20 @@ DisplayTask(void* context)
     (void)flags;
 
     char text[12];
-    FormatTemperatureText(text,
-                          sizeof(text),
-                          temp_milli_c,
-                          RuntimeGetEffectiveDisplayUnits(),
-                          temp_valid);
+    const bool show_cal_overdue =
+      state->cached_status.time_valid &&
+      state->cached_status.cal_time_stable &&
+      state->cached_status.cal_overdue &&
+      ((now_ms / 750u) % 2u) == 0u;
+    if (show_cal_overdue) {
+      snprintf(text, sizeof(text), "CAL ");
+    } else {
+      FormatTemperatureText(text,
+                            sizeof(text),
+                            temp_milli_c,
+                            RuntimeGetEffectiveDisplayUnits(),
+                            temp_valid);
+    }
     if (strncmp(last_text, text, sizeof(last_text)) != 0) {
       Max7219DisplaySetText(&state->display, text);
       snprintf(last_text, sizeof(last_text), "%s", text);
@@ -2667,7 +2739,11 @@ SensorTask(void* context)
     if (time_valid) {
       record.flags |= LOG_RECORD_FLAG_TIME_VALID;
     }
-    if (state->settings.calibration.is_valid) {
+    const bool cal_valid =
+      (state->settings.calibration.is_valid && !state->cal_overdue);
+    if (!state->cal_due_check_suspended && state->cal_overdue) {
+      record.flags &= (uint16_t)~LOG_RECORD_FLAG_CAL_VALID;
+    } else if (cal_valid) {
       record.flags |= LOG_RECORD_FLAG_CAL_VALID;
     }
     if (state->sd_degraded) {

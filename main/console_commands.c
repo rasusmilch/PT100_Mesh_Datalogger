@@ -35,6 +35,7 @@
 #include "esp_wifi.h"
 #include "net_supervisor.h"
 #include "runtime_health.h"
+#include "time_civil.h"
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"
@@ -567,7 +568,15 @@ SaveCalibrationWithContext(const calibration_model_t* model)
   }
   calibration_context_t context;
   AppSettingsBuildCalibrationContextFromReader(&context, g_runtime->sensor);
-  return AppSettingsSaveCalibrationWithContext(model, &context);
+  esp_err_t result = AppSettingsSaveCalibrationWithContext(model, &context);
+  if (result != ESP_OK) {
+    return result;
+  }
+  if (TimeSyncIsSystemTimeValid() && g_runtime->settings != NULL) {
+    g_runtime->settings->cal_last_utc = (int64_t)time(NULL);
+    result = AppSettingsSaveCalibrationSchedule(g_runtime->settings);
+  }
+  return result;
 }
 
 /**
@@ -762,6 +771,7 @@ CommandStatus(int argc, char** argv)
          settings->calibration.coefficients[1],
          settings->calibration.coefficients[2],
          settings->calibration.coefficients[3]);
+  PrintCalibrationStatusBlock(settings, state);
 
   const bool sd_mounted = g_runtime->sd_logger->is_mounted;
   const bool sd_degraded = RuntimeSdIsDegraded();
@@ -2067,16 +2077,113 @@ static struct
 static int
 CommandCal(int argc, char** argv)
 {
-  int errors = arg_parse(argc, argv, (void**)&g_cal_args);
-  if (errors != 0) {
-    arg_print_errors(stderr, g_cal_args.end, argv[0]);
-    return 1;
-  }
   if (g_runtime == NULL) {
     return 1;
   }
 
   app_settings_t* settings = g_runtime->settings;
+  if (argc >= 2) {
+    const char* action = argv[1];
+    if (strcmp(action, "status") == 0) {
+      PrintCalibrationStatusDetailed(settings, RuntimeGetState());
+      return 0;
+    }
+    if (strcmp(action, "set") == 0) {
+      if (argc < 4) {
+        printf("usage: cal set date <YYYY-MM-DD> | cal set due <count> "
+               "<days|months|years> | cal set due_override <count> "
+               "<days|months|years>\n");
+        return 1;
+      }
+      const char* target = argv[2];
+      if (strcmp(target, "date") == 0) {
+        if (argc != 4) {
+          printf("usage: cal set date <YYYY-MM-DD>\n");
+          return 1;
+        }
+        int64_t epoch = 0;
+        if (!ParseUtcDateString(argv[3], &epoch)) {
+          printf("invalid date; expected YYYY-MM-DD\n");
+          return 1;
+        }
+        settings->cal_last_override_utc = epoch;
+        esp_err_t result = AppSettingsSaveCalibrationSchedule(settings);
+        if (result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(result));
+          return 1;
+        }
+        printf("calibration override date set to %s\n", argv[3]);
+        return 0;
+      }
+      if (strcmp(target, "due") == 0 || strcmp(target, "due_override") == 0) {
+        if (argc != 5) {
+          printf("usage: cal set %s <count> <days|months|years>\n", target);
+          return 1;
+        }
+        char* end = NULL;
+        long count_long = strtol(argv[3], &end, 10);
+        if (end == argv[3] || *end != '\0' || count_long <= 0 ||
+            count_long > UINT16_MAX) {
+          printf("invalid count\n");
+          return 1;
+        }
+        uint8_t unit = 0;
+        if (!ParseCalDueUnit(argv[4], &unit)) {
+          printf("invalid unit; use days|months|years\n");
+          return 1;
+        }
+        if (strcmp(target, "due") == 0) {
+          settings->cal_due_count = (uint16_t)count_long;
+          settings->cal_due_unit = unit;
+        } else {
+          settings->cal_due_override_count = (uint16_t)count_long;
+          settings->cal_due_override_unit = unit;
+        }
+        esp_err_t result = AppSettingsSaveCalibrationSchedule(settings);
+        if (result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(result));
+          return 1;
+        }
+        printf("calibration %s set to %ld %s\n",
+               (strcmp(target, "due") == 0) ? "due" : "due override",
+               count_long,
+               argv[4]);
+        return 0;
+      }
+      printf("usage: cal set date <YYYY-MM-DD> | cal set due <count> "
+             "<days|months|years> | cal set due_override <count> "
+             "<days|months|years>\n");
+      return 1;
+    }
+    if (strcmp(action, "clear") == 0 && argc >= 3) {
+      const char* target = argv[2];
+      if (strcmp(target, "date") == 0) {
+        settings->cal_last_override_utc = 0;
+      } else if (strcmp(target, "due") == 0) {
+        settings->cal_due_count = 0;
+        settings->cal_due_unit = 0;
+      } else if (strcmp(target, "due_override") == 0) {
+        settings->cal_due_override_count = 0;
+        settings->cal_due_override_unit = 0;
+      } else {
+        printf("usage: cal clear date | cal clear due | cal clear due_override\n");
+        return 1;
+      }
+      esp_err_t result = AppSettingsSaveCalibrationSchedule(settings);
+      if (result != ESP_OK) {
+        printf("save failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+      printf("calibration %s cleared\n", target);
+      return 0;
+    }
+  }
+
+  int errors = arg_parse(argc, argv, (void**)&g_cal_args);
+  if (errors != 0) {
+    arg_print_errors(stderr, g_cal_args.end, argv[0]);
+    return 1;
+  }
   const char* action = g_cal_args.action->sval[0];
 
   if (strcmp(action, "clear") == 0) {
@@ -2357,10 +2464,14 @@ CommandCal(int argc, char** argv)
     return 1;
   }
 
-  printf("unknown action. usage: cal clear | cal add <raw_c> <actual_c> | cal "
-         "list | cal show | cal apply | cal live [--every_ms 500] [--seconds "
-         "10] | cal capture <actual_temp_c> [--stable_stddev_c 0.05] "
-         "[--min_seconds 5] [--timeout_seconds 120]\n");
+  printf("unknown action. usage: cal status | cal set date <YYYY-MM-DD> | "
+         "cal clear date | cal set due <count> <days|months|years> | "
+         "cal clear due | cal set due_override <count> <days|months|years> | "
+         "cal clear due_override | cal clear | cal add <raw_c> <actual_c> | "
+         "cal list | cal show | cal apply | cal live [--every_ms 500] "
+         "[--seconds 10] | cal capture <actual_temp_c> "
+         "[--stable_stddev_c 0.05] [--min_seconds 5] "
+         "[--timeout_seconds 120]\n");
   return 1;
 }
 
@@ -3769,6 +3880,229 @@ ParseVerbose(const char* value, int* verbosity_out)
   return true;
 }
 
+static const char*
+CalDueUnitToString(uint8_t unit, bool plural)
+{
+  switch (unit) {
+    case CAL_DUE_UNIT_DAYS:
+      return plural ? "days" : "day";
+    case CAL_DUE_UNIT_MONTHS:
+      return plural ? "months" : "month";
+    case CAL_DUE_UNIT_YEARS:
+      return plural ? "years" : "year";
+    default:
+      return "unknown";
+  }
+}
+
+static bool
+ParseCalDueUnit(const char* value, uint8_t* unit_out)
+{
+  if (value == NULL || unit_out == NULL) {
+    return false;
+  }
+  if (strcasecmp(value, "day") == 0 || strcasecmp(value, "days") == 0) {
+    *unit_out = (uint8_t)CAL_DUE_UNIT_DAYS;
+    return true;
+  }
+  if (strcasecmp(value, "month") == 0 || strcasecmp(value, "months") == 0) {
+    *unit_out = (uint8_t)CAL_DUE_UNIT_MONTHS;
+    return true;
+  }
+  if (strcasecmp(value, "year") == 0 || strcasecmp(value, "years") == 0) {
+    *unit_out = (uint8_t)CAL_DUE_UNIT_YEARS;
+    return true;
+  }
+  return false;
+}
+
+static void
+FormatUtcEpochIso8601(int64_t epoch_utc, char* buffer, size_t buffer_size)
+{
+  if (buffer == NULL || buffer_size == 0) {
+    return;
+  }
+  if (epoch_utc <= 0) {
+    snprintf(buffer, buffer_size, "n/a");
+    return;
+  }
+  time_t raw = (time_t)epoch_utc;
+  struct tm utc_time;
+  if (gmtime_r(&raw, &utc_time) == NULL) {
+    snprintf(buffer, buffer_size, "n/a");
+    return;
+  }
+  if (strftime(buffer, buffer_size, "%Y-%m-%dT%H:%M:%SZ", &utc_time) == 0) {
+    snprintf(buffer, buffer_size, "n/a");
+  }
+}
+
+static void
+FormatCalDueEvery(uint16_t count, uint8_t unit, char* buffer, size_t buffer_size)
+{
+  if (buffer == NULL || buffer_size == 0) {
+    return;
+  }
+  if (count == 0 || unit == 0) {
+    snprintf(buffer, buffer_size, "disabled");
+    return;
+  }
+  const bool plural = (count != 1);
+  snprintf(buffer,
+           buffer_size,
+           "%u %s",
+           (unsigned)count,
+           CalDueUnitToString(unit, plural));
+}
+
+static void
+ResolveCalibrationSchedule(const app_settings_t* settings,
+                           int64_t* last_cal_out,
+                           uint16_t* due_count_out,
+                           uint8_t* due_unit_out)
+{
+  if (settings == NULL) {
+    return;
+  }
+  if (last_cal_out != NULL) {
+    *last_cal_out = (settings->cal_last_override_utc != 0)
+                      ? settings->cal_last_override_utc
+                      : settings->cal_last_utc;
+  }
+  if (due_count_out != NULL) {
+    *due_count_out = (settings->cal_due_override_count != 0)
+                       ? settings->cal_due_override_count
+                       : settings->cal_due_count;
+  }
+  if (due_unit_out != NULL) {
+    *due_unit_out = (settings->cal_due_override_unit != 0)
+                      ? settings->cal_due_override_unit
+                      : settings->cal_due_unit;
+  }
+}
+
+static void
+PrintCalibrationStatusBlock(const app_settings_t* settings,
+                            const runtime_state_t* state)
+{
+  int64_t last_cal = 0;
+  uint16_t due_count = 0;
+  uint8_t due_unit = 0;
+  ResolveCalibrationSchedule(settings, &last_cal, &due_count, &due_unit);
+
+  char last_buffer[32];
+  char due_every[32];
+  char due_date_buffer[32];
+  FormatUtcEpochIso8601(last_cal, last_buffer, sizeof(last_buffer));
+  FormatCalDueEvery(due_count, due_unit, due_every, sizeof(due_every));
+
+  int64_t due_date = 0;
+  if (last_cal != 0 && due_count != 0) {
+    due_date = CalComputeDueDateUtc(last_cal, due_count,
+                                    (cal_due_unit_t)due_unit);
+  }
+  FormatUtcEpochIso8601(due_date, due_date_buffer, sizeof(due_date_buffer));
+
+  const bool time_valid = TimeSyncIsSystemTimeValid();
+  const bool time_stable = (state != NULL) ? state->cal_time_stable : false;
+  const bool check_suspended =
+    (state != NULL) ? state->cal_due_check_suspended : !time_valid;
+  const bool overdue = (state != NULL) ? state->cal_overdue : false;
+
+  printf("Calibration:\n");
+  printf("  Last UTC:  %s\n", last_buffer);
+  if (!time_valid) {
+    printf("  Due check suspended (time invalid)\n");
+    return;
+  }
+  printf("  Due every: %s\n", due_every);
+  printf("  Due date:  %s\n", due_date_buffer);
+  printf("  Overdue:   %s\n", overdue ? "yes" : "no");
+  printf("  Time valid: %s\n", time_valid ? "yes" : "no");
+  printf("  Time stable: %s\n", time_stable ? "yes" : "no");
+  printf("  Check: %s\n", check_suspended ? "suspended" : "active");
+}
+
+static void
+PrintCalibrationStatusDetailed(const app_settings_t* settings,
+                               const runtime_state_t* state)
+{
+  char base_last[32];
+  char override_last[32];
+  char base_due[32];
+  char override_due[32];
+  char effective_last[32];
+  char effective_due[32];
+  char due_date_buffer[32];
+
+  FormatUtcEpochIso8601(settings->cal_last_utc,
+                        base_last,
+                        sizeof(base_last));
+  FormatUtcEpochIso8601(settings->cal_last_override_utc,
+                        override_last,
+                        sizeof(override_last));
+  FormatCalDueEvery(settings->cal_due_count,
+                    settings->cal_due_unit,
+                    base_due,
+                    sizeof(base_due));
+  FormatCalDueEvery(settings->cal_due_override_count,
+                    settings->cal_due_override_unit,
+                    override_due,
+                    sizeof(override_due));
+
+  int64_t last_cal = 0;
+  uint16_t due_count = 0;
+  uint8_t due_unit = 0;
+  ResolveCalibrationSchedule(settings, &last_cal, &due_count, &due_unit);
+  FormatUtcEpochIso8601(last_cal, effective_last, sizeof(effective_last));
+  FormatCalDueEvery(due_count, due_unit, effective_due, sizeof(effective_due));
+
+  int64_t due_date = 0;
+  if (last_cal != 0 && due_count != 0) {
+    due_date = CalComputeDueDateUtc(last_cal, due_count,
+                                    (cal_due_unit_t)due_unit);
+  }
+  FormatUtcEpochIso8601(due_date, due_date_buffer, sizeof(due_date_buffer));
+
+  const bool time_valid = TimeSyncIsSystemTimeValid();
+  const bool time_stable = (state != NULL) ? state->cal_time_stable : false;
+  const bool check_suspended =
+    (state != NULL) ? state->cal_due_check_suspended : !time_valid;
+  const bool overdue = (state != NULL) ? state->cal_overdue : false;
+
+  printf("Calibration:\n");
+  printf("  Last UTC (base):     %s\n", base_last);
+  printf("  Last UTC (override): %s\n", override_last);
+  printf("  Due every (base):    %s\n", base_due);
+  printf("  Due every (override): %s\n", override_due);
+  printf("  Effective last UTC:  %s\n", effective_last);
+  printf("  Effective due:       %s\n", effective_due);
+  printf("  Due date:            %s\n", due_date_buffer);
+  printf("  Overdue:             %s\n", overdue ? "yes" : "no");
+  printf("  Time valid:          %s\n", time_valid ? "yes" : "no");
+  printf("  Time stable:         %s\n", time_stable ? "yes" : "no");
+  printf("  Due check:           %s\n",
+         check_suspended ? "suspended" : "active");
+}
+
+static bool
+ParseUtcDateString(const char* value, int64_t* epoch_out)
+{
+  if (value == NULL || epoch_out == NULL) {
+    return false;
+  }
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  char trailing = '\0';
+  const int matched =
+    sscanf(value, "%4d-%2d-%2d%c", &year, &month, &day, &trailing);
+  if (matched != 3) {
+    return false;
+  }
+  return TimeCivilUtcEpochFromDate(year, month, day, epoch_out);
+}
+
 /**
  * @brief Execute ParseOptionalBool.
  * @param argc Parameter argc.
@@ -4348,7 +4682,11 @@ RegisterCommands(void)
   const esp_console_cmd_t cal_cmd = {
     .command = "cal",
     .help =
-      "Calibration: cal clear | cal add <raw_c> <actual_c> | cal list | cal "
+      "Calibration: cal status | cal set date <YYYY-MM-DD> | cal clear date |\n"
+      "             cal set due <count> <days|months|years> | cal clear due |\n"
+      "             cal set due_override <count> <days|months|years> |\n"
+      "             cal clear due_override |\n"
+      "             cal clear | cal add <raw_c> <actual_c> | cal list | cal "
       "show |\n"
       "             cal apply [--mode linear|piecewise|polyN] "
       "[--allow_wide_slope] |\n"
