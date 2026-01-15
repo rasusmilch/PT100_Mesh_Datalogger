@@ -41,13 +41,13 @@
 #include "runtime_state.h"
 #include "sd_logger.h"
 #include "sdkconfig.h"
+#include "stack_monitor.h"
 #include "time_civil.h"
-#include "units_gpio.h"
 #include "time_sync.h"
+#include "units_gpio.h"
 #include "wifi_credentials.h"
 #include "wifi_manager.h"
 #include "wifi_service.h"
-#include "stack_monitor.h"
 
 static const char* kTag = "runtime";
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
@@ -67,6 +67,11 @@ static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 static const int64_t kNetTxStallDropMs = 30000;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
+
+static void
+UpdateCalibrationDueState(runtime_state_t* state,
+                          bool time_valid,
+                          int64_t now_utc);
 
 static void
 RootRecordRxCallback(const pt100_mesh_addr_t* from,
@@ -97,10 +102,8 @@ RegisterStackMonitorTask(const char* name,
                          TaskHandle_t* handle_ptr,
                          uint32_t stack_alloc_bytes)
 {
-  if (!StackMonitorRegister(&g_stack_monitor,
-                            name,
-                            handle_ptr,
-                            stack_alloc_bytes)) {
+  if (!StackMonitorRegister(
+        &g_stack_monitor, name, handle_ptr, stack_alloc_bytes)) {
     ESP_LOGW(kTag, "Stack monitor registry full; skipping %s", name);
   }
 }
@@ -1000,8 +1003,7 @@ UpdateCalibrationDueState(runtime_state_t* state,
       if (state->cal_last_time_valid_utc == 0) {
         state->cal_last_time_valid_utc = now_utc;
       }
-      if (now_utc - state->cal_last_time_valid_utc >=
-          kCalTimeStableDelaySec) {
+      if (now_utc - state->cal_last_time_valid_utc >= kCalTimeStableDelaySec) {
         state->cal_time_stable = true;
       }
     } else {
@@ -1018,14 +1020,12 @@ UpdateCalibrationDueState(runtime_state_t* state,
     const int64_t last_cal = (state->settings.cal_last_override_utc != 0)
                                ? state->settings.cal_last_override_utc
                                : state->settings.cal_last_utc;
-    const uint16_t freq_count =
-      (state->settings.cal_due_override_count != 0)
-        ? state->settings.cal_due_override_count
-        : state->settings.cal_due_count;
-    const uint8_t freq_unit =
-      (state->settings.cal_due_override_unit != 0)
-        ? state->settings.cal_due_override_unit
-        : state->settings.cal_due_unit;
+    const uint16_t freq_count = (state->settings.cal_due_override_count != 0)
+                                  ? state->settings.cal_due_override_count
+                                  : state->settings.cal_due_count;
+    const uint8_t freq_unit = (state->settings.cal_due_override_unit != 0)
+                                ? state->settings.cal_due_override_unit
+                                : state->settings.cal_due_unit;
     if (last_cal != 0 && freq_count != 0) {
       const int64_t due_utc =
         CalComputeDueDateUtc(last_cal, freq_count, (cal_due_unit_t)freq_unit);
@@ -1291,10 +1291,8 @@ DisplayTask(void* context)
 
     char text[12];
     const bool show_cal_overdue =
-      state->cached_status.time_valid &&
-      state->cached_status.cal_time_stable &&
-      state->cached_status.cal_overdue &&
-      ((now_ms / 750u) % 2u) == 0u;
+      state->cached_status.time_valid && state->cached_status.cal_time_stable &&
+      state->cached_status.cal_overdue && ((now_ms / 750u) % 2u) == 0u;
     if (show_cal_overdue) {
       snprintf(text, sizeof(text), "CAL ");
     } else {
@@ -1963,13 +1961,8 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
              (unsigned)actual_crc);
     state->fram_log.saw_corruption = true;
     state->fram_corrupt_skip_count++;
-    RecordFramCorruption(state,
-                         0,
-                         slot,
-                         addr,
-                         validate_result,
-                         &oldest_record,
-                         actual_crc);
+    RecordFramCorruption(
+      state, 0, slot, addr, validate_result, &oldest_record, actual_crc);
     esp_err_t skip_result = FramLogDiscardOldest(&state->fram_log);
     if (skip_result != ESP_OK) {
       return skip_result;
@@ -2074,13 +2067,8 @@ BuildBatchForDay(runtime_state_t* state,
                (unsigned)actual_crc);
       state->fram_log.saw_corruption = true;
       state->fram_corrupt_detect_count++;
-      RecordFramCorruption(state,
-                           offset,
-                           slot,
-                           addr,
-                           validate_result,
-                           &record,
-                           actual_crc);
+      RecordFramCorruption(
+        state, offset, slot, addr, validate_result, &record, actual_crc);
       break;
     }
     if (peek_result != ESP_OK) {
@@ -2663,8 +2651,7 @@ SensorTask(void* context)
         state->settings.calibration_points_count);
       record.raw_temp_milli_c = (int32_t)llround(raw_temp_c * 1000.0);
       record.temp_milli_c = (int32_t)llround(raw_cal_c * 1000.0);
-      record.resistance_milli_ohm =
-        (int32_t)llround(raw_res_ohm * 1000.0);
+      record.resistance_milli_ohm = (int32_t)llround(raw_res_ohm * 1000.0);
 
       const double disp_cal_c = CalibrationModelEvaluateWithPoints(
         &state->settings.calibration,
@@ -2860,9 +2847,8 @@ NetTxStallDropExport(runtime_state_t* state)
     return;
   }
   state->export_drop_count++;
-  UpdateCachedUint32(state,
-                     &state->cached_status.export_drop_count,
-                     state->export_drop_count);
+  UpdateCachedUint32(
+    state, &state->cached_status.export_drop_count, state->export_drop_count);
   if (LogRateLimitAllow(&state->last_export_drop_log_ms,
                         kExportLogRateLimitMs)) {
     ESP_LOGW(kTag, "export outbox stalled; dropping oldest record");
@@ -2876,9 +2862,8 @@ NetTxStallDropBroker(runtime_state_t* state)
     return;
   }
   state->broker_drop_count++;
-  UpdateCachedUint32(state,
-                     &state->cached_status.broker_drop_count,
-                     state->broker_drop_count);
+  UpdateCachedUint32(
+    state, &state->cached_status.broker_drop_count, state->broker_drop_count);
   if (LogRateLimitAllow(&state->last_broker_drop_log_ms,
                         kExportLogRateLimitMs)) {
     ESP_LOGW(kTag, "broker outbox stalled; dropping oldest record");
@@ -2938,16 +2923,14 @@ NetTxHandleExportLeaf(runtime_state_t* state,
                            state->export_send_fail_count);
         if (LogRateLimitAllow(&state->last_export_fail_log_ms,
                               kExportLogRateLimitMs)) {
-          ESP_LOGW(kTag,
-                   "mesh export send failed: %s",
-                   esp_err_to_name(send_result));
+          ESP_LOGW(
+            kTag, "mesh export send failed: %s", esp_err_to_name(send_result));
         }
       }
     }
   } else {
-    const bool should_mqtt =
-      state->mqtt_enabled_active &&
-      state->net_mode_active == APP_NET_MODE_DIRECT_WIFI;
+    const bool should_mqtt = state->mqtt_enabled_active &&
+                             state->net_mode_active == APP_NET_MODE_DIRECT_WIFI;
     EnsureMqttClientState(state, should_mqtt);
     if (state->mqtt_client_connected) {
       char node_id[32] = { 0 };
@@ -3184,9 +3167,8 @@ NetTxHandleBrokerPublish(runtime_state_t* state,
     return true;
   }
 
-  const bool should_mqtt =
-    state->mqtt_enabled_active &&
-    BridgeModeUsesBroker(state->mqtt_bridge_mode_active);
+  const bool should_mqtt = state->mqtt_enabled_active &&
+                           BridgeModeUsesBroker(state->mqtt_bridge_mode_active);
   EnsureMqttClientState(state, should_mqtt);
   if (!state->mqtt_client_connected) {
     if (fail_start_ms != NULL) {
@@ -3303,8 +3285,7 @@ NetTxHandleAlertSend(runtime_state_t* state,
   if (!state->stop_requested) {
     (void)AlertNtfyEnqueue(&state->alert_manager.ntfy, &note);
     if (next_attempt_ms != NULL) {
-      *next_attempt_ms =
-        now_ms + (int64_t)state->alert_manager.ntfy.backoff_ms;
+      *next_attempt_ms = now_ms + (int64_t)state->alert_manager.ntfy.backoff_ms;
     }
   }
   return true;
@@ -3336,8 +3317,7 @@ NetTxTask(void* context)
   uint32_t min_stack_hwm_bytes = UINT32_MAX;
 
   while (!state->stop_requested) {
-    const uint32_t hwm_bytes =
-      (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    const uint32_t hwm_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
     if (hwm_bytes < min_stack_hwm_bytes) {
       min_stack_hwm_bytes = hwm_bytes;
       ESP_LOGI(kTag,
@@ -3361,8 +3341,7 @@ NetTxTask(void* context)
                                              &broker_backoff_ms);
       }
       if (alert_can_send && AlertManagerIsConfigured(&state->alert_manager)) {
-        did_work |= NetTxHandleAlertSend(
-          state, now_ms, &alert_next_attempt_ms);
+        did_work |= NetTxHandleAlertSend(state, now_ms, &alert_next_attempt_ms);
       } else if (alert_suppressed) {
         NetTxDrainAlertQueue(state);
       }
@@ -3373,8 +3352,7 @@ NetTxTask(void* context)
                                         &export_next_attempt_ms,
                                         &export_backoff_ms);
       if (alert_can_send && AlertManagerIsConfigured(&state->alert_manager)) {
-        did_work |= NetTxHandleAlertSend(
-          state, now_ms, &alert_next_attempt_ms);
+        did_work |= NetTxHandleAlertSend(state, now_ms, &alert_next_attempt_ms);
       } else if (alert_suppressed) {
         NetTxDrainAlertQueue(state);
       }
@@ -3599,11 +3577,9 @@ ControlTickTimeSync(runtime_state_t* state)
   const bool time_valid = TimeSyncIsSystemTimeValid();
   UpdateTimeHealthState(state, time_valid);
   const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
-  UpdateCachedBool(
-    state, &state->cached_status.mesh_connected, mesh_connected);
-  UpdateCachedInt32(state,
-                    &state->cached_status.mesh_level,
-                    state->mesh.last_level);
+  UpdateCachedBool(state, &state->cached_status.mesh_connected, mesh_connected);
+  UpdateCachedInt32(
+    state, &state->cached_status.mesh_level, state->mesh.last_level);
 
   if (state->settings.node_role == APP_NODE_ROLE_SENSOR) {
     if (!time_valid && mesh_connected) {
@@ -3639,8 +3615,7 @@ DirectWifiTask(void* context)
   uint32_t min_stack_hwm_bytes = UINT32_MAX;
 
   while (!state->stop_requested) {
-    const uint32_t hwm_bytes =
-      (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    const uint32_t hwm_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
     if (hwm_bytes < min_stack_hwm_bytes) {
       min_stack_hwm_bytes = hwm_bytes;
       ESP_LOGI(kTag,
@@ -3786,9 +3761,9 @@ ControlTickTopology(runtime_state_t* state, int64_t now_ms)
   if (connected_now) {
     s_last_disconnected_warn_ms = 0;
   } else if (MeshTransportIsStarted(&state->mesh)) {
-    const bool should_warn = (s_last_disconnected_warn_ms == 0) ||
-                             ((now_ms - s_last_disconnected_warn_ms) >=
-                              (5 * 60 * 1000));
+    const bool should_warn =
+      (s_last_disconnected_warn_ms == 0) ||
+      ((now_ms - s_last_disconnected_warn_ms) >= (5 * 60 * 1000));
     if (should_warn) {
       ESP_LOGW(kTag,
                "Mesh not connected (layer=%d). Still scanning for AP/root...",
@@ -3803,7 +3778,8 @@ ControlTickTopology(runtime_state_t* state, int64_t now_ms)
       (!s_have_prev_status) ||
       (strncmp(s_prev_role, role, sizeof(s_prev_role)) != 0) ||
       (s_prev_allow_children != allow_children) || (s_prev_layer != layer) ||
-      (strncmp(s_prev_parent_str, parent_str, sizeof(s_prev_parent_str)) != 0) ||
+      (strncmp(s_prev_parent_str, parent_str, sizeof(s_prev_parent_str)) !=
+       0) ||
       (s_prev_child_count != child_count) || (s_prev_rssi != rssi);
 
     if (changed) {
@@ -4317,8 +4293,7 @@ ControlTask(void* context)
       const int64_t now_epoch =
         TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
       if (alert_boot_pending) {
-        AlertManagerEmitSystemBoot(
-          &state->alert_manager, now_ms, now_epoch);
+        AlertManagerEmitSystemBoot(&state->alert_manager, now_ms, now_epoch);
         alert_boot_pending = false;
       }
       if (pending_mode_code != ALERT_SYSTEM_CODE_NONE) {
@@ -4326,24 +4301,21 @@ ControlTask(void* context)
           &state->alert_manager, pending_mode_code, now_ms, now_epoch);
         pending_mode_code = ALERT_SYSTEM_CODE_NONE;
       }
-      AlertManagerProcessSystemError(
-        &state->alert_manager,
-        ALERT_SYSTEM_CODE_ERROR_SD_IO,
-        state->cached_status.sd_io_error_active,
-        now_ms,
-        now_epoch);
-      AlertManagerProcessSystemError(
-        &state->alert_manager,
-        ALERT_SYSTEM_CODE_ERROR_FRAM_OVERRUN,
-        state->cached_status.fram_overrun_active,
-        now_ms,
-        now_epoch);
-      AlertManagerProcessSystemError(
-        &state->alert_manager,
-        ALERT_SYSTEM_CODE_ERROR_RTD_FAULT,
-        state->cached_status.sensor_fault_present,
-        now_ms,
-        now_epoch);
+      AlertManagerProcessSystemError(&state->alert_manager,
+                                     ALERT_SYSTEM_CODE_ERROR_SD_IO,
+                                     state->cached_status.sd_io_error_active,
+                                     now_ms,
+                                     now_epoch);
+      AlertManagerProcessSystemError(&state->alert_manager,
+                                     ALERT_SYSTEM_CODE_ERROR_FRAM_OVERRUN,
+                                     state->cached_status.fram_overrun_active,
+                                     now_ms,
+                                     now_epoch);
+      AlertManagerProcessSystemError(&state->alert_manager,
+                                     ALERT_SYSTEM_CODE_ERROR_RTD_FAULT,
+                                     state->cached_status.sensor_fault_present,
+                                     now_ms,
+                                     now_epoch);
     }
 
     if (state->runtime_phase == RUNTIME_PHASE_RUNNING &&
@@ -4364,8 +4336,7 @@ ControlTask(void* context)
           (next_alert_tick_ms == 0 || now_ms >= next_alert_tick_ms)) {
         const int64_t now_epoch =
           TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-        AlertManagerTick(
-          &state->alert_manager, now_ms, now_epoch);
+        AlertManagerTick(&state->alert_manager, now_ms, now_epoch);
         next_alert_tick_ms = now_ms + 1000;
       } else if (!alert_eligible) {
         next_alert_tick_ms = 0;
@@ -4376,8 +4347,7 @@ ControlTask(void* context)
       next_alert_tick_ms = 0;
     }
 
-    const uint32_t hwm_bytes =
-      (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    const uint32_t hwm_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
     if (hwm_bytes < min_stack_hwm_bytes) {
       min_stack_hwm_bytes = hwm_bytes;
       ESP_LOGI(
@@ -4505,7 +4475,7 @@ DisplayShareConfigMatchesApp(void)
          RuntimeGetDisplayMosiGpio() == CONFIG_APP_SPI_MOSI_GPIO &&
          RuntimeGetDisplaySclkGpio() == CONFIG_APP_SPI_SCLK_GPIO;
 }
-#endif  // CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+#endif // CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
 
 static int
 SpiHostToId(spi_host_device_t host)
@@ -4801,13 +4771,12 @@ RuntimeManagerInit(void)
   esp_err_t display_result = InitializeMax7219Display(&g_state);
   if (display_result == ESP_OK && g_state.display_initialized) {
     const uint32_t kDisplayTaskStackBytes = 4096;
-    BaseType_t display_created = xTaskCreate(
-      &DisplayTask,
-      "display",
-      kDisplayTaskStackBytes,
-      &g_state,
-      2,
-      &g_state.display_task);
+    BaseType_t display_created = xTaskCreate(&DisplayTask,
+                                             "display",
+                                             kDisplayTaskStackBytes,
+                                             &g_state,
+                                             2,
+                                             &g_state.display_task);
     if (display_created != pdPASS) {
       g_state.display_initialized = false;
       g_state.display_task = NULL;
@@ -5048,13 +5017,12 @@ RuntimeManagerInit(void)
   }
 
   const uint32_t kControlTaskStackBytes = 12288;
-  BaseType_t control_created =
-    xTaskCreate(&ControlTask,
-                "control",
-                kControlTaskStackBytes,
-                &g_state,
-                3,
-                &g_state.control_task);
+  BaseType_t control_created = xTaskCreate(&ControlTask,
+                                           "control",
+                                           kControlTaskStackBytes,
+                                           &g_state,
+                                           3,
+                                           &g_state.control_task);
   if (control_created != pdPASS) {
     g_state.control_task = NULL;
     if (first_error == ESP_OK) {
@@ -5340,9 +5308,7 @@ RuntimeStart(void)
 
   esp_err_t net_apply_result = RuntimeApplyNetMode(g_state.settings.net_mode);
   if (net_apply_result != ESP_OK && effective_net_mode == APP_NET_MODE_MESH) {
-    ESP_LOGE(kTag,
-             "Mesh start failed: %s",
-             esp_err_to_name(net_apply_result));
+    ESP_LOGE(kTag, "Mesh start failed: %s", esp_err_to_name(net_apply_result));
   }
 
   if (g_state.mesh_started && g_state.mesh.is_root &&
@@ -5393,13 +5359,12 @@ RuntimeStart(void)
   }
 
   if (role == APP_NODE_ROLE_SENSOR) {
-    sensor_created = xTaskCreate(
-      &SensorTask,
-      "sensor",
-      kSensorStackBytes,
-      &g_state,
-      5,
-      &g_state.sensor_task);
+    sensor_created = xTaskCreate(&SensorTask,
+                                 "sensor",
+                                 kSensorStackBytes,
+                                 &g_state,
+                                 5,
+                                 &g_state.sensor_task);
     if (sensor_created != pdPASS) {
       g_state.sensor_task = NULL;
       ESP_LOGE(kTag, "Failed to create task sensor");
@@ -5426,13 +5391,12 @@ RuntimeStart(void)
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
-    export_created = xTaskCreate(
-      &ExportTask,
-      "export",
-      kExportStackBytes,
-      &g_state,
-      4,
-      &g_state.export_task);
+    export_created = xTaskCreate(&ExportTask,
+                                 "export",
+                                 kExportStackBytes,
+                                 &g_state,
+                                 4,
+                                 &g_state.export_task);
     if (export_created != pdPASS) {
       g_state.export_task = NULL;
       ESP_LOGE(kTag, "Failed to create task export");
