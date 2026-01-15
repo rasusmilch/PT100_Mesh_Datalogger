@@ -697,6 +697,37 @@ def _format_flags_summary(df: pd.DataFrame) -> str:
 
 
 
+
+def _range_is_fully_calibrated(df: pd.DataFrame) -> bool:
+    """Return True if *all* rows in df are marked CAL_VALID.
+
+    This tool treats calibration as all-or-nothing. If any row in the selected
+    range is missing CAL_VALID, we consider the range uncalibrated.
+    """
+    if "flags" not in df.columns:
+        return False
+
+    flags_series = df["flags"]
+    # If any flags are missing, we can't prove calibration coverage.
+    if flags_series.isna().any():
+        return False
+
+    cal_mask = None
+    for mask, short_name in _LOG_RECORD_FLAG_DEFS:
+        if short_name == "CAL_VALID":
+            cal_mask = int(mask)
+            break
+    if cal_mask is None:
+        cal_mask = 1 << 1
+
+    try:
+        flags_int = flags_series.astype("int64")
+    except Exception:
+        return False
+
+    return bool(((flags_int & cal_mask) != 0).all())
+
+
 def _apply_flag_filters_for_stats(
     df: pd.DataFrame,
     y_series: pd.Series,
@@ -957,7 +988,7 @@ def _build_figure(
     y_series_c = pd.to_numeric(df[y_name], errors="coerce")
     y_series = (
         _convert_temperature_series(y_series_c, options.temp_unit)
-        if y_name in ("cal_temp_c", "raw_temp_c")
+        if y_name_effective in ("cal_temp_c", "raw_temp_c")
         else y_series_c
     )
 
@@ -1130,6 +1161,7 @@ def _export_pdf_report(
     summary_rows: List[List[str]],
     title: str,
     subtitle: str,
+    warning_text: Optional[str] = None,
 ) -> None:
     half_inch = 0.5 * inch
     doc = SimpleDocTemplate(
@@ -1156,6 +1188,16 @@ def _export_pdf_report(
         textColor=colors.grey,
         spaceAfter=14,
     )
+
+    styles_warn = ParagraphStyle(
+        "WarnStyle",
+        fontName="Helvetica-Bold",
+        fontSize=13.5,
+        leading=16,
+        alignment=TA_CENTER,
+        textColor=colors.red,
+        spaceAfter=12,
+    )
     styles_body = ParagraphStyle(
         "BodyStyle",
         fontName="Helvetica",
@@ -1166,6 +1208,10 @@ def _export_pdf_report(
     elements: List[object] = []
     elements.append(Paragraph(title, styles_title))
     elements.append(Paragraph(subtitle, styles_sub))
+    if warning_text:
+        warning_html = warning_text.replace("\n", "<br/>")
+        elements.append(Paragraph(warning_html, styles_warn))
+
 
     table = Table(summary_rows, colWidths=[2.3 * inch, 4.7 * inch])
     table.setStyle(
@@ -1205,6 +1251,7 @@ def _export_pdf_report_vector(
     summary_rows: List[List[str]],
     title: str,
     subtitle: str,
+    warning_text: Optional[str] = None,
 ) -> None:
     """Export a vector PDF using Matplotlib's PDF backend.
 
@@ -1251,7 +1298,25 @@ def _export_pdf_report_vector(
             transform=ax.transAxes,
         )
 
-        # Build a Matplotlib table (kept as vector text/lines in the PDF).
+        
+        table_bbox = [0.0, 0.25, 1.0, 0.70]
+        if warning_text:
+            ax.text(
+                0.5,
+                0.96,
+                warning_text,
+                ha="center",
+                va="top",
+                fontsize=12,
+                fontweight="bold",
+                color="red",
+                transform=ax.transAxes,
+                wrap=True,
+            )
+            # Leave extra room above the table for the warning.
+            table_bbox = [0.0, 0.25, 1.0, 0.60]
+
+# Build a Matplotlib table (kept as vector text/lines in the PDF).
         # summary_rows includes a header row: ["Field", "Value"].
         cell_text = summary_rows[1:] if len(summary_rows) > 1 else []
         col_labels = summary_rows[0] if summary_rows else ["Field", "Value"]
@@ -1262,7 +1327,7 @@ def _export_pdf_report_vector(
             cellLoc="left",
             colLoc="left",
             loc="upper left",
-            bbox=[0.0, 0.25, 1.0, 0.70],
+            bbox=table_bbox,
         )
         table.auto_set_font_size(False)
         table.set_fontsize(9)
@@ -1557,8 +1622,22 @@ class PlotterApp:
         available = [name for name in self.series_choices if name in self.loaded.dataframe.columns]
         if not available:
             return
-        preferred = "cal_temp_c" if "cal_temp_c" in available else available[0]
-        if self.y_choice.get() not in available:
+
+        # Default to calibrated temperature ONLY when the entire loaded range is marked CAL_VALID.
+        range_fully_calibrated = _range_is_fully_calibrated(self.loaded.dataframe)
+
+        if "cal_temp_c" in available and range_fully_calibrated:
+            preferred = "cal_temp_c"
+        elif "raw_temp_c" in available:
+            preferred = "raw_temp_c"
+        else:
+            preferred = available[0]
+
+        current = self.y_choice.get()
+        if current not in available:
+            self.y_choice.set(preferred)
+            return
+        if current == "cal_temp_c" and not range_fully_calibrated and preferred != "cal_temp_c":
             self.y_choice.set(preferred)
 
     def _load_paths(self, file_paths: List[str]) -> None:
@@ -1822,9 +1901,15 @@ class PlotterApp:
             messagebox.showerror("Trim Error", str(exc))
             return
 
-        y_name = self.y_choice.get()
-        if y_name not in df.columns:
-            messagebox.showerror("Plot Error", f"Column not found: {y_name}")
+        requested_y_name = self.y_choice.get()
+        y_name_effective = requested_y_name
+
+        if requested_y_name == "cal_temp_c" and not _range_is_fully_calibrated(df):
+            if "raw_temp_c" in df.columns:
+                y_name_effective = "raw_temp_c"
+
+        if y_name_effective not in df.columns:
+            messagebox.showerror("Plot Error", f"Column not found: {y_name_effective}")
             return
 
         overlay_raw = self.overlay_raw.get()
@@ -1843,7 +1928,7 @@ class PlotterApp:
         nodes = _node_ids_from_df(df)
         range_label = f"{start_label} → {end_label}"
 
-        plot_title = _human_series_label(y_name, temp_unit="F" if self.temp_f.get() else "C")
+        plot_title = _human_series_label(y_name_effective, temp_unit="F" if self.temp_f.get() else "C")
         suptitle = f"Nodes: {nodes} — {range_label}" if nodes != "n/a" else range_label
 
         try:
@@ -1855,7 +1940,7 @@ class PlotterApp:
         fig, _plot_points, _total_points = _build_figure(
             df=df,
             time_column=self.loaded.time_column,
-            y_name=y_name,
+            y_name=y_name_effective,
             plot_title=plot_title,
             suptitle=suptitle,
             options=options,
@@ -1872,9 +1957,31 @@ class PlotterApp:
             messagebox.showerror("Trim Error", str(exc))
             return
 
-        y_name = self.y_choice.get()
-        if y_name not in df.columns:
-            messagebox.showerror("PDF Error", f"Column not found: {y_name}")
+        requested_y_name = self.y_choice.get()
+        y_name_effective = requested_y_name
+
+        # Treat calibration as all-or-nothing. If CAL_VALID is not set for every
+        # sample in the selected range, we consider the range uncalibrated.
+        range_fully_calibrated = _range_is_fully_calibrated(df)
+
+        warning_text: Optional[str] = None
+        if requested_y_name in ("raw_temp_c", "cal_temp_c") and not range_fully_calibrated:
+            warning_text = (
+                "NOT CALIBRATED — CAL_VALID flag is not set for all samples in the selected range."
+            )
+
+        # If the user requested calibrated temperature but calibration is not present,
+        # fall back to raw temperature for plotting/reporting.
+        if requested_y_name == "cal_temp_c" and not range_fully_calibrated:
+            if "raw_temp_c" in df.columns:
+                y_name_effective = "raw_temp_c"
+                warning_text = (
+                    "NOT CALIBRATED — CAL_VALID flag is not set for all samples in the selected range. "
+                    "Using RAW temperature."
+                )
+
+        if y_name_effective not in df.columns:
+            messagebox.showerror("PDF Error", f"Column not found: {y_name_effective}")
             return
 
         overlay_raw = self.overlay_raw.get()
@@ -1914,7 +2021,7 @@ class PlotterApp:
         subtitle = f"Nodes: {nodes} — {range_label}"
 
         temp_unit = "F" if self.temp_f.get() else "C"
-        plot_title = _human_series_label(y_name, temp_unit=temp_unit)
+        plot_title = _human_series_label(y_name_effective, temp_unit=temp_unit)
 
         try:
             options = self._collect_plot_options(display_config, smooth=smooth, overlay_raw=overlay_raw)
@@ -1925,26 +2032,26 @@ class PlotterApp:
         fig, plot_points, total_points = _build_figure(
             df=df,
             time_column=self.loaded.time_column,
-            y_name=y_name,
+            y_name=y_name_effective,
             plot_title=plot_title,
             suptitle=None,
             options=options,
         )
 
-        y_series_c = pd.to_numeric(df.get(y_name, pd.Series(dtype=float)), errors="coerce")
+        y_series_c = pd.to_numeric(df.get(y_name_effective, pd.Series(dtype=float)), errors="coerce")
         y_series_disp = (
             _convert_temperature_series(y_series_c, temp_unit)
-            if y_name in ("cal_temp_c", "raw_temp_c")
+            if y_name_effective in ("cal_temp_c", "raw_temp_c")
             else y_series_c
         )
-        stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name)
+        stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name_effective)
         stats = _compute_basic_stats(stats_series)
         flags_summary = _format_flags_summary(df)
 
-        series_label = _human_series_label(y_name, temp_unit=temp_unit)
+        series_label = _human_series_label(y_name_effective, temp_unit=temp_unit)
 
         overlays = []
-        if y_name in ("cal_temp_c", "raw_temp_c"):
+        if y_name_effective in ("cal_temp_c", "raw_temp_c"):
             if options.stats.show_min:
                 overlays.append("min")
             if options.stats.show_max:
@@ -1971,6 +2078,7 @@ class PlotterApp:
             ["Start", start_label],
             ["End", end_label],
             ["Series", series_label],
+            ["Calibration", "Calibrated" if range_fully_calibrated else "NOT calibrated"],
             ["min / avg / max / std", f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
         ]
         if flags_summary != "n/a":
@@ -1990,6 +2098,7 @@ class PlotterApp:
                     summary_rows=summary_rows,
                     title=title,
                     subtitle=subtitle,
+                    warning_text=warning_text,
                 )
             else:
                 assert fig_png_path is not None
@@ -2001,6 +2110,7 @@ class PlotterApp:
                     summary_rows=summary_rows,
                     title=title,
                     subtitle=subtitle,
+                    warning_text=warning_text,
                 )
         except Exception as exc:
             messagebox.showerror("PDF Error", str(exc))
