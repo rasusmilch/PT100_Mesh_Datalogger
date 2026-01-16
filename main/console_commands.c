@@ -61,6 +61,8 @@
 static const char* kTag = "console";
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
+static void
+FormatUtcEpochIso8601(int64_t epoch_utc, char* buffer, size_t buffer_size);
 /**
  * @brief Print the compact calibration schedule and due status block.
  * @param settings Current settings.
@@ -96,6 +98,12 @@ ParseUtcDateString(const char* value, int64_t* epoch_out);
  */
 static bool
 ParseCalDueUnit(const char* value, uint8_t* unit_out);
+/**
+ * @brief Print system time in UTC and local time using current TZ/DST settings.
+ * @param runtime Runtime context.
+ */
+static void
+PrintTimeShow(const app_runtime_t* runtime);
 /**
  * @brief Execute MaybePushCalRawSampleFromSensor.
  */
@@ -2749,15 +2757,113 @@ CommandTz(int argc, char** argv)
   return 1;
 }
 
+static void
+PrintTimeShow(const app_runtime_t* runtime)
+{
+  if (runtime == NULL || runtime->settings == NULL) {
+    return;
+  }
+
+  tzset();
+
+  const time_t now_seconds = time(NULL);
+  struct tm utc_tm = { 0 };
+  char utc_buffer[32] = { 0 };
+  if (gmtime_r(&now_seconds, &utc_tm) != NULL) {
+    strftime(utc_buffer, sizeof(utc_buffer), "%Y-%m-%d %H:%M:%SZ", &utc_tm);
+  }
+
+  struct tm local_tm = { 0 };
+  int local_isdst = -1;
+  char local_buffer[48] = { 0 };
+  if (localtime_r(&now_seconds, &local_tm) != NULL) {
+    strftime(
+      local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S %Z (%z)", &local_tm);
+    local_isdst = local_tm.tm_isdst;
+  }
+
+  printf("utc_time: %s (epoch=%ld)\n",
+         (utc_buffer[0] != '\0') ? utc_buffer : "unknown",
+         (long)now_seconds);
+  printf("local_time: %s\n",
+         (local_buffer[0] != '\0') ? local_buffer : "unknown");
+  printf("time_valid: %s\n", TimeSyncIsSystemTimeValid() ? "yes" : "no");
+  printf("tz_posix: %s\n", runtime->settings->tz_posix);
+  printf("dst_enabled: %s\n",
+         runtime->settings->dst_enabled ? "yes" : "no");
+  printf("local_isdst: %d\n", local_isdst);
+
+  time_sntp_status_t sntp_status;
+  TimeSyncGetSntpStatus(&sntp_status);
+  printf("sntp_server: %s\n",
+         (sntp_status.last_server[0] != '\0') ? sntp_status.last_server
+                                              : "n/a");
+  if (sntp_status.last_attempt_epoch > 0) {
+    char attempt_buffer[32] = { 0 };
+    FormatUtcEpochIso8601(
+      sntp_status.last_attempt_epoch, attempt_buffer, sizeof(attempt_buffer));
+    printf("sntp_last_attempt: %s (epoch=%" PRId64 ")\n",
+           attempt_buffer,
+           sntp_status.last_attempt_epoch);
+  } else {
+    printf("sntp_last_attempt: never\n");
+  }
+  printf("sntp_last_result: %s (%d)\n",
+         esp_err_to_name(sntp_status.last_result),
+         (int)sntp_status.last_result);
+  if (sntp_status.last_success_epoch > 0) {
+    char success_buffer[32] = { 0 };
+    FormatUtcEpochIso8601(
+      sntp_status.last_success_epoch, success_buffer, sizeof(success_buffer));
+    printf("sntp_last_success: %s (epoch=%" PRId64 ")\n",
+           success_buffer,
+           sntp_status.last_success_epoch);
+  } else {
+    printf("sntp_last_success: never\n");
+  }
+
+  const bool rtc_present =
+    (runtime->time_sync != NULL && runtime->time_sync->is_ds3231_ready);
+  printf("rtc_present: %s\n", rtc_present ? "yes" : "no");
+
+  int64_t rtc_epoch = 0;
+  if (rtc_present &&
+      TimeSyncReadRtcEpoch(runtime->time_sync, &rtc_epoch) == ESP_OK) {
+    char rtc_buffer[32] = { 0 };
+    FormatUtcEpochIso8601(rtc_epoch, rtc_buffer, sizeof(rtc_buffer));
+    const int64_t drift_seconds = (int64_t)now_seconds - rtc_epoch;
+    printf("rtc_time_utc: %s (epoch=%" PRId64 ")\n", rtc_buffer, rtc_epoch);
+    printf("rtc_drift_seconds: %" PRId64 "\n", drift_seconds);
+  } else {
+    printf("rtc_time_utc: n/a\n");
+    printf("rtc_drift_seconds: n/a\n");
+  }
+
+  const int64_t rtc_last_set_epoch = TimeSyncGetLastRtcSetEpoch();
+  if (rtc_last_set_epoch > 0) {
+    char set_buffer[32] = { 0 };
+    FormatUtcEpochIso8601(
+      rtc_last_set_epoch, set_buffer, sizeof(set_buffer));
+    printf("rtc_last_set: %s (epoch=%" PRId64 ")\n",
+           set_buffer,
+           rtc_last_set_epoch);
+  } else {
+    printf("rtc_last_set: never\n");
+  }
+}
+
 /**
  * @brief Execute PrintTimeUsage.
  */
 static void
 PrintTimeUsage(void)
 {
+  printf("time show\n");
   printf("time setlocal \"YYYY-MM-DD HH:MM:SS\" [--is_dst 0|1]\n");
   printf(
     "  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n");
+  printf(
+    "  local formatting uses current TZ rules (POSIX TZ string via settings)\n");
   printf("  use --is_dst to disambiguate fall-back hour\n");
 }
 
@@ -2780,6 +2886,15 @@ CommandTime(int argc, char** argv)
   }
 
   const char* action = g_time_args.action->sval[0];
+  if (strcmp(action, "show") == 0) {
+    if (g_time_args.local_time->count != 0 || g_time_args.is_dst->count != 0) {
+      PrintTimeUsage();
+      return 1;
+    }
+    PrintTimeShow(g_runtime);
+    return 0;
+  }
+
   if (strcmp(action, "setlocal") != 0) {
     PrintTimeUsage();
     return 1;
@@ -4795,15 +4910,17 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&tz_cmd));
 
-  g_time_args.action = arg_str1(NULL, NULL, "<action>", "setlocal");
+  g_time_args.action = arg_str1(NULL, NULL, "<action>", "setlocal|show");
   g_time_args.local_time = arg_str0(NULL, NULL, "<local_time>", "LOCAL time");
   g_time_args.is_dst = arg_int0(NULL, "is_dst", "<0|1>", "DST disambiguation");
   g_time_args.end = arg_end(3);
   const esp_console_cmd_t time_cmd = {
     .command = "time",
     .help =
+      "time show\n"
       "time setlocal \"YYYY-MM-DD HH:MM:SS\" [--is_dst 0|1]\n"
       "  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n"
+      "  local formatting uses current TZ rules (POSIX TZ string via settings)\n"
       "  use --is_dst to disambiguate fall-back hour",
     .hint = NULL,
     .func = &CommandTime,
