@@ -78,6 +78,7 @@ extern "C"
     uint32_t fram_flush_watermark_records;
     uint32_t sd_flush_period_ms;
     uint32_t sd_batch_bytes_target;
+    uint32_t rtc_resync_period_ms;
     calibration_model_t calibration;
     calibration_context_t calibration_context;
     bool calibration_context_valid;
@@ -149,6 +150,13 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t AppSettingsSaveSdBatchBytes(uint32_t batch_bytes);
+
+/**
+ * @brief Execute AppSettingsSaveRtcResyncPeriodMs.
+ * @param period_ms Parameter period_ms.
+ * @return Return the function result.
+ */
+  esp_err_t AppSettingsSaveRtcResyncPeriodMs(uint32_t period_ms);
 
   // Persists updated calibration model to NVS.
 /**

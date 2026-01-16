@@ -643,6 +643,8 @@ CommandStatus(int argc, char** argv)
   printf("runtime_running: %s\n", RuntimeIsRunning() ? "yes" : "no");
   printf("time_valid: %s\n", TimeSyncIsSystemTimeValid() ? "yes" : "no");
   printf("log_period_ms: %u\n", (unsigned)settings->log_period_ms);
+  printf("rtc_resync_period_ms: %u\n",
+         (unsigned)settings->rtc_resync_period_ms);
   printf("sd_flush_period_ms: %u\n", (unsigned)settings->sd_flush_period_ms);
   printf("sd_batch_target_bytes: %u\n",
          (unsigned)settings->sd_batch_bytes_target);
@@ -2968,6 +2970,97 @@ CommandTime(int argc, char** argv)
   return 0;
 }
 
+/**
+ * @brief Execute PrintRtcUsage.
+ */
+static void
+PrintRtcUsage(void)
+{
+  printf("rtc status\n");
+  printf("rtc set period_ms <0..86400000>\n");
+}
+
+/**
+ * @brief Execute CommandRtc.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandRtc(int argc, char** argv)
+{
+  if (g_runtime == NULL || g_runtime->settings == NULL) {
+    return 1;
+  }
+  if (argc < 2) {
+    PrintRtcUsage();
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "status") == 0) {
+    const runtime_state_t* state = RuntimeGetState();
+    printf("rtc_resync_period_ms: %u\n",
+           (unsigned)g_runtime->settings->rtc_resync_period_ms);
+    printf("time_jump_back_armed: %s\n",
+           (state != NULL && state->time_jump_back_armed) ? "yes" : "no");
+    printf("time_jump_back_confirm_pending: %s\n",
+           (state != NULL && state->time_jump_back_confirm_pending) ? "yes"
+                                                                    : "no");
+    if (state != NULL && state->time_jump_back_confirm_pending) {
+      printf("time_jump_back_record_id: %" PRIu64 "\n",
+             state->time_jump_back_record_id);
+    } else {
+      printf("time_jump_back_record_id: n/a\n");
+    }
+    if (state != NULL && state->last_time_jump_back_delta_sec != 0) {
+      printf("last_time_jump_back_delta_sec: %" PRId64 "\n",
+             state->last_time_jump_back_delta_sec);
+    } else {
+      printf("last_time_jump_back_delta_sec: n/a\n");
+    }
+
+    const int64_t system_epoch = (int64_t)time(NULL);
+    printf("system_epoch_utc: %" PRId64 "\n", system_epoch);
+    int64_t rtc_epoch = 0;
+    if (g_runtime->time_sync != NULL &&
+        TimeSyncReadRtcEpoch(g_runtime->time_sync, &rtc_epoch) == ESP_OK) {
+      printf("rtc_epoch_utc: %" PRId64 "\n", rtc_epoch);
+      printf("rtc_delta_seconds: %" PRId64 "\n",
+             rtc_epoch - system_epoch);
+    } else {
+      printf("rtc_epoch_utc: n/a\n");
+      printf("rtc_delta_seconds: n/a\n");
+    }
+    return 0;
+  }
+
+  if (strcmp(action, "set") == 0) {
+    if (argc != 4 || strcmp(argv[2], "period_ms") != 0) {
+      PrintRtcUsage();
+      return 1;
+    }
+    char* end = NULL;
+    const unsigned long value = strtoul(argv[3], &end, 10);
+    if (end == argv[3] || *end != '\0' || value > 86400000ul) {
+      PrintRtcUsage();
+      return 1;
+    }
+    g_runtime->settings->rtc_resync_period_ms = (uint32_t)value;
+    const esp_err_t result =
+      AppSettingsSaveRtcResyncPeriodMs((uint32_t)value);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("rtc_resync_period_ms set to %lu\n", value);
+    return 0;
+  }
+
+  PrintRtcUsage();
+  return 1;
+}
+
 // --- Boiling point calculator (from MeshTemps-LeafNode.ino) ------------------
 //
 // Usage:
@@ -4927,6 +5020,14 @@ RegisterCommands(void)
     .argtable = &g_time_args,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&time_cmd));
+
+  const esp_console_cmd_t rtc_cmd = {
+    .command = "rtc",
+    .help = "rtc status | rtc set period_ms <0..86400000>",
+    .hint = NULL,
+    .func = &CommandRtc,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&rtc_cmd));
 
   const esp_console_cmd_t boilpt_cmd = {
     .command = "boilpt",

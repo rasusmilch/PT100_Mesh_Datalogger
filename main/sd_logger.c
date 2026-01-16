@@ -371,8 +371,14 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
   BuildDailyCsvPath(
     logger, epoch_utc, date_string, sizeof(date_string), path, sizeof(path));
 
-  if (logger->file != NULL && strcmp(logger->current_date, date_string) == 0) {
-    return ESP_OK; // already open for today
+  if (logger->file != NULL && logger->current_date[0] != '\0') {
+    const int date_cmp = strcmp(date_string, logger->current_date);
+    if (date_cmp == 0) {
+      return ESP_OK; // already open for today
+    }
+    if (date_cmp < 0) {
+      return ESP_OK; // never roll backward to an earlier date
+    }
   }
 
   SdLoggerClose(logger);

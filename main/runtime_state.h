@@ -166,6 +166,13 @@ extern "C" {
     mesh_transport_t mesh;
     time_sync_t time_sync;
     i2c_bus_t i2c_bus;
+    TickType_t rtc_resync_last_ticks;
+    TickType_t last_rtc_force_before_roll_ticks;
+    TickType_t last_rtc_resync_warn_ticks;
+    bool time_jump_back_armed;
+    bool time_jump_back_confirm_pending;
+    uint64_t time_jump_back_record_id;
+    int64_t last_time_jump_back_delta_sec;
 
     QueueHandle_t log_queue;
     StaticQueue_t log_queue_struct;
