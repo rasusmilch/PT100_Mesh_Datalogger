@@ -69,6 +69,7 @@ _FLAG_LABELS: Dict[str, str] = {
     "SENSOR_FAULT": "Sensor fault",
     "FRAM_FULL": "FRAM full",
     "RTD_EMA": "RTD EMA used",
+    "TIME_JUMP_BACK": "Time jump back (RTC sync)",
 }
 
 # Flags that represent an error condition when set.
@@ -83,6 +84,7 @@ _FALLBACK_FLAG_DEFS: List[Tuple[int, str]] = [
     (1 << 4, "SENSOR_FAULT"),
     (1 << 5, "FRAM_FULL"),
     (1 << 6, "RTD_EMA"),
+    (1 << 7, "TIME_JUMP_BACK"),
 ]
 
 
@@ -134,6 +136,55 @@ def _load_flag_definitions_from_header() -> List[Tuple[int, str]]:
 
 # Resolved definitions used by this tool.
 _LOG_RECORD_FLAG_DEFS: List[Tuple[int, str]] = _load_flag_definitions_from_header()
+
+
+def _get_flag_mask(short_name: str, fallback_mask: int) -> int:
+    for mask, name in _LOG_RECORD_FLAG_DEFS:
+        if name == short_name:
+            return int(mask)
+    return int(fallback_mask)
+
+
+def _get_time_jump_back_mask(df: pd.DataFrame) -> np.ndarray:
+    """Return a boolean mask for TIME_JUMP_BACK records."""
+    if "flags" not in df.columns:
+        return np.zeros(len(df), dtype=bool)
+    mask = _get_flag_mask("TIME_JUMP_BACK", 1 << 7)
+    flags_numeric = pd.to_numeric(df["flags"], errors="coerce").fillna(0).astype("int64")
+    return ((flags_numeric & mask) != 0).to_numpy(dtype=bool, copy=False)
+
+
+def _ensure_sequence_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure a usable sequence column exists for acquisition ordering."""
+    df = df.copy()
+    if "seq" in df.columns:
+        seq_series = pd.to_numeric(df["seq"], errors="coerce")
+    elif "record_id" in df.columns:
+        seq_series = pd.to_numeric(df["record_id"], errors="coerce")
+    else:
+        seq_series = pd.Series([pd.NA] * len(df), dtype="float64")
+
+    df["__seq"] = pd.array(seq_series, dtype="Int64")
+    if df["__seq"].isna().all():
+        raise ValueError("Sequence ordering requires a valid 'seq' or 'record_id' column.")
+    return df
+
+
+def _compute_unwrapped_sequence(seq_series: pd.Series) -> pd.Series:
+    """Return a monotonic sequence by unwrapping 32-bit wraps."""
+    offset = 0
+    previous_value: Optional[int] = None
+    unwrapped: List[Optional[int]] = []
+    for value in seq_series:
+        if pd.isna(value):
+            unwrapped.append(pd.NA)
+            continue
+        current = int(value)
+        if previous_value is not None and current < previous_value:
+            offset += 2 ** 32
+        unwrapped.append(current + offset)
+        previous_value = current
+    return pd.Series(unwrapped, index=seq_series.index, dtype="Int64")
 
 
 @dataclass
@@ -595,12 +646,19 @@ def _load_csv_files(file_paths: List[str]) -> LoadedLog:
         local_tz=local_tz,
     )
 
-    if time_column == "__time":
-        combined = combined.sort_values(by=time_column).reset_index(drop=True)
-    else:
+    combined = _ensure_sequence_column(combined)
+    combined["__seq_unwrapped"] = _compute_unwrapped_sequence(combined["__seq"])
+    missing_seq = int(combined["__seq_unwrapped"].isna().sum())
+    if missing_seq:
+        raise ValueError(
+            f"Sequence ordering requires seq/record_id for every row; {missing_seq} rows are missing."
+        )
+
+    if time_column == "__x":
         # record_id fallback: numeric X axis
         combined[time_column] = pd.to_numeric(combined[time_column], errors="coerce")
-        combined = combined.sort_values(by=time_column).reset_index(drop=True)
+
+    combined = combined.sort_values(by="__seq_unwrapped", kind="mergesort").reset_index(drop=True)
 
     return LoadedLog(
         dataframe=combined,
@@ -625,7 +683,12 @@ def _compute_basic_stats(series: pd.Series) -> Dict[str, str]:
 
 
 
-def _format_flags_summary(df: pd.DataFrame) -> str:
+def _format_flags_summary(
+    df: pd.DataFrame,
+    *,
+    display_tz: Optional[datetime.tzinfo],
+    time_source: str,
+) -> str:
     """Build a concise summary of *problem* log_record flags.
 
     This intentionally hides informational flags (for example, MESH_CONNECTED).
@@ -689,6 +752,31 @@ def _format_flags_summary(df: pd.DataFrame) -> str:
 
         # Hide non-problem/informational flags (e.g., RTD_EMA).
         continue
+
+    time_jump_mask = _get_time_jump_back_mask(df)
+    time_jump_count = int(time_jump_mask.sum())
+    if time_jump_count:
+        first_index = int(np.flatnonzero(time_jump_mask)[0])
+        first_time_label = "n/a"
+        if "__time" in df.columns:
+            display_times = _convert_time_series_to_display_tz(
+                df["__time"],
+                display_tz=display_tz,
+                time_source=time_source,
+            )
+            first_time = display_times.iloc[first_index]
+            if pd.notna(first_time):
+                first_time_label = pd.Timestamp(first_time).strftime("%Y-%m-%d %H:%M:%S")
+
+        first_seq_label = "n/a"
+        if "__seq" in df.columns:
+            first_seq = df["__seq"].iloc[first_index]
+            if pd.notna(first_seq):
+                first_seq_label = str(int(first_seq))
+
+        problem_lines.append(
+            f"Time jump back events: {time_jump_count} (first at {first_time_label}, seq {first_seq_label})"
+        )
 
     if not problem_lines:
         return "n/a"
@@ -1020,6 +1108,16 @@ def _build_figure(
             max_plot_points=options.max_plot_points,
         )
 
+    time_jump_mask = _get_time_jump_back_mask(df)
+    time_jump_positions = np.flatnonzero(time_jump_mask)
+    if time_jump_positions.size:
+        include_positions = set(plot_positions.tolist())
+        for jump_index in time_jump_positions:
+            include_positions.add(int(jump_index))
+            if jump_index > 0:
+                include_positions.add(int(jump_index - 1))
+        plot_positions = np.unique(np.fromiter(include_positions, dtype=np.int64))
+
     x_plot = x_values.iloc[plot_positions]
     y_plot = y_series.iloc[plot_positions]
 
@@ -1044,6 +1142,22 @@ def _build_figure(
 
     if raw_temp_series is not None:
         ax.plot(x_plot, raw_temp_series.iloc[plot_positions], linewidth=0.9, alpha=0.7, label="raw_temp_c (data)")
+
+    if time_jump_positions.size:
+        time_jump_label = _FLAG_LABELS.get("TIME_JUMP_BACK", "Time jump back (RTC sync)")
+        for idx, jump_index in enumerate(time_jump_positions):
+            x_jump = x_values.iloc[jump_index]
+            ax.axvline(
+                x_jump,
+                color="#d62728",
+                linestyle=":",
+                linewidth=1.0,
+                alpha=0.7,
+                label=time_jump_label if idx == 0 else "_nolegend_",
+            )
+            y_jump = y_series.iloc[jump_index]
+            if pd.notna(y_jump):
+                ax.scatter([x_jump], [y_jump], color="#d62728", marker="x", s=35, label="_nolegend_")
 
     is_temperature = y_name in ("cal_temp_c", "raw_temp_c")
     if is_temperature:
@@ -2047,7 +2161,11 @@ class PlotterApp:
         )
         stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name_effective)
         stats = _compute_basic_stats(stats_series)
-        flags_summary = _format_flags_summary(df)
+        flags_summary = _format_flags_summary(
+            df,
+            display_tz=display_config.display_tz,
+            time_source=self.loaded.time_source,
+        )
 
         series_label = _human_series_label(y_name_effective, temp_unit=temp_unit)
 
