@@ -3002,16 +3002,16 @@ CommandRtc(int argc, char** argv)
     const runtime_state_t* state = RuntimeGetState();
     printf("rtc_resync_period_ms: %u\n",
            (unsigned)g_runtime->settings->rtc_resync_period_ms);
-    printf("time_jump_back_armed: %s\n",
-           (state != NULL && state->time_jump_back_armed) ? "yes" : "no");
-    printf("time_jump_back_confirm_pending: %s\n",
-           (state != NULL && state->time_jump_back_confirm_pending) ? "yes"
+    printf("time_jump_back_arm_next: %s\n",
+           (state != NULL && state->time_jump_back_arm_next) ? "yes" : "no");
+    printf("time_jump_back_pending_confirm: %s\n",
+           (state != NULL && state->time_jump_back_pending_confirm) ? "yes"
                                                                     : "no");
-    if (state != NULL && state->time_jump_back_confirm_pending) {
-      printf("time_jump_back_record_id: %" PRIu64 "\n",
-             state->time_jump_back_record_id);
+    if (state != NULL && state->time_jump_back_pending_confirm) {
+      printf("time_jump_back_attempt_record_id: %" PRIu64 "\n",
+             state->time_jump_back_attempt_record_id);
     } else {
-      printf("time_jump_back_record_id: n/a\n");
+      printf("time_jump_back_attempt_record_id: n/a\n");
     }
     if (state != NULL && state->last_time_jump_back_delta_sec != 0) {
       printf("last_time_jump_back_delta_sec: %" PRId64 "\n",

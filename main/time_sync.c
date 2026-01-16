@@ -434,12 +434,6 @@ TimeSyncResyncSystemFromRtc(time_sync_t* time_sync,
     if (jumped_back_out != NULL) {
       *jumped_back_out = true;
     }
-    ESP_LOGW(kTag,
-             "RTC resync stepped back: delta=%" PRId64
-             "s rtc=%" PRId64 " sys=%" PRId64,
-             delta_seconds,
-             (int64_t)rtc_epoch,
-             (int64_t)system_epoch);
   } else {
     ESP_LOGI(kTag,
              "RTC resync applied: delta=%" PRId64 "s rtc=%" PRId64

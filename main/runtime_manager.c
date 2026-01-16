@@ -1944,6 +1944,222 @@ RecordFramCorruption(runtime_state_t* state,
  * @param epoch_for_file Parameter epoch_for_file.
  * @return Return the function result.
  */
+/**
+ * @brief Request an SD flush without blocking acquisition.
+ * @param state Parameter state.
+ */
+static void
+RequestSdFlush(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->sd_flush_pending = true;
+  state->sd_next_flush_allowed_ticks = 0;
+}
+
+/**
+ * @brief Arm the one-shot time jump marker for the next record.
+ * @param state Parameter state.
+ */
+static void
+ArmTimeJumpBackNextRecord(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  if (state->time_jump_back_arm_next) {
+    return;
+  }
+  const TickType_t now_ticks = xTaskGetTickCount();
+  if (state->time_jump_back_last_arm_ticks == now_ticks) {
+    return;
+  }
+  state->time_jump_back_arm_next = true;
+  state->time_jump_back_last_arm_ticks = now_ticks;
+}
+
+/**
+ * @brief Handle a backward RTC resync and request a one-shot marker.
+ * @param state Parameter state.
+ * @param delta_seconds Signed delta (rtc - system).
+ * @param system_epoch_before System epoch (seconds) before resync.
+ */
+static void
+HandleRtcBackwardJump(runtime_state_t* state,
+                      int64_t delta_seconds,
+                      int64_t system_epoch_before)
+{
+  if (state == NULL || delta_seconds >= 0) {
+    return;
+  }
+
+  const int64_t rtc_epoch = system_epoch_before + delta_seconds;
+  ESP_LOGW(kTag,
+           "RTC resync stepped system time backward by %" PRId64
+           " s (sys=%" PRId64 " rtc=%" PRId64 "); will flag next record",
+           delta_seconds,
+           system_epoch_before,
+           rtc_epoch);
+  state->last_time_jump_back_delta_sec = delta_seconds;
+
+  if (state->time_jump_back_pending_confirm) {
+    ESP_LOGI(kTag,
+             "Time jump marker already pending SD confirm; not re-arming");
+    return;
+  }
+  ArmTimeJumpBackNextRecord(state);
+  RequestSdFlush(state);
+}
+
+/**
+ * @brief Clear pending time jump marker after SD confirmation.
+ * @param state Parameter state.
+ */
+static void
+ConfirmTimeJumpBackMarker(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  if (!state->time_jump_back_pending_confirm) {
+    return;
+  }
+  state->time_jump_back_pending_confirm = false;
+  state->time_jump_back_attempt_record_id = 0;
+  ESP_LOGI(kTag, "Time jump marker written and verified on SD");
+}
+
+/**
+ * @brief Retry time jump marker after a proven loss.
+ * @param state Parameter state.
+ */
+static void
+RetryTimeJumpBackMarker(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  ESP_LOGW(kTag,
+           "Time jump marker record lost before SD confirm; flagging next "
+           "record");
+  state->time_jump_back_pending_confirm = false;
+  state->time_jump_back_attempt_record_id = 0;
+  ArmTimeJumpBackNextRecord(state);
+  RequestSdFlush(state);
+}
+
+/**
+ * @brief Evaluate a batch write for time jump confirmation or retry.
+ * @param state Parameter state.
+ * @param batch_includes_time_jump_flag Whether the batch has the marker.
+ * @param last_record_id Last record id written in the batch.
+ */
+static void
+HandleTimeJumpBackBatchWritten(runtime_state_t* state,
+                               bool batch_includes_time_jump_flag,
+                               uint64_t last_record_id)
+{
+  if (state == NULL || !state->time_jump_back_pending_confirm) {
+    return;
+  }
+  if (batch_includes_time_jump_flag) {
+    ConfirmTimeJumpBackMarker(state);
+    return;
+  }
+  if (state->time_jump_back_attempt_record_id != 0 &&
+      last_record_id >= state->time_jump_back_attempt_record_id) {
+    RetryTimeJumpBackMarker(state);
+  }
+}
+
+/**
+ * @brief Evaluate a corrupted FRAM skip for time jump retry.
+ * @param state Parameter state.
+ * @param record Corrupted record data (best effort).
+ */
+static void
+HandleTimeJumpBackCorruptSkip(runtime_state_t* state,
+                              const log_record_t* record)
+{
+  if (state == NULL || record == NULL ||
+      !state->time_jump_back_pending_confirm) {
+    return;
+  }
+  if (record->record_id == 0) {
+    return;
+  }
+  if (state->time_jump_back_attempt_record_id == 0) {
+    return;
+  }
+  if (record->record_id >= state->time_jump_back_attempt_record_id) {
+    RetryTimeJumpBackMarker(state);
+  }
+}
+
+/**
+ * @brief Restore pending time jump marker state from FRAM on boot.
+ * @param state Parameter state.
+ */
+static void
+RestoreTimeJumpBackPendingFromFram(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  const uint32_t buffered = FramLogGetBufferedRecords(&state->fram_log);
+  if (buffered == 0) {
+    return;
+  }
+
+  uint64_t sd_last_record_id_on_boot = 0;
+  if (state->sd_logger.is_mounted && TimeSyncIsSystemTimeValid()) {
+    const int64_t epoch_now = (int64_t)time(NULL);
+    if (SdLoggerEnsureDailyFile(&state->sd_logger, epoch_now) == ESP_OK) {
+      sd_last_record_id_on_boot =
+        SdLoggerLastRecordIdOnSd(&state->sd_logger);
+    }
+  }
+
+  uint32_t max_scan = buffered;
+  const uint32_t watermark = state->settings.fram_flush_watermark_records;
+  if (watermark > 0) {
+    const uint32_t scan_limit = watermark * 2u;
+    if (scan_limit < max_scan) {
+      max_scan = scan_limit;
+    }
+  }
+
+  for (uint32_t offset = 0; offset < max_scan; ++offset) {
+    log_record_t record;
+    const esp_err_t peek_result =
+      FramLogPeekOffset(&state->fram_log, offset, &record);
+    if (peek_result == ESP_ERR_NOT_FOUND) {
+      break;
+    }
+    if (peek_result == ESP_ERR_INVALID_RESPONSE) {
+      continue;
+    }
+    if (peek_result != ESP_OK) {
+      break;
+    }
+    if ((record.flags & LOG_RECORD_FLAG_TIME_JUMP_BACK) == 0) {
+      continue;
+    }
+    if (sd_last_record_id_on_boot == 0 ||
+        record.record_id > sd_last_record_id_on_boot) {
+      state->time_jump_back_pending_confirm = true;
+      state->time_jump_back_attempt_record_id = record.record_id;
+      RequestSdFlush(state);
+      ESP_LOGI(kTag,
+               "Restored pending time jump marker from FRAM: record_id=%"
+               PRIu64,
+               record.record_id);
+    }
+    break;
+  }
+}
+
 static esp_err_t
 EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
 {
@@ -1980,6 +2196,7 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
     state->fram_corrupt_skip_count++;
     RecordFramCorruption(
       state, 0, slot, addr, validate_result, &oldest_record, actual_crc);
+    HandleTimeJumpBackCorruptSkip(state, &oldest_record);
     esp_err_t skip_result = FramLogDiscardOldest(&state->fram_log);
     if (skip_result != ESP_OK) {
       return skip_result;
@@ -2009,8 +2226,12 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
       if (ms_since_force >= 5000u) {
         int64_t delta_seconds = 0;
         bool jumped_back = false;
+        const int64_t system_epoch_before = (int64_t)time(NULL);
         const esp_err_t resync_result = TimeSyncResyncSystemFromRtc(
           &state->time_sync, &delta_seconds, &jumped_back);
+        if (resync_result == ESP_OK && jumped_back) {
+          HandleRtcBackwardJump(state, delta_seconds, system_epoch_before);
+        }
         if (resync_result == ESP_OK && TimeSyncIsSystemTimeValid()) {
           target_epoch_for_file = (int64_t)time(NULL);
         }
@@ -2041,29 +2262,6 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
 }
 
 /**
- * @brief Execute MaybeConfirmTimeJumpBackOnSd.
- * @param state Parameter state.
- */
-static void
-MaybeConfirmTimeJumpBackOnSd(runtime_state_t* state)
-{
-  if (state == NULL) {
-    return;
-  }
-  if (!state->time_jump_back_confirm_pending) {
-    return;
-  }
-  if (SdLoggerLastRecordIdOnSd(&state->sd_logger) <
-      state->time_jump_back_record_id) {
-    return;
-  }
-  state->time_jump_back_confirm_pending = false;
-  ESP_LOGI(kTag,
-           "Time jump flag record verified on SD: record_id=%" PRIu64,
-           state->time_jump_back_record_id);
-}
-
-/**
  * @brief Execute BuildBatchForDay.
  * @param state Parameter state.
  * @param target_date Parameter target_date.
@@ -2075,6 +2273,8 @@ MaybeConfirmTimeJumpBackOnSd(runtime_state_t* state)
  * @param records_used_out Parameter records_used_out.
  * @param last_record_id_out Parameter last_record_id_out.
  * @param bytes_used_out Parameter bytes_used_out.
+ * @param batch_includes_time_jump_flag_out Parameter
+ * batch_includes_time_jump_flag_out.
  * @return Return the function result.
  */
 static esp_err_t
@@ -2087,11 +2287,13 @@ BuildBatchForDay(runtime_state_t* state,
                  uint32_t max_ms,
                  uint32_t* records_used_out,
                  uint64_t* last_record_id_out,
-                 size_t* bytes_used_out)
+                 size_t* bytes_used_out,
+                 bool* batch_includes_time_jump_flag_out)
 {
   size_t used = 0;
   uint32_t records_used = 0;
   uint64_t last_record_id = 0;
+  bool batch_includes_time_jump_flag = false;
 
   const uint32_t buffered = FramLogGetBufferedRecords(&state->fram_log);
   for (uint32_t offset = 0; offset < buffered; ++offset) {
@@ -2162,6 +2364,9 @@ BuildBatchForDay(runtime_state_t* state,
     used += line_len;
     records_used++;
     last_record_id = record.record_id;
+    if ((record.flags & LOG_RECORD_FLAG_TIME_JUMP_BACK) != 0) {
+      batch_includes_time_jump_flag = true;
+    }
 
     if (used >= buffer_size - sizeof(g_sd_csv_line_buffer)) {
       break;
@@ -2171,6 +2376,9 @@ BuildBatchForDay(runtime_state_t* state,
   *records_used_out = records_used;
   *last_record_id_out = last_record_id;
   *bytes_used_out = used;
+  if (batch_includes_time_jump_flag_out != NULL) {
+    *batch_includes_time_jump_flag_out = batch_includes_time_jump_flag;
+  }
   return ESP_OK;
 }
 
@@ -2198,6 +2406,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       ESP_LOGE(kTag, "Cannot flush: corrupted FRAM record at head");
+      HandleTimeJumpBackCorruptSkip(state, &first_record);
       (void)FramLogSkipCorruptedRecord(&state->fram_log);
       return ESP_ERR_INVALID_RESPONSE;
     }
@@ -2233,6 +2442,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     uint32_t records_used = 0;
     uint64_t last_record_id = 0;
     size_t bytes_used = 0;
+    bool batch_includes_time_jump_flag = false;
     esp_err_t batch_result = BuildBatchForDay(state,
                                               day_string,
                                               state->batch_buffer,
@@ -2242,7 +2452,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
                                               0,
                                               &records_used,
                                               &last_record_id,
-                                              &bytes_used);
+                                              &bytes_used,
+                                              &batch_includes_time_jump_flag);
     if (batch_result != ESP_OK) {
       RuntimeSdIoUnlock(state);
       return batch_result;
@@ -2296,7 +2507,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       return write_result;
     }
     ClearSdIoError(state);
-    MaybeConfirmTimeJumpBackOnSd(state);
+    HandleTimeJumpBackBatchWritten(
+      state, batch_includes_time_jump_flag, last_record_id);
     RuntimeSdIoUnlock(state);
 
     for (uint32_t index = 0; index < records_used; ++index) {
@@ -2506,6 +2718,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       ESP_LOGW(kTag, "Skipping corrupted FRAM record during SD flush");
+      HandleTimeJumpBackCorruptSkip(state, &first_record);
       (void)FramLogSkipCorruptedRecord(&state->fram_log);
       state->fram_corrupt_skip_count++;
       corrupt_skips_this_call++;
@@ -2538,6 +2751,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     uint32_t records_used = 0;
     uint64_t last_record_id = 0;
     size_t bytes_used = 0;
+    bool batch_includes_time_jump_flag = false;
     const uint32_t remaining_records_budget =
       (max_records > 0) ? (max_records - total_records_flushed) : 0;
     esp_err_t batch_result = BuildBatchForDay(state,
@@ -2549,7 +2763,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
                                               max_ms,
                                               &records_used,
                                               &last_record_id,
-                                              &bytes_used);
+                                              &bytes_used,
+                                              &batch_includes_time_jump_flag);
     if (batch_result != ESP_OK) {
       result = batch_result;
       goto flush_done;
@@ -2588,7 +2803,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       goto flush_done;
     }
     ClearSdIoError(state);
-    MaybeConfirmTimeJumpBackOnSd(state);
+    HandleTimeJumpBackBatchWritten(
+      state, batch_includes_time_jump_flag, last_record_id);
 
     for (uint32_t index = 0; index < records_used; ++index) {
       esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
@@ -3460,11 +3676,11 @@ StorageTask(void* context)
       if (id_result != ESP_OK) {
         ESP_LOGE(
           kTag, "Failed to assign record id: %s", esp_err_to_name(id_result));
-      } else if (state->time_jump_back_armed) {
+      } else if (state->time_jump_back_arm_next) {
         record.flags |= LOG_RECORD_FLAG_TIME_JUMP_BACK;
-        state->time_jump_back_record_id = record.record_id;
-        state->time_jump_back_confirm_pending = true;
-        state->time_jump_back_armed = false;
+        state->time_jump_back_attempt_record_id = record.record_id;
+        state->time_jump_back_pending_confirm = true;
+        state->time_jump_back_arm_next = false;
       }
       const int64_t now_ms = esp_timer_get_time() / 1000;
       const int64_t now_epoch =
@@ -3688,6 +3904,7 @@ ControlTickRtcResync(runtime_state_t* state)
 
   int64_t delta_seconds = 0;
   bool jumped_back = false;
+  const int64_t system_epoch_before = (int64_t)time(NULL);
   const esp_err_t result =
     TimeSyncResyncSystemFromRtc(&state->time_sync,
                                 &delta_seconds,
@@ -3706,8 +3923,7 @@ ControlTickRtcResync(runtime_state_t* state)
   }
 
   if (jumped_back) {
-    state->time_jump_back_armed = true;
-    state->last_time_jump_back_delta_sec = delta_seconds;
+    HandleRtcBackwardJump(state, delta_seconds, system_epoch_before);
   }
 }
 
@@ -5029,6 +5245,7 @@ RuntimeManagerInit(void)
   if (g_state.sd_logger.is_mounted) {
     UpdateCachedBool(&g_state, &g_state.cached_status.sd_safe_to_remove, false);
   }
+  RestoreTimeJumpBackPendingFromFram(&g_state);
 
   esp_err_t sensor_result = InitializeMax31865Sensor(&g_state, spi_host);
   if (sensor_result != ESP_OK && first_error == ESP_OK) {
