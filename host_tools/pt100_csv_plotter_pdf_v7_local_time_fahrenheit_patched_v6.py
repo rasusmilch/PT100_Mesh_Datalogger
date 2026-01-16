@@ -139,12 +139,20 @@ def _load_flag_definitions_from_header() -> List[Tuple[int, str]]:
 _LOG_RECORD_FLAG_DEFS: List[Tuple[int, str]] = _load_flag_definitions_from_header()
 
 
-def _get_flag_mask(short_name: str, fallback_mask: int) -> int:
+def _get_flag_mask(short_name: str, default_mask: int = 0) -> int:
+    """Return the bitmask for a given LOG_RECORD_FLAG short name.
+
+    Args:
+        short_name: The enum suffix from log_record.h (e.g. 'CAL_VALID').
+        default_mask: Fallback mask to return if the flag is not found.
+
+    Returns:
+        The bitmask value, or default_mask if unknown.
+    """
     for mask, name in _LOG_RECORD_FLAG_DEFS:
         if name == short_name:
             return int(mask)
-    return int(fallback_mask)
-
+    return int(default_mask)
 
 def _get_time_jump_back_mask(df: pd.DataFrame) -> np.ndarray:
     """Return a boolean mask for TIME_JUMP_BACK records."""
@@ -1039,6 +1047,7 @@ def _add_highlight_spans(
             alpha=alpha,
             linewidth=0,
             antialiased=False,
+            zorder=0.8,
             label=label if idx == 0 else "_nolegend_",
         )
 
@@ -1136,13 +1145,13 @@ def _build_figure(
     ax.set_ylabel(_human_series_label(y_name, temp_unit=options.temp_unit))
 
     if options.smooth and smoothed_series is not None:
-        ax.plot(x_plot, y_plot, linewidth=0.7, alpha=0.7, label="data")
-        ax.plot(x_plot, smoothed_series.iloc[plot_positions], linewidth=2.0, label="rolling mean")
+        ax.plot(x_plot, y_plot, linewidth=0.7, alpha=0.7, zorder=2.0, label="data")
+        ax.plot(x_plot, smoothed_series.iloc[plot_positions], linewidth=2.0, zorder=3.0, label="rolling mean")
     else:
-        ax.plot(x_plot, y_plot, linewidth=1.2, label="data")
+        ax.plot(x_plot, y_plot, linewidth=1.2, zorder=2.0, label="data")
 
     if raw_temp_series is not None:
-        ax.plot(x_plot, raw_temp_series.iloc[plot_positions], linewidth=0.9, alpha=0.7, label="raw_temp_c (data)")
+        ax.plot(x_plot, raw_temp_series.iloc[plot_positions], linewidth=0.9, alpha=0.7, zorder=2.1, label="raw_temp_c (data)")
 
     if time_jump_positions.size:
         time_jump_label = _FLAG_LABELS.get("TIME_JUMP_BACK", "Time jump back (RTC sync)")
@@ -1165,11 +1174,11 @@ def _build_figure(
         stats_min, stats_avg, stats_max, stats_std = _compute_numeric_stats(y_series)
         if stats_avg is not None:
             if options.stats.show_min and stats_min is not None:
-                ax.axhline(stats_min, color="#8b0000", linestyle="--", linewidth=1.0, label="min")
+                ax.axhline(stats_min, color="#8b0000", linestyle="--", linewidth=1.0, zorder=4.0, label="min")
             if options.stats.show_max and stats_max is not None:
-                ax.axhline(stats_max, color="#8b0000", linestyle="--", linewidth=1.0, label="max")
+                ax.axhline(stats_max, color="#8b0000", linestyle="--", linewidth=1.0, zorder=4.0, label="max")
             if options.stats.show_avg:
-                ax.axhline(stats_avg, color="#1f77b4", linestyle="-.", linewidth=1.2, label="avg")
+                ax.axhline(stats_avg, color="#1f77b4", linestyle="-.", linewidth=1.2, zorder=4.0, label="avg")
             if options.stats.show_std_band and stats_std is not None:
                 ax.fill_between(
                     x_plot,
@@ -1177,6 +1186,7 @@ def _build_figure(
                     stats_avg + stats_std,
                     color="#1f77b4",
                     alpha=0.16,
+                    zorder=1.0,
                     label="±1σ",
                 )
 
@@ -1203,6 +1213,7 @@ def _build_figure(
                 color="#d62728",
                 linestyle="--",
                 linewidth=1.2,
+                zorder=4.0,
                 label="upper limit",
             )
         if options.highlights.highlight_above and options.highlights.upper_limit is not None:
@@ -1222,6 +1233,7 @@ def _build_figure(
                 color="#9467bd",
                 linestyle="--",
                 linewidth=1.2,
+                zorder=4.0,
                 label="lower limit",
             )
         if options.highlights.highlight_below and options.highlights.lower_limit is not None:
@@ -1234,8 +1246,40 @@ def _build_figure(
                 color="#9467bd",
                 alpha=0.16,
             )
+    # Ensure event markers render above the data line.
+    if time_column == "__time" and "flags" in df.columns:
+        time_jump_mask = _get_flag_mask("TIME_JUMP_BACK", 1 << 7)
+        try:
+            flags_int = df["flags"].fillna(0).astype("int64")
+            jump_positions = np.flatnonzero((flags_int.values & time_jump_mask) != 0)
+        except Exception:
+            jump_positions = np.asarray([], dtype=np.int64)
 
-    ax.legend()
+        if jump_positions.size:
+            jump_x_values = x_values.iloc[jump_positions]
+            seen_keys = set()
+            unique_jump_x: List[object] = []
+            for item in jump_x_values:
+                key = str(item)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                unique_jump_x.append(item)
+
+            for idx, x0 in enumerate(unique_jump_x):
+                ax.axvline(
+                    x0,
+                    color="0.10",
+                    linewidth=3.0,
+                    alpha=0.95,
+                    zorder=6.0,
+                    label="time jump back" if idx == 0 else "_nolegend_",
+                )
+
+    legend = ax.legend(framealpha=1.0)
+    
+    if legend is not None:
+        legend.set_zorder(10.0)
 
     # Improve time axis readability: show local time with a concise formatter that
     # adds the date only when needed.

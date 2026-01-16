@@ -23,6 +23,7 @@ Run:
 
 from __future__ import annotations
 
+import re
 import datetime
 import glob
 import math
@@ -69,6 +70,7 @@ _FLAG_LABELS: Dict[str, str] = {
     "SENSOR_FAULT": "Sensor fault",
     "FRAM_FULL": "FRAM full",
     "RTD_EMA": "RTD EMA used",
+    "TIME_JUMP_BACK": "Time jump back (RTC sync)",
 }
 
 # Flags that represent an error condition when set.
@@ -83,6 +85,7 @@ _FALLBACK_FLAG_DEFS: List[Tuple[int, str]] = [
     (1 << 4, "SENSOR_FAULT"),
     (1 << 5, "FRAM_FULL"),
     (1 << 6, "RTD_EMA"),
+    (1 << 7, "TIME_JUMP_BACK"),
 ]
 
 
@@ -134,6 +137,63 @@ def _load_flag_definitions_from_header() -> List[Tuple[int, str]]:
 
 # Resolved definitions used by this tool.
 _LOG_RECORD_FLAG_DEFS: List[Tuple[int, str]] = _load_flag_definitions_from_header()
+
+
+def _get_flag_mask(short_name: str, default_mask: int = 0) -> int:
+    """Return the bitmask for a given LOG_RECORD_FLAG short name.
+
+    Args:
+        short_name: The enum suffix from log_record.h (e.g. 'CAL_VALID').
+        default_mask: Fallback mask to return if the flag is not found.
+
+    Returns:
+        The bitmask value, or default_mask if unknown.
+    """
+    for mask, name in _LOG_RECORD_FLAG_DEFS:
+        if name == short_name:
+            return int(mask)
+    return int(default_mask)
+
+def _get_time_jump_back_mask(df: pd.DataFrame) -> np.ndarray:
+    """Return a boolean mask for TIME_JUMP_BACK records."""
+    if "flags" not in df.columns:
+        return np.zeros(len(df), dtype=bool)
+    mask = _get_flag_mask("TIME_JUMP_BACK", 1 << 7)
+    flags_numeric = pd.to_numeric(df["flags"], errors="coerce").fillna(0).astype("int64")
+    return ((flags_numeric & mask) != 0).to_numpy(dtype=bool, copy=False)
+
+
+def _ensure_sequence_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure a usable sequence column exists for acquisition ordering."""
+    df = df.copy()
+    if "seq" in df.columns:
+        seq_series = pd.to_numeric(df["seq"], errors="coerce")
+    elif "record_id" in df.columns:
+        seq_series = pd.to_numeric(df["record_id"], errors="coerce")
+    else:
+        seq_series = pd.Series([pd.NA] * len(df), dtype="float64")
+
+    df["__seq"] = pd.array(seq_series, dtype="Int64")
+    if df["__seq"].isna().all():
+        raise ValueError("Sequence ordering requires a valid 'seq' or 'record_id' column.")
+    return df
+
+
+def _compute_unwrapped_sequence(seq_series: pd.Series) -> pd.Series:
+    """Return a monotonic sequence by unwrapping 32-bit wraps."""
+    offset = 0
+    previous_value: Optional[int] = None
+    unwrapped: List[Optional[int]] = []
+    for value in seq_series:
+        if pd.isna(value):
+            unwrapped.append(pd.NA)
+            continue
+        current = int(value)
+        if previous_value is not None and current < previous_value:
+            offset += 2 ** 32
+        unwrapped.append(current + offset)
+        previous_value = current
+    return pd.Series(unwrapped, index=seq_series.index, dtype="Int64")
 
 
 @dataclass
@@ -595,12 +655,19 @@ def _load_csv_files(file_paths: List[str]) -> LoadedLog:
         local_tz=local_tz,
     )
 
-    if time_column == "__time":
-        combined = combined.sort_values(by=time_column).reset_index(drop=True)
-    else:
+    combined = _ensure_sequence_column(combined)
+    combined["__seq_unwrapped"] = _compute_unwrapped_sequence(combined["__seq"])
+    missing_seq = int(combined["__seq_unwrapped"].isna().sum())
+    if missing_seq:
+        raise ValueError(
+            f"Sequence ordering requires seq/record_id for every row; {missing_seq} rows are missing."
+        )
+
+    if time_column == "__x":
         # record_id fallback: numeric X axis
         combined[time_column] = pd.to_numeric(combined[time_column], errors="coerce")
-        combined = combined.sort_values(by=time_column).reset_index(drop=True)
+
+    combined = combined.sort_values(by="__seq_unwrapped", kind="mergesort").reset_index(drop=True)
 
     return LoadedLog(
         dataframe=combined,
@@ -625,7 +692,12 @@ def _compute_basic_stats(series: pd.Series) -> Dict[str, str]:
 
 
 
-def _format_flags_summary(df: pd.DataFrame) -> str:
+def _format_flags_summary(
+    df: pd.DataFrame,
+    *,
+    display_tz: Optional[datetime.tzinfo],
+    time_source: str,
+) -> str:
     """Build a concise summary of *problem* log_record flags.
 
     This intentionally hides informational flags (for example, MESH_CONNECTED).
@@ -690,11 +762,67 @@ def _format_flags_summary(df: pd.DataFrame) -> str:
         # Hide non-problem/informational flags (e.g., RTD_EMA).
         continue
 
+    time_jump_mask = _get_time_jump_back_mask(df)
+    time_jump_count = int(time_jump_mask.sum())
+    if time_jump_count:
+        first_index = int(np.flatnonzero(time_jump_mask)[0])
+        first_time_label = "n/a"
+        if "__time" in df.columns:
+            display_times = _convert_time_series_to_display_tz(
+                df["__time"],
+                display_tz=display_tz,
+                time_source=time_source,
+            )
+            first_time = display_times.iloc[first_index]
+            if pd.notna(first_time):
+                first_time_label = pd.Timestamp(first_time).strftime("%Y-%m-%d %H:%M:%S")
+
+        first_seq_label = "n/a"
+        if "__seq" in df.columns:
+            first_seq = df["__seq"].iloc[first_index]
+            if pd.notna(first_seq):
+                first_seq_label = str(int(first_seq))
+
+        problem_lines.append(
+            f"Time jump back events: {time_jump_count} (first at {first_time_label}, seq {first_seq_label})"
+        )
+
     if not problem_lines:
         return "n/a"
 
     return "\n".join(problem_lines)
 
+
+
+
+def _range_is_fully_calibrated(df: pd.DataFrame) -> bool:
+    """Return True if *all* rows in df are marked CAL_VALID.
+
+    This tool treats calibration as all-or-nothing. If any row in the selected
+    range is missing CAL_VALID, we consider the range uncalibrated.
+    """
+    if "flags" not in df.columns:
+        return False
+
+    flags_series = df["flags"]
+    # If any flags are missing, we can't prove calibration coverage.
+    if flags_series.isna().any():
+        return False
+
+    cal_mask = None
+    for mask, short_name in _LOG_RECORD_FLAG_DEFS:
+        if short_name == "CAL_VALID":
+            cal_mask = int(mask)
+            break
+    if cal_mask is None:
+        cal_mask = 1 << 1
+
+    try:
+        flags_int = flags_series.astype("int64")
+    except Exception:
+        return False
+
+    return bool(((flags_int & cal_mask) != 0).all())
 
 
 def _apply_flag_filters_for_stats(
@@ -919,6 +1047,7 @@ def _add_highlight_spans(
             alpha=alpha,
             linewidth=0,
             antialiased=False,
+            zorder=0.8,
             label=label if idx == 0 else "_nolegend_",
         )
 
@@ -955,6 +1084,7 @@ def _build_figure(
         )
 
     y_series_c = pd.to_numeric(df[y_name], errors="coerce")
+    # Temperature unit conversion only applies to temperature series.
     y_series = (
         _convert_temperature_series(y_series_c, options.temp_unit)
         if y_name in ("cal_temp_c", "raw_temp_c")
@@ -988,6 +1118,16 @@ def _build_figure(
             max_plot_points=options.max_plot_points,
         )
 
+    time_jump_mask = _get_time_jump_back_mask(df)
+    time_jump_positions = np.flatnonzero(time_jump_mask)
+    if time_jump_positions.size:
+        include_positions = set(plot_positions.tolist())
+        for jump_index in time_jump_positions:
+            include_positions.add(int(jump_index))
+            if jump_index > 0:
+                include_positions.add(int(jump_index - 1))
+        plot_positions = np.unique(np.fromiter(include_positions, dtype=np.int64))
+
     x_plot = x_values.iloc[plot_positions]
     y_plot = y_series.iloc[plot_positions]
 
@@ -1005,24 +1145,41 @@ def _build_figure(
     ax.set_ylabel(_human_series_label(y_name, temp_unit=options.temp_unit))
 
     if options.smooth and smoothed_series is not None:
-        ax.plot(x_plot, y_plot, linewidth=0.7, alpha=0.7, label="data")
-        ax.plot(x_plot, smoothed_series.iloc[plot_positions], linewidth=2.0, label="rolling mean")
+        ax.plot(x_plot, y_plot, linewidth=0.7, alpha=0.7, zorder=4.0, label="data")
+        ax.plot(x_plot, smoothed_series.iloc[plot_positions], linewidth=2.0, zorder=5.0, label="rolling mean")
     else:
-        ax.plot(x_plot, y_plot, linewidth=1.2, label="data")
+        ax.plot(x_plot, y_plot, linewidth=1.2, zorder=4.0, label="data")
 
     if raw_temp_series is not None:
-        ax.plot(x_plot, raw_temp_series.iloc[plot_positions], linewidth=0.9, alpha=0.7, label="raw_temp_c (data)")
+        ax.plot(x_plot, raw_temp_series.iloc[plot_positions], linewidth=0.9, alpha=0.7, zorder=4.1, label="raw_temp_c (data)")
+
+    if time_jump_positions.size:
+        time_jump_label = _FLAG_LABELS.get("TIME_JUMP_BACK", "Time jump back (RTC sync)")
+        for idx, jump_index in enumerate(time_jump_positions):
+            x_jump = x_values.iloc[jump_index]
+            ax.axvline(
+                x_jump,
+                color="#d62728",
+                linestyle=":",
+                linewidth=1.0,
+                alpha=0.7,
+                zorder=7.0,
+                label=time_jump_label if idx == 0 else "_nolegend_",
+            )
+            y_jump = y_series.iloc[jump_index]
+            if pd.notna(y_jump):
+                ax.scatter([x_jump], [y_jump], color="#d62728", marker="x", s=35, zorder=7.1, label="_nolegend_")
 
     is_temperature = y_name in ("cal_temp_c", "raw_temp_c")
     if is_temperature:
         stats_min, stats_avg, stats_max, stats_std = _compute_numeric_stats(y_series)
         if stats_avg is not None:
             if options.stats.show_min and stats_min is not None:
-                ax.axhline(stats_min, color="#8b0000", linestyle="--", linewidth=1.0, label="min")
+                ax.axhline(stats_min, color="#8b0000", linestyle="--", linewidth=1.0, zorder=3.0, label="min")
             if options.stats.show_max and stats_max is not None:
-                ax.axhline(stats_max, color="#8b0000", linestyle="--", linewidth=1.0, label="max")
+                ax.axhline(stats_max, color="#8b0000", linestyle="--", linewidth=1.0, zorder=3.0, label="max")
             if options.stats.show_avg:
-                ax.axhline(stats_avg, color="#1f77b4", linestyle="-.", linewidth=1.2, label="avg")
+                ax.axhline(stats_avg, color="#1f77b4", linestyle="-.", linewidth=1.2, zorder=3.0, label="avg")
             if options.stats.show_std_band and stats_std is not None:
                 ax.fill_between(
                     x_plot,
@@ -1030,6 +1187,7 @@ def _build_figure(
                     stats_avg + stats_std,
                     color="#1f77b4",
                     alpha=0.16,
+                    zorder=1.0,
                     label="±1σ",
                 )
 
@@ -1056,6 +1214,7 @@ def _build_figure(
                 color="#d62728",
                 linestyle="--",
                 linewidth=1.2,
+                zorder=3.0,
                 label="upper limit",
             )
         if options.highlights.highlight_above and options.highlights.upper_limit is not None:
@@ -1075,6 +1234,7 @@ def _build_figure(
                 color="#9467bd",
                 linestyle="--",
                 linewidth=1.2,
+                zorder=3.0,
                 label="lower limit",
             )
         if options.highlights.highlight_below and options.highlights.lower_limit is not None:
@@ -1087,8 +1247,39 @@ def _build_figure(
                 color="#9467bd",
                 alpha=0.16,
             )
+    # Ensure event markers render above the data line.
+    if time_column == "__time" and "flags" in df.columns:
+        time_jump_mask = _get_flag_mask("TIME_JUMP_BACK", 1 << 7)
+        try:
+            flags_int = df["flags"].fillna(0).astype("int64")
+            jump_positions = np.flatnonzero((flags_int.values & time_jump_mask) != 0)
+        except Exception:
+            jump_positions = np.asarray([], dtype=np.int64)
 
-    ax.legend()
+        if jump_positions.size:
+            jump_x_values = x_values.iloc[jump_positions]
+            seen_keys = set()
+            unique_jump_x: List[object] = []
+            for item in jump_x_values:
+                key = str(item)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                unique_jump_x.append(item)
+
+            for idx, x0 in enumerate(unique_jump_x):
+                ax.axvline(
+                    x0,
+                    color="0.10",
+                    linewidth=3.0,
+                    alpha=0.95,
+                    zorder=7.0,
+                    label="time jump back" if idx == 0 else "_nolegend_",
+                )
+
+    legend = ax.legend(framealpha=1.0)
+    if legend is not None:
+        legend.set_zorder(10.0)
 
     # Improve time axis readability: show local time with a concise formatter that
     # adds the date only when needed.
@@ -1130,6 +1321,7 @@ def _export_pdf_report(
     summary_rows: List[List[str]],
     title: str,
     subtitle: str,
+    warning_text: Optional[str] = None,
 ) -> None:
     half_inch = 0.5 * inch
     doc = SimpleDocTemplate(
@@ -1156,6 +1348,16 @@ def _export_pdf_report(
         textColor=colors.grey,
         spaceAfter=14,
     )
+
+    styles_warn = ParagraphStyle(
+        "WarnStyle",
+        fontName="Helvetica-Bold",
+        fontSize=13.5,
+        leading=16,
+        alignment=TA_CENTER,
+        textColor=colors.red,
+        spaceAfter=12,
+    )
     styles_body = ParagraphStyle(
         "BodyStyle",
         fontName="Helvetica",
@@ -1166,6 +1368,10 @@ def _export_pdf_report(
     elements: List[object] = []
     elements.append(Paragraph(title, styles_title))
     elements.append(Paragraph(subtitle, styles_sub))
+    if warning_text:
+        warning_html = warning_text.replace("\n", "<br/>")
+        elements.append(Paragraph(warning_html, styles_warn))
+
 
     table = Table(summary_rows, colWidths=[2.3 * inch, 4.7 * inch])
     table.setStyle(
@@ -1205,6 +1411,7 @@ def _export_pdf_report_vector(
     summary_rows: List[List[str]],
     title: str,
     subtitle: str,
+    warning_text: Optional[str] = None,
 ) -> None:
     """Export a vector PDF using Matplotlib's PDF backend.
 
@@ -1251,7 +1458,25 @@ def _export_pdf_report_vector(
             transform=ax.transAxes,
         )
 
-        # Build a Matplotlib table (kept as vector text/lines in the PDF).
+        
+        table_bbox = [0.0, 0.25, 1.0, 0.70]
+        if warning_text:
+            ax.text(
+                0.5,
+                0.96,
+                warning_text,
+                ha="center",
+                va="top",
+                fontsize=12,
+                fontweight="bold",
+                color="red",
+                transform=ax.transAxes,
+                wrap=True,
+            )
+            # Leave extra room above the table for the warning.
+            table_bbox = [0.0, 0.25, 1.0, 0.60]
+
+# Build a Matplotlib table (kept as vector text/lines in the PDF).
         # summary_rows includes a header row: ["Field", "Value"].
         cell_text = summary_rows[1:] if len(summary_rows) > 1 else []
         col_labels = summary_rows[0] if summary_rows else ["Field", "Value"]
@@ -1262,7 +1487,7 @@ def _export_pdf_report_vector(
             cellLoc="left",
             colLoc="left",
             loc="upper left",
-            bbox=[0.0, 0.25, 1.0, 0.70],
+            bbox=table_bbox,
         )
         table.auto_set_font_size(False)
         table.set_fontsize(9)
@@ -1557,8 +1782,22 @@ class PlotterApp:
         available = [name for name in self.series_choices if name in self.loaded.dataframe.columns]
         if not available:
             return
-        preferred = "cal_temp_c" if "cal_temp_c" in available else available[0]
-        if self.y_choice.get() not in available:
+
+        # Default to calibrated temperature ONLY when the entire loaded range is marked CAL_VALID.
+        range_fully_calibrated = _range_is_fully_calibrated(self.loaded.dataframe)
+
+        if "cal_temp_c" in available and range_fully_calibrated:
+            preferred = "cal_temp_c"
+        elif "raw_temp_c" in available:
+            preferred = "raw_temp_c"
+        else:
+            preferred = available[0]
+
+        current = self.y_choice.get()
+        if current not in available:
+            self.y_choice.set(preferred)
+            return
+        if current == "cal_temp_c" and not range_fully_calibrated and preferred != "cal_temp_c":
             self.y_choice.set(preferred)
 
     def _load_paths(self, file_paths: List[str]) -> None:
@@ -1822,9 +2061,15 @@ class PlotterApp:
             messagebox.showerror("Trim Error", str(exc))
             return
 
-        y_name = self.y_choice.get()
-        if y_name not in df.columns:
-            messagebox.showerror("Plot Error", f"Column not found: {y_name}")
+        requested_y_name = self.y_choice.get()
+        y_name_effective = requested_y_name
+
+        if requested_y_name == "cal_temp_c" and not _range_is_fully_calibrated(df):
+            if "raw_temp_c" in df.columns:
+                y_name_effective = "raw_temp_c"
+
+        if y_name_effective not in df.columns:
+            messagebox.showerror("Plot Error", f"Column not found: {y_name_effective}")
             return
 
         overlay_raw = self.overlay_raw.get()
@@ -1843,7 +2088,7 @@ class PlotterApp:
         nodes = _node_ids_from_df(df)
         range_label = f"{start_label} → {end_label}"
 
-        plot_title = _human_series_label(y_name, temp_unit="F" if self.temp_f.get() else "C")
+        plot_title = _human_series_label(y_name_effective, temp_unit="F" if self.temp_f.get() else "C")
         suptitle = f"Nodes: {nodes} — {range_label}" if nodes != "n/a" else range_label
 
         try:
@@ -1855,7 +2100,7 @@ class PlotterApp:
         fig, _plot_points, _total_points = _build_figure(
             df=df,
             time_column=self.loaded.time_column,
-            y_name=y_name,
+            y_name=y_name_effective,
             plot_title=plot_title,
             suptitle=suptitle,
             options=options,
@@ -1872,9 +2117,31 @@ class PlotterApp:
             messagebox.showerror("Trim Error", str(exc))
             return
 
-        y_name = self.y_choice.get()
-        if y_name not in df.columns:
-            messagebox.showerror("PDF Error", f"Column not found: {y_name}")
+        requested_y_name = self.y_choice.get()
+        y_name_effective = requested_y_name
+
+        # Treat calibration as all-or-nothing. If CAL_VALID is not set for every
+        # sample in the selected range, we consider the range uncalibrated.
+        range_fully_calibrated = _range_is_fully_calibrated(df)
+
+        warning_text: Optional[str] = None
+        if requested_y_name in ("raw_temp_c", "cal_temp_c") and not range_fully_calibrated:
+            warning_text = (
+                "NOT CALIBRATED — CAL_VALID flag is not set for all samples in the selected range."
+            )
+
+        # If the user requested calibrated temperature but calibration is not present,
+        # fall back to raw temperature for plotting/reporting.
+        if requested_y_name == "cal_temp_c" and not range_fully_calibrated:
+            if "raw_temp_c" in df.columns:
+                y_name_effective = "raw_temp_c"
+                warning_text = (
+                    "NOT CALIBRATED — CAL_VALID flag is not set for all samples in the selected range. "
+                    "Using RAW temperature."
+                )
+
+        if y_name_effective not in df.columns:
+            messagebox.showerror("PDF Error", f"Column not found: {y_name_effective}")
             return
 
         overlay_raw = self.overlay_raw.get()
@@ -1914,7 +2181,7 @@ class PlotterApp:
         subtitle = f"Nodes: {nodes} — {range_label}"
 
         temp_unit = "F" if self.temp_f.get() else "C"
-        plot_title = _human_series_label(y_name, temp_unit=temp_unit)
+        plot_title = _human_series_label(y_name_effective, temp_unit=temp_unit)
 
         try:
             options = self._collect_plot_options(display_config, smooth=smooth, overlay_raw=overlay_raw)
@@ -1925,26 +2192,30 @@ class PlotterApp:
         fig, plot_points, total_points = _build_figure(
             df=df,
             time_column=self.loaded.time_column,
-            y_name=y_name,
+            y_name=y_name_effective,
             plot_title=plot_title,
             suptitle=None,
             options=options,
         )
 
-        y_series_c = pd.to_numeric(df.get(y_name, pd.Series(dtype=float)), errors="coerce")
+        y_series_c = pd.to_numeric(df.get(y_name_effective, pd.Series(dtype=float)), errors="coerce")
         y_series_disp = (
             _convert_temperature_series(y_series_c, temp_unit)
-            if y_name in ("cal_temp_c", "raw_temp_c")
+            if y_name_effective in ("cal_temp_c", "raw_temp_c")
             else y_series_c
         )
-        stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name)
+        stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name_effective)
         stats = _compute_basic_stats(stats_series)
-        flags_summary = _format_flags_summary(df)
+        flags_summary = _format_flags_summary(
+            df,
+            display_tz=display_config.display_tz,
+            time_source=self.loaded.time_source,
+        )
 
-        series_label = _human_series_label(y_name, temp_unit=temp_unit)
+        series_label = _human_series_label(y_name_effective, temp_unit=temp_unit)
 
         overlays = []
-        if y_name in ("cal_temp_c", "raw_temp_c"):
+        if y_name_effective in ("cal_temp_c", "raw_temp_c"):
             if options.stats.show_min:
                 overlays.append("min")
             if options.stats.show_max:
@@ -1971,6 +2242,7 @@ class PlotterApp:
             ["Start", start_label],
             ["End", end_label],
             ["Series", series_label],
+            ["Calibration", "Calibrated" if range_fully_calibrated else "NOT calibrated"],
             ["min / avg / max / std", f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
         ]
         if flags_summary != "n/a":
@@ -1978,8 +2250,9 @@ class PlotterApp:
         if stats_notes:
             summary_rows.append(["Stats filtering", "; ".join(stats_notes)])
 
-        if overlays:
-            summary_rows.append(["Overlays", ", ".join(overlays)])
+        # Intentionally omit any "Overlays" row from the PDF summary. The report
+        # should stay focused on time span, series, calibration, statistics, and
+        # any flag issues.
 
         try:
             if use_vector_pdf:
@@ -1990,6 +2263,7 @@ class PlotterApp:
                     summary_rows=summary_rows,
                     title=title,
                     subtitle=subtitle,
+                    warning_text=warning_text,
                 )
             else:
                 assert fig_png_path is not None
@@ -2001,6 +2275,7 @@ class PlotterApp:
                     summary_rows=summary_rows,
                     title=title,
                     subtitle=subtitle,
+                    warning_text=warning_text,
                 )
         except Exception as exc:
             messagebox.showerror("PDF Error", str(exc))
