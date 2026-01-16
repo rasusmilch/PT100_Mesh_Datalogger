@@ -3,6 +3,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <inttypes.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -370,6 +371,83 @@ TimeSyncSetSystemFromRtc(time_sync_t* time_sync)
            rtc_time.tm_hour,
            rtc_time.tm_min,
            rtc_time.tm_sec);
+  return ESP_OK;
+}
+
+/**
+ * @brief Resync the system time from the DS3231 RTC if the delta exceeds a
+ *        small deadband.
+ * @param time_sync Time sync context for RTC access.
+ * @param delta_seconds_out Optional output for rtc_epoch - system_epoch.
+ * @param jumped_back_out Optional output set true when a backward time step
+ *        was applied.
+ * @return ESP_OK on success; error code on RTC read or time conversion
+ *         failure.
+ */
+esp_err_t
+TimeSyncResyncSystemFromRtc(time_sync_t* time_sync,
+                            int64_t* delta_seconds_out,
+                            bool* jumped_back_out)
+{
+  if (delta_seconds_out != NULL) {
+    *delta_seconds_out = 0;
+  }
+  if (jumped_back_out != NULL) {
+    *jumped_back_out = false;
+  }
+  if (time_sync == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  struct tm rtc_time;
+  const esp_err_t result = Ds3231ReadTimeWithRetries(time_sync, &rtc_time);
+  if (result != ESP_OK) {
+    return result;
+  }
+  if (!YearLooksValid(rtc_time.tm_year)) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  rtc_time.tm_isdst = 0;
+  const time_t rtc_epoch = UtcTmToEpochSeconds(&rtc_time);
+  if (rtc_epoch == (time_t)-1) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const time_t system_epoch = time(NULL);
+  const int64_t delta_seconds = (int64_t)rtc_epoch - (int64_t)system_epoch;
+  if (delta_seconds_out != NULL) {
+    *delta_seconds_out = delta_seconds;
+  }
+
+  const int64_t kDeadbandSeconds = 2;
+  if (llabs(delta_seconds) < kDeadbandSeconds) {
+    return ESP_OK;
+  }
+
+  struct timeval tv = {
+    .tv_sec = rtc_epoch,
+    .tv_usec = 0,
+  };
+  settimeofday(&tv, NULL);
+
+  if (delta_seconds < 0) {
+    if (jumped_back_out != NULL) {
+      *jumped_back_out = true;
+    }
+    ESP_LOGW(kTag,
+             "RTC resync stepped back: delta=%" PRId64
+             "s rtc=%" PRId64 " sys=%" PRId64,
+             delta_seconds,
+             (int64_t)rtc_epoch,
+             (int64_t)system_epoch);
+  } else {
+    ESP_LOGI(kTag,
+             "RTC resync applied: delta=%" PRId64 "s rtc=%" PRId64
+             " sys=%" PRId64,
+             delta_seconds,
+             (int64_t)rtc_epoch,
+             (int64_t)system_epoch);
+  }
   return ESP_OK;
 }
 

@@ -23,6 +23,7 @@ extern "C"
     LOG_RECORD_FLAG_SENSOR_FAULT = 1u << 4,
     LOG_RECORD_FLAG_FRAM_FULL = 1u << 5,
     LOG_RECORD_FLAG_RTD_EMA = 1u << 6,
+    LOG_RECORD_FLAG_TIME_JUMP_BACK = 1u << 7,
   } log_record_flags_t;
 
 #pragma pack(push, 1)

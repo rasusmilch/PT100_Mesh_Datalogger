@@ -63,6 +63,20 @@ extern "C"
    */
   esp_err_t TimeSyncSetRtcFromSystem(time_sync_t* time_sync);
 
+  /**
+   * @brief Resync the system time from the DS3231 RTC if the delta exceeds a
+   *        small deadband.
+   * @param time_sync Time sync context for RTC access.
+   * @param delta_seconds_out Optional output for rtc_epoch - system_epoch.
+   * @param jumped_back_out Optional output set true when a backward time step
+   *        was applied.
+   * @return ESP_OK on success; error code on RTC read or time conversion
+   *         failure.
+   */
+  esp_err_t TimeSyncResyncSystemFromRtc(time_sync_t* time_sync,
+                                        int64_t* delta_seconds_out,
+                                        bool* jumped_back_out);
+
   // Root-only: start SNTP and block until time is synced (or timeout).
   /**
    * @brief Execute TimeSyncStartSntpAndWait.

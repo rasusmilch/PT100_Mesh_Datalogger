@@ -21,6 +21,7 @@ static const char* kKeyLogPeriodMs = "log_period_ms";
 static const char* kKeyFlushWatermark = "flush_wm_rec";
 static const char* kKeySdFlushPeriodMs = "sd_flush_ms";
 static const char* kKeySdBatchBytes = "sd_batch_bytes";
+static const char* kKeyRtcResyncPeriodMs = "rtc_resync_ms";
 static const char* kKeyCalDegree = "cal_deg";
 static const char* kKeyCalMode = "cal_mode";
 static const char* kKeyCalCoeffs = "cal_coeffs";
@@ -294,6 +295,7 @@ ApplyDefaults(app_settings_t* settings)
     (uint32_t)CONFIG_APP_FRAM_FLUSH_WATERMARK_RECORDS_DEFAULT;
   settings->sd_flush_period_ms = (uint32_t)CONFIG_APP_SD_PERIODIC_FLUSH_MS;
   settings->sd_batch_bytes_target = (uint32_t)CONFIG_APP_SD_BATCH_BYTES_TARGET;
+  settings->rtc_resync_period_ms = 3600000u;
   CalibrationModelInitIdentity(&settings->calibration);
   memset(&settings->calibration_context, 0,
          sizeof(settings->calibration_context));
@@ -519,6 +521,12 @@ AppSettingsLoad(app_settings_t* settings_out)
   result = nvs_get_u32(handle, kKeySdBatchBytes, &sd_batch_bytes);
   if (result == ESP_OK && sd_batch_bytes >= 4096) {
     settings_out->sd_batch_bytes_target = sd_batch_bytes;
+  }
+
+  uint32_t rtc_resync_ms = settings_out->rtc_resync_period_ms;
+  result = nvs_get_u32(handle, kKeyRtcResyncPeriodMs, &rtc_resync_ms);
+  if (result == ESP_OK && rtc_resync_ms <= 86400000u) {
+    settings_out->rtc_resync_period_ms = rtc_resync_ms;
   }
 
   uint8_t cal_degree = 0;
@@ -823,11 +831,12 @@ AppSettingsLoad(app_settings_t* settings_out)
   nvs_close(handle);
   ESP_LOGI(
     kTag,
-    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s net_mode=%s mqtt_en=%u mqtt_uri=%s mqtt_pfx=%s mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
+    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u rtc_resync_ms=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s net_mode=%s mqtt_en=%u mqtt_uri=%s mqtt_pfx=%s mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
     (unsigned)settings_out->log_period_ms,
     (unsigned)settings_out->fram_flush_watermark_records,
     (unsigned)settings_out->sd_flush_period_ms,
     (unsigned)settings_out->sd_batch_bytes_target,
+    (unsigned)settings_out->rtc_resync_period_ms,
     (unsigned)settings_out->calibration.degree,
     (unsigned)settings_out->calibration_points_count,
     settings_out->tz_posix,
@@ -924,6 +933,27 @@ AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
     return result;
   }
   result = nvs_set_u32(handle, kKeySdBatchBytes, batch_bytes);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+/**
+ * @brief Execute AppSettingsSaveRtcResyncPeriodMs.
+ * @param period_ms Parameter period_ms.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveRtcResyncPeriodMs(uint32_t period_ms)
+{
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u32(handle, kKeyRtcResyncPeriodMs, period_ms);
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }

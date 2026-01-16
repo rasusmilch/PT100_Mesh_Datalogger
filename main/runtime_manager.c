@@ -472,6 +472,8 @@ ControlTask(void* context);
 static void
 ControlTickTimeSync(runtime_state_t* state);
 static void
+ControlTickRtcResync(runtime_state_t* state);
+static void
 ControlTickTopology(runtime_state_t* state, int64_t now_ms);
 static void
 NetTxTask(void* context);
@@ -1431,6 +1433,21 @@ BuildDateStringFromRecord(const log_record_t* record,
 }
 
 /**
+ * @brief Execute BuildDateStringFromEpoch.
+ * @param epoch Parameter epoch.
+ * @param out Parameter out.
+ * @param out_size Parameter out_size.
+ */
+static void
+BuildDateStringFromEpoch(int64_t epoch, char* out, size_t out_size)
+{
+  time_t time_seconds = (time_t)epoch;
+  struct tm time_info;
+  gmtime_r(&time_seconds, &time_info);
+  strftime(out, out_size, "%Y-%m-%dZ", &time_info);
+}
+
+/**
  * @brief Execute CsvDataPortWriter.
  * @param bytes Parameter bytes.
  * @param len Parameter len.
@@ -1977,8 +1994,32 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   if (oldest_record.timestamp_epoch_sec > 0) {
     target_epoch = oldest_record.timestamp_epoch_sec;
   }
+  int64_t target_epoch_for_file = target_epoch;
+  if (state->sd_logger.current_date[0] != '\0') {
+    char target_date[16];
+    BuildDateStringFromEpoch(target_epoch, target_date, sizeof(target_date));
+    const int date_cmp = strcmp(target_date, state->sd_logger.current_date);
+    if (date_cmp > 0) {
+      const TickType_t now_ticks = xTaskGetTickCount();
+      const uint32_t ms_since_force =
+        (state->last_rtc_force_before_roll_ticks == 0)
+          ? UINT32_MAX
+          : (uint32_t)pdTICKS_TO_MS(now_ticks -
+                                   state->last_rtc_force_before_roll_ticks);
+      if (ms_since_force >= 5000u) {
+        int64_t delta_seconds = 0;
+        bool jumped_back = false;
+        const esp_err_t resync_result = TimeSyncResyncSystemFromRtc(
+          &state->time_sync, &delta_seconds, &jumped_back);
+        if (resync_result == ESP_OK && TimeSyncIsSystemTimeValid()) {
+          target_epoch_for_file = (int64_t)time(NULL);
+        }
+        state->last_rtc_force_before_roll_ticks = now_ticks;
+      }
+    }
+  }
   esp_err_t sd_result =
-    SdLoggerEnsureDailyFile(&state->sd_logger, target_epoch);
+    SdLoggerEnsureDailyFile(&state->sd_logger, target_epoch_for_file);
   if (sd_result != ESP_OK) {
     return sd_result;
   }
@@ -1997,6 +2038,29 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
     ESP_LOGW(kTag, "Dropped %u FRAM records already present on SD", consumed);
   }
   return ESP_OK;
+}
+
+/**
+ * @brief Execute MaybeConfirmTimeJumpBackOnSd.
+ * @param state Parameter state.
+ */
+static void
+MaybeConfirmTimeJumpBackOnSd(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  if (!state->time_jump_back_confirm_pending) {
+    return;
+  }
+  if (SdLoggerLastRecordIdOnSd(&state->sd_logger) <
+      state->time_jump_back_record_id) {
+    return;
+  }
+  state->time_jump_back_confirm_pending = false;
+  ESP_LOGI(kTag,
+           "Time jump flag record verified on SD: record_id=%" PRIu64,
+           state->time_jump_back_record_id);
 }
 
 /**
@@ -2232,6 +2296,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       return write_result;
     }
     ClearSdIoError(state);
+    MaybeConfirmTimeJumpBackOnSd(state);
     RuntimeSdIoUnlock(state);
 
     for (uint32_t index = 0; index < records_used; ++index) {
@@ -2523,6 +2588,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       goto flush_done;
     }
     ClearSdIoError(state);
+    MaybeConfirmTimeJumpBackOnSd(state);
 
     for (uint32_t index = 0; index < records_used; ++index) {
       esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
@@ -3394,6 +3460,11 @@ StorageTask(void* context)
       if (id_result != ESP_OK) {
         ESP_LOGE(
           kTag, "Failed to assign record id: %s", esp_err_to_name(id_result));
+      } else if (state->time_jump_back_armed) {
+        record.flags |= LOG_RECORD_FLAG_TIME_JUMP_BACK;
+        state->time_jump_back_record_id = record.record_id;
+        state->time_jump_back_confirm_pending = true;
+        state->time_jump_back_armed = false;
       }
       const int64_t now_ms = esp_timer_get_time() / 1000;
       const int64_t now_epoch =
@@ -3593,6 +3664,50 @@ ControlTickTimeSync(runtime_state_t* state)
       const int64_t now_seconds = (int64_t)time(NULL);
       (void)MeshTransportBroadcastTime(&state->mesh, now_seconds);
     }
+  }
+}
+
+static void
+ControlTickRtcResync(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  const uint32_t period_ms = state->settings.rtc_resync_period_ms;
+  if (period_ms == 0) {
+    return;
+  }
+
+  const TickType_t now_ticks = xTaskGetTickCount();
+  if (state->rtc_resync_last_ticks != 0 &&
+      pdTICKS_TO_MS(now_ticks - state->rtc_resync_last_ticks) < period_ms) {
+    return;
+  }
+  state->rtc_resync_last_ticks = now_ticks;
+
+  int64_t delta_seconds = 0;
+  bool jumped_back = false;
+  const esp_err_t result =
+    TimeSyncResyncSystemFromRtc(&state->time_sync,
+                                &delta_seconds,
+                                &jumped_back);
+  if (result != ESP_OK) {
+    const uint32_t warn_elapsed_ms =
+      (state->last_rtc_resync_warn_ticks == 0)
+        ? UINT32_MAX
+        : (uint32_t)pdTICKS_TO_MS(now_ticks -
+                                 state->last_rtc_resync_warn_ticks);
+    if (warn_elapsed_ms >= 60000u) {
+      ESP_LOGW(kTag, "RTC resync failed: %s", esp_err_to_name(result));
+      state->last_rtc_resync_warn_ticks = now_ticks;
+    }
+    return;
+  }
+
+  if (jumped_back) {
+    state->time_jump_back_armed = true;
+    state->last_time_jump_back_delta_sec = delta_seconds;
   }
 }
 
@@ -4331,6 +4446,8 @@ ControlTask(void* context)
         ControlTickTimeSync(state);
         next_time_sync_ms = now_ms + 2000;
       }
+
+      ControlTickRtcResync(state);
 
       if (alert_eligible &&
           (next_alert_tick_ms == 0 || now_ms >= next_alert_tick_ms)) {
