@@ -20,7 +20,9 @@
 #include "esp_mesh_lite_port.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "fram_error_log.h"
 #include "fram_i2c.h"
+#include "fram_layout.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -4934,6 +4936,7 @@ InitializeRuntimeStruct(void)
   g_runtime.fram_i2c = &g_state.fram_i2c;
   g_runtime.fram_io = &g_state.fram_io;
   g_runtime.fram_log = &g_state.fram_log;
+  g_runtime.fram_error_log = &g_state.fram_error_log;
   g_runtime.sd_logger = &g_state.sd_logger;
   g_runtime.sensor = &g_state.sensor;
   g_runtime.mesh = &g_state.mesh;
@@ -5224,12 +5227,31 @@ RuntimeManagerInit(void)
   }
 
   esp_err_t fram_log_result =
-    FramLogInit(&g_state.fram_log, g_state.fram_io, CONFIG_APP_FRAM_SIZE_BYTES);
+    FramLogInit(&g_state.fram_log, g_state.fram_io, FRAM_DATA_BYTES);
   if (fram_log_result != ESP_OK) {
     if (first_error == ESP_OK) {
       first_error = fram_log_result;
     }
     ESP_LOGE(kTag, "FramLogInit failed: %s", esp_err_to_name(fram_log_result));
+  }
+
+  esp_err_t fram_errlog_result =
+    FramErrorLogInit(&g_state.fram_error_log,
+                     g_state.fram_io,
+                     FRAM_ERRLOG_BASE,
+                     FRAM_ERRLOG_BYTES);
+  if (fram_errlog_result != ESP_OK) {
+    if (first_error == ESP_OK) {
+      first_error = fram_errlog_result;
+    }
+    ESP_LOGE(
+      kTag, "FramErrorLogInit failed: %s", esp_err_to_name(fram_errlog_result));
+  } else {
+    fram_error_log_stats_t stats = { 0 };
+    if (FramErrorLogGetStats(&g_state.fram_error_log, &stats) == ESP_OK &&
+        stats.count > 0) {
+      (void)FramErrorLogDump(&g_state.fram_error_log, 0);
+    }
   }
 
   if (g_state.sd_io_mutex != NULL && SdCardPresent(&g_state)) {

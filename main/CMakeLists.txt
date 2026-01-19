@@ -21,6 +21,7 @@ idf_component_register(
     "data_port.c"
     "net_stack.c"
     "crc16.c"
+    "fram_error_log.c"
     "fram_i2c.c"
     "fram_log.c"
     "fram_spi.c"

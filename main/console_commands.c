@@ -33,6 +33,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "fram_error_log.h"
 #include "net_supervisor.h"
 #include "runtime_health.h"
 #include "time_civil.h"
@@ -2095,6 +2096,125 @@ CommandLog(int argc, char** argv)
 
   printf("unknown action. usage: log interval <ms> | log watermark <records> | "
          "log flush_period <ms> | log batch <bytes> | log show\n");
+  return 1;
+}
+
+/**
+ * @brief Execute CommandErrlog.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandErrlog(int argc, char** argv)
+{
+  if (g_runtime == NULL || g_runtime->fram_error_log == NULL) {
+    printf("runtime not ready\n");
+    return 1;
+  }
+  if (argc < 2) {
+    printf("usage: errlog show [--last N] | errlog stats | errlog clear\n");
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "stats") == 0) {
+    fram_error_log_stats_t stats = { 0 };
+    const esp_err_t result =
+      FramErrorLogGetStats(g_runtime->fram_error_log, &stats);
+    if (result != ESP_OK) {
+      printf("errlog stats failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("errlog count=%" PRIu32 " capacity=%" PRIu32 " write_index=%" PRIu32
+           "\n",
+           stats.count,
+           stats.capacity,
+           stats.write_index);
+    printf("errlog active_bitmap=0x%08" PRIx32 "%08" PRIx32 "\n",
+           stats.active_bitmap_high,
+           stats.active_bitmap_low);
+    return 0;
+  }
+
+  if (strcmp(action, "clear") == 0) {
+    const esp_err_t result = FramErrorLogClear(g_runtime->fram_error_log);
+    if (result != ESP_OK) {
+      printf("errlog clear failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("errlog cleared\n");
+    return 0;
+  }
+
+  if (strcmp(action, "show") == 0) {
+    int last = 0;
+    for (int i = 2; i < argc; ++i) {
+      if (strcmp(argv[i], "--last") == 0 && (i + 1) < argc) {
+        last = atoi(argv[++i]);
+      } else {
+        printf("usage: errlog show [--last N]\n");
+        return 1;
+      }
+    }
+    if (last < 0) {
+      printf("last must be >= 0\n");
+      return 1;
+    }
+    fram_error_log_stats_t stats = { 0 };
+    const esp_err_t stats_result =
+      FramErrorLogGetStats(g_runtime->fram_error_log, &stats);
+    if (stats_result != ESP_OK) {
+      printf("errlog show failed: %s\n", esp_err_to_name(stats_result));
+      return 1;
+    }
+    if (stats.count == 0) {
+      printf("errlog empty\n");
+      return 0;
+    }
+    uint32_t start_index = 0;
+    if (last > 0 && (uint32_t)last < stats.count) {
+      start_index = stats.count - (uint32_t)last;
+    }
+    printf("errlog entries: showing %" PRIu32 " of %" PRIu32 "\n",
+           stats.count - start_index,
+           stats.count);
+    for (uint32_t i = start_index; i < stats.count; ++i) {
+      fram_error_log_entry_t entry = { 0 };
+      bool crc_ok = false;
+      const esp_err_t result =
+        FramErrorLogReadEntry(g_runtime->fram_error_log, i, &entry, &crc_ok);
+      if (result != ESP_OK) {
+        printf("entry[%" PRIu32 "] read failed: %s\n",
+               i,
+               esp_err_to_name(result));
+        continue;
+      }
+      char utc_buffer[32];
+      char local_buffer[32];
+      char flags_buffer[32];
+      FormatUtcEpochIso8601(entry.epoch_sec, utc_buffer, sizeof(utc_buffer));
+      FormatLocalEpochIso8601(entry.epoch_sec,
+                              local_buffer,
+                              sizeof(local_buffer));
+      FormatErrlogFlags(entry.flags, flags_buffer, sizeof(flags_buffer));
+      printf("entry[%" PRIu32 "]: utc=%s local=%s.%03u code=%u flags=%s "
+             "detail0=%" PRId32 " detail1=%" PRId32 " crc=%s\n",
+             i,
+             utc_buffer,
+             local_buffer,
+             (unsigned)entry.millis,
+             (unsigned)entry.code,
+             flags_buffer,
+             entry.detail0,
+             entry.detail1,
+             crc_ok ? "ok" : "bad");
+    }
+    return 0;
+  }
+
+  printf("unknown action. usage: errlog show [--last N] | errlog stats | errlog "
+         "clear\n");
   return 1;
 }
 
@@ -4181,6 +4301,52 @@ FormatUtcEpochIso8601(int64_t epoch_utc, char* buffer, size_t buffer_size)
 }
 
 static void
+FormatLocalEpochIso8601(int64_t epoch_utc, char* buffer, size_t buffer_size)
+{
+  if (buffer == NULL || buffer_size == 0) {
+    return;
+  }
+  if (epoch_utc <= 0) {
+    snprintf(buffer, buffer_size, "n/a");
+    return;
+  }
+  time_t raw = (time_t)epoch_utc;
+  struct tm local_time;
+  if (localtime_r(&raw, &local_time) == NULL) {
+    snprintf(buffer, buffer_size, "n/a");
+    return;
+  }
+  if (strftime(buffer, buffer_size, "%Y-%m-%d %H:%M:%S", &local_time) == 0) {
+    snprintf(buffer, buffer_size, "n/a");
+  }
+}
+
+static void
+FormatErrlogFlags(uint16_t flags, char* buffer, size_t buffer_size)
+{
+  if (buffer == NULL || buffer_size == 0) {
+    return;
+  }
+  buffer[0] = '\0';
+  size_t pos = 0;
+  if ((flags & kFramErrorLogEntryFlagActive) != 0) {
+    pos += (size_t)snprintf(buffer + pos,
+                            buffer_size - pos,
+                            "%sactive",
+                            (pos == 0) ? "" : ",");
+  }
+  if ((flags & kFramErrorLogEntryFlagResolved) != 0) {
+    pos += (size_t)snprintf(buffer + pos,
+                            buffer_size - pos,
+                            "%sresolved",
+                            (pos == 0) ? "" : ",");
+  }
+  if (pos == 0) {
+    snprintf(buffer, buffer_size, "none");
+  }
+}
+
+static void
 FormatCalDueEvery(uint16_t count, uint8_t unit, char* buffer, size_t buffer_size)
 {
   if (buffer == NULL || buffer_size == 0) {
@@ -4867,6 +5033,15 @@ RegisterCommands(void)
     .func = &CommandFram,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&fram_cmd));
+
+  const esp_console_cmd_t errlog_cmd = {
+    .command = "errlog",
+    .help = "Error log commands: errlog show [--last N] | errlog stats | "
+            "errlog clear",
+    .hint = NULL,
+    .func = &CommandErrlog,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&errlog_cmd));
 
   const esp_console_cmd_t log_cmd = {
     .command = "log",
