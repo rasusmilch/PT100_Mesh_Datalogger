@@ -57,6 +57,7 @@ static const uint32_t kSdFlushMaxRecordsPerPass = 100;
 static const uint32_t kSdFlushMaxMsPerPass = 50;
 static const uint32_t kSdFlushTimeSliceMs = 50;
 static const uint32_t kSdFlushWarnIntervalMs = 10000;
+static const uint32_t kFramLogLockWarnIntervalMs = 10000;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kSdFlushMinIntervalMs = 200;
 static const uint32_t kSdDetectPollIntervalMs = 250;
@@ -110,6 +111,25 @@ RuntimeNotifyTask(TaskHandle_t handle)
     return;
   }
   xTaskNotifyGive(handle);
+}
+
+static bool
+RuntimeFramLogLockWithWarn(runtime_state_t* state,
+                           TickType_t timeout_ticks,
+                           uint32_t* timeout_counter,
+                           uint32_t* last_log_ms,
+                           const char* context)
+{
+  if (RuntimeFramLogLock(state, timeout_ticks)) {
+    return true;
+  }
+  if (timeout_counter != NULL) {
+    (*timeout_counter)++;
+  }
+  if (LogRateLimitAllow(last_log_ms, kFramLogLockWarnIntervalMs)) {
+    ESP_LOGW(kTag, "FRAM log lock timeout in %s", context);
+  }
+  return false;
 }
 
 static void
@@ -3057,6 +3077,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   size_t total_bytes_flushed = 0;
   uint32_t corrupt_skips_this_call = 0;
   const uint32_t kMaxCorruptSkipsThisCall = 8;
+  const TickType_t fram_log_timeout_ticks = pdMS_TO_TICKS(250);
   EnsureSdMountedLocked(state);
   if (!state->sd_logger.is_mounted) {
     result = ESP_OK;
@@ -3065,7 +3086,12 @@ SdFlushWorkerTickEx(runtime_state_t* state,
 
   while (true) {
     uint32_t buffered_records = 0;
-    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    if (!RuntimeFramLogLockWithWarn(
+          state,
+          fram_log_timeout_ticks,
+          &state->fram_log_lock_timeout_count_sdflush,
+          &state->last_fram_log_lock_timeout_sdflush_log_ms,
+          "sd_flush buffered check")) {
       result = ESP_ERR_TIMEOUT;
       goto flush_done;
     }
@@ -3083,7 +3109,12 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     }
 
     log_record_t first_record;
-    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    if (!RuntimeFramLogLockWithWarn(
+          state,
+          fram_log_timeout_ticks,
+          &state->fram_log_lock_timeout_count_sdflush,
+          &state->last_fram_log_lock_timeout_sdflush_log_ms,
+          "sd_flush peek")) {
       result = ESP_ERR_TIMEOUT;
       goto flush_done;
     }
@@ -3131,7 +3162,12 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     bool batch_includes_time_jump_flag = false;
     const uint32_t remaining_records_budget =
       (max_records > 0) ? (max_records - total_records_flushed) : 0;
-    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    if (!RuntimeFramLogLockWithWarn(
+          state,
+          fram_log_timeout_ticks,
+          &state->fram_log_lock_timeout_count_sdflush,
+          &state->last_fram_log_lock_timeout_sdflush_log_ms,
+          "sd_flush build batch")) {
       result = ESP_ERR_TIMEOUT;
       goto flush_done;
     }
@@ -3188,7 +3224,12 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     HandleTimeJumpBackBatchWritten(
       state, batch_includes_time_jump_flag, last_record_id);
 
-    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    if (!RuntimeFramLogLockWithWarn(
+          state,
+          fram_log_timeout_ticks,
+          &state->fram_log_lock_timeout_count_sdflush,
+          &state->last_fram_log_lock_timeout_sdflush_log_ms,
+          "sd_flush discard")) {
       result = ESP_ERR_TIMEOUT;
       goto flush_done;
     }
@@ -3222,9 +3263,16 @@ flush_done:
   }
   if (more_pending_out != NULL) {
     bool more_pending = false;
-    if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    if (RuntimeFramLogLockWithWarn(
+          state,
+          fram_log_timeout_ticks,
+          &state->fram_log_lock_timeout_count_sdflush,
+          &state->last_fram_log_lock_timeout_sdflush_log_ms,
+          "sd_flush pending check")) {
       more_pending = (FramLogGetBufferedRecords(&state->fram_log) > 0);
       RuntimeFramLogUnlock(state);
+    } else {
+      more_pending = true;
     }
     *more_pending_out = more_pending;
   }
@@ -4055,6 +4103,7 @@ static void
 StorageTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
+  const TickType_t fram_log_timeout_ticks = pdMS_TO_TICKS(50);
 
   while (!state->stop_requested ||
          uxQueueMessagesWaiting(state->log_queue) > 0) {
@@ -4066,15 +4115,22 @@ StorageTask(void* context)
       RuntimeMarkersSetStorage(state, STORAGE_020_AFTER_QUEUE_RECV);
       log_record_t record = msg.record;
       bool fram_lock_ok =
-        RuntimeFramLogLock(state, kFramLogLockTimeoutTicks);
+        RuntimeFramLogLockWithWarn(
+          state,
+          fram_log_timeout_ticks,
+          &state->fram_log_lock_timeout_count_storage,
+          &state->last_fram_log_lock_timeout_storage_log_ms,
+          "storage");
       esp_err_t id_result = ESP_ERR_TIMEOUT;
       if (fram_lock_ok) {
         id_result = FramLogAssignRecordIds(&state->fram_log, &record);
       }
       RuntimeMarkersSetStorage(state, STORAGE_030_ASSIGN_IDS);
       if (id_result != ESP_OK) {
-        ESP_LOGE(
-          kTag, "Failed to assign record id: %s", esp_err_to_name(id_result));
+        if (fram_lock_ok) {
+          ESP_LOGE(
+            kTag, "Failed to assign record id: %s", esp_err_to_name(id_result));
+        }
       } else if (state->time_jump_back_arm_next) {
         record.flags |= LOG_RECORD_FLAG_TIME_JUMP_BACK;
         state->time_jump_back_attempt_record_id = record.record_id;
