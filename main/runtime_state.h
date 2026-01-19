@@ -230,6 +230,10 @@ extern "C" {
     fram_log_validate_result_t fram_corrupt_last_reason;
     uint32_t fram_append_fail_streak;
     uint32_t fram_crc_fail_streak;
+    uint32_t fram_log_lock_timeout_count_storage;
+    uint32_t fram_log_lock_timeout_count_sdflush;
+    uint32_t last_fram_log_lock_timeout_storage_log_ms;
+    uint32_t last_fram_log_lock_timeout_sdflush_log_ms;
     bool i2c_recovery_in_progress;
 
     // Sensor fault logging state (rate-limited).
