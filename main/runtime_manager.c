@@ -20,7 +20,9 @@
 #include "esp_mesh_lite_port.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "fram_error_log.h"
 #include "fram_i2c.h"
+#include "fram_layout.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -63,10 +65,21 @@ static const int64_t kCalTimeStableDelaySec = 60;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
+static const TickType_t kI2cIoLockTimeoutTicks = pdMS_TO_TICKS(25);
+static const TickType_t kI2cRecoveryLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 static const int64_t kNetTxStallDropMs = 30000;
+static const uint32_t kI2cRecoveryTriggerCount = 3;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
+
+enum
+{
+  ERROR_FRAM_IO_FAIL = 100,
+  ERROR_I2C_RECOVERY_START = 101,
+  ERROR_I2C_RECOVERY_SUCCESS = 102,
+  ERROR_I2C_RECOVERY_FAILED = 103,
+};
 
 static void
 UpdateCalibrationDueState(runtime_state_t* state,
@@ -364,6 +377,37 @@ RuntimeSdIoUnlock(runtime_state_t* state)
     return;
   }
   (void)xSemaphoreGive(state->sd_io_mutex);
+}
+
+/**
+ * @brief Execute RuntimeI2cLock.
+ * @param timeout_ticks Parameter timeout_ticks.
+ * @return Return the function result.
+ */
+bool
+RuntimeI2cLock(TickType_t timeout_ticks)
+{
+  if (g_state.i2c_mutex == NULL) {
+    ESP_LOGE(kTag, "I2C mutex unavailable");
+    return false;
+  }
+  if (xSemaphoreTake(g_state.i2c_mutex, timeout_ticks) != pdTRUE) {
+    ESP_LOGW(kTag, "I2C mutex timeout");
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Execute RuntimeI2cUnlock.
+ */
+void
+RuntimeI2cUnlock(void)
+{
+  if (g_state.i2c_mutex == NULL) {
+    return;
+  }
+  (void)xSemaphoreGive(g_state.i2c_mutex);
 }
 
 typedef struct
@@ -1368,7 +1412,13 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
   if (addr > 0xFFFFu) {
     return ESP_ERR_INVALID_ARG;
   }
-  return FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
+  if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
+  esp_err_t result =
+    FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
+  RuntimeI2cUnlock();
+  return result;
 }
 
 /**
@@ -1388,7 +1438,13 @@ FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
   if (addr > 0xFFFFu) {
     return ESP_ERR_INVALID_ARG;
   }
-  return FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
+  if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
+  esp_err_t result =
+    FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
+  RuntimeI2cUnlock();
+  return result;
 }
 
 /**
@@ -1938,6 +1994,225 @@ RecordFramCorruption(runtime_state_t* state,
   state->fram_corrupt_last_reason = reason;
 }
 
+static void
+LogFramErrorEvent(runtime_state_t* state,
+                  uint16_t code,
+                  bool resolved,
+                  int32_t detail0,
+                  int32_t detail1)
+{
+  if (state == NULL || !state->fram_error_log.initialized) {
+    return;
+  }
+  int64_t epoch_seconds = 0;
+  int32_t millis = 0;
+  TimeSyncGetNow(&epoch_seconds, &millis);
+  uint32_t epoch_u32 = (epoch_seconds > 0) ? (uint32_t)epoch_seconds : 0u;
+  uint16_t millis_u16 = (millis >= 0) ? (uint16_t)millis : 0u;
+  bool logged = false;
+  if (resolved) {
+    (void)FramErrorLogAppendResolved(&state->fram_error_log,
+                                     code,
+                                     detail0,
+                                     detail1,
+                                     epoch_u32,
+                                     millis_u16,
+                                     &logged);
+  } else {
+    (void)FramErrorLogAppendActive(&state->fram_error_log,
+                                   code,
+                                   detail0,
+                                   detail1,
+                                   epoch_u32,
+                                   millis_u16,
+                                   &logged);
+  }
+}
+
+static bool
+RuntimeVerifyFram(runtime_state_t* state)
+{
+  if (state == NULL || !state->fram_i2c.initialized) {
+    return false;
+  }
+  uint8_t before[4] = { 0 };
+  uint8_t after[4] = { 0 };
+  esp_err_t read_result =
+    FramI2cRead(&state->fram_i2c, 0, before, sizeof(before));
+  if (read_result != ESP_OK) {
+    return false;
+  }
+  esp_err_t write_result =
+    FramI2cWrite(&state->fram_i2c, 0, before, sizeof(before));
+  if (write_result != ESP_OK) {
+    return false;
+  }
+  esp_err_t verify_result =
+    FramI2cRead(&state->fram_i2c, 0, after, sizeof(after));
+  if (verify_result != ESP_OK) {
+    return false;
+  }
+  return memcmp(before, after, sizeof(before)) == 0;
+}
+
+static bool
+RuntimeRecoverI2cBus(runtime_state_t* state,
+                     const char* reason,
+                     esp_err_t last_error)
+{
+  if (state == NULL) {
+    return false;
+  }
+  if (state->i2c_recovery_in_progress) {
+    return false;
+  }
+  state->i2c_recovery_in_progress = true;
+
+  if (!RuntimeI2cLock(kI2cRecoveryLockTimeoutTicks)) {
+    ESP_LOGW(kTag, "I2C recovery lock timeout");
+    state->i2c_recovery_in_progress = false;
+    return false;
+  }
+
+  ESP_LOGW(kTag,
+           "I2C recovery start (%s): %s",
+           (reason != NULL) ? reason : "unknown",
+           esp_err_to_name(last_error));
+  LogFramErrorEvent(
+    state, ERROR_I2C_RECOVERY_START, false, (int32_t)last_error, 0);
+  UpdateCachedBool(
+    state, &state->cached_status.i2c_recovery_active, true);
+
+  const i2c_port_t port = state->i2c_bus.port;
+  const int sda_gpio = state->i2c_bus.sda_gpio;
+  const int scl_gpio = state->i2c_bus.scl_gpio;
+  const uint32_t frequency_hz = state->i2c_bus.frequency_hz;
+
+  esp_err_t recover_result = I2cBusRecoverLines(sda_gpio, scl_gpio);
+  if (recover_result != ESP_OK) {
+    ESP_LOGW(kTag,
+             "I2C line recovery failed: %s",
+             esp_err_to_name(recover_result));
+  }
+
+  esp_err_t result = I2cBusDeinit(&state->i2c_bus);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "I2C bus deinit failed: %s", esp_err_to_name(result));
+  }
+
+  result = I2cBusInit(
+    &state->i2c_bus, port, sda_gpio, scl_gpio, frequency_hz);
+  if (result != ESP_OK) {
+    goto recovery_failed;
+  }
+
+  result = TimeSyncInit(
+    &state->time_sync, &state->i2c_bus, (uint8_t)CONFIG_APP_DS3231_I2C_ADDR);
+  if (result != ESP_OK) {
+    goto recovery_failed;
+  }
+
+  result = FramI2cInit(&state->fram_i2c,
+                       state->i2c_bus.handle,
+                       (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
+                       CONFIG_APP_FRAM_SIZE_BYTES,
+                       state->i2c_bus.frequency_hz);
+  if (result != ESP_OK) {
+    goto recovery_failed;
+  }
+
+  if (!RuntimeVerifyFram(state)) {
+    result = ESP_ERR_INVALID_RESPONSE;
+    goto recovery_failed;
+  }
+
+  LogFramErrorEvent(state, ERROR_I2C_RECOVERY_START, true, 0, 0);
+  LogFramErrorEvent(state, ERROR_FRAM_IO_FAIL, true, 0, 0);
+  LogFramErrorEvent(state, ERROR_I2C_RECOVERY_SUCCESS, true, 0, 0);
+  UpdateCachedBool(
+    state, &state->cached_status.i2c_recovery_active, false);
+  UpdateCachedBool(
+    state, &state->cached_status.fram_io_error_active, false);
+  state->fram_append_fail_streak = 0;
+  state->fram_crc_fail_streak = 0;
+  state->i2c_recovery_in_progress = false;
+  RuntimeI2cUnlock();
+  ESP_LOGI(kTag, "I2C recovery succeeded");
+  return true;
+
+recovery_failed:
+  LogFramErrorEvent(
+    state, ERROR_I2C_RECOVERY_FAILED, false, (int32_t)result, 0);
+  ESP_LOGE(kTag, "I2C recovery failed: %s", esp_err_to_name(result));
+  RuntimeI2cUnlock();
+  state->i2c_recovery_in_progress = false;
+  vTaskDelay(pdMS_TO_TICKS(200));
+  esp_restart();
+  return false;
+}
+
+static void
+TrackFramInvalidResponse(runtime_state_t* state, const char* context)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->fram_crc_fail_streak++;
+  ESP_LOGW(kTag,
+           "FRAM invalid response (%s); streak=%" PRIu32,
+           (context != NULL) ? context : "unknown",
+           state->fram_crc_fail_streak);
+  if (state->fram_crc_fail_streak >= kI2cRecoveryTriggerCount) {
+    state->fram_crc_fail_streak = 0;
+    if (!state->cached_status.fram_io_error_active) {
+      LogFramErrorEvent(state,
+                        ERROR_FRAM_IO_FAIL,
+                        false,
+                        (int32_t)ESP_ERR_INVALID_RESPONSE,
+                        (int32_t)kI2cRecoveryTriggerCount);
+      UpdateCachedBool(
+        state, &state->cached_status.fram_io_error_active, true);
+    }
+    (void)RuntimeRecoverI2cBus(
+      state, context, ESP_ERR_INVALID_RESPONSE);
+  }
+}
+
+static void
+ResetFramInvalidResponseStreak(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->fram_crc_fail_streak = 0;
+}
+
+static void
+TrackFramAppendFailure(runtime_state_t* state, esp_err_t error)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->fram_append_fail_streak++;
+  ESP_LOGW(kTag,
+           "FRAM append failure streak=%" PRIu32 " err=%s",
+           state->fram_append_fail_streak,
+           esp_err_to_name(error));
+  if (state->fram_append_fail_streak >= kI2cRecoveryTriggerCount) {
+    state->fram_append_fail_streak = 0;
+    if (!state->cached_status.fram_io_error_active) {
+      LogFramErrorEvent(state,
+                        ERROR_FRAM_IO_FAIL,
+                        false,
+                        (int32_t)error,
+                        (int32_t)kI2cRecoveryTriggerCount);
+      UpdateCachedBool(
+        state, &state->cached_status.fram_io_error_active, true);
+    }
+    (void)RuntimeRecoverI2cBus(state, "append", error);
+  }
+}
+
 /**
  * @brief Execute EnsureSdSyncedForEpoch.
  * @param state Parameter state.
@@ -2197,6 +2472,7 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
     RecordFramCorruption(
       state, 0, slot, addr, validate_result, &oldest_record, actual_crc);
     HandleTimeJumpBackCorruptSkip(state, &oldest_record);
+    TrackFramInvalidResponse(state, "sd_sync");
     esp_err_t skip_result = FramLogDiscardOldest(&state->fram_log);
     if (skip_result != ESP_OK) {
       return skip_result;
@@ -2206,6 +2482,7 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   if (peek_result != ESP_OK) {
     return peek_result;
   }
+  ResetFramInvalidResponseStreak(state);
 
   int64_t target_epoch = epoch_for_file;
   if (oldest_record.timestamp_epoch_sec > 0) {
@@ -2335,11 +2612,13 @@ BuildBatchForDay(runtime_state_t* state,
       state->fram_corrupt_detect_count++;
       RecordFramCorruption(
         state, offset, slot, addr, validate_result, &record, actual_crc);
+      TrackFramInvalidResponse(state, "batch");
       break;
     }
     if (peek_result != ESP_OK) {
       return peek_result;
     }
+    ResetFramInvalidResponseStreak(state);
 
     char record_date[16];
     BuildDateStringFromRecord(&record, record_date, sizeof(record_date));
@@ -2722,6 +3001,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       (void)FramLogSkipCorruptedRecord(&state->fram_log);
       state->fram_corrupt_skip_count++;
       corrupt_skips_this_call++;
+      TrackFramInvalidResponse(state, "flush");
       if (corrupt_skips_this_call >= kMaxCorruptSkipsThisCall) {
         break;
       }
@@ -2731,6 +3011,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       result = peek_result;
       goto flush_done;
     }
+    ResetFramInvalidResponseStreak(state);
 
     const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
                                      ? first_record.timestamp_epoch_sec
@@ -3699,7 +3980,9 @@ StorageTask(void* context)
         if (append_result != ESP_OK) {
           ESP_LOGE(
             kTag, "FRAM append failed: %s", esp_err_to_name(append_result));
+          TrackFramAppendFailure(state, append_result);
         } else {
+          state->fram_append_fail_streak = 0;
           state->sd_flush_records_since++;
         }
         const uint64_t overrun_after =
@@ -4643,6 +4926,17 @@ ControlTask(void* context)
                                      now_ms,
                                      now_epoch);
       AlertManagerProcessSystemError(&state->alert_manager,
+                                     ALERT_SYSTEM_CODE_ERROR_FRAM_IO,
+                                     state->cached_status.fram_io_error_active,
+                                     now_ms,
+                                     now_epoch);
+      AlertManagerProcessSystemError(
+        &state->alert_manager,
+        ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY,
+        state->cached_status.i2c_recovery_active,
+        now_ms,
+        now_epoch);
+      AlertManagerProcessSystemError(&state->alert_manager,
                                      ALERT_SYSTEM_CODE_ERROR_RTD_FAULT,
                                      state->cached_status.sensor_fault_present,
                                      now_ms,
@@ -4934,6 +5228,7 @@ InitializeRuntimeStruct(void)
   g_runtime.fram_i2c = &g_state.fram_i2c;
   g_runtime.fram_io = &g_state.fram_io;
   g_runtime.fram_log = &g_state.fram_log;
+  g_runtime.fram_error_log = &g_state.fram_error_log;
   g_runtime.sd_logger = &g_state.sd_logger;
   g_runtime.sensor = &g_state.sensor;
   g_runtime.mesh = &g_state.mesh;
@@ -5012,6 +5307,10 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create SD I/O mutex; SD marked degraded");
     g_state.sd_degraded = true;
     UpdateCachedBool(&g_state, &g_state.cached_status.sd_degraded, true);
+  }
+  g_state.i2c_mutex = xSemaphoreCreateMutexStatic(&g_state.i2c_mutex_buf);
+  if (g_state.i2c_mutex == NULL) {
+    ESP_LOGE(kTag, "Failed to create I2C mutex");
   }
 
   uint8_t mac[6] = { 0 };
@@ -5224,12 +5523,31 @@ RuntimeManagerInit(void)
   }
 
   esp_err_t fram_log_result =
-    FramLogInit(&g_state.fram_log, g_state.fram_io, CONFIG_APP_FRAM_SIZE_BYTES);
+    FramLogInit(&g_state.fram_log, g_state.fram_io, FRAM_DATA_BYTES);
   if (fram_log_result != ESP_OK) {
     if (first_error == ESP_OK) {
       first_error = fram_log_result;
     }
     ESP_LOGE(kTag, "FramLogInit failed: %s", esp_err_to_name(fram_log_result));
+  }
+
+  esp_err_t fram_errlog_result =
+    FramErrorLogInit(&g_state.fram_error_log,
+                     g_state.fram_io,
+                     FRAM_ERRLOG_BASE,
+                     FRAM_ERRLOG_BYTES);
+  if (fram_errlog_result != ESP_OK) {
+    if (first_error == ESP_OK) {
+      first_error = fram_errlog_result;
+    }
+    ESP_LOGE(
+      kTag, "FramErrorLogInit failed: %s", esp_err_to_name(fram_errlog_result));
+  } else {
+    fram_error_log_stats_t stats = { 0 };
+    if (FramErrorLogGetStats(&g_state.fram_error_log, &stats) == ESP_OK &&
+        stats.count > 0) {
+      (void)FramErrorLogDump(&g_state.fram_error_log, 0);
+    }
   }
 
   if (g_state.sd_io_mutex != NULL && SdCardPresent(&g_state)) {

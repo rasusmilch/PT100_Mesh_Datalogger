@@ -7,6 +7,7 @@
 #include "app_settings.h"
 #include "driver/spi_master.h"
 #include "esp_err.h"
+#include "fram_error_log.h"
 #include "fram_i2c.h"
 #include "fram_io.h"
 #include "fram_log.h"
@@ -28,6 +29,7 @@ extern "C" {
     fram_i2c_t* fram_i2c;
     fram_io_t* fram_io;
     fram_log_t* fram_log;
+    fram_error_log_t* fram_error_log;
     sd_logger_t* sd_logger;
     max31865_reader_t* sensor;
     mesh_transport_t* mesh;
@@ -87,6 +89,18 @@ extern "C" {
  * @return Return the function result.
  */
   runtime_state_t* RuntimeGetState(void);
+
+/**
+ * @brief Execute RuntimeI2cLock.
+ * @param timeout_ticks Parameter timeout_ticks.
+ * @return Return the function result.
+ */
+  bool RuntimeI2cLock(TickType_t timeout_ticks);
+
+/**
+ * @brief Execute RuntimeI2cUnlock.
+ */
+  void RuntimeI2cUnlock(void);
 
 /**
  * @brief Execute RuntimeStart.

@@ -7,6 +7,7 @@
 #include "app_settings.h"
 #include "esp_err.h"
 #include "fram_i2c.h"
+#include "fram_error_log.h"
 #include "fram_io.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
@@ -60,6 +61,8 @@ extern "C" {
     bool fram_full;
     uint32_t fram_flush_watermark_records;
     bool fram_overrun_active;
+    bool fram_io_error_active;
+    bool i2c_recovery_active;
 
     // sensor
     bool sensor_fault_present;
@@ -158,6 +161,7 @@ extern "C" {
     fram_i2c_t fram_i2c;
     fram_io_t fram_io;
     fram_log_t fram_log;
+    fram_error_log_t fram_error_log;
     sd_logger_t sd_logger;
     sd_card_detect_t sd_card_detect;
     StaticSemaphore_t sd_io_mutex_buf;
@@ -166,6 +170,8 @@ extern "C" {
     mesh_transport_t mesh;
     time_sync_t time_sync;
     i2c_bus_t i2c_bus;
+    StaticSemaphore_t i2c_mutex_buf;
+    SemaphoreHandle_t i2c_mutex;
     TickType_t rtc_resync_last_ticks;
     TickType_t last_rtc_force_before_roll_ticks;
     TickType_t last_rtc_resync_warn_ticks;
@@ -218,6 +224,9 @@ extern "C" {
     uint16_t fram_corrupt_last_exp_crc;
     uint16_t fram_corrupt_last_act_crc;
     fram_log_validate_result_t fram_corrupt_last_reason;
+    uint32_t fram_append_fail_streak;
+    uint32_t fram_crc_fail_streak;
+    bool i2c_recovery_in_progress;
 
     // Sensor fault logging state (rate-limited).
     bool last_sensor_fault_present;
