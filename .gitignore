@@ -92,3 +92,4 @@ main.tar.gz
 *.tar.gz
 *.zip
 dependencies.yml
+*.csv
