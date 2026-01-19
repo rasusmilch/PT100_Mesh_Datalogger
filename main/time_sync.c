@@ -12,6 +12,7 @@
 
 #include "esp_log.h"
 #include "i2c_bus.h"
+#include "runtime_manager.h"
 
 #if __has_include("esp_netif_sntp.h")
 #include "esp_netif_sntp.h"
@@ -29,6 +30,7 @@ static esp_err_t s_last_sntp_result = ESP_ERR_INVALID_STATE;
 static int64_t s_last_sntp_success_epoch = 0;
 static int64_t s_last_rtc_set_epoch = 0;
 static bool s_esp_netif_sntp_initialized = false;
+static const TickType_t kI2cLockTimeoutTicks = pdMS_TO_TICKS(50);
 
 static uint32_t
 TickNow(void)
@@ -80,8 +82,12 @@ Ds3231ProbeAndUpdateReady(time_sync_t* time_sync)
     return ESP_ERR_INVALID_STATE;
   }
 
+  if (!RuntimeI2cLock(kI2cLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
   const esp_err_t probe_result = i2c_master_probe(
     time_sync->bus->handle, time_sync->ds3231_addr, 100 /* timeout_ms */);
+  RuntimeI2cUnlock();
   if (probe_result == ESP_OK) {
     time_sync->is_ds3231_ready = true;
     time_sync->ds3231_consecutive_failures = 0;
@@ -232,8 +238,12 @@ static esp_err_t
 Ds3231ReadTime(const time_sync_t* time_sync, struct tm* time_out)
 {
   uint8_t regs[7] = { 0 };
+  if (!RuntimeI2cLock(kI2cLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
   esp_err_t result =
     I2cBusReadRegister(time_sync->ds3231_device, 0x00, regs, sizeof(regs));
+  RuntimeI2cUnlock();
   if (result != ESP_OK) {
     return result;
   }
@@ -297,8 +307,13 @@ Ds3231WriteTime(const time_sync_t* time_sync, const struct tm* time_value)
   regs[4] = BinaryToBcd((uint8_t)time_value->tm_mday);
   regs[5] = BinaryToBcd((uint8_t)(time_value->tm_mon + 1));
   regs[6] = BinaryToBcd((uint8_t)(time_value->tm_year - 100)); // store 00..99
-  return I2cBusWriteRegister(
+  if (!RuntimeI2cLock(kI2cLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
+  esp_err_t result = I2cBusWriteRegister(
     time_sync->ds3231_device, 0x00, regs, sizeof(regs));
+  RuntimeI2cUnlock();
+  return result;
 }
 
 static esp_err_t
@@ -866,8 +881,13 @@ TimeSyncReadRtcRegisters(const time_sync_t* time_sync,
   if (time_sync == NULL || !time_sync->is_ds3231_ready) {
     return ESP_ERR_INVALID_STATE;
   }
-  return I2cBusReadRegister(
+  if (!RuntimeI2cLock(kI2cLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
+  const esp_err_t result = I2cBusReadRegister(
     time_sync->ds3231_device, start_reg, data_out, length);
+  RuntimeI2cUnlock();
+  return result;
 }
 
 /**

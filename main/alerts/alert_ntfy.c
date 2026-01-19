@@ -344,6 +344,15 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
         case ALERT_SYSTEM_CODE_ERROR_TIME_INVALID:
           error = "time_invalid";
           break;
+        case ALERT_SYSTEM_CODE_ERROR_FRAM_IO:
+          error = "fram_io";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY:
+          error = "i2c_recovery";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_STORAGE_STALL:
+          error = "storage_stall";
+          break;
         default:
           known = false;
           break;

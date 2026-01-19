@@ -38,6 +38,21 @@ extern "C" {
                        uint32_t frequency_hz);
 
 /**
+ * @brief Execute I2cBusDeinit.
+ * @param bus Parameter bus.
+ * @return Return the function result.
+ */
+  esp_err_t I2cBusDeinit(i2c_bus_t* bus);
+
+/**
+ * @brief Execute I2cBusRecoverLines.
+ * @param sda_gpio Parameter sda_gpio.
+ * @param scl_gpio Parameter scl_gpio.
+ * @return Return the function result.
+ */
+  esp_err_t I2cBusRecoverLines(int sda_gpio, int scl_gpio);
+
+/**
  * @brief Execute I2cBusAddDevice.
  * @param bus Parameter bus.
  * @param address Parameter address.
