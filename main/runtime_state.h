@@ -7,6 +7,7 @@
 #include "app_settings.h"
 #include "esp_err.h"
 #include "fram_i2c.h"
+#include "fram_error_log.h"
 #include "fram_io.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
@@ -158,6 +159,7 @@ extern "C" {
     fram_i2c_t fram_i2c;
     fram_io_t fram_io;
     fram_log_t fram_log;
+    fram_error_log_t fram_error_log;
     sd_logger_t sd_logger;
     sd_card_detect_t sd_card_detect;
     StaticSemaphore_t sd_io_mutex_buf;

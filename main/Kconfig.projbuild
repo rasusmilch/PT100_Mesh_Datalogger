@@ -326,6 +326,13 @@ config APP_FRAM_SIZE_BYTES
   help
     Total size of the FRAM device. Used to compute circular buffer capacity.
 
+config APP_FRAM_ERRLOG_BYTES
+  int "FRAM error log reserve (bytes)"
+  range 256 8192
+  default 1024
+  help
+    Reserved bytes at the end of FRAM for the persistent error log.
+
 config APP_FRAM_I2C_ADDR
   int "FRAM I2C address"
   range 0 127

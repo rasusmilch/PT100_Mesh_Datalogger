@@ -8,6 +8,7 @@
 
 #include "esp_err.h"
 #include "fram_i2c.h"
+#include "fram_layout.h"
 #include "fram_log.h"
 #include "i2c_bus.h"
 
@@ -202,7 +203,7 @@ RunDiagFram(const app_runtime_t* runtime,
   if (full) {
     const uint32_t fram_size =
       (log != NULL && log->fram_size_bytes > 0) ? log->fram_size_bytes
-                                                : CONFIG_APP_FRAM_SIZE_BYTES;
+                                                : FRAM_DATA_BYTES;
     const size_t header_guard = 256;
     size_t scratch_size =
       (bytes > 0) ? (size_t)bytes : (size_t)((fram_size >= 512) ? 512 : 256);
