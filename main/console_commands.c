@@ -67,6 +67,11 @@ static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
 static void
 FormatUtcEpochIso8601(int64_t epoch_utc, char* buffer, size_t buffer_size);
+static void
+FormatLocalEpochIso8601(int64_t epoch_utc, char* buffer, size_t buffer_size);
+static void
+FormatErrlogFlags(uint16_t flags, char* buffer, size_t buffer_size);
+
 /**
  * @brief Print the compact calibration schedule and due status block.
  * @param settings Current settings.
@@ -86,7 +91,8 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
                                const runtime_state_t* state);
 
 /**
- * @brief Parse a UTC date string in YYYY-MM-DD format into an epoch seconds value.
+ * @brief Parse a UTC date string in YYYY-MM-DD format into an epoch seconds
+ * value.
  * @param value Input string.
  * @param epoch_out Output epoch seconds (UTC midnight).
  * @return true on success.
@@ -2236,18 +2242,16 @@ CommandErrlog(int argc, char** argv)
       const esp_err_t result =
         FramErrorLogReadEntry(g_runtime->fram_error_log, i, &entry, &crc_ok);
       if (result != ESP_OK) {
-        printf("entry[%" PRIu32 "] read failed: %s\n",
-               i,
-               esp_err_to_name(result));
+        printf(
+          "entry[%" PRIu32 "] read failed: %s\n", i, esp_err_to_name(result));
         continue;
       }
       char utc_buffer[32];
       char local_buffer[32];
       char flags_buffer[32];
       FormatUtcEpochIso8601(entry.epoch_sec, utc_buffer, sizeof(utc_buffer));
-      FormatLocalEpochIso8601(entry.epoch_sec,
-                              local_buffer,
-                              sizeof(local_buffer));
+      FormatLocalEpochIso8601(
+        entry.epoch_sec, local_buffer, sizeof(local_buffer));
       FormatErrlogFlags(entry.flags, flags_buffer, sizeof(flags_buffer));
       printf("entry[%" PRIu32 "]: utc=%s local=%s.%03u code=%u flags=%s "
              "detail0=%" PRId32 " detail1=%" PRId32 " crc=%s\n",
@@ -2264,8 +2268,9 @@ CommandErrlog(int argc, char** argv)
     return 0;
   }
 
-  printf("unknown action. usage: errlog show [--last N] | errlog stats | errlog "
-         "clear\n");
+  printf(
+    "unknown action. usage: errlog show [--last N] | errlog stats | errlog "
+    "clear\n");
   return 1;
 }
 
@@ -2382,7 +2387,8 @@ CommandCal(int argc, char** argv)
         settings->cal_due_override_count = 0;
         settings->cal_due_override_unit = 0;
       } else {
-        printf("usage: cal clear date | cal clear due | cal clear due_override\n");
+        printf(
+          "usage: cal clear date | cal clear due | cal clear due_override\n");
         return 1;
       }
       esp_err_t result = AppSettingsSaveCalibrationSchedule(settings);
@@ -2950,8 +2956,10 @@ PrintTimeShow(const app_runtime_t* runtime)
   int local_isdst = -1;
   char local_buffer[48] = { 0 };
   if (localtime_r(&now_seconds, &local_tm) != NULL) {
-    strftime(
-      local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S %Z (%z)", &local_tm);
+    strftime(local_buffer,
+             sizeof(local_buffer),
+             "%Y-%m-%d %H:%M:%S %Z (%z)",
+             &local_tm);
     local_isdst = local_tm.tm_isdst;
   }
 
@@ -2962,8 +2970,7 @@ PrintTimeShow(const app_runtime_t* runtime)
          (local_buffer[0] != '\0') ? local_buffer : "unknown");
   printf("time_valid: %s\n", TimeSyncIsSystemTimeValid() ? "yes" : "no");
   printf("tz_posix: %s\n", runtime->settings->tz_posix);
-  printf("dst_enabled: %s\n",
-         runtime->settings->dst_enabled ? "yes" : "no");
+  printf("dst_enabled: %s\n", runtime->settings->dst_enabled ? "yes" : "no");
   printf("local_isdst: %d\n", local_isdst);
 
   time_sntp_status_t sntp_status;
@@ -3015,11 +3022,9 @@ PrintTimeShow(const app_runtime_t* runtime)
   const int64_t rtc_last_set_epoch = TimeSyncGetLastRtcSetEpoch();
   if (rtc_last_set_epoch > 0) {
     char set_buffer[32] = { 0 };
-    FormatUtcEpochIso8601(
-      rtc_last_set_epoch, set_buffer, sizeof(set_buffer));
-    printf("rtc_last_set: %s (epoch=%" PRId64 ")\n",
-           set_buffer,
-           rtc_last_set_epoch);
+    FormatUtcEpochIso8601(rtc_last_set_epoch, set_buffer, sizeof(set_buffer));
+    printf(
+      "rtc_last_set: %s (epoch=%" PRId64 ")\n", set_buffer, rtc_last_set_epoch);
   } else {
     printf("rtc_last_set: never\n");
   }
@@ -3035,8 +3040,8 @@ PrintTimeUsage(void)
   printf("time setlocal \"YYYY-MM-DD HH:MM:SS\" [--is_dst 0|1]\n");
   printf(
     "  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n");
-  printf(
-    "  local formatting uses current TZ rules (POSIX TZ string via settings)\n");
+  printf("  local formatting uses current TZ rules (POSIX TZ string via "
+         "settings)\n");
   printf("  use --is_dst to disambiguate fall-back hour\n");
 }
 
@@ -3197,8 +3202,7 @@ CommandRtc(int argc, char** argv)
     if (g_runtime->time_sync != NULL &&
         TimeSyncReadRtcEpoch(g_runtime->time_sync, &rtc_epoch) == ESP_OK) {
       printf("rtc_epoch_utc: %" PRId64 "\n", rtc_epoch);
-      printf("rtc_delta_seconds: %" PRId64 "\n",
-             rtc_epoch - system_epoch);
+      printf("rtc_delta_seconds: %" PRId64 "\n", rtc_epoch - system_epoch);
     } else {
       printf("rtc_epoch_utc: n/a\n");
       printf("rtc_delta_seconds: n/a\n");
@@ -3218,8 +3222,7 @@ CommandRtc(int argc, char** argv)
       return 1;
     }
     g_runtime->settings->rtc_resync_period_ms = (uint32_t)value;
-    const esp_err_t result =
-      AppSettingsSaveRtcResyncPeriodMs((uint32_t)value);
+    const esp_err_t result = AppSettingsSaveRtcResyncPeriodMs((uint32_t)value);
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -4381,16 +4384,12 @@ FormatErrlogFlags(uint16_t flags, char* buffer, size_t buffer_size)
   buffer[0] = '\0';
   size_t pos = 0;
   if ((flags & kFramErrorLogEntryFlagActive) != 0) {
-    pos += (size_t)snprintf(buffer + pos,
-                            buffer_size - pos,
-                            "%sactive",
-                            (pos == 0) ? "" : ",");
+    pos += (size_t)snprintf(
+      buffer + pos, buffer_size - pos, "%sactive", (pos == 0) ? "" : ",");
   }
   if ((flags & kFramErrorLogEntryFlagResolved) != 0) {
-    pos += (size_t)snprintf(buffer + pos,
-                            buffer_size - pos,
-                            "%sresolved",
-                            (pos == 0) ? "" : ",");
+    pos += (size_t)snprintf(
+      buffer + pos, buffer_size - pos, "%sresolved", (pos == 0) ? "" : ",");
   }
   if (pos == 0) {
     snprintf(buffer, buffer_size, "none");
@@ -4398,7 +4397,10 @@ FormatErrlogFlags(uint16_t flags, char* buffer, size_t buffer_size)
 }
 
 static void
-FormatCalDueEvery(uint16_t count, uint8_t unit, char* buffer, size_t buffer_size)
+FormatCalDueEvery(uint16_t count,
+                  uint8_t unit,
+                  char* buffer,
+                  size_t buffer_size)
 {
   if (buffer == NULL || buffer_size == 0) {
     return;
@@ -4458,8 +4460,8 @@ PrintCalibrationStatusBlock(const app_settings_t* settings,
 
   int64_t due_date = 0;
   if (last_cal != 0 && due_count != 0) {
-    due_date = CalComputeDueDateUtc(last_cal, due_count,
-                                    (cal_due_unit_t)due_unit);
+    due_date =
+      CalComputeDueDateUtc(last_cal, due_count, (cal_due_unit_t)due_unit);
   }
   FormatUtcEpochIso8601(due_date, due_date_buffer, sizeof(due_date_buffer));
 
@@ -4495,12 +4497,9 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
   char effective_due[32];
   char due_date_buffer[32];
 
-  FormatUtcEpochIso8601(settings->cal_last_utc,
-                        base_last,
-                        sizeof(base_last));
-  FormatUtcEpochIso8601(settings->cal_last_override_utc,
-                        override_last,
-                        sizeof(override_last));
+  FormatUtcEpochIso8601(settings->cal_last_utc, base_last, sizeof(base_last));
+  FormatUtcEpochIso8601(
+    settings->cal_last_override_utc, override_last, sizeof(override_last));
   FormatCalDueEvery(settings->cal_due_count,
                     settings->cal_due_unit,
                     base_due,
@@ -4519,8 +4518,8 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
 
   int64_t due_date = 0;
   if (last_cal != 0 && due_count != 0) {
-    due_date = CalComputeDueDateUtc(last_cal, due_count,
-                                    (cal_due_unit_t)due_unit);
+    due_date =
+      CalComputeDueDateUtc(last_cal, due_count, (cal_due_unit_t)due_unit);
   }
   FormatUtcEpochIso8601(due_date, due_date_buffer, sizeof(due_date_buffer));
 
@@ -5276,7 +5275,8 @@ RegisterCommands(void)
       "time show\n"
       "time setlocal \"YYYY-MM-DD HH:MM:SS\" [--is_dst 0|1]\n"
       "  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n"
-      "  local formatting uses current TZ rules (POSIX TZ string via settings)\n"
+      "  local formatting uses current TZ rules (POSIX TZ string via "
+      "settings)\n"
       "  use --is_dst to disambiguate fall-back hour",
     .hint = NULL,
     .func = &CommandTime,

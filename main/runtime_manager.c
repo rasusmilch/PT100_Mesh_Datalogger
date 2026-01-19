@@ -75,6 +75,8 @@ static const int64_t kNetTxStallDropMs = 30000;
 static const uint32_t kI2cRecoveryTriggerCount = 3;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
+static runtime_state_t g_state;
+static app_runtime_t g_runtime;
 
 enum
 {
@@ -103,6 +105,12 @@ PackMacToLeafId(const uint8_t mac[6]);
 
 static sd_append_verify_t
 ResolveSdVerifyMode(const runtime_state_t* state);
+
+static bool
+RuntimeFramLogLock(runtime_state_t* state, TickType_t timeout_ticks);
+
+static void
+RuntimeFramLogUnlock(runtime_state_t* state);
 
 static void
 RuntimeNotifyTask(TaskHandle_t handle)
@@ -472,8 +480,6 @@ typedef struct
   uint16_t payload_len;
 } broker_publish_item_t;
 
-static runtime_state_t g_state;
-static app_runtime_t g_runtime;
 static StaticQueue_t g_export_outbox_queue_struct;
 static StaticQueue_t g_broker_outbox_queue_struct;
 static uint8_t* g_export_outbox_queue_storage = NULL;
@@ -2133,8 +2139,7 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
            esp_err_to_name(last_error));
   LogFramErrorEvent(
     state, ERROR_I2C_RECOVERY_START, false, (int32_t)last_error, 0);
-  UpdateCachedBool(
-    state, &state->cached_status.i2c_recovery_active, true);
+  UpdateCachedBool(state, &state->cached_status.i2c_recovery_active, true);
 
   const i2c_port_t port = state->i2c_bus.port;
   const int sda_gpio = state->i2c_bus.sda_gpio;
@@ -2143,9 +2148,8 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
 
   esp_err_t recover_result = I2cBusRecoverLines(sda_gpio, scl_gpio);
   if (recover_result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "I2C line recovery failed: %s",
-             esp_err_to_name(recover_result));
+    ESP_LOGW(
+      kTag, "I2C line recovery failed: %s", esp_err_to_name(recover_result));
   }
 
   esp_err_t result = I2cBusDeinit(&state->i2c_bus);
@@ -2153,8 +2157,7 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
     ESP_LOGW(kTag, "I2C bus deinit failed: %s", esp_err_to_name(result));
   }
 
-  result = I2cBusInit(
-    &state->i2c_bus, port, sda_gpio, scl_gpio, frequency_hz);
+  result = I2cBusInit(&state->i2c_bus, port, sda_gpio, scl_gpio, frequency_hz);
   if (result != ESP_OK) {
     goto recovery_failed;
   }
@@ -2182,10 +2185,8 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
   LogFramErrorEvent(state, ERROR_I2C_RECOVERY_START, true, 0, 0);
   LogFramErrorEvent(state, ERROR_FRAM_IO_FAIL, true, 0, 0);
   LogFramErrorEvent(state, ERROR_I2C_RECOVERY_SUCCESS, true, 0, 0);
-  UpdateCachedBool(
-    state, &state->cached_status.i2c_recovery_active, false);
-  UpdateCachedBool(
-    state, &state->cached_status.fram_io_error_active, false);
+  UpdateCachedBool(state, &state->cached_status.i2c_recovery_active, false);
+  UpdateCachedBool(state, &state->cached_status.fram_io_error_active, false);
   state->fram_append_fail_streak = 0;
   state->fram_crc_fail_streak = 0;
   state->i2c_recovery_in_progress = false;
@@ -2223,11 +2224,9 @@ TrackFramInvalidResponse(runtime_state_t* state, const char* context)
                         false,
                         (int32_t)ESP_ERR_INVALID_RESPONSE,
                         (int32_t)kI2cRecoveryTriggerCount);
-      UpdateCachedBool(
-        state, &state->cached_status.fram_io_error_active, true);
+      UpdateCachedBool(state, &state->cached_status.fram_io_error_active, true);
     }
-    (void)RuntimeRecoverI2cBus(
-      state, context, ESP_ERR_INVALID_RESPONSE);
+    (void)RuntimeRecoverI2cBus(state, context, ESP_ERR_INVALID_RESPONSE);
   }
 }
 
@@ -2259,8 +2258,7 @@ TrackFramAppendFailure(runtime_state_t* state, esp_err_t error)
                         false,
                         (int32_t)error,
                         (int32_t)kI2cRecoveryTriggerCount);
-      UpdateCachedBool(
-        state, &state->cached_status.fram_io_error_active, true);
+      UpdateCachedBool(state, &state->cached_status.fram_io_error_active, true);
     }
     (void)RuntimeRecoverI2cBus(state, "append", error);
   }
@@ -2449,8 +2447,7 @@ RestoreTimeJumpBackPendingFromFram(runtime_state_t* state)
   if (state->sd_logger.is_mounted && TimeSyncIsSystemTimeValid()) {
     const int64_t epoch_now = (int64_t)time(NULL);
     if (SdLoggerEnsureDailyFile(&state->sd_logger, epoch_now) == ESP_OK) {
-      sd_last_record_id_on_boot =
-        SdLoggerLastRecordIdOnSd(&state->sd_logger);
+      sd_last_record_id_on_boot = SdLoggerLastRecordIdOnSd(&state->sd_logger);
     }
   }
 
@@ -2485,10 +2482,10 @@ RestoreTimeJumpBackPendingFromFram(runtime_state_t* state)
         state->time_jump_back_pending_confirm = true;
         state->time_jump_back_attempt_record_id = record.record_id;
         RequestSdFlush(state);
-        ESP_LOGI(kTag,
-                 "Restored pending time jump marker from FRAM: record_id=%"
-                 PRIu64,
-                 record.record_id);
+        ESP_LOGI(
+          kTag,
+          "Restored pending time jump marker from FRAM: record_id=%" PRIu64,
+          record.record_id);
       }
       break;
     }
@@ -2567,7 +2564,7 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
         (state->last_rtc_force_before_roll_ticks == 0)
           ? UINT32_MAX
           : (uint32_t)pdTICKS_TO_MS(now_ticks -
-                                   state->last_rtc_force_before_roll_ticks);
+                                    state->last_rtc_force_before_roll_ticks);
       if (ms_since_force >= 5000u) {
         int64_t delta_seconds = 0;
         bool jumped_back = false;
@@ -4114,13 +4111,12 @@ StorageTask(void* context)
     if (received) {
       RuntimeMarkersSetStorage(state, STORAGE_020_AFTER_QUEUE_RECV);
       log_record_t record = msg.record;
-      bool fram_lock_ok =
-        RuntimeFramLogLockWithWarn(
-          state,
-          fram_log_timeout_ticks,
-          &state->fram_log_lock_timeout_count_storage,
-          &state->last_fram_log_lock_timeout_storage_log_ms,
-          "storage");
+      bool fram_lock_ok = RuntimeFramLogLockWithWarn(
+        state,
+        fram_log_timeout_ticks,
+        &state->fram_log_lock_timeout_count_storage,
+        &state->last_fram_log_lock_timeout_storage_log_ms,
+        "storage");
       esp_err_t id_result = ESP_ERR_TIMEOUT;
       if (fram_lock_ok) {
         id_result = FramLogAssignRecordIds(&state->fram_log, &record);
@@ -4201,7 +4197,6 @@ StorageTask(void* context)
         }
       }
     }
-
   }
 
   state->storage_task = NULL;
@@ -4316,10 +4311,10 @@ SdFlushTask(void* context)
           if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
             UpdateFramFillState(state);
             if (!state->sd_was_mounted && state->sd_logger.is_mounted) {
-              ESP_LOGI(
-                kTag,
-                "SD recovered; resuming flush. FRAM overruns since boot: %" PRIu64,
-                FramLogGetOverrunRecordsTotal(&state->fram_log));
+              ESP_LOGI(kTag,
+                       "SD recovered; resuming flush. FRAM overruns since "
+                       "boot: %" PRIu64,
+                       FramLogGetOverrunRecordsTotal(&state->fram_log));
             }
             RuntimeFramLogUnlock(state);
           }
@@ -4397,16 +4392,14 @@ ControlTickRtcResync(runtime_state_t* state)
   int64_t delta_seconds = 0;
   bool jumped_back = false;
   const int64_t system_epoch_before = (int64_t)time(NULL);
-  const esp_err_t result =
-    TimeSyncResyncSystemFromRtc(&state->time_sync,
-                                &delta_seconds,
-                                &jumped_back);
+  const esp_err_t result = TimeSyncResyncSystemFromRtc(
+    &state->time_sync, &delta_seconds, &jumped_back);
   if (result != ESP_OK) {
     const uint32_t warn_elapsed_ms =
       (state->last_rtc_resync_warn_ticks == 0)
         ? UINT32_MAX
         : (uint32_t)pdTICKS_TO_MS(now_ticks -
-                                 state->last_rtc_resync_warn_ticks);
+                                  state->last_rtc_resync_warn_ticks);
     if (warn_elapsed_ms >= 60000u) {
       ESP_LOGW(kTag, "RTC resync failed: %s", esp_err_to_name(result));
       state->last_rtc_resync_warn_ticks = now_ticks;
@@ -5178,12 +5171,11 @@ ControlTask(void* context)
                                      state->cached_status.fram_io_error_active,
                                      now_ms,
                                      now_epoch);
-      AlertManagerProcessSystemError(
-        &state->alert_manager,
-        ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY,
-        state->cached_status.i2c_recovery_active,
-        now_ms,
-        now_epoch);
+      AlertManagerProcessSystemError(&state->alert_manager,
+                                     ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY,
+                                     state->cached_status.i2c_recovery_active,
+                                     now_ms,
+                                     now_epoch);
       AlertManagerProcessSystemError(&state->alert_manager,
                                      ALERT_SYSTEM_CODE_ERROR_RTD_FAULT,
                                      state->cached_status.sensor_fault_present,
@@ -5253,9 +5245,7 @@ RuntimeFlushToSd(void* context)
       remaining = (uint32_t)FramLogGetBufferedRecords(&state->fram_log);
       RuntimeFramLogUnlock(state);
     }
-    ESP_LOGI(kTag,
-             "flush complete; remaining=%u",
-             (unsigned)remaining);
+    ESP_LOGI(kTag, "flush complete; remaining=%u", (unsigned)remaining);
     return ESP_OK;
   }
   ESP_LOGE(kTag, "flush failed: %s", esp_err_to_name(result));
@@ -5788,11 +5778,10 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "FramLogInit failed: %s", esp_err_to_name(fram_log_result));
   }
 
-  esp_err_t fram_errlog_result =
-    FramErrorLogInit(&g_state.fram_error_log,
-                     g_state.fram_io,
-                     FRAM_ERRLOG_BASE,
-                     FRAM_ERRLOG_BYTES);
+  esp_err_t fram_errlog_result = FramErrorLogInit(&g_state.fram_error_log,
+                                                  g_state.fram_io,
+                                                  FRAM_ERRLOG_BASE,
+                                                  FRAM_ERRLOG_BYTES);
   if (fram_errlog_result != ESP_OK) {
     if (first_error == ESP_OK) {
       first_error = fram_errlog_result;
@@ -6354,9 +6343,8 @@ RuntimeStart(void)
   }
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
-      sd_flush_created != pdPASS ||
-      export_created != pdPASS || net_tx_created != pdPASS ||
-      wifi_direct_created != pdPASS) {
+      sd_flush_created != pdPASS || export_created != pdPASS ||
+      net_tx_created != pdPASS || wifi_direct_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.logger_running = false;
     UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);
@@ -6364,8 +6352,7 @@ RuntimeStart(void)
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
             g_state.sd_flush_task != NULL || g_state.export_task != NULL ||
-            g_state.net_tx_task != NULL ||
-            g_state.wifi_direct_task != NULL) &&
+            g_state.net_tx_task != NULL || g_state.wifi_direct_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
