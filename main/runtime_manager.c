@@ -66,6 +66,7 @@ static const int64_t kCalTimeStableDelaySec = 60;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
+static const TickType_t kFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const TickType_t kI2cIoLockTimeoutTicks = pdMS_TO_TICKS(25);
 static const TickType_t kI2cRecoveryLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
@@ -130,6 +131,7 @@ RuntimeNotifyAllRunTasks(runtime_state_t* state)
   }
   RuntimeNotifyTask(state->sensor_task);
   RuntimeNotifyTask(state->storage_task);
+  RuntimeNotifyTask(state->sd_flush_task);
   RuntimeNotifyTask(state->export_task);
   RuntimeNotifyTask(state->net_tx_task);
   RuntimeNotifyTask(state->wifi_direct_task);
@@ -380,6 +382,32 @@ RuntimeSdIoUnlock(runtime_state_t* state)
   (void)xSemaphoreGive(state->sd_io_mutex);
 }
 
+static bool
+RuntimeFramLogLock(runtime_state_t* state, TickType_t timeout_ticks)
+{
+  if (state == NULL) {
+    return false;
+  }
+  if (state->fram_log_mutex == NULL) {
+    ESP_LOGE(kTag, "FRAM log mutex unavailable");
+    return false;
+  }
+  if (xSemaphoreTake(state->fram_log_mutex, timeout_ticks) != pdTRUE) {
+    ESP_LOGW(kTag, "FRAM log mutex timeout");
+    return false;
+  }
+  return true;
+}
+
+static void
+RuntimeFramLogUnlock(runtime_state_t* state)
+{
+  if (state == NULL || state->fram_log_mutex == NULL) {
+    return;
+  }
+  (void)xSemaphoreGive(state->fram_log_mutex);
+}
+
 /**
  * @brief Execute RuntimeI2cLock.
  * @param timeout_ticks Parameter timeout_ticks.
@@ -585,11 +613,14 @@ SdMaintenanceTick(runtime_state_t* state)
              (unsigned)state->sd_fail_count);
   }
 
-  if (FramLogGetBufferedRecords(&state->fram_log) > 0) {
-    // We have backlog and SD is now available. Start draining immediately.
-    state->sd_flush_pending = true;
-    state->sd_start_drain_pending = true;
-    state->sd_next_flush_allowed_ticks = 0;
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    if (FramLogGetBufferedRecords(&state->fram_log) > 0) {
+      // We have backlog and SD is now available. Start draining immediately.
+      state->sd_flush_pending = true;
+      state->sd_start_drain_pending = true;
+      state->sd_next_flush_allowed_ticks = 0;
+    }
+    RuntimeFramLogUnlock(state);
   }
 }
 
@@ -679,6 +710,7 @@ ClearSdIoError(runtime_state_t* state)
 /**
  * @brief Execute UpdateFramFillState.
  * @param state Parameter state.
+ * @note Caller must hold fram_log_mutex.
  */
 static void
 UpdateFramFillState(runtime_state_t* state)
@@ -2383,7 +2415,12 @@ RestoreTimeJumpBackPendingFromFram(runtime_state_t* state)
   if (state == NULL) {
     return;
   }
-  const uint32_t buffered = FramLogGetBufferedRecords(&state->fram_log);
+  uint32_t buffered = 0;
+  if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    return;
+  }
+  buffered = FramLogGetBufferedRecords(&state->fram_log);
+  RuntimeFramLogUnlock(state);
   if (buffered == 0) {
     return;
   }
@@ -2406,33 +2443,36 @@ RestoreTimeJumpBackPendingFromFram(runtime_state_t* state)
     }
   }
 
-  for (uint32_t offset = 0; offset < max_scan; ++offset) {
-    log_record_t record;
-    const esp_err_t peek_result =
-      FramLogPeekOffset(&state->fram_log, offset, &record);
-    if (peek_result == ESP_ERR_NOT_FOUND) {
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    for (uint32_t offset = 0; offset < max_scan; ++offset) {
+      log_record_t record;
+      const esp_err_t peek_result =
+        FramLogPeekOffset(&state->fram_log, offset, &record);
+      if (peek_result == ESP_ERR_NOT_FOUND) {
+        break;
+      }
+      if (peek_result == ESP_ERR_INVALID_RESPONSE) {
+        continue;
+      }
+      if (peek_result != ESP_OK) {
+        break;
+      }
+      if ((record.flags & LOG_RECORD_FLAG_TIME_JUMP_BACK) == 0) {
+        continue;
+      }
+      if (sd_last_record_id_on_boot == 0 ||
+          record.record_id > sd_last_record_id_on_boot) {
+        state->time_jump_back_pending_confirm = true;
+        state->time_jump_back_attempt_record_id = record.record_id;
+        RequestSdFlush(state);
+        ESP_LOGI(kTag,
+                 "Restored pending time jump marker from FRAM: record_id=%"
+                 PRIu64,
+                 record.record_id);
+      }
       break;
     }
-    if (peek_result == ESP_ERR_INVALID_RESPONSE) {
-      continue;
-    }
-    if (peek_result != ESP_OK) {
-      break;
-    }
-    if ((record.flags & LOG_RECORD_FLAG_TIME_JUMP_BACK) == 0) {
-      continue;
-    }
-    if (sd_last_record_id_on_boot == 0 ||
-        record.record_id > sd_last_record_id_on_boot) {
-      state->time_jump_back_pending_confirm = true;
-      state->time_jump_back_attempt_record_id = record.record_id;
-      RequestSdFlush(state);
-      ESP_LOGI(kTag,
-               "Restored pending time jump marker from FRAM: record_id=%"
-               PRIu64,
-               record.record_id);
-    }
-    break;
+    RuntimeFramLogUnlock(state);
   }
 }
 
@@ -2442,7 +2482,11 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   if (state == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+  if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
   if (FramLogGetBufferedRecords(&state->fram_log) == 0) {
+    RuntimeFramLogUnlock(state);
     return ESP_OK;
   }
 
@@ -2475,15 +2519,18 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
     HandleTimeJumpBackCorruptSkip(state, &oldest_record);
     TrackFramInvalidResponse(state, "sd_sync");
     esp_err_t skip_result = FramLogDiscardOldest(&state->fram_log);
+    RuntimeFramLogUnlock(state);
     if (skip_result != ESP_OK) {
       return skip_result;
     }
     return ESP_OK;
   }
   if (peek_result != ESP_OK) {
+    RuntimeFramLogUnlock(state);
     return peek_result;
   }
   ResetFramInvalidResponseStreak(state);
+  RuntimeFramLogUnlock(state);
 
   int64_t target_epoch = epoch_for_file;
   if (oldest_record.timestamp_epoch_sec > 0) {
@@ -2524,8 +2571,12 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   }
 
   uint32_t consumed = 0;
+  if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
   esp_err_t consume_result = FramLogConsumeUpToRecordId(
     &state->fram_log, SdLoggerLastRecordIdOnSd(&state->sd_logger), &consumed);
+  RuntimeFramLogUnlock(state);
   if (consume_result == ESP_ERR_INVALID_RESPONSE) {
     ESP_LOGE(kTag, "FRAM corruption while aligning with SD contents");
     return consume_result;
@@ -2553,6 +2604,7 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
  * @param bytes_used_out Parameter bytes_used_out.
  * @param batch_includes_time_jump_flag_out Parameter
  * batch_includes_time_jump_flag_out.
+ * @note Caller must hold fram_log_mutex.
  * @return Return the function result.
  */
 static esp_err_t
@@ -2681,18 +2733,34 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
   const bool allow_full_flush = flush_all && state->stop_requested;
   TickType_t flush_start = xTaskGetTickCount();
   uint32_t total_flushed = 0;
-  while (FramLogGetBufferedRecords(&state->fram_log) > 0) {
+  while (true) {
+    uint32_t buffered = 0;
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      return ESP_ERR_TIMEOUT;
+    }
+    buffered = FramLogGetBufferedRecords(&state->fram_log);
+    RuntimeFramLogUnlock(state);
+    if (buffered == 0) {
+      break;
+    }
+
     log_record_t first_record;
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      return ESP_ERR_TIMEOUT;
+    }
     esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       ESP_LOGE(kTag, "Cannot flush: corrupted FRAM record at head");
       HandleTimeJumpBackCorruptSkip(state, &first_record);
       (void)FramLogSkipCorruptedRecord(&state->fram_log);
+      RuntimeFramLogUnlock(state);
       return ESP_ERR_INVALID_RESPONSE;
     }
     if (peek_result != ESP_OK) {
+      RuntimeFramLogUnlock(state);
       return peek_result;
     }
+    RuntimeFramLogUnlock(state);
 
     char day_string[16];
     BuildDateStringFromRecord(&first_record, day_string, sizeof(day_string));
@@ -2723,6 +2791,10 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     uint64_t last_record_id = 0;
     size_t bytes_used = 0;
     bool batch_includes_time_jump_flag = false;
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      RuntimeSdIoUnlock(state);
+      return ESP_ERR_TIMEOUT;
+    }
     esp_err_t batch_result = BuildBatchForDay(state,
                                               day_string,
                                               state->batch_buffer,
@@ -2734,6 +2806,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
                                               &last_record_id,
                                               &bytes_used,
                                               &batch_includes_time_jump_flag);
+    RuntimeFramLogUnlock(state);
     if (batch_result != ESP_OK) {
       RuntimeSdIoUnlock(state);
       return batch_result;
@@ -2791,9 +2864,13 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       state, batch_includes_time_jump_flag, last_record_id);
     RuntimeSdIoUnlock(state);
 
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      return ESP_ERR_TIMEOUT;
+    }
     for (uint32_t index = 0; index < records_used; ++index) {
       esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
       if (discard_result != ESP_OK) {
+        RuntimeFramLogUnlock(state);
         return discard_result;
       }
       if ((index % 16u) == 0u && (xTaskGetTickCount() - flush_start) >
@@ -2809,6 +2886,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
         flush_start = xTaskGetTickCount();
       }
     }
+    RuntimeFramLogUnlock(state);
 
     total_flushed += records_used;
     ESP_LOGI(kTag,
@@ -2918,6 +2996,8 @@ ResolveSdVerifyMode(const runtime_state_t* state)
  * @param more_pending_out Parameter more_pending_out.
  * @return Return the function result.
  */
+// Lock order rule: SdFlushTask/SdFlushWorkerTickEx takes sd_io_mutex first,
+// then fram_log_mutex. StorageTask never takes sd_io_mutex.
 static esp_err_t
 SdFlushWorkerTickEx(runtime_state_t* state,
                     uint32_t max_records,
@@ -2984,8 +3064,13 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   }
 
   while (true) {
-    const uint32_t buffered_records =
-      FramLogGetBufferedRecords(&state->fram_log);
+    uint32_t buffered_records = 0;
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      result = ESP_ERR_TIMEOUT;
+      goto flush_done;
+    }
+    buffered_records = FramLogGetBufferedRecords(&state->fram_log);
+    RuntimeFramLogUnlock(state);
     if (buffered_records == 0) {
       break;
     }
@@ -2998,6 +3083,10 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     }
 
     log_record_t first_record;
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      result = ESP_ERR_TIMEOUT;
+      goto flush_done;
+    }
     esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       ESP_LOGW(kTag, "Skipping corrupted FRAM record during SD flush");
@@ -3006,16 +3095,19 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       state->fram_corrupt_skip_count++;
       corrupt_skips_this_call++;
       TrackFramInvalidResponse(state, "flush");
+      RuntimeFramLogUnlock(state);
       if (corrupt_skips_this_call >= kMaxCorruptSkipsThisCall) {
         break;
       }
       continue;
     }
     if (peek_result != ESP_OK) {
+      RuntimeFramLogUnlock(state);
       result = peek_result;
       goto flush_done;
     }
     ResetFramInvalidResponseStreak(state);
+    RuntimeFramLogUnlock(state);
 
     const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
                                      ? first_record.timestamp_epoch_sec
@@ -3039,6 +3131,10 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     bool batch_includes_time_jump_flag = false;
     const uint32_t remaining_records_budget =
       (max_records > 0) ? (max_records - total_records_flushed) : 0;
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      result = ESP_ERR_TIMEOUT;
+      goto flush_done;
+    }
     esp_err_t batch_result = BuildBatchForDay(state,
                                               day_string,
                                               state->batch_buffer,
@@ -3050,6 +3146,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
                                               &last_record_id,
                                               &bytes_used,
                                               &batch_includes_time_jump_flag);
+    RuntimeFramLogUnlock(state);
     if (batch_result != ESP_OK) {
       result = batch_result;
       goto flush_done;
@@ -3091,13 +3188,19 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     HandleTimeJumpBackBatchWritten(
       state, batch_includes_time_jump_flag, last_record_id);
 
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      result = ESP_ERR_TIMEOUT;
+      goto flush_done;
+    }
     for (uint32_t index = 0; index < records_used; ++index) {
       esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
       if (discard_result != ESP_OK) {
+        RuntimeFramLogUnlock(state);
         result = discard_result;
         goto flush_done;
       }
     }
+    RuntimeFramLogUnlock(state);
 
     total_records_flushed += records_used;
     total_bytes_flushed += bytes_used;
@@ -3118,7 +3221,12 @@ flush_done:
     *bytes_flushed_out = total_bytes_flushed;
   }
   if (more_pending_out != NULL) {
-    *more_pending_out = (FramLogGetBufferedRecords(&state->fram_log) > 0);
+    bool more_pending = false;
+    if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      more_pending = (FramLogGetBufferedRecords(&state->fram_log) > 0);
+      RuntimeFramLogUnlock(state);
+    }
+    *more_pending_out = more_pending;
   }
   return ESP_OK;
 }
@@ -3947,9 +4055,6 @@ static void
 StorageTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
-  state->last_flush_ticks = xTaskGetTickCount();
-  state->sd_next_flush_allowed_ticks = state->last_flush_ticks;
-  TickType_t last_sd_detect_poll_ticks = 0;
 
   while (!state->stop_requested ||
          uxQueueMessagesWaiting(state->log_queue) > 0) {
@@ -3960,7 +4065,12 @@ StorageTask(void* context)
     if (received) {
       RuntimeMarkersSetStorage(state, STORAGE_020_AFTER_QUEUE_RECV);
       log_record_t record = msg.record;
-      esp_err_t id_result = FramLogAssignRecordIds(&state->fram_log, &record);
+      bool fram_lock_ok =
+        RuntimeFramLogLock(state, kFramLogLockTimeoutTicks);
+      esp_err_t id_result = ESP_ERR_TIMEOUT;
+      if (fram_lock_ok) {
+        id_result = FramLogAssignRecordIds(&state->fram_log, &record);
+      }
       RuntimeMarkersSetStorage(state, STORAGE_030_ASSIGN_IDS);
       if (id_result != ESP_OK) {
         ESP_LOGE(
@@ -3984,7 +4094,7 @@ StorageTask(void* context)
                            now_ms,
                            now_epoch);
 
-      if (state->fram_i2c.initialized) {
+      if (state->fram_i2c.initialized && fram_lock_ok) {
         RuntimeMarkersSetStorage(state, STORAGE_050_FRAM_APPEND);
         esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
         if (append_result != ESP_OK) {
@@ -4013,6 +4123,9 @@ StorageTask(void* context)
           record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
         }
       }
+      if (fram_lock_ok) {
+        RuntimeFramLogUnlock(state);
+      }
 
       // if (!state->mesh.is_root && MeshTransportIsConnected(&state->mesh)) {
       //   (void)MeshTransportSendRecord(&state->mesh, &record);
@@ -4033,6 +4146,26 @@ StorageTask(void* context)
       }
     }
 
+  }
+
+  state->storage_task = NULL;
+  vTaskDelete(NULL);
+}
+
+/**
+ * @brief Execute SdFlushTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the SdFlushTask task.
+ */
+static void
+SdFlushTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+  state->last_flush_ticks = xTaskGetTickCount();
+  state->sd_next_flush_allowed_ticks = state->last_flush_ticks;
+  TickType_t last_sd_detect_poll_ticks = 0;
+
+  while (!state->stop_requested) {
     const TickType_t now_ticks = xTaskGetTickCount();
     if (state->sd_card_detect.initialized &&
         (last_sd_detect_poll_ticks == 0 ||
@@ -4083,7 +4216,11 @@ StorageTask(void* context)
     const bool periodic_due =
       (pdTICKS_TO_MS(now_ticks - state->last_flush_ticks) >=
        state->settings.sd_flush_period_ms);
-    const uint32_t buffered = FramLogGetBufferedRecords(&state->fram_log);
+    uint32_t buffered = 0;
+    if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      buffered = FramLogGetBufferedRecords(&state->fram_log);
+      RuntimeFramLogUnlock(state);
+    }
     const bool watermark_hit =
       buffered >= state->settings.fram_flush_watermark_records;
 
@@ -4103,7 +4240,8 @@ StorageTask(void* context)
     const UBaseType_t queue_depth =
       (state->log_queue != NULL) ? uxQueueMessagesWaiting(state->log_queue) : 0;
     const bool queue_idle = (queue_depth <= 1u);
-    const bool allow_flush_now = (!received) || state->sd_start_drain_pending;
+    const bool allow_flush_now =
+      state->sd_start_drain_pending || (queue_depth == 0u);
     RuntimeMarkersSetSdFlush(state, SD_030_SCHEDULER);
     if (allow_flush_now && queue_idle && state->sd_flush_pending &&
         state->sd_logger.is_mounted &&
@@ -4119,12 +4257,15 @@ StorageTask(void* context)
       if (flush_result == ESP_OK) {
         if (flushed > 0) {
           state->sd_flush_records_since = 0;
-          UpdateFramFillState(state);
-          if (!state->sd_was_mounted && state->sd_logger.is_mounted) {
-            ESP_LOGI(kTag,
-                     "SD recovered; resuming flush. FRAM overruns since boot: "
-                     "%" PRIu64,
-                     FramLogGetOverrunRecordsTotal(&state->fram_log));
+          if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+            UpdateFramFillState(state);
+            if (!state->sd_was_mounted && state->sd_logger.is_mounted) {
+              ESP_LOGI(
+                kTag,
+                "SD recovered; resuming flush. FRAM overruns since boot: %" PRIu64,
+                FramLogGetOverrunRecordsTotal(&state->fram_log));
+            }
+            RuntimeFramLogUnlock(state);
           }
         }
         state->sd_flush_pending = more_pending;
@@ -4141,14 +4282,11 @@ StorageTask(void* context)
     } else if (!state->sd_was_mounted) {
       state->sd_was_mounted = true;
     }
+
+    RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
   }
 
-  if (state->sd_logger.is_mounted) {
-    (void)SdFlushWorkerTick(
-      state, kSdFlushMaxRecordsPerPass, kSdFlushMaxMsPerPass, NULL, NULL, NULL);
-  }
-
-  state->storage_task = NULL;
+  state->sd_flush_task = NULL;
   vTaskDelete(NULL);
 }
 
@@ -4523,7 +4661,17 @@ DrainFramToSd(runtime_state_t* state,
   int32_t records_since_yield = 0;
 
   RuntimeDiagHeapCheck(state, "DrainFramToSd loop (before)", false);
-  while (FramLogGetBufferedRecords(&state->fram_log) > 0) {
+  while (true) {
+    uint32_t buffered = 0;
+    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      result = ESP_ERR_TIMEOUT;
+      break;
+    }
+    buffered = FramLogGetBufferedRecords(&state->fram_log);
+    RuntimeFramLogUnlock(state);
+    if (buffered == 0) {
+      break;
+    }
     uint32_t flushed = 0;
     size_t bytes_flushed = 0;
     bool more_pending = false;
@@ -4544,13 +4692,21 @@ DrainFramToSd(runtime_state_t* state,
     flushed_records += (int32_t)flushed;
     flushed_bytes += (int32_t)bytes_flushed;
     records_since_yield += (int32_t)flushed;
-    UpdateFramFillState(state);
+    if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      UpdateFramFillState(state);
+      RuntimeFramLogUnlock(state);
+    }
 #if CONFIG_APP_DRAIN_LOG_PROGRESS
     if (flushed > 0) {
+      uint32_t remaining = 0;
+      if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+        remaining = FramLogGetBufferedRecords(&state->fram_log);
+        RuntimeFramLogUnlock(state);
+      }
       ESP_LOGI(kTag,
                "Drain progress: flushed=%d remaining=%u",
                flushed_records,
-               (unsigned)FramLogGetBufferedRecords(&state->fram_log));
+               (unsigned)remaining);
     }
 #endif
     if (!more_pending) {
@@ -4577,8 +4733,11 @@ drain_done:
     state->sd_backoff_until_ticks = saved_backoff;
   }
 
-  const uint32_t remaining =
-    (uint32_t)FramLogGetBufferedRecords(&state->fram_log);
+  uint32_t remaining = 0;
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    remaining = (uint32_t)FramLogGetBufferedRecords(&state->fram_log);
+    RuntimeFramLogUnlock(state);
+  }
   const uint32_t duration_ms =
     (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount() - start_ticks);
 
@@ -4762,8 +4921,11 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
   }
 
 #if !CONFIG_APP_START_DRAIN_ENABLE
-  const int32_t initial_remaining =
-    (int32_t)FramLogGetBufferedRecords(&state->fram_log);
+  int32_t initial_remaining = 0;
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    initial_remaining = (int32_t)FramLogGetBufferedRecords(&state->fram_log);
+    RuntimeFramLogUnlock(state);
+  }
   EnsureSdMounted();
   UpdateCachedBool(
     state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
@@ -4773,7 +4935,10 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
   stats->duration_ms = 0;
   stats->result = ESP_ERR_NOT_SUPPORTED;
   UpdateStartDrainCachedStatus(state, stats);
-  UpdateFramFillState(state);
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    UpdateFramFillState(state);
+    RuntimeFramLogUnlock(state);
+  }
   ESP_LOGW(kTag,
            "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
            stats->flushed_records,
@@ -4783,8 +4948,11 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
   return stats->result;
 #endif
 
-  const int32_t initial_remaining =
-    (int32_t)FramLogGetBufferedRecords(&state->fram_log);
+  int32_t initial_remaining = 0;
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    initial_remaining = (int32_t)FramLogGetBufferedRecords(&state->fram_log);
+    RuntimeFramLogUnlock(state);
+  }
 
   EnsureSdMounted();
   UpdateCachedBool(
@@ -4798,7 +4966,10 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
     stats->duration_ms = 0;
     stats->result = ESP_OK;
     UpdateStartDrainCachedStatus(state, stats);
-    UpdateFramFillState(state);
+    if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      UpdateFramFillState(state);
+      RuntimeFramLogUnlock(state);
+    }
     ESP_LOGW(kTag,
              "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
              stats->flushed_records,
@@ -4815,7 +4986,10 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
     stats->duration_ms = 0;
     stats->result = ESP_ERR_INVALID_STATE;
     UpdateStartDrainCachedStatus(state, stats);
-    UpdateFramFillState(state);
+    if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      UpdateFramFillState(state);
+      RuntimeFramLogUnlock(state);
+    }
     // SD isn't available yet. Make sure the normal storage loop drains FRAM
     // as soon as the card mounts (don't wait for watermark/periodic flush).
     state->sd_start_drain_pending = true;
@@ -4845,7 +5019,10 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
     state->sd_start_drain_pending = false;
   }
 
-  UpdateFramFillState(state);
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    UpdateFramFillState(state);
+    RuntimeFramLogUnlock(state);
+  }
   UpdateStartDrainCachedStatus(state, stats);
   ESP_LOGW(kTag,
            "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
@@ -5015,9 +5192,14 @@ RuntimeFlushToSd(void* context)
   }
   esp_err_t result = FlushFramToSd(state, true);
   if (result == ESP_OK || result == ESP_ERR_NOT_FOUND) {
+    uint32_t remaining = 0;
+    if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+      remaining = (uint32_t)FramLogGetBufferedRecords(&state->fram_log);
+      RuntimeFramLogUnlock(state);
+    }
     ESP_LOGI(kTag,
              "flush complete; remaining=%u",
-             (unsigned)FramLogGetBufferedRecords(&state->fram_log));
+             (unsigned)remaining);
     return ESP_OK;
   }
   ESP_LOGE(kTag, "flush failed: %s", esp_err_to_name(result));
@@ -5322,6 +5504,10 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create SD I/O mutex; SD marked degraded");
     g_state.sd_degraded = true;
     UpdateCachedBool(&g_state, &g_state.cached_status.sd_degraded, true);
+  }
+  g_state.fram_log_mutex = xSemaphoreCreateMutex();
+  if (g_state.fram_log_mutex == NULL) {
+    ESP_LOGE(kTag, "Failed to create FRAM log mutex");
   }
   g_state.i2c_mutex = xSemaphoreCreateMutexStatic(&g_state.i2c_mutex_buf);
   if (g_state.i2c_mutex == NULL) {
@@ -6014,6 +6200,7 @@ RuntimeStart(void)
 
   BaseType_t sensor_created = pdPASS;
   BaseType_t storage_created = pdPASS;
+  BaseType_t sd_flush_created = pdPASS;
   BaseType_t export_created = pdPASS;
   BaseType_t net_tx_created = pdPASS;
   BaseType_t wifi_direct_created = pdPASS;
@@ -6055,6 +6242,22 @@ RuntimeStart(void)
       RegisterStackMonitorTask(
         "storage", &g_state.storage_task, kStorageTaskStackBytes);
     }
+    g_state.sd_flush_task =
+      xTaskCreateStatic(&SdFlushTask,
+                        "sd_flush",
+                        kSdFlushTaskStackBytes / sizeof(StackType_t),
+                        &g_state,
+                        5,
+                        g_state.sd_flush_task_stack,
+                        &g_state.sd_flush_task_tcb);
+    sd_flush_created = (g_state.sd_flush_task != NULL) ? pdPASS : pdFAIL;
+    if (sd_flush_created != pdPASS) {
+      g_state.sd_flush_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task sd_flush");
+    } else {
+      RegisterStackMonitorTask(
+        "sd_flush", &g_state.sd_flush_task, kSdFlushTaskStackBytes);
+    }
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
@@ -6095,6 +6298,7 @@ RuntimeStart(void)
   }
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
+      sd_flush_created != pdPASS ||
       export_created != pdPASS || net_tx_created != pdPASS ||
       wifi_direct_created != pdPASS) {
     g_state.stop_requested = true;
@@ -6103,14 +6307,15 @@ RuntimeStart(void)
     UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-            g_state.export_task != NULL || g_state.net_tx_task != NULL ||
+            g_state.sd_flush_task != NULL || g_state.export_task != NULL ||
+            g_state.net_tx_task != NULL ||
             g_state.wifi_direct_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
     if (g_state.sensor_task == NULL && g_state.storage_task == NULL &&
-        g_state.export_task == NULL && g_state.net_tx_task == NULL &&
-        g_state.wifi_direct_task == NULL) {
+        g_state.sd_flush_task == NULL && g_state.export_task == NULL &&
+        g_state.net_tx_task == NULL && g_state.wifi_direct_task == NULL) {
       g_state.stop_requested = false;
       UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
     }
@@ -6148,15 +6353,15 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
 
   const TickType_t wait_start = xTaskGetTickCount();
   while ((state->sensor_task != NULL || state->storage_task != NULL ||
-          state->export_task != NULL || state->net_tx_task != NULL ||
-          state->wifi_direct_task != NULL) &&
+          state->sd_flush_task != NULL || state->export_task != NULL ||
+          state->net_tx_task != NULL || state->wifi_direct_task != NULL) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 15000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 
   if (state->sensor_task != NULL || state->storage_task != NULL ||
-      state->export_task != NULL || state->net_tx_task != NULL ||
-      state->wifi_direct_task != NULL) {
+      state->sd_flush_task != NULL || state->export_task != NULL ||
+      state->net_tx_task != NULL || state->wifi_direct_task != NULL) {
     if (state->sensor_task != NULL) {
       ESP_LOGW(kTag,
                "Stop timeout: sensor_task still running (%p)",
@@ -6166,6 +6371,11 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
       ESP_LOGW(kTag,
                "Stop timeout: storage_task still running (%p)",
                state->storage_task);
+    }
+    if (state->sd_flush_task != NULL) {
+      ESP_LOGW(kTag,
+               "Stop timeout: sd_flush_task still running (%p)",
+               state->sd_flush_task);
     }
     if (state->export_task != NULL) {
       ESP_LOGW(kTag,
@@ -6304,7 +6514,8 @@ EnterDiagMode(void)
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
   bool allow_drain = (stop_result == ESP_OK);
   if (allow_drain &&
-      (g_state.sensor_task != NULL || g_state.storage_task != NULL)) {
+      (g_state.sensor_task != NULL || g_state.storage_task != NULL ||
+       g_state.sd_flush_task != NULL)) {
     if (g_state.sensor_task != NULL) {
       ESP_LOGW(kTag,
                "Diag entry guard: sensor_task still running (%p)",
@@ -6314,6 +6525,11 @@ EnterDiagMode(void)
       ESP_LOGW(kTag,
                "Diag entry guard: storage_task still running (%p)",
                g_state.storage_task);
+    }
+    if (g_state.sd_flush_task != NULL) {
+      ESP_LOGW(kTag,
+               "Diag entry guard: sd_flush_task still running (%p)",
+               g_state.sd_flush_task);
     }
     allow_drain = false;
     stop_result = ESP_ERR_TIMEOUT;
@@ -6565,8 +6781,11 @@ RuntimeAcknowledgeDisplayAttention(display_attention_item_t item)
   if (item != kDispAttnItemFramOvr) {
     return false;
   }
-  g_state.fram_overrun_ack_total =
-    FramLogGetOverrunRecordsTotal(&g_state.fram_log);
+  if (RuntimeFramLogLock(&g_state, kFramLogLockTimeoutTicks)) {
+    g_state.fram_overrun_ack_total =
+      FramLogGetOverrunRecordsTotal(&g_state.fram_log);
+    RuntimeFramLogUnlock(&g_state);
+  }
   UpdateCachedBool(&g_state,
                    &g_state.cached_status.fram_overrun_active,
                    g_state.last_overrun_records_total >
