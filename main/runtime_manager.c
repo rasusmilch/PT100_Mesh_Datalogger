@@ -40,6 +40,7 @@
 #include "run_gpio.h"
 #include "runtime_health.h"
 #include "runtime_health_publisher.h"
+#include "runtime_markers.h"
 #include "runtime_state.h"
 #include "sd_logger.h"
 #include "sdkconfig.h"
@@ -2943,12 +2944,14 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     return ESP_ERR_NO_MEM;
   }
 
+  RuntimeMarkersSetSdFlush(state, SD_040_FLUSH_WORKER_ENTER);
   const TickType_t start_ticks = xTaskGetTickCount();
   if (state->sd_backoff_until_ticks != 0 &&
       start_ticks < state->sd_backoff_until_ticks) {
     if (more_pending_out != NULL) {
       *more_pending_out = true;
     }
+    RuntimeMarkersSetSdFlush(state, SD_050_FLUSH_WORKER_EXIT);
     return ESP_OK;
   }
 
@@ -2965,6 +2968,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     if (more_pending_out != NULL) {
       *more_pending_out = true;
     }
+    RuntimeMarkersSetSdFlush(state, SD_050_FLUSH_WORKER_EXIT);
     return ESP_ERR_TIMEOUT;
   }
   esp_err_t result = ESP_OK;
@@ -3102,6 +3106,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
 flush_done:
   state->sd_flush_in_progress = false;
   RuntimeSdIoUnlock(state);
+  RuntimeMarkersSetSdFlush(state, SD_050_FLUSH_WORKER_EXIT);
   if (result != ESP_OK) {
     return result;
   }
@@ -3949,11 +3954,14 @@ StorageTask(void* context)
   while (!state->stop_requested ||
          uxQueueMessagesWaiting(state->log_queue) > 0) {
     sensor_sample_msg_t msg;
+    RuntimeMarkersSetStorage(state, STORAGE_010_BEFORE_QUEUE_RECV);
     const bool received =
       (xQueueReceive(state->log_queue, &msg, pdMS_TO_TICKS(500)) == pdTRUE);
     if (received) {
+      RuntimeMarkersSetStorage(state, STORAGE_020_AFTER_QUEUE_RECV);
       log_record_t record = msg.record;
       esp_err_t id_result = FramLogAssignRecordIds(&state->fram_log, &record);
+      RuntimeMarkersSetStorage(state, STORAGE_030_ASSIGN_IDS);
       if (id_result != ESP_OK) {
         ESP_LOGE(
           kTag, "Failed to assign record id: %s", esp_err_to_name(id_result));
@@ -3969,6 +3977,7 @@ StorageTask(void* context)
       log_record_t alert_record = record;
       alert_record.raw_temp_milli_c = msg.disp_raw_temp_milli_c;
       alert_record.temp_milli_c = msg.disp_cal_temp_milli_c;
+      RuntimeMarkersSetStorage(state, STORAGE_040_ALERT_MANAGER);
       AlertManagerOnSample(&state->alert_manager,
                            state->local_leaf_id,
                            &alert_record,
@@ -3976,6 +3985,7 @@ StorageTask(void* context)
                            now_epoch);
 
       if (state->fram_i2c.initialized) {
+        RuntimeMarkersSetStorage(state, STORAGE_050_FRAM_APPEND);
         esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
         if (append_result != ESP_OK) {
           ESP_LOGE(
@@ -4008,9 +4018,11 @@ StorageTask(void* context)
       //   (void)MeshTransportSendRecord(&state->mesh, &record);
       // }
 
+      RuntimeMarkersSetStorage(state, STORAGE_060_EXPORT_UART_ENQUEUE);
       EnqueueExportRecord(state, state->node_id_string, &record);
 
       if (state->mqtt_enabled_active) {
+        RuntimeMarkersSetStorage(state, STORAGE_070_MQTT_ENQUEUE);
         if (state->node_role_active == APP_NODE_ROLE_ROOT) {
           if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active)) {
             EnqueueBrokerPublish(state, state->local_mac, &record);
@@ -4028,6 +4040,7 @@ StorageTask(void* context)
            kSdDetectPollIntervalMs)) {
       last_sd_detect_poll_ticks = now_ticks;
       bool detect_changed = false;
+      RuntimeMarkersSetSdFlush(state, SD_010_DETECT_POLL);
       const bool present =
         SdCardDetectPoll(&state->sd_card_detect, &detect_changed);
       UpdateCachedBool(state, &state->cached_status.sd_card_present, present);
@@ -4083,6 +4096,7 @@ StorageTask(void* context)
     }
 
     if (!state->sd_logger.is_mounted) {
+      RuntimeMarkersSetSdFlush(state, SD_020_MAINTENANCE);
       SdMaintenanceTick(state);
     }
 
@@ -4090,6 +4104,7 @@ StorageTask(void* context)
       (state->log_queue != NULL) ? uxQueueMessagesWaiting(state->log_queue) : 0;
     const bool queue_idle = (queue_depth <= 1u);
     const bool allow_flush_now = (!received) || state->sd_start_drain_pending;
+    RuntimeMarkersSetSdFlush(state, SD_030_SCHEDULER);
     if (allow_flush_now && queue_idle && state->sd_flush_pending &&
         state->sd_logger.is_mounted &&
         now_ticks >= state->sd_next_flush_allowed_ticks) {

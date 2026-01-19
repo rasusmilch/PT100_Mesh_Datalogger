@@ -51,6 +51,7 @@
 #include "linenoise/linenoise.h"
 #include "mem_guard.h"
 #include "runtime_manager.h"
+#include "runtime_markers.h"
 #include "sd_card_detect.h"
 #include "sdkconfig.h"
 #include "time_sync.h"
@@ -4960,6 +4961,35 @@ CommandReboot(int argc, char** argv)
 }
 
 /**
+ * @brief Execute CommandMarker.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandMarker(int argc, char** argv)
+{
+  if (argc < 2) {
+    printf("Usage: marker show|clear\n");
+    return 1;
+  }
+
+  const char* action = argv[1];
+  if (strcmp(action, "show") == 0) {
+    RuntimeMarkersDump(RuntimeGetState());
+    return 0;
+  }
+  if (strcmp(action, "clear") == 0) {
+    RuntimeMarkersClear();
+    printf("Markers cleared.\n");
+    return 0;
+  }
+
+  printf("Unknown marker action: %s\n", action);
+  return 1;
+}
+
+/**
  * @brief Execute RegisterCommands.
  */
 static void
@@ -5015,6 +5045,14 @@ RegisterCommands(void)
     .func = &CommandFlush,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&flush_cmd));
+
+  const esp_console_cmd_t marker_cmd = {
+    .command = "marker",
+    .help = "Marker commands: marker show | marker clear",
+    .hint = NULL,
+    .func = &CommandMarker,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&marker_cmd));
 
   const esp_console_cmd_t sd_cmd = {
     .command = "sd",

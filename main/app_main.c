@@ -8,6 +8,7 @@
 #include "nvs_flash.h"
 #include "run_gpio.h"
 #include "runtime_manager.h"
+#include "runtime_markers.h"
 
 static const char* kTag = "app";
 static const app_runtime_t* g_runtime = NULL;
@@ -75,6 +76,12 @@ AppInitTask(void* context)
   (void)context;
 
   const app_boot_mode_t boot_mode = BootModeDetermineAtStartup();
+  RuntimeMarkersDumpOnBoot();
+  const esp_reset_reason_t reset_reason = esp_reset_reason();
+  ESP_LOGI(kTag,
+           "Reset reason: %s (%d)",
+           RuntimeMarkersResetReasonToString(reset_reason),
+           (int)reset_reason);
 
   esp_err_t runtime_result = RuntimeManagerInit();
   if (runtime_result != ESP_OK) {

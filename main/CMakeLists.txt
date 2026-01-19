@@ -39,6 +39,7 @@ idf_component_register(
     "runtime_health.c"
     "runtime_health_publisher.c"
     "runtime_manager.c"
+    "runtime_markers.c"
     "run_gpio.c"
     "units_gpio.c"
     "sd_card_detect.c"
