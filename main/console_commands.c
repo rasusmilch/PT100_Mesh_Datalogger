@@ -1,6 +1,7 @@
 #include "console_commands.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include <dirent.h>
@@ -61,6 +62,7 @@
 #include "wifi_service.h"
 
 static const char* kTag = "console";
+static const TickType_t kConsoleFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
 static void
@@ -106,6 +108,25 @@ ParseCalDueUnit(const char* value, uint8_t* unit_out);
  */
 static void
 PrintTimeShow(const app_runtime_t* runtime);
+
+static bool
+ConsoleFramLogLock(runtime_state_t* state)
+{
+  if (state == NULL || state->fram_log_mutex == NULL) {
+    return false;
+  }
+  return xSemaphoreTake(state->fram_log_mutex,
+                        kConsoleFramLogLockTimeoutTicks) == pdTRUE;
+}
+
+static void
+ConsoleFramLogUnlock(runtime_state_t* state)
+{
+  if (state == NULL || state->fram_log_mutex == NULL) {
+    return;
+  }
+  (void)xSemaphoreGive(state->fram_log_mutex);
+}
 /**
  * @brief Execute MaybePushCalRawSampleFromSensor.
  */
@@ -715,12 +736,25 @@ CommandStatus(int argc, char** argv)
          (local_buffer[0] != '\0') ? local_buffer : "unknown",
          utc_offset_sec,
          local_time.tm_isdst);
-  const size_t fram_count = FramLogGetCountRecords(g_runtime->fram_log);
-  const size_t fram_capacity = FramLogGetCapacityRecords(g_runtime->fram_log);
+  runtime_state_t* state = RuntimeGetState();
+  size_t fram_count = 0;
+  size_t fram_capacity = 0;
+  uint64_t fram_overrun_total = 0;
+  uint32_t fram_buffered = 0;
+  uint32_t fram_next_sequence = 0;
+  const bool fram_locked = ConsoleFramLogLock(state);
+  if (fram_locked) {
+    fram_count = FramLogGetCountRecords(g_runtime->fram_log);
+    fram_capacity = FramLogGetCapacityRecords(g_runtime->fram_log);
+    fram_overrun_total = FramLogGetOverrunRecordsTotal(g_runtime->fram_log);
+    fram_buffered = FramLogGetBufferedRecords(g_runtime->fram_log);
+    fram_next_sequence = FramLogNextSequence(g_runtime->fram_log);
+    ConsoleFramLogUnlock(state);
+  } else {
+    printf("fram_stats: unavailable (lock timeout)\n");
+  }
   const uint32_t fram_fill_pct =
     (fram_capacity > 0) ? (uint32_t)((fram_count * 100u) / fram_capacity) : 0u;
-  const uint64_t fram_overrun_total =
-    FramLogGetOverrunRecordsTotal(g_runtime->fram_log);
   printf("fram_count: %zu\n", fram_count);
   printf("fram_capacity: %zu\n", fram_capacity);
   printf("fram_fill_pct: %u\n", (unsigned)fram_fill_pct);
@@ -731,9 +765,8 @@ CommandStatus(int argc, char** argv)
     (g_runtime->fram_full != NULL) ? *g_runtime->fram_full : false;
   printf("fram_full: %s\n", fram_full ? "yes" : "no");
   printf("fram_count/seq: %u/%u\n",
-         (unsigned)FramLogGetBufferedRecords(g_runtime->fram_log),
-         (unsigned)FramLogNextSequence(g_runtime->fram_log));
-  runtime_state_t* state = RuntimeGetState();
+         (unsigned)fram_buffered,
+         (unsigned)fram_next_sequence);
   if (state != NULL) {
     printf("fram_corrupt_detect_count: %u\n",
            (unsigned)state->fram_corrupt_detect_count);
@@ -1486,8 +1519,14 @@ CommandFram(int argc, char** argv)
     return 1;
   }
 
+  runtime_state_t* state = RuntimeGetState();
+  if (!ConsoleFramLogLock(state)) {
+    printf("fram: busy (lock timeout)\n");
+    return 1;
+  }
   fram_log_status_t status;
   esp_err_t result = FramLogGetStatus(g_runtime->fram_log, &status);
+  ConsoleFramLogUnlock(state);
   if (result != ESP_OK) {
     printf("fram: not initialized\n");
     return 1;
@@ -1509,7 +1548,12 @@ CommandFram(int argc, char** argv)
          (unsigned)status.next_sequence,
          status.next_record_id);
   if (strcmp(action, "clear") == 0) {
+    if (!ConsoleFramLogLock(state)) {
+      printf("fram clear skipped: lock timeout\n");
+      return 1;
+    }
     result = FramLogReset(g_runtime->fram_log);
+    ConsoleFramLogUnlock(state);
     if (result != ESP_OK) {
       printf("fram clear failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -1521,6 +1565,10 @@ CommandFram(int argc, char** argv)
     return 0;
   }
   if (strcmp(action, "show") == 0) {
+    if (!ConsoleFramLogLock(state)) {
+      printf("fram show skipped: lock timeout\n");
+      return 1;
+    }
     const uint32_t buffered = FramLogGetBufferedRecords(g_runtime->fram_log);
     const uint64_t last_sd_id = SdLoggerLastRecordIdOnSd(g_runtime->sd_logger);
     printf("fram: buffered=%u last_sd_record_id=%" PRIu64 "\n",
@@ -1538,6 +1586,7 @@ CommandFram(int argc, char** argv)
         printf("fram show failed at offset %u: %s\n",
                (unsigned)offset,
                esp_err_to_name(peek_result));
+        ConsoleFramLogUnlock(state);
         return 1;
       }
 
@@ -1579,6 +1628,7 @@ CommandFram(int argc, char** argv)
              record.resistance_milli_ohm / 1000.0);
       printf("  flags: 0x%04x [%s]\n", (unsigned)record.flags, flags_string);
     }
+    ConsoleFramLogUnlock(state);
   }
   return 0;
 }

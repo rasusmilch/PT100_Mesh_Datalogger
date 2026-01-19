@@ -137,6 +137,7 @@ extern "C" {
   {
     kLogQueueDepth = 64,
     kStorageTaskStackBytes = 8192, // bytes
+    kSdFlushTaskStackBytes = 12288, // bytes
     kNetTxTaskStackBytes = 10240, // bytes
   };
 
@@ -166,6 +167,7 @@ extern "C" {
     sd_card_detect_t sd_card_detect;
     StaticSemaphore_t sd_io_mutex_buf;
     SemaphoreHandle_t sd_io_mutex;
+    SemaphoreHandle_t fram_log_mutex;
     max31865_reader_t sensor;
     mesh_transport_t mesh;
     time_sync_t time_sync;
@@ -249,6 +251,10 @@ extern "C" {
     StaticTask_t storage_task_tcb;
     StackType_t storage_task_stack[kStorageTaskStackBytes /
                                    sizeof(StackType_t)];
+    TaskHandle_t sd_flush_task;
+    StaticTask_t sd_flush_task_tcb;
+    StackType_t sd_flush_task_stack[kSdFlushTaskStackBytes /
+                                    sizeof(StackType_t)];
     TaskHandle_t export_task;
     TaskHandle_t display_task;
     TaskHandle_t wifi_direct_task;
