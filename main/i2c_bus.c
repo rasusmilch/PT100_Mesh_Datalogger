@@ -2,9 +2,12 @@
 
 #include <string.h>
 
+#include "driver/gpio.h"
 #include "esp_err.h"
+#include "esp_rom_sys.h"
 
 static const int kI2cTimeoutMs = 100;
+static const int kI2cRecoveryDelayUs = 5;
 
 /**
  * @brief Execute I2cBusInit.
@@ -47,6 +50,73 @@ I2cBusInit(i2c_bus_t* bus,
     return result;
   }
   bus->initialized = true;
+  return ESP_OK;
+}
+
+/**
+ * @brief Execute I2cBusDeinit.
+ * @param bus Parameter bus.
+ * @return Return the function result.
+ */
+esp_err_t
+I2cBusDeinit(i2c_bus_t* bus)
+{
+  if (bus == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  esp_err_t result = ESP_OK;
+  if (bus->initialized && bus->handle != NULL) {
+    result = i2c_del_master_bus(bus->handle);
+  }
+
+  memset(bus, 0, sizeof(*bus));
+  return result;
+}
+
+/**
+ * @brief Execute I2cBusRecoverLines.
+ * @param sda_gpio Parameter sda_gpio.
+ * @param scl_gpio Parameter scl_gpio.
+ * @return Return the function result.
+ */
+esp_err_t
+I2cBusRecoverLines(int sda_gpio, int scl_gpio)
+{
+  if (sda_gpio < 0 || scl_gpio < 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  gpio_config_t config = {
+    .pin_bit_mask = (1ULL << sda_gpio) | (1ULL << scl_gpio),
+    .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+    .pull_up_en = GPIO_PULLUP_ENABLE,
+    .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE,
+  };
+  esp_err_t result = gpio_config(&config);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  gpio_set_level(sda_gpio, 1);
+  gpio_set_level(scl_gpio, 1);
+  esp_rom_delay_us(kI2cRecoveryDelayUs);
+
+  for (int pulse = 0; pulse < 9; ++pulse) {
+    gpio_set_level(scl_gpio, 0);
+    esp_rom_delay_us(kI2cRecoveryDelayUs);
+    gpio_set_level(scl_gpio, 1);
+    esp_rom_delay_us(kI2cRecoveryDelayUs);
+  }
+
+  gpio_set_level(sda_gpio, 0);
+  esp_rom_delay_us(kI2cRecoveryDelayUs);
+  gpio_set_level(scl_gpio, 1);
+  esp_rom_delay_us(kI2cRecoveryDelayUs);
+  gpio_set_level(sda_gpio, 1);
+  esp_rom_delay_us(kI2cRecoveryDelayUs);
+
   return ESP_OK;
 }
 

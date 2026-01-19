@@ -91,6 +91,18 @@ extern "C" {
   runtime_state_t* RuntimeGetState(void);
 
 /**
+ * @brief Execute RuntimeI2cLock.
+ * @param timeout_ticks Parameter timeout_ticks.
+ * @return Return the function result.
+ */
+  bool RuntimeI2cLock(TickType_t timeout_ticks);
+
+/**
+ * @brief Execute RuntimeI2cUnlock.
+ */
+  void RuntimeI2cUnlock(void);
+
+/**
  * @brief Execute RuntimeStart.
  * @return Return the function result.
  */
