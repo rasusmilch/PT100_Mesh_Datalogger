@@ -134,6 +134,9 @@ RuntimeFramLogLock(runtime_state_t* state, TickType_t timeout_ticks);
 static void
 RuntimeFramLogUnlock(runtime_state_t* state);
 
+static bool
+RuntimeVerifyFram(runtime_state_t* state);
+
 static void
 RuntimeNotifyTask(TaskHandle_t handle)
 {
@@ -2322,14 +2325,8 @@ RuntimeFlushPendingErrlog(runtime_state_t* state)
     }
     if ((pending_active & mask) != 0) {
       bool logged = false;
-      const esp_err_t result =
-        FramErrorLogAppendActive(&state->fram_error_log,
-                                 code,
-                                 0,
-                                 0,
-                                 epoch_u32,
-                                 millis_u16,
-                                 &logged);
+      const esp_err_t result = FramErrorLogAppendActive(
+        &state->fram_error_log, code, 0, 0, epoch_u32, millis_u16, &logged);
       if (result == ESP_OK) {
         taskENTER_CRITICAL(&state->errlog_latch_lock);
         state->errlog_pending_active_mask &= ~mask;
@@ -2338,14 +2335,8 @@ RuntimeFlushPendingErrlog(runtime_state_t* state)
     }
     if ((pending_resolved & mask) != 0) {
       bool logged = false;
-      const esp_err_t result =
-        FramErrorLogAppendResolved(&state->fram_error_log,
-                                   code,
-                                   0,
-                                   0,
-                                   epoch_u32,
-                                   millis_u16,
-                                   &logged);
+      const esp_err_t result = FramErrorLogAppendResolved(
+        &state->fram_error_log, code, 0, 0, epoch_u32, millis_u16, &logged);
       if (result == ESP_OK && logged) {
         taskENTER_CRITICAL(&state->errlog_latch_lock);
         state->errlog_pending_resolved_mask &= ~mask;
@@ -3458,8 +3449,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     }
     record_index = state->fram_log.read_index;
     record_slot = record_index % state->fram_log.capacity_records;
-    record_addr = state->fram_log.record_region_offset +
-                  record_slot * sizeof(log_record_t);
+    record_addr =
+      state->fram_log.record_region_offset + record_slot * sizeof(log_record_t);
     RuntimeFramLogUnlock(state);
 
     log_record_t record;
@@ -3679,11 +3670,8 @@ SensorSpiFaultSetActive(runtime_state_t* state, int64_t now_ms)
   LogFramErrorEvent(state, kErrlogSensorSpiFault, false, 0, 0);
   const int64_t event_epoch =
     TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-  (void)RuntimeEnqueueSystemErrorNote(state,
-                                      ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI,
-                                      false,
-                                      event_epoch,
-                                      now_ms);
+  (void)RuntimeEnqueueSystemErrorNote(
+    state, ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI, false, event_epoch, now_ms);
   state->sensor_spi_fault_active = true;
 }
 
@@ -3700,11 +3688,8 @@ SensorSpiFaultResolveIfStable(runtime_state_t* state, int64_t now_ms)
   LogFramErrorEvent(state, kErrlogSensorSpiFault, true, 0, 0);
   const int64_t event_epoch =
     TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-  (void)RuntimeEnqueueSystemErrorNote(state,
-                                      ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI,
-                                      true,
-                                      event_epoch,
-                                      now_ms);
+  (void)RuntimeEnqueueSystemErrorNote(
+    state, ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI, true, event_epoch, now_ms);
   state->sensor_spi_fault_active = false;
   state->sensor_spi_reinit_count = 0;
   state->sensor_spi_reinit_window_start_ms = 0;
@@ -4756,8 +4741,8 @@ SdFlushTask(void* context)
       uint32_t pass_count = 0;
       while (state->sd_manual_drain_active && !state->stop_requested) {
         const TickType_t now_ticks = xTaskGetTickCount();
-        if (ManualDrainTimedOutTicks(
-              now_ticks, state->sd_manual_drain_deadline_ticks)) {
+        if (ManualDrainTimedOutTicks(now_ticks,
+                                     state->sd_manual_drain_deadline_ticks)) {
           state->sd_manual_drain_active = false;
           state->sd_manual_drain_deadline_ticks = 0;
           break;
@@ -5704,16 +5689,12 @@ ControlTask(void* context)
           stable = RuntimeVerifyFram(state);
           RuntimeI2cUnlock();
         }
-        if (stable &&
-            (now_ms - state->reboot_alert_active_sent_ms) >=
-              (int64_t)kRebootAlertResolveDelayMs) {
+        if (stable && (now_ms - state->reboot_alert_active_sent_ms) >=
+                        (int64_t)kRebootAlertResolveDelayMs) {
           const int64_t resolve_epoch =
             TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-          if (RuntimeEnqueueSystemErrorNote(state,
-                                            state->reboot_alert_code,
-                                            true,
-                                            resolve_epoch,
-                                            now_ms)) {
+          if (RuntimeEnqueueSystemErrorNote(
+                state, state->reboot_alert_code, true, resolve_epoch, now_ms)) {
             state->reboot_alert_active_sent = false;
           } else {
             state->reboot_alert_next_check_ms =
