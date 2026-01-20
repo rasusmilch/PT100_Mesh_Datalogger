@@ -212,6 +212,8 @@ extern "C" {
     TickType_t last_sd_flush_warn_ticks;
     TickType_t last_sd_flush_wait_warn_ticks;
     uint32_t sd_fail_count;
+    TickType_t sd_last_bus_reset_ticks;
+    uint32_t sd_bus_reset_count;
     uint32_t sd_flush_records_since;
     bool sd_flush_in_progress;
     bool sd_flush_pending;

@@ -1430,11 +1430,38 @@ AlertManagerSenderTask(void* context)
     return;
   }
 
+  int64_t last_send_ms = 0;
+
   while (!*ctx->stop_requested) {
     alert_notification_t note;
     if (xQueueReceive(ctx->manager->ntfy.queue, &note, pdMS_TO_TICKS(1000)) !=
         pdTRUE) {
       continue;
+    }
+
+    int64_t min_interval_ms = 15000;
+    if (ctx->manager->config.global_max_per_minute > 0) {
+      int64_t per_minute_interval_ms =
+        60000 / (int64_t)ctx->manager->config.global_max_per_minute;
+      if (per_minute_interval_ms > min_interval_ms) {
+        min_interval_ms = per_minute_interval_ms;
+      }
+    }
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (last_send_ms > 0 && (now_ms - last_send_ms) < min_interval_ms) {
+      alert_notification_t newest = note;
+      while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
+        newest = note;
+      }
+      note = newest;
+      int64_t remaining_ms = min_interval_ms - (now_ms - last_send_ms);
+      if (remaining_ms > 0) {
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((uint32_t)remaining_ms));
+        if (*ctx->stop_requested) {
+          break;
+        }
+      }
     }
 
     alert_ntfy_config_t cfg = {
@@ -1455,6 +1482,7 @@ AlertManagerSenderTask(void* context)
       ctx->manager->ntfy.last_http_status = status;
       ctx->manager->ntfy.last_err = err;
       ctx->manager->ntfy.backoff_ms = 0;
+      last_send_ms = esp_timer_get_time() / 1000;
     } else if (result == ALERT_NTFY_SKIPPED) {
       ctx->manager->ntfy.last_err = err;
     } else {
