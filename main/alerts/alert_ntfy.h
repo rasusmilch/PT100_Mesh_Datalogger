@@ -80,6 +80,7 @@ extern "C"
     const char* topic;
     const char* token;
     const char* root_id;
+    uint32_t http_timeout_ms;
   } alert_ntfy_config_t;
 
   /**

@@ -133,6 +133,17 @@ extern "C" {
     RUNTIME_PHASE_STOPPING,
   } runtime_phase_t;
 
+  typedef struct
+  {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    uint32_t pending_system_code;
+    bool pending_is_active;
+    int64_t pending_epoch;
+    uint32_t pending_uptime_ms;
+  } runtime_reboot_alert_latch_t;
+
   enum
   {
     kLogQueueDepth = 64,
@@ -280,6 +291,13 @@ extern "C" {
     runtime_phase_t runtime_phase;
     bool pending_start;
     bool pending_stop;
+    bool reboot_alert_pending;
+    bool reboot_alert_active_sent;
+    int64_t reboot_alert_active_sent_ms;
+    int64_t reboot_alert_event_epoch;
+    uint32_t reboot_alert_event_uptime_ms;
+    alert_system_code_t reboot_alert_code;
+    int64_t reboot_alert_next_check_ms;
 
     bool request_run_start;
     bool request_run_stop;

@@ -13,6 +13,7 @@
 #include "data_csv.h"
 #include "data_port.h"
 #include "display_attention.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -73,10 +74,20 @@ static const TickType_t kI2cRecoveryLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 static const int64_t kNetTxStallDropMs = 30000;
 static const uint32_t kI2cRecoveryTriggerCount = 3;
+static const uint32_t kRebootAlertLatchMagic = 0x5254424C;
+static const uint16_t kRebootAlertLatchVersion = 1;
+static const uint32_t kRebootAlertWifiWaitMs = 2500;
+static const uint32_t kRebootAlertHttpTimeoutMs = 1500;
+static const uint32_t kRebootAlertResolveDelayMs = 5000;
+static const uint32_t kRebootAlertResolveCheckIntervalMs = 1000;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
 static runtime_state_t g_state;
 static app_runtime_t g_runtime;
+static RTC_DATA_ATTR runtime_reboot_alert_latch_t g_reboot_alert_latch = {
+  .magic = kRebootAlertLatchMagic,
+  .version = kRebootAlertLatchVersion,
+};
 
 enum
 {
@@ -214,6 +225,165 @@ AlertManagerCanSend(const runtime_state_t* state)
     return true;
   }
   return WifiManagerIsConnected();
+}
+
+static bool
+RuntimeRebootAlertLatchValid(void)
+{
+  return g_reboot_alert_latch.magic == kRebootAlertLatchMagic &&
+         g_reboot_alert_latch.version == kRebootAlertLatchVersion;
+}
+
+static void
+RuntimeRebootAlertLatchSet(alert_system_code_t code,
+                           int64_t epoch,
+                           uint32_t uptime_ms)
+{
+  g_reboot_alert_latch.magic = kRebootAlertLatchMagic;
+  g_reboot_alert_latch.version = kRebootAlertLatchVersion;
+  g_reboot_alert_latch.pending_is_active = true;
+  g_reboot_alert_latch.pending_system_code = (uint32_t)code;
+  g_reboot_alert_latch.pending_epoch = epoch;
+  g_reboot_alert_latch.pending_uptime_ms = uptime_ms;
+}
+
+static void
+RuntimeRebootAlertLatchClear(void)
+{
+  g_reboot_alert_latch.magic = kRebootAlertLatchMagic;
+  g_reboot_alert_latch.version = kRebootAlertLatchVersion;
+  g_reboot_alert_latch.pending_is_active = false;
+  g_reboot_alert_latch.pending_system_code = 0;
+  g_reboot_alert_latch.pending_epoch = 0;
+  g_reboot_alert_latch.pending_uptime_ms = 0;
+}
+
+static void
+RuntimeLoadRebootAlertLatch(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->reboot_alert_pending = false;
+  state->reboot_alert_active_sent = false;
+  state->reboot_alert_active_sent_ms = 0;
+  state->reboot_alert_event_epoch = 0;
+  state->reboot_alert_event_uptime_ms = 0;
+  state->reboot_alert_code = ALERT_SYSTEM_CODE_NONE;
+  state->reboot_alert_next_check_ms = 0;
+
+  if (!RuntimeRebootAlertLatchValid() ||
+      !g_reboot_alert_latch.pending_is_active ||
+      g_reboot_alert_latch.pending_system_code == 0) {
+    return;
+  }
+
+  state->reboot_alert_pending = true;
+  state->reboot_alert_code =
+    (alert_system_code_t)g_reboot_alert_latch.pending_system_code;
+  state->reboot_alert_event_epoch = g_reboot_alert_latch.pending_epoch;
+  state->reboot_alert_event_uptime_ms = g_reboot_alert_latch.pending_uptime_ms;
+}
+
+static bool
+RuntimeWaitForWifiConnected(uint32_t wait_ms)
+{
+  if (WifiManagerIsConnected()) {
+    return true;
+  }
+  const int64_t start_ms = esp_timer_get_time() / 1000;
+  while ((esp_timer_get_time() / 1000) - start_ms < (int64_t)wait_ms) {
+    if (WifiManagerIsConnected()) {
+      return true;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  return WifiManagerIsConnected();
+}
+
+static bool
+RuntimeEnqueueSystemErrorNote(runtime_state_t* state,
+                              alert_system_code_t code,
+                              bool resolved,
+                              int64_t event_epoch,
+                              int64_t event_uptime_ms)
+{
+  if (state == NULL || !AlertManagerIsConfigured(&state->alert_manager)) {
+    return false;
+  }
+  if (state->alert_manager.ntfy.queue == NULL) {
+    return false;
+  }
+  const uint32_t enable_mask = state->alert_manager.config.enable_mask;
+  if ((enable_mask & (1u << ALERT_SYSTEM_ERROR)) == 0u) {
+    return false;
+  }
+
+  alert_notification_t note = { 0 };
+  note.type = ALERT_SYSTEM_ERROR;
+  note.severity = ALERT_SEV_CRIT;
+  note.resolved = resolved;
+  note.leaf_id = state->local_leaf_id;
+  note.payload.event_code = (uint32_t)code;
+  note.payload.event_epoch = (event_epoch > 0) ? event_epoch : -1;
+  note.payload.event_uptime_ms = event_uptime_ms;
+  return AlertNtfyEnqueue(&state->alert_manager.ntfy, &note);
+}
+
+static bool
+RuntimeAttemptPreRebootAlertSend(runtime_state_t* state,
+                                 alert_system_code_t code,
+                                 int64_t event_epoch,
+                                 int64_t event_uptime_ms)
+{
+  if (state == NULL) {
+    return false;
+  }
+  if (!AlertManagerIsConfigured(&state->alert_manager)) {
+    return false;
+  }
+  const uint32_t enable_mask = state->alert_manager.config.enable_mask;
+  if ((enable_mask & (1u << ALERT_SYSTEM_ERROR)) == 0u) {
+    return false;
+  }
+
+  bool wifi_connected = WifiManagerIsConnected();
+  if (!wifi_connected) {
+    wifi_connected = RuntimeWaitForWifiConnected(kRebootAlertWifiWaitMs);
+  }
+  if (!wifi_connected) {
+    return false;
+  }
+
+  alert_notification_t note = { 0 };
+  note.type = ALERT_SYSTEM_ERROR;
+  note.severity = ALERT_SEV_CRIT;
+  note.resolved = false;
+  note.leaf_id = state->local_leaf_id;
+  note.payload.event_code = (uint32_t)code;
+  note.payload.event_epoch = (event_epoch > 0) ? event_epoch : -1;
+  note.payload.event_uptime_ms = event_uptime_ms;
+
+  alert_ntfy_config_t cfg = {
+    .url = state->alert_manager.config.ntfy_url,
+    .topic = state->alert_manager.config.ntfy_topic,
+    .token = state->alert_manager.config.ntfy_token,
+    .root_id = state->alert_manager.root_id_string,
+    .http_timeout_ms = kRebootAlertHttpTimeoutMs,
+  };
+
+  int status = 0;
+  esp_err_t err = ESP_OK;
+  alert_ntfy_result_t result =
+    AlertNtfySend(&state->alert_manager.ntfy, &cfg, &note, &status, &err);
+  if (result == ALERT_NTFY_OK) {
+    return true;
+  }
+  ESP_LOGW(kTag,
+           "pre-reboot ntfy failed: err=%s status=%d",
+           esp_err_to_name(err),
+           status);
+  return false;
 }
 
 static void
@@ -2200,7 +2370,19 @@ recovery_failed:
   ESP_LOGE(kTag, "I2C recovery failed: %s", esp_err_to_name(result));
   RuntimeI2cUnlock();
   state->i2c_recovery_in_progress = false;
+  const int64_t event_uptime_ms = esp_timer_get_time() / 1000;
+  const int64_t event_epoch =
+    TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+  const bool ntfy_sent = RuntimeAttemptPreRebootAlertSend(
+    state, ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY, event_epoch, event_uptime_ms);
   vTaskDelay(pdMS_TO_TICKS(200));
+  if (ntfy_sent) {
+    RuntimeRebootAlertLatchClear();
+  } else {
+    RuntimeRebootAlertLatchSet(ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY,
+                               event_epoch,
+                               (uint32_t)event_uptime_ms);
+  }
   esp_restart();
   return false;
 }
@@ -3970,6 +4152,7 @@ NetTxHandleAlertSend(runtime_state_t* state,
     .topic = state->alert_manager.config.ntfy_topic,
     .token = state->alert_manager.config.ntfy_token,
     .root_id = state->alert_manager.root_id_string,
+    .http_timeout_ms = 0,
   };
 
   int status = 0;
@@ -5144,6 +5327,60 @@ ControlTask(void* context)
     }
 
     const bool alert_eligible = AlertManagerEligible(state);
+    if (state->reboot_alert_pending && alert_eligible &&
+        WifiManagerIsConnected()) {
+      int64_t event_epoch = state->reboot_alert_event_epoch;
+      int64_t event_uptime_ms = state->reboot_alert_event_uptime_ms;
+      if (event_uptime_ms <= 0) {
+        event_uptime_ms = now_ms;
+      }
+      if (event_epoch <= 0 && TimeSyncIsSystemTimeValid()) {
+        event_epoch = (int64_t)time(NULL);
+      }
+      if (RuntimeEnqueueSystemErrorNote(state,
+                                        state->reboot_alert_code,
+                                        false,
+                                        event_epoch,
+                                        event_uptime_ms)) {
+        state->reboot_alert_pending = false;
+        state->reboot_alert_active_sent = true;
+        state->reboot_alert_active_sent_ms = now_ms;
+        state->reboot_alert_next_check_ms =
+          now_ms + (int64_t)kRebootAlertResolveDelayMs;
+        RuntimeRebootAlertLatchClear();
+      }
+    }
+    if (state->reboot_alert_active_sent && alert_eligible &&
+        WifiManagerIsConnected()) {
+      if (state->reboot_alert_next_check_ms == 0 ||
+          now_ms >= state->reboot_alert_next_check_ms) {
+        bool stable = false;
+        if (state->i2c_bus.initialized && state->fram_i2c.initialized &&
+            RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
+          stable = RuntimeVerifyFram(state);
+          RuntimeI2cUnlock();
+        }
+        if (stable &&
+            (now_ms - state->reboot_alert_active_sent_ms) >=
+              (int64_t)kRebootAlertResolveDelayMs) {
+          const int64_t resolve_epoch =
+            TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+          if (RuntimeEnqueueSystemErrorNote(state,
+                                            state->reboot_alert_code,
+                                            true,
+                                            resolve_epoch,
+                                            now_ms)) {
+            state->reboot_alert_active_sent = false;
+          } else {
+            state->reboot_alert_next_check_ms =
+              now_ms + (int64_t)kRebootAlertResolveCheckIntervalMs;
+          }
+        } else {
+          state->reboot_alert_next_check_ms =
+            now_ms + (int64_t)kRebootAlertResolveCheckIntervalMs;
+        }
+      }
+    }
     if (alert_eligible) {
       const int64_t now_epoch =
         TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
@@ -5616,6 +5853,7 @@ RuntimeManagerInit(void)
   AlertManagerInit(
     &g_state.alert_manager, g_state.node_id_string, g_state.local_leaf_id);
   (void)AlertManagerLoadConfig(&g_state.alert_manager);
+  RuntimeLoadRebootAlertLatch(&g_state);
 
   const spi_host_device_t spi_host = GetSpiHost();
   esp_err_t bus_result = InitSpiBus(spi_host);

@@ -378,10 +378,12 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
 
   AppendTimeLine(&note->payload, body, sizeof(body));
 
+  const uint32_t timeout_ms =
+    (cfg->http_timeout_ms > 0) ? cfg->http_timeout_ms : 5000;
   esp_http_client_config_t config = {
     .url = url,
     .method = HTTP_METHOD_POST,
-    .timeout_ms = 5000,
+    .timeout_ms = (int)timeout_ms,
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
     .crt_bundle_attach = esp_crt_bundle_attach,
 #endif
