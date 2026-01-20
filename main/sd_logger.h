@@ -21,6 +21,7 @@ extern "C"
     size_t batch_target_bytes;
     size_t tail_scan_bytes;
     size_t file_buffer_bytes;
+    uint32_t max_freq_khz;
   } sd_logger_config_t;
 
   typedef struct
