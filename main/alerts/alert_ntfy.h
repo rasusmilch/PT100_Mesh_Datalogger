@@ -79,6 +79,9 @@ extern "C"
     uint32_t suppressed_count;
     bool suppressed_latest_valid;
     alert_notification_t suppressed_latest;
+    int64_t last_sent_ms;
+    bool last_sent_valid;
+    alert_notification_t last_sent;
   } alert_ntfy_t;
 
   typedef struct
