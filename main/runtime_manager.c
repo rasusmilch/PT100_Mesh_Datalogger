@@ -71,6 +71,11 @@ static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const TickType_t kFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const TickType_t kI2cIoLockTimeoutTicks = pdMS_TO_TICKS(25);
 static const TickType_t kI2cRecoveryLockTimeoutTicks = pdMS_TO_TICKS(2000);
+static const uint32_t kSensorSpiInvalidStreakThreshold = 3;
+static const uint32_t kSensorSpiReinitAlertThreshold = 2;
+static const int64_t kSensorSpiReinitWindowMs = 60000;
+static const int64_t kSensorSpiStableResolveMs = 30000;
+static const uint16_t kErrlogSensorSpiFault = 17;
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 static const int64_t kNetTxStallDropMs = 30000;
 static const uint32_t kI2cRecoveryTriggerCount = 3;
@@ -101,6 +106,12 @@ static void
 UpdateCalibrationDueState(runtime_state_t* state,
                           bool time_valid,
                           int64_t now_utc);
+
+static spi_host_device_t
+GetSpiHost(void);
+
+static esp_err_t
+InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host);
 
 static void
 RootRecordRxCallback(const pt100_mesh_addr_t* from,
@@ -605,6 +616,18 @@ RuntimeSdIoUnlock(runtime_state_t* state)
     return;
   }
   (void)xSemaphoreGive(state->sd_io_mutex);
+}
+
+static bool
+RuntimeSpiBusLock(void* context, TickType_t timeout_ticks)
+{
+  return RuntimeSdIoLock((runtime_state_t*)context, timeout_ticks);
+}
+
+static void
+RuntimeSpiBusUnlock(void* context)
+{
+  RuntimeSdIoUnlock((runtime_state_t*)context);
 }
 
 static bool
@@ -3647,6 +3670,84 @@ SdFlushWorkerTick(runtime_state_t* state,
                              more_pending_out);
 }
 
+static void
+SensorSpiFaultSetActive(runtime_state_t* state, int64_t now_ms)
+{
+  if (state == NULL || state->sensor_spi_fault_active) {
+    return;
+  }
+  LogFramErrorEvent(state, kErrlogSensorSpiFault, false, 0, 0);
+  const int64_t event_epoch =
+    TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+  (void)RuntimeEnqueueSystemErrorNote(state,
+                                      ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI,
+                                      false,
+                                      event_epoch,
+                                      now_ms);
+  state->sensor_spi_fault_active = true;
+}
+
+static void
+SensorSpiFaultResolveIfStable(runtime_state_t* state, int64_t now_ms)
+{
+  if (state == NULL || !state->sensor_spi_fault_active) {
+    return;
+  }
+  if (state->sensor_spi_last_invalid_ms == 0 ||
+      now_ms - state->sensor_spi_last_invalid_ms < kSensorSpiStableResolveMs) {
+    return;
+  }
+  LogFramErrorEvent(state, kErrlogSensorSpiFault, true, 0, 0);
+  const int64_t event_epoch =
+    TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+  (void)RuntimeEnqueueSystemErrorNote(state,
+                                      ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI,
+                                      true,
+                                      event_epoch,
+                                      now_ms);
+  state->sensor_spi_fault_active = false;
+  state->sensor_spi_reinit_count = 0;
+  state->sensor_spi_reinit_window_start_ms = 0;
+}
+
+static void
+TrackSensorSpiInvalid(runtime_state_t* state, int64_t now_ms)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->sensor_spi_invalid_streak++;
+  state->sensor_spi_last_invalid_ms = now_ms;
+  if (state->sensor_spi_invalid_streak < kSensorSpiInvalidStreakThreshold) {
+    return;
+  }
+  state->sensor_spi_invalid_streak = 0;
+  const bool locked = RuntimeSdIoLock(state, kSdIoLockTimeoutTicks);
+  if (!locked) {
+    ESP_LOGW(kTag, "SPI bus lock timeout; skipping MAX31865 reinit");
+    return;
+  }
+  const esp_err_t init_result = InitializeMax31865Sensor(state, GetSpiHost());
+  RuntimeSdIoUnlock(state);
+  if (init_result != ESP_OK) {
+    ESP_LOGW(kTag,
+             "MAX31865 reinit failed after SPI invalid streak: %s",
+             esp_err_to_name(init_result));
+    return;
+  }
+  if (state->sensor_spi_reinit_window_start_ms == 0 ||
+      (now_ms - state->sensor_spi_reinit_window_start_ms) >
+        kSensorSpiReinitWindowMs) {
+    state->sensor_spi_reinit_window_start_ms = now_ms;
+    state->sensor_spi_reinit_count = 1;
+  } else {
+    state->sensor_spi_reinit_count++;
+  }
+  if (state->sensor_spi_reinit_count >= kSensorSpiReinitAlertThreshold) {
+    SensorSpiFaultSetActive(state, now_ms);
+  }
+}
+
 /**
  * @brief Execute SensorTask.
  * @param context Parameter context.
@@ -3686,6 +3787,16 @@ SensorTask(void* context)
     if (result == ESP_OK) {
       raw_temp_c = sample.temperature_c;
       raw_res_ohm = sample.resistance_ohm;
+    }
+
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if (result == ESP_ERR_INVALID_RESPONSE) {
+      TrackSensorSpiInvalid(state, now_ms);
+    } else {
+      state->sensor_spi_invalid_streak = 0;
+      if (result == ESP_OK) {
+        SensorSpiFaultResolveIfStable(state, now_ms);
+      }
     }
 
     double disp_raw_temp_c = raw_temp_c;
@@ -3763,6 +3874,14 @@ SensorTask(void* context)
       }
       state->last_sensor_fault_present = true;
       state->last_sensor_fault_status = sample.fault_status;
+    } else if (result == ESP_ERR_INVALID_RESPONSE) {
+      const bool rate_ok =
+        (state->last_sensor_spi_log_ticks == 0) ||
+        (pdTICKS_TO_MS(now_ticks - state->last_sensor_spi_log_ticks) >= 5000u);
+      if (rate_ok) {
+        ESP_LOGW(kTag, "MAX31865 SPI invalid response");
+        state->last_sensor_spi_log_ticks = now_ticks;
+      }
     } else if (result != ESP_OK) {
       const bool changed = !state->last_sensor_fault_present ||
                            state->last_sensor_fault_status != 0xFFu;
@@ -5834,6 +5953,12 @@ InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host)
     ESP_LOGE(
       kTag, "Max31865ReaderInit failed: %s", esp_err_to_name(sensor_result));
     return sensor_result;
+  }
+  if (state->sd_io_mutex != NULL && spi_host == GetSpiHost()) {
+    state->sensor.spi_bus_lock = RuntimeSpiBusLock;
+    state->sensor.spi_bus_unlock = RuntimeSpiBusUnlock;
+    state->sensor.spi_bus_lock_context = state;
+    state->sensor.spi_bus_lock_timeout_ticks = kSdIoLockTimeoutTicks;
   }
   if (state->settings.calibration.is_valid) {
     calibration_context_t current_context;

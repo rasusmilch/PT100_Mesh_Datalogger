@@ -45,6 +45,37 @@ static const double kCvdA = 3.9083e-3;
 static const double kCvdB = -5.775e-7;
 static const double kCvdC = -4.183e-12;
 
+static bool
+Max31865AcquireSpiBus(max31865_reader_t* reader)
+{
+  if (reader == NULL || reader->spi_bus_lock == NULL) {
+    return true;
+  }
+  return reader->spi_bus_lock(reader->spi_bus_lock_context,
+                              reader->spi_bus_lock_timeout_ticks);
+}
+
+static void
+Max31865ReleaseSpiBus(max31865_reader_t* reader)
+{
+  if (reader == NULL || reader->spi_bus_unlock == NULL) {
+    return;
+  }
+  reader->spi_bus_unlock(reader->spi_bus_lock_context);
+}
+
+static bool
+IsInvalidRegisterPattern(uint8_t fault_status, const uint8_t* rtd_raw)
+{
+  if (fault_status == 0xFFu) {
+    return true;
+  }
+  if (rtd_raw != NULL && rtd_raw[0] == 0xFFu && rtd_raw[1] == 0xFFu) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * @brief Execute SpiTransfer.
  * @param reader Parameter reader.
@@ -65,11 +96,16 @@ SpiTransfer(max31865_reader_t* reader,
     return ESP_ERR_INVALID_STATE;
   }
 
+  if (!Max31865AcquireSpiBus(reader)) {
+    return ESP_ERR_TIMEOUT;
+  }
+
   spi_transaction_t transaction;
   memset(&transaction, 0, sizeof(transaction));
 
   const size_t total_len = (tx_len > rx_len) ? tx_len : rx_len;
   if (total_len == 0) {
+    Max31865ReleaseSpiBus(reader);
     return ESP_OK;
   }
 
@@ -79,6 +115,7 @@ SpiTransfer(max31865_reader_t* reader,
   // into internal DMA-capable buffers owned by the reader.
   if (reader->dma_tx_buf == NULL || reader->dma_rx_buf == NULL ||
       reader->dma_buf_len < total_len) {
+    Max31865ReleaseSpiBus(reader);
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -95,14 +132,17 @@ SpiTransfer(max31865_reader_t* reader,
     transaction.rx_buffer = reader->dma_rx_buf;
   }
 
-  esp_err_t result = spi_device_polling_transmit(reader->spi_device, &transaction);
+  esp_err_t result =
+    spi_device_polling_transmit(reader->spi_device, &transaction);
   if (result != ESP_OK) {
+    Max31865ReleaseSpiBus(reader);
     return result;
   }
 
   if (rx != NULL && rx_len > 0) {
     memcpy(rx, reader->dma_rx_buf, rx_len);
   }
+  Max31865ReleaseSpiBus(reader);
   return ESP_OK;
 }
 
@@ -651,6 +691,10 @@ Max31865ReadOnce(max31865_reader_t* reader, max31865_sample_t* sample_out)
 
   if (result != ESP_OK) {
     return result;
+  }
+
+  if (IsInvalidRegisterPattern(fault_reg, rtd_raw)) {
+    return ESP_ERR_INVALID_RESPONSE;
   }
 
   uint16_t rtd_code = ((uint16_t)rtd_raw[0] << 8) | rtd_raw[1];
