@@ -117,6 +117,9 @@ enum
 static esp_err_t
 InitSpiBus(spi_host_device_t host);
 
+static esp_err_t
+InitializeMax7219Display(runtime_state_t* state);
+
 static void
 UpdateCalibrationDueState(runtime_state_t* state,
                           bool time_valid,
@@ -463,11 +466,10 @@ RuntimePauseSpiUsers(runtime_state_t* state, uint32_t timeout_ms)
   }
 
   if ((state->spi_pause_ack_mask & expected_mask) != expected_mask) {
-    ESP_LOGW(
-      kTag,
-      "SPI pause timed out; acked=0x%02" PRIx32 " expected=0x%02" PRIx32,
-      state->spi_pause_ack_mask,
-      expected_mask);
+    ESP_LOGW(kTag,
+             "SPI pause timed out; acked=0x%02" PRIx32 " expected=0x%02" PRIx32,
+             state->spi_pause_ack_mask,
+             expected_mask);
     return false;
   }
   return true;
@@ -3590,9 +3592,9 @@ SdResetPendingTick(runtime_state_t* state)
   if (state == NULL || !state->sd_reset_pending) {
     return;
   }
-  const char* context =
-    (state->sd_reset_pending_context != NULL) ? state->sd_reset_pending_context
-                                              : "SD reset";
+  const char* context = (state->sd_reset_pending_context != NULL)
+                          ? state->sd_reset_pending_context
+                          : "SD reset";
   if (SdHardResetLocked(state, context)) {
     state->sd_reset_pending = false;
     state->sd_reset_pending_context = NULL;
