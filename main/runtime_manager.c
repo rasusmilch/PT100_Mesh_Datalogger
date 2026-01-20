@@ -128,6 +128,14 @@ GetSpiHost(void);
 static esp_err_t
 InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host);
 
+/**
+ * @brief Determine whether the app SPI bus is shared with non-SD devices.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+static bool
+RuntimeIsAppSpiBusShared(const runtime_state_t* state);
+
 static void
 RootRecordRxCallback(const pt100_mesh_addr_t* from,
                      const log_record_t* record,
@@ -3444,12 +3452,14 @@ SdHardResetLocked(runtime_state_t* state, const char* context)
     return false;
   }
 
+  const bool bus_shared = RuntimeIsAppSpiBusShared(state);
+
   if (state->sd_logger.is_mounted) {
     (void)SdLoggerUnmount(&state->sd_logger);
   }
   RuntimeSdFsUnlock(state);
 
-  if (state->sensor.is_initialized) {
+  if (!bus_shared && state->sensor.is_initialized) {
     (void)Max31865ReaderDeinit(&state->sensor);
   }
 
@@ -3460,23 +3470,25 @@ SdHardResetLocked(runtime_state_t* state, const char* context)
   const bool display_on_app_bus = false;
 #endif
   const bool display_reinit =
-    display_on_app_bus && state->display_initialized;
+    display_on_app_bus && state->display_initialized && !bus_shared;
   if (display_reinit) {
     (void)Max7219DisplayDeinit(&state->display);
     state->display_initialized = false;
   }
 #endif
 
-  (void)spi_bus_free(GetSpiHost());
-  vTaskDelay(pdMS_TO_TICKS(20));
-  (void)InitSpiBus(GetSpiHost());
+  if (!bus_shared) {
+    (void)spi_bus_free(GetSpiHost());
+    vTaskDelay(pdMS_TO_TICKS(20));
+    (void)InitSpiBus(GetSpiHost());
 
-  const esp_err_t sensor_init_result =
-    InitializeMax31865Sensor(state, GetSpiHost());
-  if (sensor_init_result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "MAX31865 reinit failed after SPI reset: %s",
-             esp_err_to_name(sensor_init_result));
+    const esp_err_t sensor_init_result =
+      InitializeMax31865Sensor(state, GetSpiHost());
+    if (sensor_init_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "MAX31865 reinit failed after SPI reset: %s",
+               esp_err_to_name(sensor_init_result));
+    }
   }
 
 #if CONFIG_APP_MAX7219_ENABLE
@@ -4034,6 +4046,8 @@ SensorTask(void* context)
     }
 
     const int64_t now_ms = esp_timer_get_time() / 1000;
+    const bool sd_flush_spi_busy =
+      (result == ESP_ERR_TIMEOUT && state->sd_flush_in_progress);
     if (result == ESP_ERR_INVALID_RESPONSE) {
       TrackSensorSpiInvalid(state, now_ms);
     } else {
@@ -4126,6 +4140,9 @@ SensorTask(void* context)
         ESP_LOGW(kTag, "MAX31865 SPI invalid response");
         state->last_sensor_spi_log_ticks = now_ticks;
       }
+    } else if (sd_flush_spi_busy) {
+      // Best-effort: skip fault logging/state changes when SD flush holds the
+      // shared SPI bus.
     } else if (result != ESP_OK) {
       const bool changed = !state->last_sensor_fault_present ||
                            state->last_sensor_fault_status != 0xFFu;
@@ -6168,6 +6185,30 @@ DisplayShareConfigMatchesApp(void)
 }
 #endif // CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
 
+/**
+ * @brief Determine whether the app SPI bus is shared with non-SD devices.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+static bool
+RuntimeIsAppSpiBusShared(const runtime_state_t* state)
+{
+  if (state == NULL) {
+    return false;
+  }
+  if (state->sensor.is_initialized) {
+    return true;
+  }
+#if CONFIG_APP_MAX7219_ENABLE
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+  if (state->display_initialized && DisplayShareConfigMatchesApp()) {
+    return true;
+  }
+#endif
+#endif
+  return false;
+}
+
 static int
 SpiHostToId(spi_host_device_t host)
 {
@@ -6193,12 +6234,6 @@ InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host)
     ESP_LOGE(
       kTag, "Max31865ReaderInit failed: %s", esp_err_to_name(sensor_result));
     return sensor_result;
-  }
-  if (state->spi_bus_mutex != NULL && spi_host == GetSpiHost()) {
-    state->sensor.spi_bus_lock = RuntimeSpiBusLock;
-    state->sensor.spi_bus_unlock = RuntimeSpiBusUnlock;
-    state->sensor.spi_bus_lock_context = state;
-    state->sensor.spi_bus_lock_timeout_ticks = kSdIoLockTimeoutTicks;
   }
   if (state->settings.calibration.is_valid) {
     calibration_context_t current_context;
