@@ -2224,14 +2224,100 @@ RecordFramCorruption(runtime_state_t* state,
 }
 
 static void
+RuntimeErrlogLatchEvent(runtime_state_t* state, uint16_t code, bool resolved)
+{
+  if (state == NULL) {
+    return;
+  }
+  uint64_t mask = 0;
+  if (!FramErrorLogGetCodeMask(code, &mask)) {
+    return;
+  }
+  taskENTER_CRITICAL(&state->errlog_latch_lock);
+  if (resolved) {
+    state->errlog_pending_resolved_mask |= mask;
+  } else {
+    state->errlog_pending_active_mask |= mask;
+  }
+  taskEXIT_CRITICAL(&state->errlog_latch_lock);
+}
+
+static void
+RuntimeFlushPendingErrlog(runtime_state_t* state)
+{
+  if (state == NULL || !state->fram_error_log.initialized) {
+    return;
+  }
+  uint64_t pending_active = 0;
+  uint64_t pending_resolved = 0;
+  taskENTER_CRITICAL(&state->errlog_latch_lock);
+  pending_active = state->errlog_pending_active_mask;
+  pending_resolved = state->errlog_pending_resolved_mask;
+  taskEXIT_CRITICAL(&state->errlog_latch_lock);
+
+  if (pending_active == 0 && pending_resolved == 0) {
+    return;
+  }
+
+  int64_t epoch_seconds = 0;
+  int32_t millis = 0;
+  TimeSyncGetNow(&epoch_seconds, &millis);
+  uint32_t epoch_u32 = (epoch_seconds > 0) ? (uint32_t)epoch_seconds : 0u;
+  uint16_t millis_u16 = (millis >= 0) ? (uint16_t)millis : 0u;
+
+  for (uint16_t code = 0; code < 64u; ++code) {
+    uint64_t mask = 0;
+    if (!FramErrorLogGetCodeMask(code, &mask)) {
+      continue;
+    }
+    if ((pending_active & mask) != 0) {
+      bool logged = false;
+      const esp_err_t result =
+        FramErrorLogAppendActive(&state->fram_error_log,
+                                 code,
+                                 0,
+                                 0,
+                                 epoch_u32,
+                                 millis_u16,
+                                 &logged);
+      if (result == ESP_OK) {
+        taskENTER_CRITICAL(&state->errlog_latch_lock);
+        state->errlog_pending_active_mask &= ~mask;
+        taskEXIT_CRITICAL(&state->errlog_latch_lock);
+      }
+    }
+    if ((pending_resolved & mask) != 0) {
+      bool logged = false;
+      const esp_err_t result =
+        FramErrorLogAppendResolved(&state->fram_error_log,
+                                   code,
+                                   0,
+                                   0,
+                                   epoch_u32,
+                                   millis_u16,
+                                   &logged);
+      if (result == ESP_OK && logged) {
+        taskENTER_CRITICAL(&state->errlog_latch_lock);
+        state->errlog_pending_resolved_mask &= ~mask;
+        taskEXIT_CRITICAL(&state->errlog_latch_lock);
+      }
+    }
+  }
+}
+
+static esp_err_t
 LogFramErrorEvent(runtime_state_t* state,
                   uint16_t code,
                   bool resolved,
                   int32_t detail0,
                   int32_t detail1)
 {
-  if (state == NULL || !state->fram_error_log.initialized) {
-    return;
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!state->fram_error_log.initialized) {
+    RuntimeErrlogLatchEvent(state, code, resolved);
+    return ESP_OK;
   }
   int64_t epoch_seconds = 0;
   int32_t millis = 0;
@@ -2240,22 +2326,52 @@ LogFramErrorEvent(runtime_state_t* state,
   uint16_t millis_u16 = (millis >= 0) ? (uint16_t)millis : 0u;
   bool logged = false;
   if (resolved) {
-    (void)FramErrorLogAppendResolved(&state->fram_error_log,
-                                     code,
-                                     detail0,
-                                     detail1,
-                                     epoch_u32,
-                                     millis_u16,
-                                     &logged);
-  } else {
-    (void)FramErrorLogAppendActive(&state->fram_error_log,
-                                   code,
-                                   detail0,
-                                   detail1,
-                                   epoch_u32,
-                                   millis_u16,
-                                   &logged);
+    return FramErrorLogAppendResolved(&state->fram_error_log,
+                                      code,
+                                      detail0,
+                                      detail1,
+                                      epoch_u32,
+                                      millis_u16,
+                                      &logged);
   }
+  return FramErrorLogAppendActive(&state->fram_error_log,
+                                  code,
+                                  detail0,
+                                  detail1,
+                                  epoch_u32,
+                                  millis_u16,
+                                  &logged);
+}
+
+esp_err_t
+RuntimeMaybeInitFramErrorLog(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (state->fram_error_log.initialized) {
+    return ESP_OK;
+  }
+  if (!state->i2c_bus.initialized || !state->fram_i2c.initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
+    return ESP_ERR_TIMEOUT;
+  }
+  const bool fram_ok = RuntimeVerifyFram(state);
+  RuntimeI2cUnlock();
+  if (!fram_ok) {
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+  const esp_err_t result = FramErrorLogInit(&state->fram_error_log,
+                                            state->fram_io,
+                                            FRAM_ERRLOG_BASE,
+                                            FRAM_ERRLOG_BYTES);
+  if (result != ESP_OK) {
+    return result;
+  }
+  RuntimeFlushPendingErrlog(state);
+  return ESP_OK;
 }
 
 static bool
@@ -5277,6 +5393,7 @@ ControlTask(void* context)
   static int64_t next_topology_ms = 0;
   static int64_t next_time_sync_ms = 0;
   static int64_t next_alert_tick_ms = 0;
+  static int64_t next_errlog_init_ms = 0;
   static bool alert_boot_pending = true;
   static alert_system_code_t pending_mode_code = ALERT_SYSTEM_CODE_NONE;
   static runtime_phase_t last_phase = RUNTIME_PHASE_DIAGNOSTICS;
@@ -5314,6 +5431,15 @@ ControlTask(void* context)
         state->pending_start = false;
         (void)EnterRunMode();
       }
+    }
+
+    if (!state->fram_error_log.initialized) {
+      if (next_errlog_init_ms == 0 || now_ms >= next_errlog_init_ms) {
+        (void)RuntimeMaybeInitFramErrorLog(state);
+        next_errlog_init_ms = now_ms + 1000;
+      }
+    } else {
+      next_errlog_init_ms = 0;
     }
 
     const runtime_phase_t current_phase = state->runtime_phase;
@@ -5698,6 +5824,7 @@ InitializeRuntimeStruct(void)
   memset(&g_runtime, 0, sizeof(g_runtime));
   g_state.last_temp_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
   g_state.request_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+  g_state.errlog_latch_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
   MqttClientWrapInit(&g_state.mqtt_client);
   RuntimeHealthInit(&g_state.health_cache);
   RuntimeHealthPublisherInit(&g_state);

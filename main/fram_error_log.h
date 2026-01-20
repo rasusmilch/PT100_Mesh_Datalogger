@@ -92,6 +92,8 @@ extern "C" {
 
   esp_err_t FramErrorLogDump(const fram_error_log_t* log, uint32_t max_entries);
 
+  bool FramErrorLogGetCodeMask(uint16_t code, uint64_t* mask_out);
+
 #ifdef __cplusplus
 }
 #endif

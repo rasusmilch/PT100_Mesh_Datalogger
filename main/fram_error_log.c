@@ -129,8 +129,8 @@ FramErrorLogSetActiveBitmap(fram_error_log_header_t* header, uint64_t bitmap)
   header->active_bitmap_high = (uint32_t)(bitmap >> 32);
 }
 
-static bool
-FramErrorLogTryGetBit(uint16_t code, uint64_t* mask_out)
+bool
+FramErrorLogGetCodeMask(uint16_t code, uint64_t* mask_out)
 {
   if (mask_out == NULL) {
     return false;
@@ -162,7 +162,7 @@ FramErrorLogAppendInternal(fram_error_log_t* log,
 
   fram_error_log_header_t header = log->header;
   uint64_t mask = 0;
-  const bool has_bit = FramErrorLogTryGetBit(code, &mask);
+  const bool has_bit = FramErrorLogGetCodeMask(code, &mask);
   const uint64_t active_bitmap = FramErrorLogActiveBitmap(&header);
 
   if (has_bit) {
