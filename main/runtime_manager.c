@@ -416,6 +416,33 @@ RuntimeInterruptibleDelayTicks(TickType_t delay_ticks)
   (void)ulTaskNotifyTake(pdTRUE, delay_ticks);
 }
 
+static bool
+ManualDrainTimedOutTicks(TickType_t now_ticks, TickType_t deadline_ticks)
+{
+  if (deadline_ticks == 0) {
+    return false;
+  }
+  return ((int32_t)(now_ticks - deadline_ticks) >= 0);
+}
+
+static bool
+ReadFramBufferedRecords(runtime_state_t* state, uint32_t* buffered_out)
+{
+  if (buffered_out == NULL) {
+    return false;
+  }
+  *buffered_out = 0;
+  if (state == NULL) {
+    return false;
+  }
+  if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    return false;
+  }
+  *buffered_out = FramLogGetBufferedRecords(&state->fram_log);
+  RuntimeFramLogUnlock(state);
+  return true;
+}
+
 static int32_t
 ResolveStopDrainMaxMs(void)
 {
@@ -4585,6 +4612,60 @@ SdFlushTask(void* context)
     if (!state->sd_logger.is_mounted) {
       RuntimeMarkersSetSdFlush(state, SD_020_MAINTENANCE);
       SdMaintenanceTick(state);
+    }
+
+    if (state->sd_manual_drain_active) {
+      uint32_t empty_checks = 0;
+      uint32_t pass_count = 0;
+      while (state->sd_manual_drain_active && !state->stop_requested) {
+        const TickType_t now_ticks = xTaskGetTickCount();
+        if (ManualDrainTimedOutTicks(
+              now_ticks, state->sd_manual_drain_deadline_ticks)) {
+          state->sd_manual_drain_active = false;
+          state->sd_manual_drain_deadline_ticks = 0;
+          break;
+        }
+
+        uint32_t remaining = 0;
+        const bool remaining_ok = ReadFramBufferedRecords(state, &remaining);
+        if (remaining_ok) {
+          if (remaining == 0u) {
+            empty_checks++;
+          } else {
+            empty_checks = 0;
+          }
+          if (empty_checks >= 2u) {
+            state->sd_manual_drain_active = false;
+            state->sd_manual_drain_deadline_ticks = 0;
+            state->sd_flush_pending = false;
+            break;
+          }
+          if (remaining == 0u) {
+            taskYIELD();
+            continue;
+          }
+        }
+
+        uint32_t flushed = 0;
+        bool more_pending = false;
+        const esp_err_t flush_result =
+          SdFlushWorkerTick(state,
+                            kSdFlushMaxRecordsPerPass,
+                            kSdFlushMaxMsPerPass,
+                            &flushed,
+                            NULL,
+                            &more_pending);
+        state->sd_manual_drain_passes++;
+        if (flush_result == ESP_OK && flushed > 0u) {
+          state->sd_flush_records_since = 0;
+        }
+
+        taskYIELD();
+        pass_count++;
+        if ((pass_count % 4u) == 0u) {
+          vTaskDelay(1);
+        }
+      }
     }
 
     const UBaseType_t queue_depth =
