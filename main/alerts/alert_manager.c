@@ -1442,6 +1442,7 @@ AlertManagerSenderTask(void* context)
       .topic = ctx->manager->config.ntfy_topic,
       .token = ctx->manager->config.ntfy_token,
       .root_id = ctx->manager->root_id_string,
+      .http_timeout_ms = 0,
     };
 
     int status = 0;
