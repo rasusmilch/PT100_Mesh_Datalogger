@@ -3288,6 +3288,45 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
  * @param did_unmount Parameter did_unmount.
  */
 static void
+SdHardResetLocked(runtime_state_t* state, const char* context)
+{
+  if (state == NULL) {
+    return;
+  }
+  const TickType_t now_ticks = xTaskGetTickCount();
+  const TickType_t min_interval_ticks = pdMS_TO_TICKS(30000);
+  state->sd_backoff_until_ticks = now_ticks + pdMS_TO_TICKS(500);
+  if (state->sd_last_bus_reset_ticks != 0 &&
+      (now_ticks - state->sd_last_bus_reset_ticks) < min_interval_ticks) {
+    ESP_LOGW(kTag,
+             "%s: SD hard reset skipped (rate limited)",
+             (context != NULL) ? context : "SD reset");
+    return;
+  }
+
+  ESP_LOGW(
+    kTag, "%s: performing SD hard reset", (context != NULL) ? context : "SD");
+  if (state->sd_logger.is_mounted) {
+    (void)SdLoggerUnmount(&state->sd_logger);
+  }
+
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+  bool bus_shared = true;
+#else
+  bool bus_shared = false;
+#endif
+
+  if (!bus_shared) {
+    (void)spi_bus_free(GetSpiHost());
+    vTaskDelay(pdMS_TO_TICKS(20));
+    (void)InitSpiBus(GetSpiHost());
+  }
+
+  state->sd_last_bus_reset_ticks = now_ticks;
+  state->sd_bus_reset_count++;
+}
+
+static void
 MarkSdFailure(runtime_state_t* state,
               const char* context,
               const char* operation,
@@ -3299,23 +3338,35 @@ MarkSdFailure(runtime_state_t* state,
     return;
   }
   const TickType_t now_ticks = xTaskGetTickCount();
+  bool did_reset = false;
   state->sd_degraded = true;
   state->sd_fail_count++;
-  ReduceSdMaxFreqOnEio(state, errno_value);
-  uint64_t backoff_ms = kSdFlushFailureBackoffMs;
-  if (state->sd_fail_count > 1u) {
-    const uint32_t shift = state->sd_fail_count - 1u;
-    if (shift >= 31u) {
-      backoff_ms = kSdFlushFailureBackoffMaxMs;
-    } else {
-      backoff_ms = (uint64_t)kSdFlushFailureBackoffMs << shift;
+  if (errno_value == EIO && did_unmount && state->sd_fail_count >= 3u) {
+    if (RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
+      TickType_t last_reset = state->sd_last_bus_reset_ticks;
+      SdHardResetLocked(state, context);
+      did_reset = (state->sd_last_bus_reset_ticks != last_reset);
+      RuntimeSdIoUnlock(state);
     }
   }
-  if (backoff_ms < kSdFlushFailureBackoffMs) {
+  ReduceSdMaxFreqOnEio(state, errno_value);
+  uint64_t backoff_ms = 500;
+  if (!did_reset) {
     backoff_ms = kSdFlushFailureBackoffMs;
-  }
-  if (backoff_ms > kSdFlushFailureBackoffMaxMs) {
-    backoff_ms = kSdFlushFailureBackoffMaxMs;
+    if (state->sd_fail_count > 1u) {
+      const uint32_t shift = state->sd_fail_count - 1u;
+      if (shift >= 31u) {
+        backoff_ms = kSdFlushFailureBackoffMaxMs;
+      } else {
+        backoff_ms = (uint64_t)kSdFlushFailureBackoffMs << shift;
+      }
+    }
+    if (backoff_ms < kSdFlushFailureBackoffMs) {
+      backoff_ms = kSdFlushFailureBackoffMs;
+    }
+    if (backoff_ms > kSdFlushFailureBackoffMaxMs) {
+      backoff_ms = kSdFlushFailureBackoffMaxMs;
+    }
   }
   state->sd_backoff_until_ticks = now_ticks + pdMS_TO_TICKS(backoff_ms);
   if (IsSdIoOperation(operation)) {
