@@ -104,6 +104,9 @@ enum
   ERROR_I2C_RECOVERY_FAILED = 103,
 };
 
+static esp_err_t
+InitSpiBus(spi_host_device_t host);
+
 static void
 UpdateCalibrationDueState(runtime_state_t* state,
                           bool time_valid,
