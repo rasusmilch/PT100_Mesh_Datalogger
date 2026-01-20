@@ -107,6 +107,7 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
   const size_t default_batch = 128 * 1024;
   const size_t default_tail_scan = 256 * 1024;
   const size_t default_buffer = 64 * 1024;
+  const uint32_t default_max_freq_khz = 10000;
 
   logger->config.batch_target_bytes =
     DefaultOr(config ? config->batch_target_bytes : 0, default_batch);
@@ -114,6 +115,8 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
     DefaultOr(config ? config->tail_scan_bytes : 0, default_tail_scan);
   logger->config.file_buffer_bytes =
     DefaultOr(config ? config->file_buffer_bytes : 0, default_buffer);
+  logger->config.max_freq_khz =
+    DefaultOr(config ? config->max_freq_khz : 0, default_max_freq_khz);
 
   if (logger->config.file_buffer_bytes > 0) {
     logger->file_buffer = AllocatePreferPsram(
@@ -197,7 +200,7 @@ SdLoggerMountInternal(sd_logger_t* logger,
   // Hot-insert and longer wiring runs are significantly more reliable at a
   // lower SPI clock. If you want maximum throughput later, make this
   // configurable and/or raise it after a successful probe.
-  sd_host.max_freq_khz = 10000; // 10 MHz
+  sd_host.max_freq_khz = logger->config.max_freq_khz;
   if (logger->io_bounce_bytes != NULL && logger->io_bounce_capacity > 0) {
 #if defined(ESP_IDF_VERSION) && (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0))
     if (logger->io_bounce_capacity >= 512) {

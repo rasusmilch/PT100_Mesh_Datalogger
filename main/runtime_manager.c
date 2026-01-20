@@ -1,5 +1,6 @@
 #include "runtime_manager.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
@@ -60,6 +61,7 @@ static const uint32_t kSdFlushTimeSliceMs = 50;
 static const uint32_t kSdFlushWarnIntervalMs = 10000;
 static const uint32_t kFramLogLockWarnIntervalMs = 10000;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
+static const uint32_t kSdFlushFailureBackoffMaxMs = 300000;
 static const uint32_t kSdFlushMinIntervalMs = 200;
 static const uint32_t kSdDetectPollIntervalMs = 250;
 static const uint32_t kExportQueueDepth = 64;
@@ -804,6 +806,9 @@ static void
 EnsureSdMounted(void);
 static void
 EnsureSdMountedLocked(runtime_state_t* state);
+
+static void
+ReduceSdMaxFreqOnEio(runtime_state_t* state, int errno_value);
 
 static void
 MarkSdFailure(runtime_state_t* state,
@@ -3296,8 +3301,23 @@ MarkSdFailure(runtime_state_t* state,
   const TickType_t now_ticks = xTaskGetTickCount();
   state->sd_degraded = true;
   state->sd_fail_count++;
-  state->sd_backoff_until_ticks =
-    now_ticks + pdMS_TO_TICKS(kSdFlushFailureBackoffMs);
+  ReduceSdMaxFreqOnEio(state, errno_value);
+  uint64_t backoff_ms = kSdFlushFailureBackoffMs;
+  if (state->sd_fail_count > 1u) {
+    const uint32_t shift = state->sd_fail_count - 1u;
+    if (shift >= 31u) {
+      backoff_ms = kSdFlushFailureBackoffMaxMs;
+    } else {
+      backoff_ms = (uint64_t)kSdFlushFailureBackoffMs << shift;
+    }
+  }
+  if (backoff_ms < kSdFlushFailureBackoffMs) {
+    backoff_ms = kSdFlushFailureBackoffMs;
+  }
+  if (backoff_ms > kSdFlushFailureBackoffMaxMs) {
+    backoff_ms = kSdFlushFailureBackoffMaxMs;
+  }
+  state->sd_backoff_until_ticks = now_ticks + pdMS_TO_TICKS(backoff_ms);
   if (IsSdIoOperation(operation)) {
     state->sd_last_io_error_active = true;
     state->sd_last_io_err = error;
@@ -3325,6 +3345,29 @@ MarkSdFailure(runtime_state_t* state,
            errno_str,
            action_label,
            (unsigned)state->sd_backoff_until_ticks);
+}
+
+static void
+ReduceSdMaxFreqOnEio(runtime_state_t* state, int errno_value)
+{
+  if (state == NULL || errno_value != EIO) {
+    return;
+  }
+
+  uint32_t current_khz = state->sd_logger.config.max_freq_khz;
+  uint32_t next_khz = current_khz;
+  if (current_khz > 5000u) {
+    next_khz = 5000u;
+  } else if (current_khz > 2000u) {
+    next_khz = 2000u;
+  }
+
+  if (next_khz != current_khz && next_khz != 0u) {
+    state->sd_logger.config.max_freq_khz = next_khz;
+    ESP_LOGW(kTag,
+             "SD I/O error (EIO); reducing SD SPI max freq to %u kHz",
+             (unsigned)next_khz);
+  }
 }
 
 /**
@@ -3430,9 +3473,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     }
 
     uint32_t buffered_records = 0;
-    uint32_t record_index = 0;
-    uint32_t record_slot = 0;
-    uint32_t record_addr = 0;
+    log_record_t first_record;
+    char day_string[16];
     if (!RuntimeFramLogLockWithWarn(
           state,
           fram_log_timeout_ticks,
@@ -3447,75 +3489,63 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       RuntimeFramLogUnlock(state);
       break;
     }
-    record_index = state->fram_log.read_index;
-    record_slot = record_index % state->fram_log.capacity_records;
-    record_addr =
-      state->fram_log.record_region_offset + record_slot * sizeof(log_record_t);
-    RuntimeFramLogUnlock(state);
-
-    log_record_t record;
-    esp_err_t read_result = state->fram_log.io.read(
-      state->fram_log.io.context, record_addr, &record, sizeof(record));
-    if (read_result != ESP_OK) {
-      result = read_result;
-      goto flush_done;
-    }
-
-    uint16_t actual_crc = 0;
-    const fram_log_validate_result_t validate_result =
-      FramLogValidateRecord(&record, &actual_crc);
-    if (validate_result != OK) {
+    esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
+    if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       ESP_LOGW(kTag, "Skipping corrupted FRAM record during SD flush");
-      HandleTimeJumpBackCorruptSkip(state, &record);
-      if (!RuntimeFramLogLockWithWarn(
-            state,
-            fram_log_timeout_ticks,
-            &state->fram_log_lock_timeout_count_sdflush,
-            &state->last_fram_log_lock_timeout_sdflush_log_ms,
-            "sd_flush corrupt skip")) {
-        result = ESP_ERR_TIMEOUT;
+      HandleTimeJumpBackCorruptSkip(state, &first_record);
+      esp_err_t skip_result = FramLogSkipCorruptedRecord(&state->fram_log);
+      RuntimeFramLogUnlock(state);
+      if (skip_result != ESP_OK) {
+        result = skip_result;
         goto flush_done;
       }
-      if (state->fram_log.read_index == record_index &&
-          state->fram_log.record_count > 0) {
-        esp_err_t skip_result = FramLogSkipCorruptedRecord(&state->fram_log);
-        RuntimeFramLogUnlock(state);
-        if (skip_result != ESP_OK) {
-          result = skip_result;
-          goto flush_done;
-        }
-        state->fram_corrupt_skip_count++;
-        corrupt_skips_this_call++;
-        TrackFramInvalidResponse(state, "flush");
-      } else {
-        RuntimeFramLogUnlock(state);
-      }
+      state->fram_corrupt_skip_count++;
+      corrupt_skips_this_call++;
+      TrackFramInvalidResponse(state, "flush");
       if (corrupt_skips_this_call >= kMaxCorruptSkipsThisCall) {
         break;
       }
       continue;
     }
-    ResetFramInvalidResponseStreak(state);
-
-    if (!RuntimeFramLogLockWithWarn(
-          state,
-          fram_log_timeout_ticks,
-          &state->fram_log_lock_timeout_count_sdflush,
-          &state->last_fram_log_lock_timeout_sdflush_log_ms,
-          "sd_flush verify head")) {
-      result = ESP_ERR_TIMEOUT;
+    if (peek_result != ESP_OK) {
+      RuntimeFramLogUnlock(state);
+      result = peek_result;
       goto flush_done;
     }
-    const bool record_still_oldest =
-      (state->fram_log.read_index == record_index &&
-       state->fram_log.record_count > 0);
+    ResetFramInvalidResponseStreak(state);
+
+    BuildDateStringFromRecord(&first_record, day_string, sizeof(day_string));
+    uint32_t max_batch_records = 0;
+    if (max_records > 0) {
+      max_batch_records = max_records - total_records_flushed;
+    }
+    uint32_t records_used = 0;
+    uint64_t last_record_id = 0;
+    size_t bytes_used = 0;
+    bool batch_includes_time_jump_flag = false;
+    esp_err_t batch_result = BuildBatchForDay(state,
+                                              day_string,
+                                              state->batch_buffer,
+                                              state->batch_buffer_size,
+                                              max_batch_records,
+                                              start_ticks,
+                                              max_ms,
+                                              &records_used,
+                                              &last_record_id,
+                                              &bytes_used,
+                                              &batch_includes_time_jump_flag);
     RuntimeFramLogUnlock(state);
-    if (!record_still_oldest) {
-      continue;
+    if (batch_result != ESP_OK) {
+      result = batch_result;
+      goto flush_done;
+    }
+    if (records_used == 0 || bytes_used == 0) {
+      result = ESP_ERR_NO_MEM;
+      goto flush_done;
     }
 
-    const int64_t epoch_for_file = (record.timestamp_epoch_sec > 0)
-                                     ? record.timestamp_epoch_sec
+    const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
+                                     ? first_record.timestamp_epoch_sec
                                      : (int64_t)time(NULL);
     esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
     if (sync_result != ESP_OK) {
@@ -3527,29 +3557,14 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       goto flush_done;
     }
 
-    size_t line_len = 0;
-    if (!CsvFormatRow(&record,
-                      state->node_id_string,
-                      g_sd_csv_line_buffer,
-                      sizeof(g_sd_csv_line_buffer),
-                      &line_len)) {
-      result = ESP_ERR_NO_MEM;
-      goto flush_done;
-    }
-    if (line_len > state->batch_buffer_size) {
-      result = ESP_ERR_NO_MEM;
-      goto flush_done;
-    }
-    memcpy(state->batch_buffer, g_sd_csv_line_buffer, line_len);
-
     sd_csv_append_stats_t append_stats = { 0 };
     sd_csv_append_scratch_t append_scratch = { 0 };
     const sd_csv_append_scratch_t* scratch =
       BuildSdAppendScratch(state, &append_scratch);
     esp_err_t write_result = SdLoggerAppendBatchEx(&state->sd_logger,
                                                    state->batch_buffer,
-                                                   line_len,
-                                                   record.record_id,
+                                                   bytes_used,
+                                                   last_record_id,
                                                    verify_mode,
                                                    flush_mode,
                                                    scratch,
@@ -3572,9 +3587,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     }
     ClearSdIoError(state);
     HandleTimeJumpBackBatchWritten(
-      state,
-      (record.flags & LOG_RECORD_FLAG_TIME_JUMP_BACK) != 0,
-      record.record_id);
+      state, batch_includes_time_jump_flag, last_record_id);
 
     if (!RuntimeFramLogLockWithWarn(
           state,
@@ -3585,20 +3598,18 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       result = ESP_ERR_TIMEOUT;
       goto flush_done;
     }
-    if (state->fram_log.read_index == record_index &&
-        state->fram_log.record_count > 0) {
+    for (uint32_t index = 0; index < records_used; ++index) {
       esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
-      RuntimeFramLogUnlock(state);
       if (discard_result != ESP_OK) {
+        RuntimeFramLogUnlock(state);
         result = discard_result;
         goto flush_done;
       }
-    } else {
-      RuntimeFramLogUnlock(state);
     }
+    RuntimeFramLogUnlock(state);
 
-    total_records_flushed += 1u;
-    total_bytes_flushed += line_len;
+    total_records_flushed += records_used;
+    total_bytes_flushed += bytes_used;
   }
 
 flush_done:
@@ -6257,6 +6268,7 @@ RuntimeManagerInit(void)
     .batch_target_bytes = g_state.settings.sd_batch_bytes_target,
     .tail_scan_bytes = CONFIG_APP_SD_TAIL_SCAN_BYTES,
     .file_buffer_bytes = CONFIG_APP_SD_FILE_BUFFER_BYTES,
+    .max_freq_khz = 0,
   };
   SdLoggerInit(&g_state.sd_logger, &sd_config);
 
