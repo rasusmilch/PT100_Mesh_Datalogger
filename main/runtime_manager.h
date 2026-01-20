@@ -91,6 +91,13 @@ extern "C" {
   runtime_state_t* RuntimeGetState(void);
 
 /**
+ * @brief Attempt to initialize the FRAM error log and flush pending latches.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+  esp_err_t RuntimeMaybeInitFramErrorLog(runtime_state_t* state);
+
+/**
  * @brief Execute RuntimeI2cLock.
  * @param timeout_ticks Parameter timeout_ticks.
  * @return Return the function result.

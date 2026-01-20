@@ -174,6 +174,9 @@ extern "C" {
     fram_io_t fram_io;
     fram_log_t fram_log;
     fram_error_log_t fram_error_log;
+    portMUX_TYPE errlog_latch_lock;
+    uint64_t errlog_pending_active_mask;
+    uint64_t errlog_pending_resolved_mask;
     sd_logger_t sd_logger;
     sd_card_detect_t sd_card_detect;
     StaticSemaphore_t sd_io_mutex_buf;

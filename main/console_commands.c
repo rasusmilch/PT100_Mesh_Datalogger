@@ -2165,8 +2165,28 @@ CommandLog(int argc, char** argv)
 static int
 CommandErrlog(int argc, char** argv)
 {
+  runtime_state_t* state = RuntimeGetState();
+  if (state != NULL) {
+    (void)RuntimeMaybeInitFramErrorLog(state);
+  }
   if (g_runtime == NULL || g_runtime->fram_error_log == NULL) {
     printf("runtime not ready\n");
+    return 1;
+  }
+  if (!g_runtime->fram_error_log->initialized) {
+    uint64_t pending_active = 0;
+    uint64_t pending_resolved = 0;
+    if (state != NULL) {
+      taskENTER_CRITICAL(&state->errlog_latch_lock);
+      pending_active = state->errlog_pending_active_mask;
+      pending_resolved = state->errlog_pending_resolved_mask;
+      taskEXIT_CRITICAL(&state->errlog_latch_lock);
+    }
+    printf(
+      "FRAM errlog unavailable; pending_latches=0x%016" PRIx64
+      "/0x%016" PRIx64 "\n",
+      pending_active,
+      pending_resolved);
     return 1;
   }
   if (argc < 2) {
