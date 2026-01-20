@@ -157,6 +157,20 @@ extern "C" {
   esp_err_t RuntimeWithTemporarySdMount(runtime_sd_op_fn_t op, void* ctx);
 
 /**
+ * @brief Execute RuntimeSdFsLock.
+ * @param state Parameter state.
+ * @param timeout_ticks Parameter timeout_ticks.
+ * @return Return the function result.
+ */
+  bool RuntimeSdFsLock(runtime_state_t* state, TickType_t timeout_ticks);
+
+/**
+ * @brief Execute RuntimeSdFsUnlock.
+ * @param state Parameter state.
+ */
+  void RuntimeSdFsUnlock(runtime_state_t* state);
+
+/**
  * @brief Execute RuntimeSdIoLock.
  * @param state Parameter state.
  * @param timeout_ticks Parameter timeout_ticks.

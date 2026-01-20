@@ -66,6 +66,10 @@ static const uint32_t kSdFlushMinIntervalMs = 200;
 static const uint32_t kSdDetectPollIntervalMs = 250;
 static const uint32_t kExportQueueDepth = 64;
 static const uint32_t kExportOutboxDepth = CONFIG_APP_EXPORT_OUTBOX_DEPTH;
+static const uint32_t kSdIoErrorSetThreshold = 2;
+static const uint32_t kSdIoErrorClearThreshold = 2;
+static const uint32_t kFramOverrunActiveSetThreshold = 2;
+static const uint32_t kFramOverrunActiveClearThreshold = 2;
 static const int64_t kCalTimeStableDelaySec = 60;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
@@ -102,6 +106,12 @@ enum
   ERROR_I2C_RECOVERY_START = 101,
   ERROR_I2C_RECOVERY_SUCCESS = 102,
   ERROR_I2C_RECOVERY_FAILED = 103,
+};
+
+enum
+{
+  SPI_PAUSE_ACK_SENSOR = 1u << 0,
+  SPI_PAUSE_ACK_DISPLAY = 1u << 1,
 };
 
 static esp_err_t
@@ -405,28 +415,66 @@ RuntimeAttemptPreRebootAlertSend(runtime_state_t* state,
   return false;
 }
 
-static void
+static uint32_t
+RuntimeExpectedSpiPauseMask(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return 0;
+  }
+  uint32_t mask = 0;
+  if (state->sensor_task != NULL) {
+    mask |= SPI_PAUSE_ACK_SENSOR;
+  }
+  if (state->display_task != NULL) {
+    mask |= SPI_PAUSE_ACK_DISPLAY;
+  }
+  return mask;
+}
+
+static bool
 RuntimePauseSpiUsers(runtime_state_t* state, uint32_t timeout_ms)
 {
   if (state == NULL) {
-    return;
+    return false;
+  }
+
+  const uint32_t expected_mask = RuntimeExpectedSpiPauseMask(state);
+  if (expected_mask == 0) {
+    return true;
   }
 
   state->spi_pause_requested = true;
-  state->spi_pause_acked = false;
+  state->spi_pause_ack_mask = 0;
   RuntimeNotifyTask(state->display_task);
+  RuntimeNotifyTask(state->sensor_task);
 
   const TickType_t wait_start = xTaskGetTickCount();
-  while (state->display_task != NULL && !state->spi_pause_acked &&
+  while (((state->spi_pause_ack_mask & expected_mask) != expected_mask) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < timeout_ms)) {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 
-  if (state->display_task != NULL && !state->spi_pause_acked) {
-    ESP_LOGW(kTag,
-             "Stop: SPI pause timed out; display task still active (%p)",
-             state->display_task);
+  if ((state->spi_pause_ack_mask & expected_mask) != expected_mask) {
+    ESP_LOGW(
+      kTag,
+      "SPI pause timed out; acked=0x%02" PRIx32 " expected=0x%02" PRIx32,
+      state->spi_pause_ack_mask,
+      expected_mask);
+    return false;
   }
+  return true;
+}
+
+static void
+RuntimeResumeSpiUsers(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->spi_pause_requested = false;
+  state->spi_pause_ack_mask = 0;
+  RuntimeNotifyTask(state->display_task);
+  RuntimeNotifyTask(state->sensor_task);
 }
 
 static void
@@ -585,13 +633,13 @@ MarkSdIoLockFailure(runtime_state_t* state)
 }
 
 /**
- * @brief Execute RuntimeSdIoLock.
+ * @brief Execute RuntimeSdFsLock.
  * @param state Parameter state.
  * @param timeout_ticks Parameter timeout_ticks.
  * @return Return the function result.
  */
 bool
-RuntimeSdIoLock(runtime_state_t* state, TickType_t timeout_ticks)
+RuntimeSdFsLock(runtime_state_t* state, TickType_t timeout_ticks)
 {
   if (state == NULL) {
     return false;
@@ -614,11 +662,11 @@ RuntimeSdIoLock(runtime_state_t* state, TickType_t timeout_ticks)
 }
 
 /**
- * @brief Execute RuntimeSdIoUnlock.
+ * @brief Execute RuntimeSdFsUnlock.
  * @param state Parameter state.
  */
 void
-RuntimeSdIoUnlock(runtime_state_t* state)
+RuntimeSdFsUnlock(runtime_state_t* state)
 {
   if (state == NULL || state->sd_io_mutex == NULL) {
     return;
@@ -626,16 +674,54 @@ RuntimeSdIoUnlock(runtime_state_t* state)
   (void)xSemaphoreGive(state->sd_io_mutex);
 }
 
+/**
+ * @brief Execute RuntimeSdIoLock.
+ * @param state Parameter state.
+ * @param timeout_ticks Parameter timeout_ticks.
+ * @return Return the function result.
+ */
+bool
+RuntimeSdIoLock(runtime_state_t* state, TickType_t timeout_ticks)
+{
+  return RuntimeSdFsLock(state, timeout_ticks);
+}
+
+/**
+ * @brief Execute RuntimeSdIoUnlock.
+ * @param state Parameter state.
+ */
+void
+RuntimeSdIoUnlock(runtime_state_t* state)
+{
+  RuntimeSdFsUnlock(state);
+}
+
 static bool
 RuntimeSpiBusLock(void* context, TickType_t timeout_ticks)
 {
-  return RuntimeSdIoLock((runtime_state_t*)context, timeout_ticks);
+  runtime_state_t* state = (runtime_state_t*)context;
+  if (state == NULL) {
+    return false;
+  }
+  if (state->spi_bus_mutex == NULL) {
+    ESP_LOGE(kTag, "SPI bus mutex unavailable");
+    return false;
+  }
+  if (xSemaphoreTake(state->spi_bus_mutex, timeout_ticks) != pdTRUE) {
+    ESP_LOGW(kTag, "SPI bus mutex timeout");
+    return false;
+  }
+  return true;
 }
 
 static void
 RuntimeSpiBusUnlock(void* context)
 {
-  RuntimeSdIoUnlock((runtime_state_t*)context);
+  runtime_state_t* state = (runtime_state_t*)context;
+  if (state == NULL || state->spi_bus_mutex == NULL) {
+    return;
+  }
+  (void)xSemaphoreGive(state->spi_bus_mutex);
 }
 
 static bool
@@ -958,10 +1044,41 @@ ClearSdIoError(runtime_state_t* state)
   if (state == NULL) {
     return;
   }
+  state->sd_io_success_streak++;
+  state->sd_io_error_streak = 0;
+  if (state->sd_last_io_error_active &&
+      state->sd_io_success_streak < kSdIoErrorClearThreshold) {
+    return;
+  }
   state->sd_last_io_error_active = false;
   state->sd_last_io_err = ESP_OK;
   state->sd_last_errno = 0;
   UpdateCachedBool(state, &state->cached_status.sd_io_error_active, false);
+}
+
+static void
+UpdateFramOverrunActive(runtime_state_t* state, uint64_t overrun_total)
+{
+  if (state == NULL) {
+    return;
+  }
+  const bool overrun_active = (overrun_total > state->fram_overrun_ack_total);
+  if (overrun_active) {
+    state->fram_overrun_active_streak++;
+    state->fram_overrun_clear_streak = 0;
+  } else {
+    state->fram_overrun_clear_streak++;
+    state->fram_overrun_active_streak = 0;
+  }
+  const bool cached_active = state->cached_status.fram_overrun_active;
+  if (!cached_active && overrun_active &&
+      state->fram_overrun_active_streak >= kFramOverrunActiveSetThreshold) {
+    UpdateCachedBool(state, &state->cached_status.fram_overrun_active, true);
+  } else if (cached_active && !overrun_active &&
+             state->fram_overrun_clear_streak >=
+               kFramOverrunActiveClearThreshold) {
+    UpdateCachedBool(state, &state->cached_status.fram_overrun_active, false);
+  }
 }
 
 /**
@@ -1468,18 +1585,18 @@ DisplayTask(void* context)
   while (state != NULL) {
     if (!state->display_initialized) {
       if (state->spi_pause_requested) {
-        state->spi_pause_acked = true;
+        state->spi_pause_ack_mask |= SPI_PAUSE_ACK_DISPLAY;
       }
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
 
     if (state->spi_pause_requested) {
-      state->spi_pause_acked = true;
+      state->spi_pause_ack_mask |= SPI_PAUSE_ACK_DISPLAY;
       RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
       continue;
     }
-    state->spi_pause_acked = false;
+    state->spi_pause_ack_mask &= ~SPI_PAUSE_ACK_DISPLAY;
 
     if (state->display_test_active) {
       const TickType_t now_ticks = xTaskGetTickCount();
@@ -3290,43 +3407,91 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
  * @param errno_value Parameter errno_value.
  * @param did_unmount Parameter did_unmount.
  */
-static void
+static bool
 SdHardResetLocked(runtime_state_t* state, const char* context)
 {
   if (state == NULL) {
-    return;
+    return false;
   }
   const TickType_t now_ticks = xTaskGetTickCount();
   const TickType_t min_interval_ticks = pdMS_TO_TICKS(30000);
-  state->sd_backoff_until_ticks = now_ticks + pdMS_TO_TICKS(500);
   if (state->sd_last_bus_reset_ticks != 0 &&
       (now_ticks - state->sd_last_bus_reset_ticks) < min_interval_ticks) {
     ESP_LOGW(kTag,
              "%s: SD hard reset skipped (rate limited)",
              (context != NULL) ? context : "SD reset");
-    return;
+    return false;
   }
 
   ESP_LOGW(
     kTag, "%s: performing SD hard reset", (context != NULL) ? context : "SD");
+  if (!RuntimePauseSpiUsers(state, 2000u)) {
+    RuntimeResumeSpiUsers(state);
+    return false;
+  }
+
+  if (!RuntimeSpiBusLock(state, kSdIoLockTimeoutTicks)) {
+    RuntimeResumeSpiUsers(state);
+    return false;
+  }
+
+  if (!RuntimeSdFsLock(state, kSdIoLockTimeoutTicks)) {
+    ESP_LOGW(kTag,
+             "%s: SD reset skipped; SD lock unavailable",
+             (context != NULL) ? context : "SD reset");
+    RuntimeSpiBusUnlock(state);
+    RuntimeResumeSpiUsers(state);
+    return false;
+  }
+
   if (state->sd_logger.is_mounted) {
     (void)SdLoggerUnmount(&state->sd_logger);
   }
+  RuntimeSdFsUnlock(state);
 
-#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
-  bool bus_shared = true;
-#else
-  bool bus_shared = false;
-#endif
-
-  if (!bus_shared) {
-    (void)spi_bus_free(GetSpiHost());
-    vTaskDelay(pdMS_TO_TICKS(20));
-    (void)InitSpiBus(GetSpiHost());
+  if (state->sensor.is_initialized) {
+    (void)Max31865ReaderDeinit(&state->sensor);
   }
 
+#if CONFIG_APP_MAX7219_ENABLE
+#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
+  const bool display_on_app_bus = true;
+#else
+  const bool display_on_app_bus = false;
+#endif
+  const bool display_reinit =
+    display_on_app_bus && state->display_initialized;
+  if (display_reinit) {
+    (void)Max7219DisplayDeinit(&state->display);
+    state->display_initialized = false;
+  }
+#endif
+
+  (void)spi_bus_free(GetSpiHost());
+  vTaskDelay(pdMS_TO_TICKS(20));
+  (void)InitSpiBus(GetSpiHost());
+
+  const esp_err_t sensor_init_result =
+    InitializeMax31865Sensor(state, GetSpiHost());
+  if (sensor_init_result != ESP_OK) {
+    ESP_LOGW(kTag,
+             "MAX31865 reinit failed after SPI reset: %s",
+             esp_err_to_name(sensor_init_result));
+  }
+
+#if CONFIG_APP_MAX7219_ENABLE
+  if (display_reinit) {
+    (void)InitializeMax7219Display(state);
+  }
+#endif
+
+  RuntimeSpiBusUnlock(state);
+  RuntimeResumeSpiUsers(state);
+
+  state->sd_backoff_until_ticks = now_ticks + pdMS_TO_TICKS(500);
   state->sd_last_bus_reset_ticks = now_ticks;
   state->sd_bus_reset_count++;
+  return true;
 }
 
 static void
@@ -3341,42 +3506,47 @@ MarkSdFailure(runtime_state_t* state,
     return;
   }
   const TickType_t now_ticks = xTaskGetTickCount();
-  bool did_reset = false;
   state->sd_degraded = true;
   state->sd_fail_count++;
   if (errno_value == EIO && did_unmount && state->sd_fail_count >= 3u) {
-    if (RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
-      TickType_t last_reset = state->sd_last_bus_reset_ticks;
-      SdHardResetLocked(state, context);
-      did_reset = (state->sd_last_bus_reset_ticks != last_reset);
-      RuntimeSdIoUnlock(state);
+    if (!state->sd_reset_pending) {
+      state->sd_reset_pending = true;
+      state->sd_reset_pending_since_ticks = now_ticks;
+      state->sd_reset_pending_context = context;
+      state->sd_reset_pending_errno = errno_value;
+      ESP_LOGW(kTag,
+               "%s: SD reset requested after EIO escalation",
+               (context != NULL) ? context : "SD");
     }
   }
   ReduceSdMaxFreqOnEio(state, errno_value);
   uint64_t backoff_ms = 500;
-  if (!did_reset) {
-    backoff_ms = kSdFlushFailureBackoffMs;
-    if (state->sd_fail_count > 1u) {
-      const uint32_t shift = state->sd_fail_count - 1u;
-      if (shift >= 31u) {
-        backoff_ms = kSdFlushFailureBackoffMaxMs;
-      } else {
-        backoff_ms = (uint64_t)kSdFlushFailureBackoffMs << shift;
-      }
-    }
-    if (backoff_ms < kSdFlushFailureBackoffMs) {
-      backoff_ms = kSdFlushFailureBackoffMs;
-    }
-    if (backoff_ms > kSdFlushFailureBackoffMaxMs) {
+  backoff_ms = kSdFlushFailureBackoffMs;
+  if (state->sd_fail_count > 1u) {
+    const uint32_t shift = state->sd_fail_count - 1u;
+    if (shift >= 31u) {
       backoff_ms = kSdFlushFailureBackoffMaxMs;
+    } else {
+      backoff_ms = (uint64_t)kSdFlushFailureBackoffMs << shift;
     }
+  }
+  if (backoff_ms < kSdFlushFailureBackoffMs) {
+    backoff_ms = kSdFlushFailureBackoffMs;
+  }
+  if (backoff_ms > kSdFlushFailureBackoffMaxMs) {
+    backoff_ms = kSdFlushFailureBackoffMaxMs;
   }
   state->sd_backoff_until_ticks = now_ticks + pdMS_TO_TICKS(backoff_ms);
   if (IsSdIoOperation(operation)) {
-    state->sd_last_io_error_active = true;
+    state->sd_io_error_streak++;
+    state->sd_io_success_streak = 0;
     state->sd_last_io_err = error;
     state->sd_last_errno = errno_value;
-    UpdateCachedBool(state, &state->cached_status.sd_io_error_active, true);
+    if (!state->sd_last_io_error_active &&
+        state->sd_io_error_streak >= kSdIoErrorSetThreshold) {
+      state->sd_last_io_error_active = true;
+      UpdateCachedBool(state, &state->cached_status.sd_io_error_active, true);
+    }
   }
   UpdateCachedBool(
     state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
@@ -3389,9 +3559,10 @@ MarkSdFailure(runtime_state_t* state,
   const char* op_label = (operation != NULL) ? operation : "unknown";
   const char* errno_str = (errno_value != 0) ? strerror(errno_value) : "n/a";
   const char* action_label = did_unmount ? "unmount+backoff" : "backoff";
+  const char* context_label = (context != NULL) ? context : "SD";
   ESP_LOGW(kTag,
            "%s: op=%s err=%s (%d) errno=%d (%s) action=%s backoff_until=%u",
-           context,
+           context_label,
            op_label,
            esp_err_to_name(error),
            (int)error,
@@ -3399,6 +3570,23 @@ MarkSdFailure(runtime_state_t* state,
            errno_str,
            action_label,
            (unsigned)state->sd_backoff_until_ticks);
+}
+
+static void
+SdResetPendingTick(runtime_state_t* state)
+{
+  if (state == NULL || !state->sd_reset_pending) {
+    return;
+  }
+  const char* context =
+    (state->sd_reset_pending_context != NULL) ? state->sd_reset_pending_context
+                                              : "SD reset";
+  if (SdHardResetLocked(state, context)) {
+    state->sd_reset_pending = false;
+    state->sd_reset_pending_context = NULL;
+    state->sd_reset_pending_errno = 0;
+    state->sd_reset_pending_since_ticks = 0;
+  }
 }
 
 static void
@@ -3772,13 +3960,13 @@ TrackSensorSpiInvalid(runtime_state_t* state, int64_t now_ms)
     return;
   }
   state->sensor_spi_invalid_streak = 0;
-  const bool locked = RuntimeSdIoLock(state, kSdIoLockTimeoutTicks);
+  const bool locked = RuntimeSpiBusLock(state, kSdIoLockTimeoutTicks);
   if (!locked) {
     ESP_LOGW(kTag, "SPI bus lock timeout; skipping MAX31865 reinit");
     return;
   }
   const esp_err_t init_result = InitializeMax31865Sensor(state, GetSpiHost());
-  RuntimeSdIoUnlock(state);
+  RuntimeSpiBusUnlock(state);
   if (init_result != ESP_OK) {
     ESP_LOGW(kTag,
              "MAX31865 reinit failed after SPI invalid streak: %s",
@@ -3809,6 +3997,12 @@ SensorTask(void* context)
   runtime_state_t* state = (runtime_state_t*)context;
 
   while (!state->stop_requested) {
+    if (state->spi_pause_requested) {
+      state->spi_pause_ack_mask |= SPI_PAUSE_ACK_SENSOR;
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
+      continue;
+    }
+    state->spi_pause_ack_mask &= ~SPI_PAUSE_ACK_SENSOR;
     const uint32_t period_ms = state->settings.log_period_ms;
 
     max31865_sample_t sample;
@@ -4617,6 +4811,9 @@ StorageTask(void* context)
 
   while (!state->stop_requested ||
          uxQueueMessagesWaiting(state->log_queue) > 0) {
+    if (state->sd_reset_pending) {
+      SdResetPendingTick(state);
+    }
     sensor_sample_msg_t msg;
     RuntimeMarkersSetStorage(state, STORAGE_010_BEFORE_QUEUE_RECV);
     const bool received =
@@ -4679,10 +4876,7 @@ StorageTask(void* context)
         LogFramOverrunWarning(
           state, overrun_after, fram_count, fram_capacity, now_ticks);
         state->last_overrun_records_total = overrun_after;
-        UpdateCachedBool(state,
-                         &state->cached_status.fram_overrun_active,
-                         state->last_overrun_records_total >
-                           state->fram_overrun_ack_total);
+        UpdateFramOverrunActive(state, state->last_overrun_records_total);
         UpdateFramFillState(state);
         if (state->fram_full) {
           record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
@@ -6000,7 +6194,7 @@ InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host)
       kTag, "Max31865ReaderInit failed: %s", esp_err_to_name(sensor_result));
     return sensor_result;
   }
-  if (state->sd_io_mutex != NULL && spi_host == GetSpiHost()) {
+  if (state->spi_bus_mutex != NULL && spi_host == GetSpiHost()) {
     state->sensor.spi_bus_lock = RuntimeSpiBusLock;
     state->sensor.spi_bus_unlock = RuntimeSpiBusUnlock;
     state->sensor.spi_bus_lock_context = state;
@@ -6060,7 +6254,7 @@ InitializeMax7219Display(runtime_state_t* state)
     .intensity = CONFIG_APP_MAX7219_INTENSITY,
     .spi_bus_mutex =
 #if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
-      state->sd_io_mutex,
+      state->spi_bus_mutex,
 #else
       NULL,
 #endif
@@ -6184,6 +6378,11 @@ RuntimeManagerInit(void)
     ESP_LOGE(kTag, "Failed to create SD I/O mutex; SD marked degraded");
     g_state.sd_degraded = true;
     UpdateCachedBool(&g_state, &g_state.cached_status.sd_degraded, true);
+  }
+  g_state.spi_bus_mutex =
+    xSemaphoreCreateMutexStatic(&g_state.spi_bus_mutex_buf);
+  if (g_state.spi_bus_mutex == NULL) {
+    ESP_LOGE(kTag, "Failed to create SPI bus mutex");
   }
   g_state.fram_log_mutex = xSemaphoreCreateMutex();
   if (g_state.fram_log_mutex == NULL) {
@@ -7122,7 +7321,7 @@ RuntimeStopAllTasks(runtime_state_t* state)
   UpdateMqttConnectionState(state);
   state->stop_requested = false;
   state->spi_pause_requested = false;
-  state->spi_pause_acked = false;
+  state->spi_pause_ack_mask = 0;
   UpdateCachedBool(state, &state->cached_status.stop_requested, false);
 
   // Leave the MAX7219 display initialized during stop; only deinit on shutdown.
@@ -7231,8 +7430,7 @@ EnterDiagMode(void)
                                  CONFIG_APP_DRAIN_MAX_RECORDS_PER_PASS,
                                  CONFIG_APP_DRAIN_YIELD_EVERY_RECORDS,
                                  &drain_stats);
-    g_state.spi_pause_requested = false;
-    g_state.spi_pause_acked = false;
+    RuntimeResumeSpiUsers(&g_state);
     if (flush_result == ESP_ERR_TIMEOUT) {
       ESP_LOGW(kTag,
                "Stop drain timed out: remaining=%d duration=%d ms",
@@ -7465,10 +7663,9 @@ RuntimeAcknowledgeDisplayAttention(display_attention_item_t item)
       FramLogGetOverrunRecordsTotal(&g_state.fram_log);
     RuntimeFramLogUnlock(&g_state);
   }
-  UpdateCachedBool(&g_state,
-                   &g_state.cached_status.fram_overrun_active,
-                   g_state.last_overrun_records_total >
-                     g_state.fram_overrun_ack_total);
+  g_state.fram_overrun_active_streak = 0;
+  g_state.fram_overrun_clear_streak = 0;
+  UpdateCachedBool(&g_state, &g_state.cached_status.fram_overrun_active, false);
   return true;
 }
 

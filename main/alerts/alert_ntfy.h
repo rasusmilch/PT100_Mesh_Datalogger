@@ -36,6 +36,7 @@ extern "C"
     ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY = 15,
     ALERT_SYSTEM_CODE_ERROR_STORAGE_STALL = 16,
     ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI = 17,
+    ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT = 18,
   } alert_system_code_t;
 
   typedef struct
@@ -73,6 +74,11 @@ extern "C"
     int last_http_status;
     esp_err_t last_err;
     uint32_t backoff_ms;
+    int64_t cooldown_until_ms;
+    int64_t retry_after_ms;
+    uint32_t suppressed_count;
+    bool suppressed_latest_valid;
+    alert_notification_t suppressed_latest;
   } alert_ntfy_t;
 
   typedef struct
@@ -107,7 +113,7 @@ extern "C"
    * @param out_err Parameter out_err.
    * @return Return the function result.
    */
-  alert_ntfy_result_t AlertNtfySend(const alert_ntfy_t* ntfy,
+  alert_ntfy_result_t AlertNtfySend(alert_ntfy_t* ntfy,
                                     const alert_ntfy_config_t* cfg,
                                     const alert_notification_t* note,
                                     int* out_status,

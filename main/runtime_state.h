@@ -181,6 +181,8 @@ extern "C" {
     sd_card_detect_t sd_card_detect;
     StaticSemaphore_t sd_io_mutex_buf;
     SemaphoreHandle_t sd_io_mutex;
+    StaticSemaphore_t spi_bus_mutex_buf;
+    SemaphoreHandle_t spi_bus_mutex;
     SemaphoreHandle_t fram_log_mutex;
     max31865_reader_t sensor;
     mesh_transport_t mesh;
@@ -213,6 +215,7 @@ extern "C" {
     TickType_t last_sd_flush_wait_warn_ticks;
     uint32_t sd_fail_count;
     TickType_t sd_last_bus_reset_ticks;
+    TickType_t sd_reset_pending_since_ticks;
     uint32_t sd_bus_reset_count;
     uint32_t sd_flush_records_since;
     bool sd_flush_in_progress;
@@ -229,6 +232,11 @@ extern "C" {
     bool sd_force_unmount_on_append;
     bool sd_verify_readback;
     bool sd_last_io_error_active;
+    uint32_t sd_io_error_streak;
+    uint32_t sd_io_success_streak;
+    bool sd_reset_pending;
+    const char* sd_reset_pending_context;
+    int sd_reset_pending_errno;
     esp_err_t sd_last_io_err;
     int sd_last_errno;
     bool fram_full;
@@ -237,6 +245,8 @@ extern "C" {
     uint64_t last_overrun_records_total;
     uint64_t last_overrun_logged_total;
     uint64_t fram_overrun_ack_total;
+    uint32_t fram_overrun_active_streak;
+    uint32_t fram_overrun_clear_streak;
     uint32_t fram_corrupt_detect_count;
     uint32_t fram_corrupt_skip_count;
     uint32_t fram_corrupt_last_offset;
@@ -295,7 +305,7 @@ extern "C" {
     bool logger_running;
     bool stop_requested;
     bool spi_pause_requested;
-    bool spi_pause_acked;
+    uint32_t spi_pause_ack_mask;
     bool mesh_started;
     bool wifi_direct_started;
     bool wifi_direct_time_synced;

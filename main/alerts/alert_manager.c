@@ -13,6 +13,8 @@
 #include "time_sync.h"
 
 static const char* kTag = "alert_mgr";
+static const int64_t kNtfyRateLimitMinCooldownMs = 60000;
+static const int64_t kNtfyRateLimitMaxCooldownMs = 900000;
 static const uint32_t kAlertConfigVersion = 1;
 static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
@@ -1416,6 +1418,41 @@ AlertManagerMonitorTask(void* context)
   vTaskDelete(NULL);
 }
 
+static int64_t
+ResolveNtfyMinIntervalMs(const alert_manager_t* manager)
+{
+  int64_t min_interval_ms = 15000;
+  if (manager != NULL && manager->config.global_max_per_minute > 0) {
+    const int64_t per_minute_interval_ms =
+      60000 / (int64_t)manager->config.global_max_per_minute;
+    if (per_minute_interval_ms > min_interval_ms) {
+      min_interval_ms = per_minute_interval_ms;
+    }
+  }
+  return min_interval_ms;
+}
+
+static void
+BuildNtfySuppressedSummary(alert_manager_t* manager,
+                           alert_notification_t* note,
+                           uint32_t suppressed_count,
+                           int64_t now_ms,
+                           int64_t now_epoch)
+{
+  if (manager == NULL || note == NULL) {
+    return;
+  }
+  memset(note, 0, sizeof(*note));
+  note->type = ALERT_SYSTEM_ERROR;
+  note->severity = ALERT_SEV_WARN;
+  note->resolved = false;
+  note->leaf_id = manager->local_leaf_id;
+  note->payload.duration_ms = suppressed_count;
+  note->payload.event_code = ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT;
+  note->payload.event_epoch = now_epoch;
+  note->payload.event_uptime_ms = now_ms;
+}
+
 /**
  * @brief Execute AlertManagerSenderTask.
  * @param context Parameter context.
@@ -1433,22 +1470,95 @@ AlertManagerSenderTask(void* context)
   int64_t last_send_ms = 0;
 
   while (!*ctx->stop_requested) {
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+    if (ctx->manager->ntfy.cooldown_until_ms > 0 &&
+        now_ms >= ctx->manager->ntfy.cooldown_until_ms &&
+        ctx->manager->ntfy.suppressed_count > 0) {
+      const int64_t min_interval_ms =
+        ResolveNtfyMinIntervalMs(ctx->manager);
+      if (last_send_ms > 0 && (now_ms - last_send_ms) < min_interval_ms) {
+        int64_t remaining_ms = min_interval_ms - (now_ms - last_send_ms);
+        if (remaining_ms > 0) {
+          (void)ulTaskNotifyTake(pdTRUE,
+                                 pdMS_TO_TICKS((uint32_t)remaining_ms));
+          if (*ctx->stop_requested) {
+            break;
+          }
+        }
+      }
+
+      alert_notification_t summary;
+      BuildNtfySuppressedSummary(ctx->manager,
+                                 &summary,
+                                 ctx->manager->ntfy.suppressed_count,
+                                 now_ms,
+                                 now_epoch);
+      alert_ntfy_config_t cfg = {
+        .url = ctx->manager->config.ntfy_url,
+        .topic = ctx->manager->config.ntfy_topic,
+        .token = ctx->manager->config.ntfy_token,
+        .root_id = ctx->manager->root_id_string,
+        .http_timeout_ms = 0,
+      };
+
+      int status = 0;
+      esp_err_t err = ESP_OK;
+      alert_ntfy_result_t result =
+        AlertNtfySend(&ctx->manager->ntfy, &cfg, &summary, &status, &err);
+      if (result == ALERT_NTFY_OK) {
+        ctx->manager->ntfy.send_success++;
+        ctx->manager->ntfy.last_http_status = status;
+        ctx->manager->ntfy.last_err = err;
+        ctx->manager->ntfy.backoff_ms = 0;
+        last_send_ms = esp_timer_get_time() / 1000;
+        ctx->manager->ntfy.cooldown_until_ms = 0;
+        ctx->manager->ntfy.suppressed_count = 0;
+        if (ctx->manager->ntfy.suppressed_latest_valid) {
+          (void)AlertNtfyEnqueue(&ctx->manager->ntfy,
+                                &ctx->manager->ntfy.suppressed_latest);
+        }
+        ctx->manager->ntfy.suppressed_latest_valid = false;
+        continue;
+      }
+      ctx->manager->ntfy.send_fail++;
+      ctx->manager->ntfy.last_http_status = status;
+      ctx->manager->ntfy.last_err = err;
+      if (status == 429) {
+        int64_t backoff_ms = ctx->manager->ntfy.backoff_ms;
+        if (backoff_ms <= 0) {
+          backoff_ms = 1000;
+        }
+        backoff_ms *= 2;
+        if (backoff_ms < kNtfyRateLimitMinCooldownMs) {
+          backoff_ms = kNtfyRateLimitMinCooldownMs;
+        }
+        if (ctx->manager->ntfy.retry_after_ms > backoff_ms) {
+          backoff_ms = ctx->manager->ntfy.retry_after_ms;
+        }
+        if (backoff_ms > kNtfyRateLimitMaxCooldownMs) {
+          backoff_ms = kNtfyRateLimitMaxCooldownMs;
+        }
+        ctx->manager->ntfy.backoff_ms = (uint32_t)backoff_ms;
+        ctx->manager->ntfy.cooldown_until_ms = now_ms + backoff_ms;
+        continue;
+      }
+      (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+      if (*ctx->stop_requested) {
+        break;
+      }
+      continue;
+    }
+
     alert_notification_t note;
     if (xQueueReceive(ctx->manager->ntfy.queue, &note, pdMS_TO_TICKS(1000)) !=
         pdTRUE) {
       continue;
     }
 
-    int64_t min_interval_ms = 15000;
-    if (ctx->manager->config.global_max_per_minute > 0) {
-      int64_t per_minute_interval_ms =
-        60000 / (int64_t)ctx->manager->config.global_max_per_minute;
-      if (per_minute_interval_ms > min_interval_ms) {
-        min_interval_ms = per_minute_interval_ms;
-      }
-    }
+    int64_t min_interval_ms = ResolveNtfyMinIntervalMs(ctx->manager);
 
-    int64_t now_ms = esp_timer_get_time() / 1000;
+    now_ms = esp_timer_get_time() / 1000;
     if (last_send_ms > 0 && (now_ms - last_send_ms) < min_interval_ms) {
       alert_notification_t newest = note;
       while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
@@ -1462,6 +1572,20 @@ AlertManagerSenderTask(void* context)
           break;
         }
       }
+    }
+
+    now_ms = esp_timer_get_time() / 1000;
+    if (ctx->manager->ntfy.cooldown_until_ms > now_ms) {
+      alert_notification_t newest = note;
+      uint32_t suppressed = 1;
+      while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
+        newest = note;
+        suppressed++;
+      }
+      ctx->manager->ntfy.suppressed_count += suppressed;
+      ctx->manager->ntfy.suppressed_latest = newest;
+      ctx->manager->ntfy.suppressed_latest_valid = true;
+      continue;
     }
 
     alert_ntfy_config_t cfg = {
@@ -1489,11 +1613,37 @@ AlertManagerSenderTask(void* context)
       ctx->manager->ntfy.send_fail++;
       ctx->manager->ntfy.last_http_status = status;
       ctx->manager->ntfy.last_err = err;
+      if (status == 429) {
+        int64_t backoff_ms = ctx->manager->ntfy.backoff_ms;
+        if (backoff_ms <= 0) {
+          backoff_ms = 1000;
+        }
+        backoff_ms *= 2;
+        if (backoff_ms < kNtfyRateLimitMinCooldownMs) {
+          backoff_ms = kNtfyRateLimitMinCooldownMs;
+        }
+        if (ctx->manager->ntfy.retry_after_ms > backoff_ms) {
+          backoff_ms = ctx->manager->ntfy.retry_after_ms;
+        }
+        if (backoff_ms > kNtfyRateLimitMaxCooldownMs) {
+          backoff_ms = kNtfyRateLimitMaxCooldownMs;
+        }
+        ctx->manager->ntfy.backoff_ms = (uint32_t)backoff_ms;
+        ctx->manager->ntfy.cooldown_until_ms = now_ms + backoff_ms;
+        ctx->manager->ntfy.suppressed_count++;
+        ctx->manager->ntfy.suppressed_latest = note;
+        ctx->manager->ntfy.suppressed_latest_valid = true;
+        while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
+          ctx->manager->ntfy.suppressed_latest = note;
+          ctx->manager->ntfy.suppressed_count++;
+        }
+        continue;
+      }
       ctx->manager->ntfy.backoff_ms = (ctx->manager->ntfy.backoff_ms == 0)
                                         ? 1000
                                         : (ctx->manager->ntfy.backoff_ms * 2);
-      if (ctx->manager->ntfy.backoff_ms > 30000) {
-        ctx->manager->ntfy.backoff_ms = 30000;
+      if (ctx->manager->ntfy.backoff_ms > kNtfyRateLimitMaxCooldownMs) {
+        ctx->manager->ntfy.backoff_ms = kNtfyRateLimitMaxCooldownMs;
       }
       (void)ulTaskNotifyTake(pdTRUE,
                              pdMS_TO_TICKS(ctx->manager->ntfy.backoff_ms));

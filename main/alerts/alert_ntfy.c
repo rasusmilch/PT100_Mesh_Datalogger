@@ -3,7 +3,9 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #include "esp_http_client.h"
@@ -64,6 +66,40 @@ SeverityToPriority(int severity)
     default:
       return "low";
   }
+}
+
+static int64_t
+ParseRetryAfterMs(const char* value)
+{
+  if (value == NULL || value[0] == '\0') {
+    return 0;
+  }
+  char* end = NULL;
+  long seconds = strtol(value, &end, 10);
+  if (end == value || seconds <= 0) {
+    return 0;
+  }
+  return (int64_t)seconds * 1000;
+}
+
+static esp_err_t
+AlertNtfyHttpEventHandler(esp_http_client_event_t* evt)
+{
+  if (evt == NULL || evt->user_data == NULL) {
+    return ESP_OK;
+  }
+  if (evt->event_id != HTTP_EVENT_ON_HEADER) {
+    return ESP_OK;
+  }
+  if (evt->header_key == NULL || evt->header_value == NULL) {
+    return ESP_OK;
+  }
+  if (strcasecmp(evt->header_key, "Retry-After") != 0) {
+    return ESP_OK;
+  }
+  alert_ntfy_t* ntfy = (alert_ntfy_t*)evt->user_data;
+  ntfy->retry_after_ms = ParseRetryAfterMs(evt->header_value);
+  return ESP_OK;
 }
 
 /**
@@ -203,13 +239,12 @@ AlertNtfyEnqueue(alert_ntfy_t* ntfy, const alert_notification_t* note)
  * @return Return the function result.
  */
 alert_ntfy_result_t
-AlertNtfySend(const alert_ntfy_t* ntfy,
+AlertNtfySend(alert_ntfy_t* ntfy,
               const alert_ntfy_config_t* cfg,
               const alert_notification_t* note,
               int* out_status,
               esp_err_t* out_err)
 {
-  (void)ntfy;
   if (out_status != NULL) {
     *out_status = 0;
   }
@@ -229,6 +264,8 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
     }
     return ALERT_NTFY_SKIPPED;
   }
+
+  ntfy->retry_after_ms = 0;
 
   char url[256];
   if (cfg->url[strlen(cfg->url) - 1] == '/') {
@@ -353,6 +390,9 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
         case ALERT_SYSTEM_CODE_ERROR_STORAGE_STALL:
           error = "storage_stall";
           break;
+        case ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT:
+          error = "ntfy_rate_limit";
+          break;
         default:
           known = false;
           break;
@@ -361,6 +401,13 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
                sizeof(body) - strlen(body),
                "type: system_error\nerror: %s\n",
                error);
+      if (note->payload.event_code == ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT &&
+          note->payload.duration_ms > 0) {
+        snprintf(body + strlen(body),
+                 sizeof(body) - strlen(body),
+                 "suppressed: %" PRIu32 "\n",
+                 note->payload.duration_ms);
+      }
       if (!known) {
         snprintf(body + strlen(body),
                  sizeof(body) - strlen(body),
@@ -384,6 +431,8 @@ AlertNtfySend(const alert_ntfy_t* ntfy,
     .url = url,
     .method = HTTP_METHOD_POST,
     .timeout_ms = (int)timeout_ms,
+    .event_handler = AlertNtfyHttpEventHandler,
+    .user_data = ntfy,
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
     .crt_bundle_attach = esp_crt_bundle_attach,
 #endif
