@@ -215,6 +215,9 @@ extern "C" {
     uint32_t sd_flush_records_since;
     bool sd_flush_in_progress;
     bool sd_flush_pending;
+    volatile bool sd_manual_drain_active;
+    volatile TickType_t sd_manual_drain_deadline_ticks;
+    volatile uint32_t sd_manual_drain_passes;
     volatile uint32_t storage_marker;
     volatile uint32_t sd_flush_marker;
     // If the FRAM->SD drain was requested at run start but SD was not mounted,

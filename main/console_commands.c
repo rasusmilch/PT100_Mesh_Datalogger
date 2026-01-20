@@ -63,6 +63,7 @@
 
 static const char* kTag = "console";
 static const TickType_t kConsoleFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
+static const int32_t kFlushTimeoutDefaultMs = 15000;
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
 static void
@@ -1481,18 +1482,101 @@ FormatRecordFlags(uint16_t flags, char* out, size_t out_size)
 static int
 CommandFlush(int argc, char** argv)
 {
-  (void)argc;
-  (void)argv;
   if (g_runtime == NULL) {
     return 1;
   }
 
-  esp_err_t result = ESP_OK;
-  if (RuntimeIsRunning()) {
-    result = FlushAllRecordsToSd(g_runtime);
-  } else {
-    result = RuntimeWithTemporarySdMount(&FlushOp, NULL);
+  bool async = false;
+  int32_t timeout_ms = kFlushTimeoutDefaultMs;
+  for (int index = 1; index < argc; ++index) {
+    const char* arg = argv[index];
+    if (strcmp(arg, "--async") == 0) {
+      async = true;
+      continue;
+    }
+    if (strcmp(arg, "--timeout") == 0) {
+      if ((index + 1) >= argc) {
+        printf("usage: flush [--async] [--timeout <ms>]\n");
+        return 1;
+      }
+      char* end = NULL;
+      const long timeout_long = strtol(argv[index + 1], &end, 10);
+      if (end == argv[index + 1] || *end != '\0') {
+        printf("invalid timeout\n");
+        return 1;
+      }
+      timeout_ms = (int32_t)timeout_long;
+      if (timeout_ms < 0) {
+        printf("invalid timeout\n");
+        return 1;
+      }
+      index++;
+      continue;
+    }
+    printf("usage: flush [--async] [--timeout <ms>]\n");
+    return 1;
   }
+
+  if (RuntimeIsRunning()) {
+    runtime_state_t* state = RuntimeGetState();
+    if (state == NULL || state->sd_flush_task == NULL) {
+      printf("flush unavailable; SD flush task not running\n");
+      return 1;
+    }
+    const TickType_t now_ticks = xTaskGetTickCount();
+    const TickType_t deadline_ticks =
+      (timeout_ms > 0) ? (now_ticks + pdMS_TO_TICKS(timeout_ms)) : 0;
+    state->sd_manual_drain_active = true;
+    state->sd_manual_drain_deadline_ticks = deadline_ticks;
+    state->sd_manual_drain_passes = 0;
+    state->sd_flush_pending = true;
+    state->sd_next_flush_allowed_ticks = 0;
+    xTaskNotifyGive(state->sd_flush_task);
+
+    if (async) {
+      printf("flush armed (timeout=%d ms)\n", (int)timeout_ms);
+      return 0;
+    }
+
+    uint32_t remaining = 0;
+    while (true) {
+      if (ConsoleFramLogLock(state)) {
+        remaining = FramLogGetBufferedRecords(&state->fram_log);
+        ConsoleFramLogUnlock(state);
+      }
+
+      if (remaining == 0u) {
+        break;
+      }
+      if (!state->sd_manual_drain_active) {
+        break;
+      }
+      if (deadline_ticks != 0 &&
+          (int32_t)(xTaskGetTickCount() - deadline_ticks) >= 0) {
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (remaining == 0u) {
+      printf("flush complete; remaining=0\n");
+      return 0;
+    }
+    if (deadline_ticks != 0 &&
+        (int32_t)(xTaskGetTickCount() - deadline_ticks) >= 0) {
+      printf("flush timed out; remaining=%u\n", (unsigned)remaining);
+      return 1;
+    }
+    printf("flush stopped; remaining=%u\n", (unsigned)remaining);
+    return 1;
+  }
+
+  if (async) {
+    printf("flush async unsupported while stopped\n");
+    return 1;
+  }
+
+  const esp_err_t result = RuntimeWithTemporarySdMount(&FlushOp, NULL);
   if (result != ESP_OK) {
     printf("flush failed: %s\n", esp_err_to_name(result));
     return 1;
@@ -5109,7 +5193,7 @@ RegisterCommands(void)
 
   const esp_console_cmd_t flush_cmd = {
     .command = "flush",
-    .help = "Force flush FRAM -> SD (best-effort)",
+    .help = "Force flush FRAM -> SD (best-effort) [--async] [--timeout <ms>]",
     .hint = NULL,
     .func = &CommandFlush,
   };
