@@ -7,6 +7,7 @@
 
 #include "driver/spi_master.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -62,6 +63,12 @@ extern "C"
     uint8_t* dma_tx_buf;
     uint8_t* dma_rx_buf;
     size_t dma_buf_len;
+
+    // Optional SPI bus lock callbacks for shared bus coordination.
+    bool (*spi_bus_lock)(void* context, TickType_t timeout_ticks);
+    void (*spi_bus_unlock)(void* context);
+    void* spi_bus_lock_context;
+    TickType_t spi_bus_lock_timeout_ticks;
   } max31865_reader_t;
 
   // Initialize MAX31865 on an already-initialized SPI bus.

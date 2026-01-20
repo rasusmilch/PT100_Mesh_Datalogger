@@ -257,6 +257,12 @@ extern "C" {
     bool last_sensor_fault_present;
     uint8_t last_sensor_fault_status;
     TickType_t last_sensor_fault_log_ticks;
+    TickType_t last_sensor_spi_log_ticks;
+    uint32_t sensor_spi_invalid_streak;
+    uint32_t sensor_spi_reinit_count;
+    int64_t sensor_spi_reinit_window_start_ms;
+    int64_t sensor_spi_last_invalid_ms;
+    bool sensor_spi_fault_active;
     bool last_rtd_ema_enabled;
     bool cal_due_check_suspended;
     bool cal_overdue;
