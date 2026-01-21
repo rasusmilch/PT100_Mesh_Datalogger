@@ -2,6 +2,7 @@
 #include "alerts/alert_manager.h"
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,14 @@
 #endif
 
 static const char* kTag = "alert_ntfy";
+
+typedef struct
+{
+  int retry_after_seconds;
+} alert_ntfy_http_context_t;
+
+static int AlertNtfyParseRetryAfterSeconds(const char* value);
+static esp_err_t AlertNtfyHttpEventHandler(esp_http_client_event_t* evt);
 
 /**
  * @brief Reduce log noise from ESP-IDF certificate bundle validation.
@@ -68,18 +77,21 @@ SeverityToPriority(int severity)
   }
 }
 
-static int64_t
-ParseRetryAfterMs(const char* value)
+static int
+AlertNtfyParseRetryAfterSeconds(const char* value)
 {
   if (value == NULL || value[0] == '\0') {
-    return 0;
+    return -1;
   }
   char* end = NULL;
   long seconds = strtol(value, &end, 10);
   if (end == value || seconds <= 0) {
-    return 0;
+    return -1;
   }
-  return (int64_t)seconds * 1000;
+  if (seconds > INT_MAX) {
+    return INT_MAX;
+  }
+  return (int)seconds;
 }
 
 static esp_err_t
@@ -97,8 +109,12 @@ AlertNtfyHttpEventHandler(esp_http_client_event_t* evt)
   if (strcasecmp(evt->header_key, "Retry-After") != 0) {
     return ESP_OK;
   }
-  alert_ntfy_t* ntfy = (alert_ntfy_t*)evt->user_data;
-  ntfy->retry_after_ms = ParseRetryAfterMs(evt->header_value);
+  alert_ntfy_http_context_t* ctx =
+    (alert_ntfy_http_context_t*)evt->user_data;
+  int seconds = AlertNtfyParseRetryAfterSeconds(evt->header_value);
+  if (seconds > 0) {
+    ctx->retry_after_seconds = seconds;
+  }
   return ESP_OK;
 }
 
@@ -234,6 +250,7 @@ AlertNtfyEnqueue(alert_ntfy_t* ntfy, const alert_notification_t* note)
  * @param ntfy Parameter ntfy.
  * @param cfg Parameter cfg.
  * @param note Parameter note.
+ * @param out_retry_after_seconds Parameter out_retry_after_seconds.
  * @param out_status Parameter out_status.
  * @param out_err Parameter out_err.
  * @return Return the function result.
@@ -242,11 +259,15 @@ alert_ntfy_result_t
 AlertNtfySend(alert_ntfy_t* ntfy,
               const alert_ntfy_config_t* cfg,
               const alert_notification_t* note,
+              int* out_retry_after_seconds,
               int* out_status,
               esp_err_t* out_err)
 {
   if (out_status != NULL) {
     *out_status = 0;
+  }
+  if (out_retry_after_seconds != NULL) {
+    *out_retry_after_seconds = -1;
   }
   if (out_err != NULL) {
     *out_err = ESP_OK;
@@ -265,7 +286,9 @@ AlertNtfySend(alert_ntfy_t* ntfy,
     return ALERT_NTFY_SKIPPED;
   }
 
-  ntfy->retry_after_ms = 0;
+  alert_ntfy_http_context_t http_ctx = {
+    .retry_after_seconds = -1,
+  };
 
   char url[256];
   if (cfg->url[strlen(cfg->url) - 1] == '/') {
@@ -432,7 +455,7 @@ AlertNtfySend(alert_ntfy_t* ntfy,
     .method = HTTP_METHOD_POST,
     .timeout_ms = (int)timeout_ms,
     .event_handler = AlertNtfyHttpEventHandler,
-    .user_data = ntfy,
+    .user_data = &http_ctx,
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
     .crt_bundle_attach = esp_crt_bundle_attach,
 #endif
@@ -464,6 +487,9 @@ AlertNtfySend(alert_ntfy_t* ntfy,
 
   if (out_status != NULL) {
     *out_status = status;
+  }
+  if (out_retry_after_seconds != NULL) {
+    *out_retry_after_seconds = http_ctx.retry_after_seconds;
   }
   if (out_err != NULL) {
     *out_err = err;

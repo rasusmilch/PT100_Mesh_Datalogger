@@ -13,9 +13,11 @@
 #include "time_sync.h"
 
 static const char* kTag = "alert_mgr";
-static const int64_t kNtfyRateLimitMinCooldownMs = 300000;
-static const int64_t kNtfyRateLimitMaxCooldownMs = 3600000;
+static const int64_t kNtfyRateLimitBaseCooldownMs = 120000;
+static const int64_t kNtfyRateLimitMaxCooldownMs = 900000;
 static const int64_t kNtfyDedupeWindowMs = 300000;
+static const int64_t kNtfyFailureMaxBackoffMs = 300000;
+static const bool kNtfySendSuppressedSummary = true;
 static const uint32_t kAlertConfigVersion = 1;
 static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
@@ -1466,24 +1468,25 @@ AlertNotificationMatches(const alert_notification_t* left,
 }
 
 static int64_t
-ResolveNtfyCooldownMs(const alert_ntfy_t* ntfy)
+ResolveNtfyCooldownMs(const alert_ntfy_t* ntfy, int retry_after_seconds)
 {
-  int64_t backoff_ms = 0;
-  if (ntfy != NULL) {
-    backoff_ms = ntfy->backoff_ms;
+  if (retry_after_seconds > 0) {
+    int64_t retry_ms = (int64_t)retry_after_seconds * 1000;
+    if (retry_ms > kNtfyRateLimitMaxCooldownMs) {
+      retry_ms = kNtfyRateLimitMaxCooldownMs;
+    }
+    return retry_ms;
   }
-  if (backoff_ms <= 0) {
-    backoff_ms = 1000;
+
+  uint32_t attempts = 1;
+  if (ntfy != NULL && ntfy->rate_limited_count > 0) {
+    attempts = ntfy->rate_limited_count;
   }
-  backoff_ms *= 2;
-  if (backoff_ms < kNtfyRateLimitMinCooldownMs) {
-    backoff_ms = kNtfyRateLimitMinCooldownMs;
-  }
-  if (ntfy != NULL && ntfy->retry_after_ms > backoff_ms) {
-    backoff_ms = ntfy->retry_after_ms;
-  }
-  if (backoff_ms < kNtfyRateLimitMinCooldownMs) {
-    backoff_ms = kNtfyRateLimitMinCooldownMs;
+
+  int64_t backoff_ms = kNtfyRateLimitBaseCooldownMs;
+  while (attempts > 1 && backoff_ms < kNtfyRateLimitMaxCooldownMs) {
+    backoff_ms *= 2;
+    attempts--;
   }
   if (backoff_ms > kNtfyRateLimitMaxCooldownMs) {
     backoff_ms = kNtfyRateLimitMaxCooldownMs;
@@ -1526,18 +1529,39 @@ AlertManagerSenderTask(void* context)
     return;
   }
 
-  int64_t last_send_ms = 0;
+  int64_t last_attempt_ms = 0;
+  int64_t last_success_ms = 0;
 
   while (!*ctx->stop_requested) {
     int64_t now_ms = esp_timer_get_time() / 1000;
     int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-    if (ctx->manager->ntfy.cooldown_until_ms > 0 &&
-        now_ms >= ctx->manager->ntfy.cooldown_until_ms &&
+    if (ctx->manager->ntfy.cooldown_until_ms > now_ms) {
+      alert_notification_t pending;
+      while (xQueueReceive(ctx->manager->ntfy.queue, &pending, 0) == pdTRUE) {
+        ctx->manager->ntfy.pending_note = pending;
+        ctx->manager->ntfy.pending_valid = true;
+        ctx->manager->ntfy.suppressed_count++;
+      }
+      int64_t remaining_ms =
+        ctx->manager->ntfy.cooldown_until_ms - now_ms;
+      if (remaining_ms > 0) {
+        (void)ulTaskNotifyTake(pdTRUE,
+                               pdMS_TO_TICKS((uint32_t)remaining_ms));
+        if (*ctx->stop_requested) {
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (kNtfySendSuppressedSummary &&
+        ctx->manager->ntfy.pending_valid &&
         ctx->manager->ntfy.suppressed_count > 0) {
       const int64_t min_interval_ms =
         ResolveNtfyMinIntervalMs(ctx->manager);
-      if (last_send_ms > 0 && (now_ms - last_send_ms) < min_interval_ms) {
-        int64_t remaining_ms = min_interval_ms - (now_ms - last_send_ms);
+      if (last_attempt_ms > 0 &&
+          (now_ms - last_attempt_ms) < min_interval_ms) {
+        int64_t remaining_ms = min_interval_ms - (now_ms - last_attempt_ms);
         if (remaining_ms > 0) {
           (void)ulTaskNotifyTake(pdTRUE,
                                  pdMS_TO_TICKS((uint32_t)remaining_ms));
@@ -1547,6 +1571,8 @@ AlertManagerSenderTask(void* context)
         }
       }
 
+      now_ms = esp_timer_get_time() / 1000;
+      now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
       alert_notification_t summary;
       BuildNtfySuppressedSummary(ctx->manager,
                                  &summary,
@@ -1562,37 +1588,39 @@ AlertManagerSenderTask(void* context)
       };
 
       int status = 0;
+      int retry_after_seconds = -1;
       esp_err_t err = ESP_OK;
-      alert_ntfy_result_t result =
-        AlertNtfySend(&ctx->manager->ntfy, &cfg, &summary, &status, &err);
+      alert_ntfy_result_t result = AlertNtfySend(&ctx->manager->ntfy,
+                                                 &cfg,
+                                                 &summary,
+                                                 &retry_after_seconds,
+                                                 &status,
+                                                 &err);
+      last_attempt_ms = now_ms;
       if (result == ALERT_NTFY_OK) {
         ctx->manager->ntfy.send_success++;
         ctx->manager->ntfy.last_http_status = status;
         ctx->manager->ntfy.last_err = err;
         ctx->manager->ntfy.backoff_ms = 0;
-        last_send_ms = esp_timer_get_time() / 1000;
+        last_success_ms = last_attempt_ms;
         ctx->manager->ntfy.last_sent = summary;
-        ctx->manager->ntfy.last_sent_ms = last_send_ms;
+        ctx->manager->ntfy.last_sent_ms = last_success_ms;
         ctx->manager->ntfy.last_sent_valid = true;
-        ctx->manager->ntfy.cooldown_until_ms = 0;
         ctx->manager->ntfy.suppressed_count = 0;
-        if (ctx->manager->ntfy.suppressed_latest_valid) {
-          (void)AlertNtfyEnqueue(&ctx->manager->ntfy,
-                                &ctx->manager->ntfy.suppressed_latest);
-        }
-        ctx->manager->ntfy.suppressed_latest_valid = false;
+        ctx->manager->ntfy.rate_limited_count = 0;
         continue;
       }
       ctx->manager->ntfy.send_fail++;
       ctx->manager->ntfy.last_http_status = status;
       ctx->manager->ntfy.last_err = err;
       if (status == 429) {
-        const int64_t backoff_ms =
-          ResolveNtfyCooldownMs(&ctx->manager->ntfy);
-        ctx->manager->ntfy.backoff_ms = (uint32_t)backoff_ms;
-        ctx->manager->ntfy.cooldown_until_ms = now_ms + backoff_ms;
+        ctx->manager->ntfy.rate_limited_count++;
+        const int64_t backoff_ms = ResolveNtfyCooldownMs(
+          &ctx->manager->ntfy, retry_after_seconds);
+        ctx->manager->ntfy.cooldown_until_ms = last_attempt_ms + backoff_ms;
         continue;
       }
+      ctx->manager->ntfy.rate_limited_count = 0;
       (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
       if (*ctx->stop_requested) {
         break;
@@ -1601,21 +1629,31 @@ AlertManagerSenderTask(void* context)
     }
 
     alert_notification_t note;
-    if (xQueueReceive(ctx->manager->ntfy.queue, &note, pdMS_TO_TICKS(1000)) !=
-        pdTRUE) {
+    bool have_note = false;
+    if (ctx->manager->ntfy.pending_valid) {
+      note = ctx->manager->ntfy.pending_note;
+      ctx->manager->ntfy.pending_valid = false;
+      have_note = true;
+    } else if (xQueueReceive(ctx->manager->ntfy.queue,
+                             &note,
+                             pdMS_TO_TICKS(1000)) == pdTRUE) {
+      have_note = true;
+    }
+    if (!have_note) {
       continue;
     }
 
     int64_t min_interval_ms = ResolveNtfyMinIntervalMs(ctx->manager);
 
     now_ms = esp_timer_get_time() / 1000;
-    if (last_send_ms > 0 && (now_ms - last_send_ms) < min_interval_ms) {
+    if (last_attempt_ms > 0 &&
+        (now_ms - last_attempt_ms) < min_interval_ms) {
       alert_notification_t newest = note;
       while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
         newest = note;
       }
       note = newest;
-      int64_t remaining_ms = min_interval_ms - (now_ms - last_send_ms);
+      int64_t remaining_ms = min_interval_ms - (now_ms - last_attempt_ms);
       if (remaining_ms > 0) {
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((uint32_t)remaining_ms));
         if (*ctx->stop_requested) {
@@ -1626,15 +1664,13 @@ AlertManagerSenderTask(void* context)
 
     now_ms = esp_timer_get_time() / 1000;
     if (ctx->manager->ntfy.cooldown_until_ms > now_ms) {
-      alert_notification_t newest = note;
-      uint32_t suppressed = 1;
+      ctx->manager->ntfy.pending_note = note;
+      ctx->manager->ntfy.pending_valid = true;
+      ctx->manager->ntfy.suppressed_count++;
       while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
-        newest = note;
-        suppressed++;
+        ctx->manager->ntfy.pending_note = note;
+        ctx->manager->ntfy.suppressed_count++;
       }
-      ctx->manager->ntfy.suppressed_count += suppressed;
-      ctx->manager->ntfy.suppressed_latest = newest;
-      ctx->manager->ntfy.suppressed_latest_valid = true;
       continue;
     }
 
@@ -1654,19 +1690,28 @@ AlertManagerSenderTask(void* context)
     };
 
     int status = 0;
+    int retry_after_seconds = -1;
     esp_err_t err = ESP_OK;
-    alert_ntfy_result_t result =
-      AlertNtfySend(&ctx->manager->ntfy, &cfg, &note, &status, &err);
+    alert_ntfy_result_t result = AlertNtfySend(&ctx->manager->ntfy,
+                                               &cfg,
+                                               &note,
+                                               &retry_after_seconds,
+                                               &status,
+                                               &err);
+    last_attempt_ms = now_ms;
 
     if (result == ALERT_NTFY_OK) {
       ctx->manager->ntfy.send_success++;
       ctx->manager->ntfy.last_http_status = status;
       ctx->manager->ntfy.last_err = err;
       ctx->manager->ntfy.backoff_ms = 0;
-      last_send_ms = esp_timer_get_time() / 1000;
+      last_success_ms = last_attempt_ms;
       ctx->manager->ntfy.last_sent = note;
-      ctx->manager->ntfy.last_sent_ms = last_send_ms;
+      ctx->manager->ntfy.last_sent_ms = last_success_ms;
       ctx->manager->ntfy.last_sent_valid = true;
+      ctx->manager->ntfy.cooldown_until_ms = 0;
+      ctx->manager->ntfy.suppressed_count = 0;
+      ctx->manager->ntfy.rate_limited_count = 0;
     } else if (result == ALERT_NTFY_SKIPPED) {
       ctx->manager->ntfy.last_err = err;
     } else {
@@ -1674,24 +1719,21 @@ AlertManagerSenderTask(void* context)
       ctx->manager->ntfy.last_http_status = status;
       ctx->manager->ntfy.last_err = err;
       if (status == 429) {
-        const int64_t backoff_ms =
-          ResolveNtfyCooldownMs(&ctx->manager->ntfy);
-        ctx->manager->ntfy.backoff_ms = (uint32_t)backoff_ms;
+        ctx->manager->ntfy.rate_limited_count++;
+        const int64_t backoff_ms = ResolveNtfyCooldownMs(
+          &ctx->manager->ntfy, retry_after_seconds);
         ctx->manager->ntfy.cooldown_until_ms = now_ms + backoff_ms;
+        ctx->manager->ntfy.pending_note = note;
+        ctx->manager->ntfy.pending_valid = true;
         ctx->manager->ntfy.suppressed_count++;
-        ctx->manager->ntfy.suppressed_latest = note;
-        ctx->manager->ntfy.suppressed_latest_valid = true;
-        while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
-          ctx->manager->ntfy.suppressed_latest = note;
-          ctx->manager->ntfy.suppressed_count++;
-        }
         continue;
       }
+      ctx->manager->ntfy.rate_limited_count = 0;
       ctx->manager->ntfy.backoff_ms = (ctx->manager->ntfy.backoff_ms == 0)
                                         ? 1000
                                         : (ctx->manager->ntfy.backoff_ms * 2);
-      if (ctx->manager->ntfy.backoff_ms > kNtfyRateLimitMaxCooldownMs) {
-        ctx->manager->ntfy.backoff_ms = kNtfyRateLimitMaxCooldownMs;
+      if (ctx->manager->ntfy.backoff_ms > kNtfyFailureMaxBackoffMs) {
+        ctx->manager->ntfy.backoff_ms = kNtfyFailureMaxBackoffMs;
       }
       (void)ulTaskNotifyTake(pdTRUE,
                              pdMS_TO_TICKS(ctx->manager->ntfy.backoff_ms));

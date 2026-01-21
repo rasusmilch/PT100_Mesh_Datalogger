@@ -75,10 +75,10 @@ extern "C"
     esp_err_t last_err;
     uint32_t backoff_ms;
     int64_t cooldown_until_ms;
-    int64_t retry_after_ms;
+    uint32_t rate_limited_count;
     uint32_t suppressed_count;
-    bool suppressed_latest_valid;
-    alert_notification_t suppressed_latest;
+    bool pending_valid;
+    alert_notification_t pending_note;
     int64_t last_sent_ms;
     bool last_sent_valid;
     alert_notification_t last_sent;
@@ -112,6 +112,7 @@ extern "C"
    * @param ntfy Parameter ntfy.
    * @param cfg Parameter cfg.
    * @param note Parameter note.
+   * @param out_retry_after_seconds Parameter out_retry_after_seconds.
    * @param out_status Parameter out_status.
    * @param out_err Parameter out_err.
    * @return Return the function result.
@@ -119,6 +120,7 @@ extern "C"
   alert_ntfy_result_t AlertNtfySend(alert_ntfy_t* ntfy,
                                     const alert_ntfy_config_t* cfg,
                                     const alert_notification_t* note,
+                                    int* out_retry_after_seconds,
                                     int* out_status,
                                     esp_err_t* out_err);
 
