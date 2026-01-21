@@ -15,15 +15,31 @@
 #include "esp_crt_bundle.h"
 #endif
 
+static void AlertNtfyApplyTlsLogPolicy(void);
+static void FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size);
+static const char* SeverityToPriority(int severity);
+static int AlertNtfyParseRetryAfterSeconds(const char* value);
+static esp_err_t AlertNtfyHttpEventHandler(esp_http_client_event_t* evt);
+static void FormatLeafId(uint64_t leaf_id, char* out, size_t out_size);
+static void FormatMilliC(int32_t milli_c, char* out, size_t out_size);
+static void AppendTimeLine(const alert_notification_payload_t* payload,
+                           char* body,
+                           size_t body_size);
+static alert_ntfy_result_t AlertNtfySendHttp(alert_ntfy_t* ntfy,
+                                             const alert_ntfy_config_t* cfg,
+                                             const char* title,
+                                             const char* body,
+                                             const char* priority,
+                                             int* out_retry_after_seconds,
+                                             int* out_status,
+                                             esp_err_t* out_err);
+
 static const char* kTag = "alert_ntfy";
 
 typedef struct
 {
   int retry_after_seconds;
 } alert_ntfy_http_context_t;
-
-static int AlertNtfyParseRetryAfterSeconds(const char* value);
-static esp_err_t AlertNtfyHttpEventHandler(esp_http_client_event_t* evt);
 
 /**
  * @brief Reduce log noise from ESP-IDF certificate bundle validation.
@@ -200,6 +216,108 @@ AppendTimeLine(const alert_notification_payload_t* payload,
   }
 }
 
+static alert_ntfy_result_t
+AlertNtfySendHttp(alert_ntfy_t* ntfy,
+                  const alert_ntfy_config_t* cfg,
+                  const char* title,
+                  const char* body,
+                  const char* priority,
+                  int* out_retry_after_seconds,
+                  int* out_status,
+                  esp_err_t* out_err)
+{
+  (void)ntfy;
+  if (out_status != NULL) {
+    *out_status = 0;
+  }
+  if (out_retry_after_seconds != NULL) {
+    *out_retry_after_seconds = -1;
+  }
+  if (out_err != NULL) {
+    *out_err = ESP_OK;
+  }
+  if (cfg == NULL || ntfy == NULL || title == NULL || body == NULL) {
+    if (out_err != NULL) {
+      *out_err = ESP_ERR_INVALID_ARG;
+    }
+    return ALERT_NTFY_FAILED;
+  }
+  if (cfg->url == NULL || cfg->url[0] == '\0' || cfg->topic == NULL ||
+      cfg->topic[0] == '\0') {
+    if (out_err != NULL) {
+      *out_err = ESP_ERR_INVALID_STATE;
+    }
+    return ALERT_NTFY_SKIPPED;
+  }
+
+  alert_ntfy_http_context_t http_ctx = {
+    .retry_after_seconds = -1,
+  };
+
+  char url[256];
+  if (cfg->url[strlen(cfg->url) - 1] == '/') {
+    snprintf(url, sizeof(url), "%s%s", cfg->url, cfg->topic);
+  } else {
+    snprintf(url, sizeof(url), "%s/%s", cfg->url, cfg->topic);
+  }
+
+  const uint32_t timeout_ms =
+    (cfg->http_timeout_ms > 0) ? cfg->http_timeout_ms : 5000;
+  esp_http_client_config_t config = {
+    .url = url,
+    .method = HTTP_METHOD_POST,
+    .timeout_ms = (int)timeout_ms,
+    .event_handler = AlertNtfyHttpEventHandler,
+    .user_data = &http_ctx,
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+    .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
+  };
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (client == NULL) {
+    if (out_err != NULL) {
+      *out_err = ESP_ERR_NO_MEM;
+    }
+    return ALERT_NTFY_FAILED;
+  }
+
+  (void)esp_http_client_set_header(client, "Title", title);
+  if (priority != NULL && priority[0] != '\0') {
+    (void)esp_http_client_set_header(client, "Priority", priority);
+  }
+  (void)esp_http_client_set_header(client, "Tags", "pt100,mesh,alarm");
+  if (cfg->token != NULL && cfg->token[0] != '\0') {
+    char auth[160];
+    snprintf(auth, sizeof(auth), "Bearer %s", cfg->token);
+    (void)esp_http_client_set_header(client, "Authorization", auth);
+  }
+
+  esp_http_client_set_post_field(client, body, (int)strlen(body));
+
+  esp_err_t err = esp_http_client_perform(client);
+  int status = esp_http_client_get_status_code(client);
+  esp_http_client_cleanup(client);
+
+  if (out_status != NULL) {
+    *out_status = status;
+  }
+  if (out_retry_after_seconds != NULL) {
+    *out_retry_after_seconds = http_ctx.retry_after_seconds;
+  }
+  if (out_err != NULL) {
+    *out_err = err;
+  }
+
+  if (err == ESP_OK && status >= 200 && status < 300) {
+    return ALERT_NTFY_OK;
+  }
+
+  ESP_LOGW(
+    kTag, "ntfy post failed: err=%s status=%d", esp_err_to_name(err), status);
+  return ALERT_NTFY_FAILED;
+}
+
 /**
  * @brief Execute AlertNtfyInit.
  * @param ntfy Parameter ntfy.
@@ -263,40 +381,12 @@ AlertNtfySend(alert_ntfy_t* ntfy,
               int* out_status,
               esp_err_t* out_err)
 {
-  if (out_status != NULL) {
-    *out_status = 0;
-  }
-  if (out_retry_after_seconds != NULL) {
-    *out_retry_after_seconds = -1;
-  }
-  if (out_err != NULL) {
-    *out_err = ESP_OK;
-  }
-  if (cfg == NULL || note == NULL || ntfy == NULL) {
+  if (note == NULL) {
     if (out_err != NULL) {
       *out_err = ESP_ERR_INVALID_ARG;
     }
     return ALERT_NTFY_FAILED;
   }
-  if (cfg->url == NULL || cfg->url[0] == '\0' || cfg->topic == NULL ||
-      cfg->topic[0] == '\0') {
-    if (out_err != NULL) {
-      *out_err = ESP_ERR_INVALID_STATE;
-    }
-    return ALERT_NTFY_SKIPPED;
-  }
-
-  alert_ntfy_http_context_t http_ctx = {
-    .retry_after_seconds = -1,
-  };
-
-  char url[256];
-  if (cfg->url[strlen(cfg->url) - 1] == '/') {
-    snprintf(url, sizeof(url), "%s%s", cfg->url, cfg->topic);
-  } else {
-    snprintf(url, sizeof(url), "%s/%s", cfg->url, cfg->topic);
-  }
-
   char leaf_id[32] = "";
   FormatLeafId(note->leaf_id, leaf_id, sizeof(leaf_id));
 
@@ -448,57 +538,42 @@ AlertNtfySend(alert_ntfy_t* ntfy,
 
   AppendTimeLine(&note->payload, body, sizeof(body));
 
-  const uint32_t timeout_ms =
-    (cfg->http_timeout_ms > 0) ? cfg->http_timeout_ms : 5000;
-  esp_http_client_config_t config = {
-    .url = url,
-    .method = HTTP_METHOD_POST,
-    .timeout_ms = (int)timeout_ms,
-    .event_handler = AlertNtfyHttpEventHandler,
-    .user_data = &http_ctx,
-#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
-    .crt_bundle_attach = esp_crt_bundle_attach,
-#endif
-  };
+  return AlertNtfySendHttp(ntfy,
+                           cfg,
+                           title,
+                           body,
+                           SeverityToPriority(note->severity),
+                           out_retry_after_seconds,
+                           out_status,
+                           out_err);
+}
 
-  esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (client == NULL) {
-    if (out_err != NULL) {
-      *out_err = ESP_ERR_NO_MEM;
-    }
-    return ALERT_NTFY_FAILED;
-  }
-
-  (void)esp_http_client_set_header(client, "Title", title);
-  (void)esp_http_client_set_header(
-    client, "Priority", SeverityToPriority(note->severity));
-  (void)esp_http_client_set_header(client, "Tags", "pt100,mesh,alarm");
-  if (cfg->token != NULL && cfg->token[0] != '\0') {
-    char auth[160];
-    snprintf(auth, sizeof(auth), "Bearer %s", cfg->token);
-    (void)esp_http_client_set_header(client, "Authorization", auth);
-  }
-
-  esp_http_client_set_post_field(client, body, (int)strlen(body));
-
-  esp_err_t err = esp_http_client_perform(client);
-  int status = esp_http_client_get_status_code(client);
-  esp_http_client_cleanup(client);
-
-  if (out_status != NULL) {
-    *out_status = status;
-  }
-  if (out_retry_after_seconds != NULL) {
-    *out_retry_after_seconds = http_ctx.retry_after_seconds;
-  }
-  if (out_err != NULL) {
-    *out_err = err;
-  }
-
-  if (err == ESP_OK && status >= 200 && status < 300) {
-    return ALERT_NTFY_OK;
-  }
-
-  ESP_LOGW(kTag, "ntfy post failed: err=%s status=%d", esp_err_to_name(err), status);
-  return ALERT_NTFY_FAILED;
+/**
+ * @brief Execute AlertNtfySendText.
+ * @param ntfy Parameter ntfy.
+ * @param cfg Parameter cfg.
+ * @param title Parameter title.
+ * @param body Parameter body.
+ * @param out_retry_after_seconds Parameter out_retry_after_seconds.
+ * @param out_status Parameter out_status.
+ * @param out_err Parameter out_err.
+ * @return Return the function result.
+ */
+alert_ntfy_result_t
+AlertNtfySendText(alert_ntfy_t* ntfy,
+                  const alert_ntfy_config_t* cfg,
+                  const char* title,
+                  const char* body,
+                  int* out_retry_after_seconds,
+                  int* out_status,
+                  esp_err_t* out_err)
+{
+  return AlertNtfySendHttp(ntfy,
+                           cfg,
+                           title,
+                           body,
+                           "default",
+                           out_retry_after_seconds,
+                           out_status,
+                           out_err);
 }

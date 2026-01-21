@@ -12,13 +12,109 @@
 #include "nvs_flash.h"
 #include "time_sync.h"
 
+typedef struct
+{
+  alert_notification_t note;
+  uint32_t count;
+} alert_batch_entry_t;
+
+typedef struct
+{
+  alert_batch_entry_t entries[ALERT_NTFY_QUEUE_LEN];
+  size_t entry_count;
+  uint32_t total_count;
+  int64_t last_event_epoch;
+  int64_t last_event_uptime_ms;
+} alert_batch_t;
+
+#if CONFIG_MESH_LITE_NODE_INFO_REPORT
+static uint64_t PackMacToId(const uint8_t mac[6]);
+#endif
+static uint64_t ResolveLeafId(const alert_manager_t* manager, uint64_t leaf_id);
+static alert_leaf_state_t* FindLeaf(alert_manager_t* manager, uint64_t leaf_id);
+static alert_leaf_state_t* FindOrAllocateLeaf(alert_manager_t* manager,
+                                               uint64_t leaf_id);
+static bool FindOrAllocateLeafIndex(alert_manager_t* manager,
+                                    uint64_t leaf_id,
+                                    size_t* index_out);
+static bool GetLeafConfig(const alert_manager_t* manager,
+                          uint64_t leaf_id,
+                          alert_leaf_config_t* out);
+static alert_leaf_config_t* GetOrCreateLeafConfig(alert_manager_t* manager,
+                                                  uint64_t leaf_id);
+static uint32_t EffectiveEnableMask(const alert_manager_t* manager,
+                                    uint64_t leaf_id);
+static void AlertStateTransition(alert_state_t* state,
+                                 bool active,
+                                 int64_t now_ms);
+static bool AlertManagerQueueNotification(alert_manager_t* manager,
+                                          alert_state_t* state,
+                                          alert_type_t type,
+                                          alert_severity_t severity,
+                                          bool resolved,
+                                          uint64_t leaf_id,
+                                          const alert_notification_payload_t* payload,
+                                          int64_t now_ms);
+static bool AlertManagerQueueOneShot(alert_manager_t* manager,
+                                     alert_state_t* state,
+                                     alert_type_t type,
+                                     alert_severity_t severity,
+                                     uint64_t leaf_id,
+                                     const alert_notification_payload_t* payload,
+                                     int64_t now_ms);
+static void FillPayloadBase(alert_notification_payload_t* payload,
+                            const alert_leaf_state_t* leaf,
+                            int64_t now_ms,
+                            int64_t now_epoch);
+static void ProcessAlert(alert_manager_t* manager,
+                         size_t leaf_index,
+                         alert_type_t type,
+                         alert_severity_t severity,
+                         bool condition_active,
+                         alert_notification_payload_t* payload,
+                         int64_t now_ms);
+static bool GetLimits(const alert_manager_t* manager,
+                      uint64_t leaf_id,
+                      int32_t* high_out,
+                      int32_t* low_out);
+static void RefreshMeshOnline(alert_manager_t* manager, int64_t now_ms);
+static void ApplyDefaults(alert_manager_t* manager);
+static int64_t ResolveNtfyMinIntervalMs(const alert_manager_t* manager);
+static void FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size);
+static void FormatMilliC(int32_t milli_c, char* out, size_t out_size);
+static void FormatBatchWindow(int64_t window_ms, char* out, size_t out_size);
+static bool AlertNotificationKeyMatches(const alert_notification_t* left,
+                                        const alert_notification_t* right);
+static bool AlertNotificationIsLeafScoped(const alert_notification_t* note);
+static void AlertNotificationDescribe(const alert_manager_t* manager,
+                                      const alert_notification_t* note,
+                                      char* out,
+                                      size_t out_size);
+static void AlertManagerBatchInit(alert_batch_t* batch);
+static void AlertManagerBatchAdd(alert_batch_t* batch,
+                                 const alert_notification_t* note);
+static size_t AlertManagerDrainNtfyQueue(alert_manager_t* manager,
+                                         alert_notification_t* notes,
+                                         size_t max_notes,
+                                         uint32_t wait_ms);
+static bool AlertManagerBuildBatchMessage(const alert_manager_t* manager,
+                                          const alert_batch_t* batch,
+                                          char* title,
+                                          size_t title_size,
+                                          char* body,
+                                          size_t body_size);
+static int64_t AlertManagerComputeNextSendMs(const alert_manager_t* manager,
+                                             int64_t now_ms,
+                                             int retry_after_seconds);
+static bool AlertManagerSendBatchedNtfy(alert_manager_t* manager,
+                                       int64_t now_ms,
+                                       int64_t now_epoch,
+                                       uint32_t wait_ms,
+                                       int64_t* next_attempt_ms);
+
 static const char* kTag = "alert_mgr";
-static const int64_t kNtfyRateLimitBaseCooldownMs = 120000;
-static const int64_t kNtfyRateLimitMaxCooldownMs = 900000;
-static const int64_t kNtfyDedupeWindowMs = 300000;
 static const int64_t kNtfyFailureMaxBackoffMs = 300000;
-static const bool kNtfySendSuppressedSummary = true;
-static const uint32_t kAlertConfigVersion = 1;
+static const uint32_t kAlertConfigVersion = 2;
 static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
 
@@ -539,6 +635,7 @@ ApplyDefaults(alert_manager_t* manager)
     (1u << ALERT_LEAF_RESTART) | (1u << ALERT_ROOT_RESTART) |
     (1u << ALERT_SYSTEM_BOOT) | (1u << ALERT_SYSTEM_MODE) |
     (1u << ALERT_SYSTEM_ERROR);
+  manager->config.ntfy_min_send_interval_ms = 300000;
   manager->config.per_key_cooldown_ms = 300000;
   manager->config.global_max_per_minute = 12;
   manager->config.missing_gap_ms = 15000;
@@ -1053,6 +1150,23 @@ AlertManagerSetRateLimit(alert_manager_t* manager,
 }
 
 /**
+ * @brief Execute AlertManagerSetNtfyMinIntervalMs.
+ * @param manager Parameter manager.
+ * @param min_interval_ms Parameter min_interval_ms.
+ * @return Return the function result.
+ */
+bool
+AlertManagerSetNtfyMinIntervalMs(alert_manager_t* manager,
+                                 uint32_t min_interval_ms)
+{
+  if (manager == NULL || min_interval_ms == 0) {
+    return false;
+  }
+  manager->config.ntfy_min_send_interval_ms = min_interval_ms;
+  return AlertManagerSaveConfig(manager) == ESP_OK;
+}
+
+/**
  * @brief Execute AlertManagerSetNtfyUrl.
  * @param manager Parameter manager.
  * @param url Parameter url.
@@ -1424,217 +1538,427 @@ AlertManagerMonitorTask(void* context)
 static int64_t
 ResolveNtfyMinIntervalMs(const alert_manager_t* manager)
 {
-  int64_t min_interval_ms = 15000;
-  if (manager != NULL && manager->config.global_max_per_minute > 0) {
-    const int64_t per_minute_interval_ms =
-      60000 / (int64_t)manager->config.global_max_per_minute;
-    if (per_minute_interval_ms > min_interval_ms) {
-      min_interval_ms = per_minute_interval_ms;
-    }
+  int64_t min_interval_ms = 300000;
+  if (manager != NULL && manager->config.ntfy_min_send_interval_ms > 0) {
+    min_interval_ms = manager->config.ntfy_min_send_interval_ms;
   }
   return min_interval_ms;
 }
 
-static bool
-AlertPayloadMatches(const alert_notification_payload_t* left,
-                    const alert_notification_payload_t* right)
+static void
+FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size)
 {
-  if (left == NULL || right == NULL) {
-    return false;
+  if (out == NULL || out_size == 0) {
+    return;
   }
-  return left->current_temp_milli_c == right->current_temp_milli_c &&
-         left->limit_milli_c == right->limit_milli_c &&
-         left->hysteresis_milli_c == right->hysteresis_milli_c &&
-         left->duration_ms == right->duration_ms &&
-         left->last_seq == right->last_seq &&
-         left->last_rx_epoch == right->last_rx_epoch &&
-         left->last_rx_uptime_ms == right->last_rx_uptime_ms &&
-         left->event_epoch == right->event_epoch &&
-         left->event_uptime_ms == right->event_uptime_ms &&
-         left->event_code == right->event_code &&
-         left->transitions == right->transitions;
-}
-
-static bool
-AlertNotificationMatches(const alert_notification_t* left,
-                         const alert_notification_t* right)
-{
-  if (left == NULL || right == NULL) {
-    return false;
+  if (epoch_seconds <= 0) {
+    snprintf(out, out_size, "unknown");
+    return;
   }
-  return left->type == right->type && left->severity == right->severity &&
-         left->resolved == right->resolved && left->leaf_id == right->leaf_id &&
-         AlertPayloadMatches(&left->payload, &right->payload);
-}
-
-static int64_t
-ResolveNtfyCooldownMs(const alert_ntfy_t* ntfy, int retry_after_seconds)
-{
-  if (retry_after_seconds > 0) {
-    int64_t retry_ms = (int64_t)retry_after_seconds * 1000;
-    if (retry_ms > kNtfyRateLimitMaxCooldownMs) {
-      retry_ms = kNtfyRateLimitMaxCooldownMs;
-    }
-    return retry_ms;
-  }
-
-  uint32_t attempts = 1;
-  if (ntfy != NULL && ntfy->rate_limited_count > 0) {
-    attempts = ntfy->rate_limited_count;
-  }
-
-  int64_t backoff_ms = kNtfyRateLimitBaseCooldownMs;
-  while (attempts > 1 && backoff_ms < kNtfyRateLimitMaxCooldownMs) {
-    backoff_ms *= 2;
-    attempts--;
-  }
-  if (backoff_ms > kNtfyRateLimitMaxCooldownMs) {
-    backoff_ms = kNtfyRateLimitMaxCooldownMs;
-  }
-  return backoff_ms;
+  time_t raw = (time_t)epoch_seconds;
+  struct tm timeinfo;
+  gmtime_r(&raw, &timeinfo);
+  strftime(out, out_size, "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
 }
 
 static void
-BuildNtfySuppressedSummary(alert_manager_t* manager,
-                           alert_notification_t* note,
-                           uint32_t suppressed_count,
-                           int64_t now_ms,
-                           int64_t now_epoch)
+FormatMilliC(int32_t milli_c, char* out, size_t out_size)
 {
-  if (manager == NULL || note == NULL) {
+  if (out == NULL || out_size == 0) {
     return;
   }
-  memset(note, 0, sizeof(*note));
-  note->type = ALERT_SYSTEM_ERROR;
-  note->severity = ALERT_SEV_WARN;
-  note->resolved = false;
-  note->leaf_id = manager->local_leaf_id;
-  note->payload.duration_ms = suppressed_count;
-  note->payload.event_code = ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT;
-  note->payload.event_epoch = now_epoch;
-  note->payload.event_uptime_ms = now_ms;
+  int64_t value = milli_c;
+  bool negative = value < 0;
+  int64_t abs_value = negative ? -value : value;
+  int64_t whole = abs_value / 1000;
+  int64_t frac = abs_value % 1000;
+  snprintf(out,
+           out_size,
+           "%s%" PRId64 ".%03" PRId64 "C",
+           negative ? "-" : "",
+           whole,
+           frac);
 }
 
-bool
-AlertManagerPumpNtfy(alert_manager_t* manager,
-                     int64_t now_ms,
-                     int64_t* next_attempt_ms)
+static void
+FormatBatchWindow(int64_t window_ms, char* out, size_t out_size)
+{
+  if (out == NULL || out_size == 0) {
+    return;
+  }
+  int64_t total_seconds = (window_ms + 999) / 1000;
+  if (total_seconds >= 60 && (total_seconds % 60) == 0) {
+    snprintf(out, out_size, "%" PRId64 "m", total_seconds / 60);
+    return;
+  }
+  if (total_seconds >= 60) {
+    snprintf(out,
+             out_size,
+             "%" PRId64 "m%" PRId64 "s",
+             total_seconds / 60,
+             total_seconds % 60);
+    return;
+  }
+  snprintf(out, out_size, "%" PRId64 "s", total_seconds);
+}
+
+static bool
+AlertNotificationKeyMatches(const alert_notification_t* left,
+                            const alert_notification_t* right)
+{
+  if (left == NULL || right == NULL) {
+    return false;
+  }
+  return left->type == right->type && left->resolved == right->resolved &&
+         left->leaf_id == right->leaf_id && left->severity == right->severity;
+}
+
+static bool
+AlertNotificationIsLeafScoped(const alert_notification_t* note)
+{
+  if (note == NULL) {
+    return false;
+  }
+  switch (note->type) {
+    case ALERT_TEMP_HIGH:
+    case ALERT_TEMP_LOW:
+    case ALERT_MISSING_RECORDS:
+    case ALERT_LEAF_OFFLINE:
+    case ALERT_LEAF_RESTART:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static void
+AlertNotificationDescribe(const alert_manager_t* manager,
+                          const alert_notification_t* note,
+                          char* out,
+                          size_t out_size)
+{
+  if (note == NULL || out == NULL || out_size == 0) {
+    return;
+  }
+  (void)manager;
+  out[0] = '\0';
+  char leaf_id[32] = "";
+  if (AlertNotificationIsLeafScoped(note)) {
+    AlertManagerFormatLeafId(note->leaf_id, leaf_id, sizeof(leaf_id));
+    snprintf(out, out_size, "Leaf %s ", leaf_id);
+  }
+
+  switch (note->type) {
+    case ALERT_TEMP_HIGH: {
+      char temp_str[24];
+      char limit_str[24];
+      FormatMilliC(note->payload.current_temp_milli_c,
+                   temp_str,
+                   sizeof(temp_str));
+      FormatMilliC(note->payload.limit_milli_c, limit_str, sizeof(limit_str));
+      snprintf(out + strlen(out),
+               out_size - strlen(out),
+               "temp high %s > %s",
+               temp_str,
+               limit_str);
+      break;
+    }
+    case ALERT_TEMP_LOW: {
+      char temp_str[24];
+      char limit_str[24];
+      FormatMilliC(note->payload.current_temp_milli_c,
+                   temp_str,
+                   sizeof(temp_str));
+      FormatMilliC(note->payload.limit_milli_c, limit_str, sizeof(limit_str));
+      snprintf(out + strlen(out),
+               out_size - strlen(out),
+               "temp low %s < %s",
+               temp_str,
+               limit_str);
+      break;
+    }
+    case ALERT_MISSING_RECORDS:
+      snprintf(out + strlen(out),
+               out_size - strlen(out),
+               "missing records gap %" PRIu32 "ms",
+               note->payload.duration_ms);
+      break;
+    case ALERT_LEAF_OFFLINE:
+      snprintf(out + strlen(out),
+               out_size - strlen(out),
+               "offline for %" PRIu32 "ms",
+               note->payload.duration_ms);
+      break;
+    case ALERT_LEAF_RESTART:
+      snprintf(out + strlen(out), out_size - strlen(out), "restart");
+      break;
+    case ALERT_ROOT_RESTART:
+      snprintf(out + strlen(out), out_size - strlen(out), "root restart");
+      break;
+    case ALERT_SYSTEM_BOOT:
+      snprintf(out + strlen(out), out_size - strlen(out), "system boot");
+      break;
+    case ALERT_SYSTEM_MODE: {
+      const char* mode = "unknown";
+      if (note->payload.event_code == ALERT_SYSTEM_CODE_MODE_RUN) {
+        mode = "run";
+      } else if (note->payload.event_code == ALERT_SYSTEM_CODE_MODE_DIAG) {
+        mode = "diag";
+      }
+      snprintf(out + strlen(out),
+               out_size - strlen(out),
+               "system mode %s",
+               mode);
+      break;
+    }
+    case ALERT_SYSTEM_ERROR: {
+      const char* error = "unknown";
+      switch (note->payload.event_code) {
+        case ALERT_SYSTEM_CODE_ERROR_SD_IO:
+          error = "sd io error";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_FRAM_OVERRUN:
+          error = "fram overrun";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_RTD_FAULT:
+          error = "rtd fault";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_TIME_INVALID:
+          error = "time invalid";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_FRAM_IO:
+          error = "fram io error";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY:
+          error = "i2c recovery";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_STORAGE_STALL:
+          error = "storage stall";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI:
+          error = "sensor spi";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT:
+          error = "ntfy rate limit";
+          break;
+        default:
+          break;
+      }
+      snprintf(out + strlen(out),
+               out_size - strlen(out),
+               "system error %s",
+               error);
+      break;
+    }
+    default:
+      snprintf(out + strlen(out), out_size - strlen(out), "unknown alert");
+      break;
+  }
+
+  if (note->resolved) {
+    snprintf(out + strlen(out),
+             out_size - strlen(out),
+             " — cleared");
+  } else {
+    snprintf(out + strlen(out), out_size - strlen(out), " — active");
+  }
+}
+
+static void
+AlertManagerBatchInit(alert_batch_t* batch)
+{
+  if (batch == NULL) {
+    return;
+  }
+  memset(batch, 0, sizeof(*batch));
+  batch->last_event_epoch = -1;
+}
+
+static void
+AlertManagerBatchAdd(alert_batch_t* batch, const alert_notification_t* note)
+{
+  if (batch == NULL || note == NULL) {
+    return;
+  }
+  batch->total_count++;
+  for (size_t i = 0; i < batch->entry_count; ++i) {
+    if (AlertNotificationKeyMatches(&batch->entries[i].note, note)) {
+      batch->entries[i].count++;
+      if (note->payload.event_epoch > 0 &&
+          note->payload.event_epoch >
+            batch->entries[i].note.payload.event_epoch) {
+        batch->entries[i].note = *note;
+      } else if (note->payload.event_epoch <= 0 &&
+                 batch->entries[i].note.payload.event_epoch <= 0 &&
+                 note->payload.event_uptime_ms >
+                   batch->entries[i].note.payload.event_uptime_ms) {
+        batch->entries[i].note = *note;
+      }
+      goto update_last_event;
+    }
+  }
+  if (batch->entry_count < ALERT_NTFY_QUEUE_LEN) {
+    batch->entries[batch->entry_count].note = *note;
+    batch->entries[batch->entry_count].count = 1;
+    batch->entry_count++;
+  }
+
+update_last_event:
+  if (note->payload.event_epoch > 0) {
+    if (note->payload.event_epoch > batch->last_event_epoch) {
+      batch->last_event_epoch = note->payload.event_epoch;
+    }
+    return;
+  }
+  if (batch->last_event_epoch <= 0 &&
+      note->payload.event_uptime_ms > batch->last_event_uptime_ms) {
+    batch->last_event_uptime_ms = note->payload.event_uptime_ms;
+  }
+}
+
+static size_t
+AlertManagerDrainNtfyQueue(alert_manager_t* manager,
+                           alert_notification_t* notes,
+                           size_t max_notes,
+                           uint32_t wait_ms)
+{
+  if (manager == NULL || notes == NULL || max_notes == 0) {
+    return 0;
+  }
+  size_t count = 0;
+  if (wait_ms > 0) {
+    if (xQueueReceive(manager->ntfy.queue,
+                      &notes[count],
+                      pdMS_TO_TICKS(wait_ms)) != pdTRUE) {
+      return 0;
+    }
+    count++;
+  }
+  while (count < max_notes &&
+         xQueueReceive(manager->ntfy.queue, &notes[count], 0) == pdTRUE) {
+    count++;
+  }
+  return count;
+}
+
+static bool
+AlertManagerBuildBatchMessage(const alert_manager_t* manager,
+                              const alert_batch_t* batch,
+                              char* title,
+                              size_t title_size,
+                              char* body,
+                              size_t body_size)
+{
+  if (manager == NULL || batch == NULL || title == NULL || body == NULL) {
+    return false;
+  }
+  snprintf(title, title_size, "PT100 Alerts (batched)");
+  char window[16];
+  FormatBatchWindow(ResolveNtfyMinIntervalMs(manager), window, sizeof(window));
+  int written = snprintf(body,
+                         body_size,
+                         "Batched %" PRIu32 " alerts over last %s:\n\n",
+                         batch->total_count,
+                         window);
+  if (written < 0 || (size_t)written >= body_size) {
+    return false;
+  }
+  size_t used = (size_t)written;
+  for (size_t i = 0; i < batch->entry_count; ++i) {
+    char line[256];
+    AlertNotificationDescribe(manager,
+                              &batch->entries[i].note,
+                              line,
+                              sizeof(line));
+    if (batch->entries[i].count > 1) {
+      snprintf(line + strlen(line),
+               sizeof(line) - strlen(line),
+               " (x%" PRIu32 ")",
+               batch->entries[i].count);
+    }
+    int line_written =
+      snprintf(body + used, body_size - used, "• %s\n", line);
+    if (line_written < 0) {
+      break;
+    }
+    if ((size_t)line_written >= (body_size - used)) {
+      used = body_size - 1;
+      body[used] = '\0';
+      break;
+    }
+    used += (size_t)line_written;
+  }
+  if (batch->last_event_epoch > 0) {
+    char time_str[32];
+    FormatEpoch(batch->last_event_epoch, time_str, sizeof(time_str));
+    snprintf(body + used,
+             body_size - used,
+             "\nLast event: %s\n",
+             time_str);
+  } else if (batch->last_event_uptime_ms > 0) {
+    snprintf(body + used,
+             body_size - used,
+             "\nLast event: uptime=%" PRIu32 "ms\n",
+             (uint32_t)batch->last_event_uptime_ms);
+  }
+  return true;
+}
+
+static int64_t
+AlertManagerComputeNextSendMs(const alert_manager_t* manager,
+                              int64_t now_ms,
+                              int retry_after_seconds)
+{
+  int64_t min_interval_ms = ResolveNtfyMinIntervalMs(manager);
+  int64_t min_send_ms = now_ms;
+  if (manager != NULL && manager->ntfy.last_sent_valid) {
+    min_send_ms = manager->ntfy.last_sent_ms + min_interval_ms;
+  }
+  if (retry_after_seconds > 0) {
+    int64_t retry_ms = now_ms + ((int64_t)retry_after_seconds * 1000);
+    return (retry_ms > min_send_ms) ? retry_ms : min_send_ms;
+  }
+  return min_send_ms;
+}
+
+static bool
+AlertManagerSendBatchedNtfy(alert_manager_t* manager,
+                            int64_t now_ms,
+                            int64_t now_epoch,
+                            uint32_t wait_ms,
+                            int64_t* next_attempt_ms)
 {
   if (manager == NULL || manager->ntfy.queue == NULL) {
     return false;
   }
+  (void)now_epoch;
 
   if (manager->ntfy.cooldown_until_ms > now_ms) {
-    alert_notification_t pending;
-    bool drained = false;
-    while (xQueueReceive(manager->ntfy.queue, &pending, 0) == pdTRUE) {
-      manager->ntfy.pending_note = pending;
-      manager->ntfy.pending_valid = true;
-      manager->ntfy.suppressed_count++;
-      drained = true;
-    }
     if (next_attempt_ms != NULL) {
       *next_attempt_ms = manager->ntfy.cooldown_until_ms;
     }
-    return drained;
-  }
-
-  const int64_t min_interval_ms = ResolveNtfyMinIntervalMs(manager);
-  if (manager->ntfy.last_attempt_ms > 0 &&
-      (now_ms - manager->ntfy.last_attempt_ms) < min_interval_ms) {
-    if (next_attempt_ms != NULL) {
-      *next_attempt_ms = manager->ntfy.last_attempt_ms + min_interval_ms;
-    }
     return false;
   }
 
-  if (kNtfySendSuppressedSummary && manager->ntfy.pending_valid &&
-      manager->ntfy.suppressed_count > 0) {
-    const int64_t now_epoch =
-      TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-    alert_notification_t summary;
-    BuildNtfySuppressedSummary(manager,
-                               &summary,
-                               manager->ntfy.suppressed_count,
-                               now_ms,
-                               now_epoch);
-    alert_ntfy_config_t cfg = {
-      .url = manager->config.ntfy_url,
-      .topic = manager->config.ntfy_topic,
-      .token = manager->config.ntfy_token,
-      .root_id = manager->root_id_string,
-      .http_timeout_ms = 0,
-    };
-
-    int status = 0;
-    int retry_after_seconds = -1;
-    esp_err_t err = ESP_OK;
-    alert_ntfy_result_t result =
-      AlertNtfySend(&manager->ntfy,
-                    &cfg,
-                    &summary,
-                    &retry_after_seconds,
-                    &status,
-                    &err);
-    manager->ntfy.last_attempt_ms = now_ms;
-    if (result == ALERT_NTFY_OK) {
-      manager->ntfy.send_success++;
-      manager->ntfy.last_http_status = status;
-      manager->ntfy.last_err = err;
-      manager->ntfy.backoff_ms = 0;
-      manager->ntfy.last_sent = summary;
-      manager->ntfy.last_sent_ms = now_ms;
-      manager->ntfy.last_sent_valid = true;
-      manager->ntfy.suppressed_count = 0;
-      manager->ntfy.rate_limited_count = 0;
-      return true;
-    }
-    if (result == ALERT_NTFY_SKIPPED) {
-      manager->ntfy.last_err = err;
-      return true;
-    }
-    manager->ntfy.send_fail++;
-    manager->ntfy.last_http_status = status;
-    manager->ntfy.last_err = err;
-    if (status == 429) {
-      manager->ntfy.rate_limited_count++;
-      const int64_t cooldown_ms =
-        ResolveNtfyCooldownMs(&manager->ntfy, retry_after_seconds);
-      manager->ntfy.cooldown_until_ms = now_ms + cooldown_ms;
-      if (next_attempt_ms != NULL) {
-        *next_attempt_ms = manager->ntfy.cooldown_until_ms;
-      }
-      return true;
-    }
-    manager->ntfy.rate_limited_count = 0;
-    manager->ntfy.backoff_ms =
-      (manager->ntfy.backoff_ms == 0) ? 1000 : (manager->ntfy.backoff_ms * 2);
-    if (manager->ntfy.backoff_ms > kNtfyFailureMaxBackoffMs) {
-      manager->ntfy.backoff_ms = kNtfyFailureMaxBackoffMs;
-    }
-    if (next_attempt_ms != NULL) {
-      *next_attempt_ms = now_ms + (int64_t)manager->ntfy.backoff_ms;
-    }
-    return true;
-  }
-
-  alert_notification_t note;
-  bool have_note = false;
-  if (manager->ntfy.pending_valid) {
-    note = manager->ntfy.pending_note;
-    manager->ntfy.pending_valid = false;
-    have_note = true;
-  } else if (xQueueReceive(manager->ntfy.queue, &note, 0) == pdTRUE) {
-    have_note = true;
-  }
-  if (!have_note) {
+  const size_t max_notes = ALERT_NTFY_QUEUE_LEN;
+  alert_notification_t notes[ALERT_NTFY_QUEUE_LEN];
+  size_t note_count =
+    AlertManagerDrainNtfyQueue(manager, notes, max_notes, wait_ms);
+  if (note_count == 0) {
     return false;
   }
 
-  if (manager->ntfy.last_sent_valid &&
-      (now_ms - manager->ntfy.last_sent_ms) <= kNtfyDedupeWindowMs &&
-      AlertNotificationMatches(&note, &manager->ntfy.last_sent)) {
-    return true;
+  alert_batch_t batch;
+  AlertManagerBatchInit(&batch);
+  for (size_t i = 0; i < note_count; ++i) {
+    AlertManagerBatchAdd(&batch, &notes[i]);
+  }
+
+  char title[64];
+  char body[1024];
+  if (!AlertManagerBuildBatchMessage(
+        manager, &batch, title, sizeof(title), body, sizeof(body))) {
+    return false;
   }
 
   alert_ntfy_config_t cfg = {
@@ -1648,28 +1972,33 @@ AlertManagerPumpNtfy(alert_manager_t* manager,
   int status = 0;
   int retry_after_seconds = -1;
   esp_err_t err = ESP_OK;
-  alert_ntfy_result_t result =
-    AlertNtfySend(&manager->ntfy,
-                  &cfg,
-                  &note,
-                  &retry_after_seconds,
-                  &status,
-                  &err);
+  alert_ntfy_result_t result = AlertNtfySendText(&manager->ntfy,
+                                                 &cfg,
+                                                 title,
+                                                 body,
+                                                 &retry_after_seconds,
+                                                 &status,
+                                                 &err);
   manager->ntfy.last_attempt_ms = now_ms;
+
+  ESP_LOGI(kTag,
+           "ntfy batch send: total=%" PRIu32 " unique=%u status=%d",
+           batch.total_count,
+           (unsigned)batch.entry_count,
+           status);
 
   if (result == ALERT_NTFY_OK) {
     manager->ntfy.send_success++;
     manager->ntfy.last_http_status = status;
     manager->ntfy.last_err = err;
     manager->ntfy.backoff_ms = 0;
-    manager->ntfy.last_sent = note;
     manager->ntfy.last_sent_ms = now_ms;
     manager->ntfy.last_sent_valid = true;
-    manager->ntfy.cooldown_until_ms = 0;
-    manager->ntfy.suppressed_count = 0;
+    manager->ntfy.cooldown_until_ms =
+      now_ms + ResolveNtfyMinIntervalMs(manager);
     manager->ntfy.rate_limited_count = 0;
     if (next_attempt_ms != NULL) {
-      *next_attempt_ms = 0;
+      *next_attempt_ms = manager->ntfy.cooldown_until_ms;
     }
     return true;
   }
@@ -1684,30 +2013,51 @@ AlertManagerPumpNtfy(alert_manager_t* manager,
   manager->ntfy.last_err = err;
   if (status == 429) {
     manager->ntfy.rate_limited_count++;
-    const int64_t cooldown_ms =
-      ResolveNtfyCooldownMs(&manager->ntfy, retry_after_seconds);
-    manager->ntfy.cooldown_until_ms = now_ms + cooldown_ms;
-    manager->ntfy.pending_note = note;
-    manager->ntfy.pending_valid = true;
-    manager->ntfy.suppressed_count++;
+    const int64_t retry_ms =
+      AlertManagerComputeNextSendMs(manager, now_ms, retry_after_seconds);
+    manager->ntfy.cooldown_until_ms = retry_ms;
     if (next_attempt_ms != NULL) {
       *next_attempt_ms = manager->ntfy.cooldown_until_ms;
     }
-    return true;
+  } else {
+    manager->ntfy.rate_limited_count = 0;
+    manager->ntfy.backoff_ms =
+      (manager->ntfy.backoff_ms == 0) ? 1000 : (manager->ntfy.backoff_ms * 2);
+    if (manager->ntfy.backoff_ms > kNtfyFailureMaxBackoffMs) {
+      manager->ntfy.backoff_ms = kNtfyFailureMaxBackoffMs;
+    }
+    int64_t retry_ms = now_ms + (int64_t)manager->ntfy.backoff_ms;
+    int64_t min_retry_ms = AlertManagerComputeNextSendMs(manager, now_ms, 0);
+    if (retry_ms < min_retry_ms) {
+      retry_ms = min_retry_ms;
+    }
+    manager->ntfy.cooldown_until_ms = retry_ms;
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = manager->ntfy.cooldown_until_ms;
+    }
   }
 
-  manager->ntfy.rate_limited_count = 0;
-  manager->ntfy.backoff_ms =
-    (manager->ntfy.backoff_ms == 0) ? 1000 : (manager->ntfy.backoff_ms * 2);
-  if (manager->ntfy.backoff_ms > kNtfyFailureMaxBackoffMs) {
-    manager->ntfy.backoff_ms = kNtfyFailureMaxBackoffMs;
+  for (size_t i = 0; i < note_count; ++i) {
+    (void)AlertNtfyEnqueue(&manager->ntfy, &notes[i]);
   }
-  manager->ntfy.pending_note = note;
-  manager->ntfy.pending_valid = true;
-  if (next_attempt_ms != NULL) {
-    *next_attempt_ms = now_ms + (int64_t)manager->ntfy.backoff_ms;
-  }
+
+  ESP_LOGW(kTag,
+           "ntfy send deferred: next_send_ms=%" PRId64,
+           manager->ntfy.cooldown_until_ms);
   return true;
+}
+
+bool
+AlertManagerPumpNtfy(alert_manager_t* manager,
+                     int64_t now_ms,
+                     int64_t* next_attempt_ms)
+{
+  if (manager == NULL || manager->ntfy.queue == NULL) {
+    return false;
+  }
+  int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+  return AlertManagerSendBatchedNtfy(
+    manager, now_ms, now_epoch, 0, next_attempt_ms);
 }
 
 /**
@@ -1724,19 +2074,10 @@ AlertManagerSenderTask(void* context)
     return;
   }
 
-  int64_t last_attempt_ms = 0;
-  int64_t last_success_ms = 0;
-
   while (!*ctx->stop_requested) {
     int64_t now_ms = esp_timer_get_time() / 1000;
     int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
     if (ctx->manager->ntfy.cooldown_until_ms > now_ms) {
-      alert_notification_t pending;
-      while (xQueueReceive(ctx->manager->ntfy.queue, &pending, 0) == pdTRUE) {
-        ctx->manager->ntfy.pending_note = pending;
-        ctx->manager->ntfy.pending_valid = true;
-        ctx->manager->ntfy.suppressed_count++;
-      }
       int64_t remaining_ms =
         ctx->manager->ntfy.cooldown_until_ms - now_ms;
       if (remaining_ms > 0) {
@@ -1748,195 +2089,8 @@ AlertManagerSenderTask(void* context)
       }
       continue;
     }
-
-    if (kNtfySendSuppressedSummary &&
-        ctx->manager->ntfy.pending_valid &&
-        ctx->manager->ntfy.suppressed_count > 0) {
-      const int64_t min_interval_ms =
-        ResolveNtfyMinIntervalMs(ctx->manager);
-      if (last_attempt_ms > 0 &&
-          (now_ms - last_attempt_ms) < min_interval_ms) {
-        int64_t remaining_ms = min_interval_ms - (now_ms - last_attempt_ms);
-        if (remaining_ms > 0) {
-          (void)ulTaskNotifyTake(pdTRUE,
-                                 pdMS_TO_TICKS((uint32_t)remaining_ms));
-          if (*ctx->stop_requested) {
-            break;
-          }
-        }
-      }
-
-      now_ms = esp_timer_get_time() / 1000;
-      now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-      alert_notification_t summary;
-      BuildNtfySuppressedSummary(ctx->manager,
-                                 &summary,
-                                 ctx->manager->ntfy.suppressed_count,
-                                 now_ms,
-                                 now_epoch);
-      alert_ntfy_config_t cfg = {
-        .url = ctx->manager->config.ntfy_url,
-        .topic = ctx->manager->config.ntfy_topic,
-        .token = ctx->manager->config.ntfy_token,
-        .root_id = ctx->manager->root_id_string,
-        .http_timeout_ms = 0,
-      };
-
-      int status = 0;
-      int retry_after_seconds = -1;
-      esp_err_t err = ESP_OK;
-      alert_ntfy_result_t result = AlertNtfySend(&ctx->manager->ntfy,
-                                                 &cfg,
-                                                 &summary,
-                                                 &retry_after_seconds,
-                                                 &status,
-                                                 &err);
-      last_attempt_ms = now_ms;
-      if (result == ALERT_NTFY_OK) {
-        ctx->manager->ntfy.send_success++;
-        ctx->manager->ntfy.last_http_status = status;
-        ctx->manager->ntfy.last_err = err;
-        ctx->manager->ntfy.backoff_ms = 0;
-        last_success_ms = last_attempt_ms;
-        ctx->manager->ntfy.last_sent = summary;
-        ctx->manager->ntfy.last_sent_ms = last_success_ms;
-        ctx->manager->ntfy.last_sent_valid = true;
-        ctx->manager->ntfy.suppressed_count = 0;
-        ctx->manager->ntfy.rate_limited_count = 0;
-        continue;
-      }
-      ctx->manager->ntfy.send_fail++;
-      ctx->manager->ntfy.last_http_status = status;
-      ctx->manager->ntfy.last_err = err;
-      if (status == 429) {
-        ctx->manager->ntfy.rate_limited_count++;
-        const int64_t backoff_ms = ResolveNtfyCooldownMs(
-          &ctx->manager->ntfy, retry_after_seconds);
-        ctx->manager->ntfy.cooldown_until_ms = last_attempt_ms + backoff_ms;
-        continue;
-      }
-      ctx->manager->ntfy.rate_limited_count = 0;
-      (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
-      if (*ctx->stop_requested) {
-        break;
-      }
-      continue;
-    }
-
-    alert_notification_t note;
-    bool have_note = false;
-    if (ctx->manager->ntfy.pending_valid) {
-      note = ctx->manager->ntfy.pending_note;
-      ctx->manager->ntfy.pending_valid = false;
-      have_note = true;
-    } else if (xQueueReceive(ctx->manager->ntfy.queue,
-                             &note,
-                             pdMS_TO_TICKS(1000)) == pdTRUE) {
-      have_note = true;
-    }
-    if (!have_note) {
-      continue;
-    }
-
-    int64_t min_interval_ms = ResolveNtfyMinIntervalMs(ctx->manager);
-
-    now_ms = esp_timer_get_time() / 1000;
-    if (last_attempt_ms > 0 &&
-        (now_ms - last_attempt_ms) < min_interval_ms) {
-      alert_notification_t newest = note;
-      while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
-        newest = note;
-      }
-      note = newest;
-      int64_t remaining_ms = min_interval_ms - (now_ms - last_attempt_ms);
-      if (remaining_ms > 0) {
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((uint32_t)remaining_ms));
-        if (*ctx->stop_requested) {
-          break;
-        }
-      }
-    }
-
-    now_ms = esp_timer_get_time() / 1000;
-    if (ctx->manager->ntfy.cooldown_until_ms > now_ms) {
-      ctx->manager->ntfy.pending_note = note;
-      ctx->manager->ntfy.pending_valid = true;
-      ctx->manager->ntfy.suppressed_count++;
-      while (xQueueReceive(ctx->manager->ntfy.queue, &note, 0) == pdTRUE) {
-        ctx->manager->ntfy.pending_note = note;
-        ctx->manager->ntfy.suppressed_count++;
-      }
-      continue;
-    }
-
-    if (ctx->manager->ntfy.last_sent_valid &&
-        (now_ms - ctx->manager->ntfy.last_sent_ms) <=
-          kNtfyDedupeWindowMs &&
-        AlertNotificationMatches(&note, &ctx->manager->ntfy.last_sent)) {
-      continue;
-    }
-
-    alert_ntfy_config_t cfg = {
-      .url = ctx->manager->config.ntfy_url,
-      .topic = ctx->manager->config.ntfy_topic,
-      .token = ctx->manager->config.ntfy_token,
-      .root_id = ctx->manager->root_id_string,
-      .http_timeout_ms = 0,
-    };
-
-    int status = 0;
-    int retry_after_seconds = -1;
-    esp_err_t err = ESP_OK;
-    alert_ntfy_result_t result = AlertNtfySend(&ctx->manager->ntfy,
-                                               &cfg,
-                                               &note,
-                                               &retry_after_seconds,
-                                               &status,
-                                               &err);
-    last_attempt_ms = now_ms;
-
-    if (result == ALERT_NTFY_OK) {
-      ctx->manager->ntfy.send_success++;
-      ctx->manager->ntfy.last_http_status = status;
-      ctx->manager->ntfy.last_err = err;
-      ctx->manager->ntfy.backoff_ms = 0;
-      last_success_ms = last_attempt_ms;
-      ctx->manager->ntfy.last_sent = note;
-      ctx->manager->ntfy.last_sent_ms = last_success_ms;
-      ctx->manager->ntfy.last_sent_valid = true;
-      ctx->manager->ntfy.cooldown_until_ms = 0;
-      ctx->manager->ntfy.suppressed_count = 0;
-      ctx->manager->ntfy.rate_limited_count = 0;
-    } else if (result == ALERT_NTFY_SKIPPED) {
-      ctx->manager->ntfy.last_err = err;
-    } else {
-      ctx->manager->ntfy.send_fail++;
-      ctx->manager->ntfy.last_http_status = status;
-      ctx->manager->ntfy.last_err = err;
-      if (status == 429) {
-        ctx->manager->ntfy.rate_limited_count++;
-        const int64_t backoff_ms = ResolveNtfyCooldownMs(
-          &ctx->manager->ntfy, retry_after_seconds);
-        ctx->manager->ntfy.cooldown_until_ms = now_ms + backoff_ms;
-        ctx->manager->ntfy.pending_note = note;
-        ctx->manager->ntfy.pending_valid = true;
-        ctx->manager->ntfy.suppressed_count++;
-        continue;
-      }
-      ctx->manager->ntfy.rate_limited_count = 0;
-      ctx->manager->ntfy.backoff_ms = (ctx->manager->ntfy.backoff_ms == 0)
-                                        ? 1000
-                                        : (ctx->manager->ntfy.backoff_ms * 2);
-      if (ctx->manager->ntfy.backoff_ms > kNtfyFailureMaxBackoffMs) {
-        ctx->manager->ntfy.backoff_ms = kNtfyFailureMaxBackoffMs;
-      }
-      (void)ulTaskNotifyTake(pdTRUE,
-                             pdMS_TO_TICKS(ctx->manager->ntfy.backoff_ms));
-      if (*ctx->stop_requested) {
-        break;
-      }
-      (void)AlertNtfyEnqueue(&ctx->manager->ntfy, &note);
-    }
+    (void)AlertManagerSendBatchedNtfy(
+      ctx->manager, now_ms, now_epoch, 1000, NULL);
   }
 
   if (ctx->task_handle != NULL) {

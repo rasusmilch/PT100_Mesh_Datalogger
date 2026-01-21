@@ -12,6 +12,19 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+static void PrintAlertTypes(void);
+static const alert_leaf_config_t* FindLeafOverride(
+  const alert_manager_t* manager, uint64_t leaf_id);
+static int ParseLeafId(const char* text, uint64_t* out);
+static bool ParseTempAbsolute(const char* text, int32_t* out_milli_c);
+static bool ParseTempDelta(const char* text, int32_t* out_delta_milli_c);
+static bool ParseAlertType(const char* text, alert_type_t* out_type);
+static bool IsHystSubcommand(const char* text);
+static const char* AlertTypeToName(alert_type_t type);
+static void PrintStatus(const alert_manager_t* manager);
+static void PrintLeafList(const alert_manager_t* manager);
+static int CommandAlert(int argc, char** argv);
+
 static const char* kTag = "console_alerts";
 static app_runtime_t* g_runtime = NULL;
 static const char* const kAlertTypeNames[] = { "high",   "low",   "missing", "offline",
@@ -293,9 +306,11 @@ PrintStatus(const alert_manager_t* manager)
          cfg->ntfy_topic[0] ? cfg->ntfy_topic : "<unset>",
          cfg->ntfy_token[0] ? "<set>" : "<empty>");
   printf("enable_mask: 0x%08" PRIX32 "\n", cfg->enable_mask);
-  printf("rate_limit: per_key_ms=%" PRIu32 " per_minute=%" PRIu32 "\n",
+  printf("rate_limit: per_key_ms=%" PRIu32 " per_minute=%" PRIu32
+         " min_interval_ms=%" PRIu32 "\n",
          cfg->per_key_cooldown_ms,
-         cfg->global_max_per_minute);
+         cfg->global_max_per_minute,
+         cfg->ntfy_min_send_interval_ms);
   printf("missing_gap_ms=%" PRIu32 " offline_ms=%" PRIu32
          " hold_ms=%" PRIu32 " hyst=%" PRIi32 ".%03" PRIi32 "C\n",
          cfg->missing_gap_ms,
@@ -433,7 +448,7 @@ CommandAlert(int argc, char** argv)
              "       alert set limit <leaf|default> <high|low> <value><C|F>\n"
              "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <delta><C|F>\n"
              "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
-             "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
+             "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n> | alert ratelimit set min_interval_ms <ms>\n"
              "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all> [leaf]\n"
              "note: ntfy token is optional (only needed for protected topics)\n");
     } else {
@@ -441,7 +456,7 @@ CommandAlert(int argc, char** argv)
              "       alert set limit default <high|low> <value><C|F>\n"
              "       alert set missing_ms <ms> | alert set offline_ms <ms> | alert set hold_ms <ms> | alert set hyst <delta><C|F>\n"
              "       alert ntfy set url|topic|token <value>|clear | alert ntfy test\n"
-             "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n>\n"
+             "       alert ratelimit set per_key_ms <ms> | alert ratelimit set per_minute <n> | alert ratelimit set min_interval_ms <ms>\n"
              "       alert clear <high|low|missing|offline|restart|root|boot|mode|error|all>\n"
              "note: leaf overrides and 'alert list' require node role root\n"
              "note: ntfy token is optional (only needed for protected topics)\n");
@@ -658,7 +673,7 @@ CommandAlert(int argc, char** argv)
   }
   if (strcmp(action, "ratelimit") == 0) {
     if (argc < 5 || strcmp(argv[2], "set") != 0) {
-      printf("usage: alert ratelimit set per_key_ms <ms> | per_minute <n>\n");
+      printf("usage: alert ratelimit set per_key_ms <ms> | per_minute <n> | min_interval_ms <ms>\n");
       return 1;
     }
     const char* field = argv[3];
@@ -672,6 +687,8 @@ CommandAlert(int argc, char** argv)
       ok = AlertManagerSetRateLimit(manager,
                                     manager->config.per_key_cooldown_ms,
                                     value);
+    } else if (strcmp(field, "min_interval_ms") == 0) {
+      ok = AlertManagerSetNtfyMinIntervalMs(manager, value);
     } else {
       printf("unknown ratelimit field\n");
       return 1;
