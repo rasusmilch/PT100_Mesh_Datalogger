@@ -85,6 +85,7 @@ static const uint16_t kErrlogSensorSpiFault = 17;
 static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 static const int64_t kNetTxStallDropMs = 30000;
 static const uint32_t kI2cRecoveryTriggerCount = 3;
+static const int64_t kFramRetryIntervalMs = 30000;
 static const uint32_t kRebootAlertLatchMagic = 0x5254424C;
 static const uint16_t kRebootAlertLatchVersion = 1;
 static const uint32_t kRebootAlertWifiWaitMs = 2500;
@@ -162,6 +163,22 @@ RuntimeFramLogUnlock(runtime_state_t* state);
 
 static bool
 RuntimeVerifyFram(runtime_state_t* state);
+
+static void
+UpdateFramFillState(runtime_state_t* state);
+
+static void
+UpdateCachedBool(runtime_state_t* state, bool* field, bool value);
+
+static void
+RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms);
+
+static esp_err_t
+LogFramErrorEvent(runtime_state_t* state,
+                  uint16_t code,
+                  bool resolved,
+                  int32_t detail0,
+                  int32_t detail1);
 
 static void
 RuntimeNotifyTask(TaskHandle_t handle)
@@ -509,6 +526,51 @@ ManualDrainTimedOutTicks(TickType_t now_ticks, TickType_t deadline_ticks)
   return ((int32_t)(now_ticks - deadline_ticks) >= 0);
 }
 
+static void
+RuntimeSyncFramFallbackCounters(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  const uint32_t next_sequence = FramLogNextSequence(&state->fram_log);
+  const uint64_t next_record_id = FramLogNextRecordId(&state->fram_log);
+  if (next_sequence != 0) {
+    state->fram_fallback_sequence = next_sequence;
+  }
+  if (next_record_id != 0) {
+    state->fram_fallback_record_id = next_record_id;
+  }
+}
+
+static void
+RuntimeSetFramUnavailable(runtime_state_t* state,
+                          const char* context,
+                          esp_err_t error,
+                          int64_t now_ms)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->fram_available = false;
+  state->fram_next_retry_ms = now_ms + kFramRetryIntervalMs;
+  if (LogRateLimitAllow(&state->last_fram_retry_log_ms,
+                        (uint32_t)kFramRetryIntervalMs)) {
+    ESP_LOGW(kTag,
+             "FRAM unavailable (%s): %s; retry in %u ms",
+             (context != NULL) ? context : "init",
+             esp_err_to_name(error),
+             (unsigned)kFramRetryIntervalMs);
+  }
+  if (!state->cached_status.fram_io_error_active) {
+    LogFramErrorEvent(state, ERROR_FRAM_IO_FAIL, false, (int32_t)error, 0);
+    UpdateCachedBool(state, &state->cached_status.fram_io_error_active, true);
+  }
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    UpdateFramFillState(state);
+    RuntimeFramLogUnlock(state);
+  }
+}
+
 static bool
 ReadFramBufferedRecords(runtime_state_t* state, uint32_t* buffered_out)
 {
@@ -519,12 +581,36 @@ ReadFramBufferedRecords(runtime_state_t* state, uint32_t* buffered_out)
   if (state == NULL) {
     return false;
   }
+  if (!state->fram_available) {
+    return true;
+  }
   if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
     return false;
   }
   *buffered_out = FramLogGetBufferedRecords(&state->fram_log);
   RuntimeFramLogUnlock(state);
   return true;
+}
+
+static esp_err_t
+RuntimeAssignRecordIds(runtime_state_t* state, log_record_t* record)
+{
+  if (state == NULL || record == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!state->fram_available) {
+    if (state->fram_fallback_sequence == 0) {
+      state->fram_fallback_sequence = 1;
+    }
+    if (state->fram_fallback_record_id == 0) {
+      state->fram_fallback_record_id = 1;
+    }
+    record->sequence = state->fram_fallback_sequence++;
+    record->record_id = state->fram_fallback_record_id++;
+    record->schema_version = LOG_RECORD_SCHEMA_VER;
+    return ESP_OK;
+  }
+  return FramLogAssignRecordIds(&state->fram_log, record);
 }
 
 static int32_t
@@ -1109,7 +1195,7 @@ UpdateFramFillState(runtime_state_t* state)
   if (state == NULL) {
     return;
   }
-  if (!state->fram_i2c.initialized) {
+  if (!state->fram_available) {
     state->fram_full = false;
     UpdateCachedUint32(state, &state->cached_status.fram_count, 0);
     UpdateCachedUint32(state, &state->cached_status.fram_capacity, 0);
@@ -2535,7 +2621,10 @@ RuntimeMaybeInitFramErrorLog(runtime_state_t* state)
   if (state->fram_error_log.initialized) {
     return ESP_OK;
   }
-  if (!state->i2c_bus.initialized || !state->fram_i2c.initialized) {
+  if (!state->fram_available) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (!state->i2c_bus.initialized) {
     return ESP_ERR_INVALID_STATE;
   }
   if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
@@ -2555,6 +2644,81 @@ RuntimeMaybeInitFramErrorLog(runtime_state_t* state)
   }
   RuntimeFlushPendingErrlog(state);
   return ESP_OK;
+}
+
+static void
+RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms)
+{
+  if (state == NULL || state->fram_available) {
+    return;
+  }
+  if (state->fram_next_retry_ms != 0 && now_ms < state->fram_next_retry_ms) {
+    return;
+  }
+  if (!state->i2c_bus.initialized) {
+    state->fram_next_retry_ms = now_ms + kFramRetryIntervalMs;
+    return;
+  }
+  if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
+    state->fram_next_retry_ms = now_ms + kFramRetryIntervalMs;
+    return;
+  }
+
+  esp_err_t i2c_result = FramI2cInit(&state->fram_i2c,
+                                    state->i2c_bus.handle,
+                                    (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
+                                    CONFIG_APP_FRAM_SIZE_BYTES,
+                                    state->i2c_bus.frequency_hz);
+  if (i2c_result != ESP_OK) {
+    RuntimeI2cUnlock();
+    RuntimeSetFramUnavailable(state, "retry", i2c_result, now_ms);
+    return;
+  }
+
+  if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    RuntimeI2cUnlock();
+    state->fram_next_retry_ms = now_ms + kFramRetryIntervalMs;
+    return;
+  }
+
+  esp_err_t fram_log_result =
+    FramLogInit(&state->fram_log, state->fram_io, FRAM_DATA_BYTES);
+  RuntimeFramLogUnlock(state);
+  if (fram_log_result != ESP_OK) {
+    RuntimeI2cUnlock();
+    RuntimeSetFramUnavailable(state, "retry log init", fram_log_result, now_ms);
+    return;
+  }
+
+  state->fram_available = true;
+  state->fram_next_retry_ms = 0;
+  RuntimeSyncFramFallbackCounters(state);
+  if (state->cached_status.fram_io_error_active) {
+    LogFramErrorEvent(state, ERROR_FRAM_IO_FAIL, true, 0, 0);
+    UpdateCachedBool(state, &state->cached_status.fram_io_error_active, false);
+  }
+
+  if (!state->fram_error_log.initialized) {
+    esp_err_t errlog_result = FramErrorLogInit(&state->fram_error_log,
+                                               state->fram_io,
+                                               FRAM_ERRLOG_BASE,
+                                               FRAM_ERRLOG_BYTES);
+    if (errlog_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "FramErrorLogInit retry failed: %s",
+               esp_err_to_name(errlog_result));
+    } else {
+      RuntimeFlushPendingErrlog(state);
+    }
+  }
+
+  RuntimeI2cUnlock();
+  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    UpdateFramFillState(state);
+    RuntimeFramLogUnlock(state);
+  }
+  RestoreTimeJumpBackPendingFromFram(state);
+  ESP_LOGI(kTag, "FRAM retry succeeded");
 }
 
 static bool
@@ -2654,6 +2818,9 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
   LogFramErrorEvent(state, ERROR_I2C_RECOVERY_START, true, 0, 0);
   LogFramErrorEvent(state, ERROR_FRAM_IO_FAIL, true, 0, 0);
   LogFramErrorEvent(state, ERROR_I2C_RECOVERY_SUCCESS, true, 0, 0);
+  state->fram_available = true;
+  state->fram_next_retry_ms = 0;
+  RuntimeSyncFramFallbackCounters(state);
   UpdateCachedBool(state, &state->cached_status.i2c_recovery_active, false);
   UpdateCachedBool(state, &state->cached_status.fram_io_error_active, false);
   state->fram_append_fail_streak = 0;
@@ -3223,6 +3390,9 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
 {
   if (state == NULL) {
     return ESP_ERR_INVALID_ARG;
+  }
+  if (!state->fram_available) {
+    return ESP_ERR_INVALID_STATE;
   }
   if (state->batch_buffer == NULL || state->batch_buffer_size == 0) {
     return ESP_ERR_NO_MEM;
@@ -4796,19 +4966,24 @@ StorageTask(void* context)
     if (received) {
       RuntimeMarkersSetStorage(state, STORAGE_020_AFTER_QUEUE_RECV);
       log_record_t record = msg.record;
-      bool fram_lock_ok = RuntimeFramLogLockWithWarn(
-        state,
-        fram_log_timeout_ticks,
-        &state->fram_log_lock_timeout_count_storage,
-        &state->last_fram_log_lock_timeout_storage_log_ms,
-        "storage");
-      esp_err_t id_result = ESP_ERR_TIMEOUT;
-      if (fram_lock_ok) {
-        id_result = FramLogAssignRecordIds(&state->fram_log, &record);
+      const bool fram_available = state->fram_available;
+      bool fram_lock_ok = false;
+      if (fram_available) {
+        fram_lock_ok = RuntimeFramLogLockWithWarn(
+          state,
+          fram_log_timeout_ticks,
+          &state->fram_log_lock_timeout_count_storage,
+          &state->last_fram_log_lock_timeout_storage_log_ms,
+          "storage");
+      }
+      esp_err_t id_result =
+        fram_available ? ESP_ERR_TIMEOUT : RuntimeAssignRecordIds(state, &record);
+      if (fram_available && fram_lock_ok) {
+        id_result = RuntimeAssignRecordIds(state, &record);
       }
       RuntimeMarkersSetStorage(state, STORAGE_030_ASSIGN_IDS);
       if (id_result != ESP_OK) {
-        if (fram_lock_ok) {
+        if (fram_available && fram_lock_ok) {
           ESP_LOGE(
             kTag, "Failed to assign record id: %s", esp_err_to_name(id_result));
         }
@@ -4831,7 +5006,7 @@ StorageTask(void* context)
                            now_ms,
                            now_epoch);
 
-      if (state->fram_i2c.initialized && fram_lock_ok) {
+      if (fram_available && fram_lock_ok) {
         RuntimeMarkersSetStorage(state, STORAGE_050_FRAM_APPEND);
         esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
         if (append_result != ESP_OK) {
@@ -4857,7 +5032,7 @@ StorageTask(void* context)
           record.flags |= LOG_RECORD_FLAG_FRAM_FULL;
         }
       }
-      if (fram_lock_ok) {
+      if (fram_available && fram_lock_ok) {
         RuntimeFramLogUnlock(state);
       }
 
@@ -4946,22 +5121,31 @@ SdFlushTask(void* context)
       state, &state->cached_status.sd_degraded, state->sd_degraded);
     UpdateCachedUint32(
       state, &state->cached_status.sd_fail_count, state->sd_fail_count);
+    if (!state->fram_available) {
+      state->sd_flush_pending = false;
+      state->sd_start_drain_pending = false;
+      if (state->sd_manual_drain_active) {
+        state->sd_manual_drain_active = false;
+        state->sd_manual_drain_deadline_ticks = 0;
+      }
+    }
     const bool periodic_due =
       (pdTICKS_TO_MS(now_ticks - state->last_flush_ticks) >=
        state->settings.sd_flush_period_ms);
     uint32_t buffered = 0;
-    if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+    if (state->fram_available &&
+        RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
       buffered = FramLogGetBufferedRecords(&state->fram_log);
       RuntimeFramLogUnlock(state);
     }
     const bool watermark_hit =
       buffered >= state->settings.fram_flush_watermark_records;
 
-    if (periodic_due) {
+    if (periodic_due && state->fram_available) {
       state->sd_flush_pending = true;
       state->last_flush_ticks = now_ticks;
     }
-    if (watermark_hit) {
+    if (watermark_hit && state->fram_available) {
       state->sd_flush_pending = true;
     }
 
@@ -5031,7 +5215,7 @@ SdFlushTask(void* context)
       state->sd_start_drain_pending || (queue_depth == 0u);
     RuntimeMarkersSetSdFlush(state, SD_030_SCHEDULER);
     if (allow_flush_now && queue_idle && state->sd_flush_pending &&
-        state->sd_logger.is_mounted &&
+        state->sd_logger.is_mounted && state->fram_available &&
         now_ticks >= state->sd_next_flush_allowed_ticks) {
       uint32_t flushed = 0;
       bool more_pending = false;
@@ -5393,6 +5577,11 @@ DrainFramToSd(runtime_state_t* state,
   int32_t flushed_bytes = 0;
   esp_err_t result = ESP_OK;
 
+  if (!state->fram_available) {
+    result = ESP_ERR_INVALID_STATE;
+    goto drain_done;
+  }
+
   if (state->batch_buffer == NULL || state->batch_buffer_size == 0) {
     result = ESP_ERR_NO_MEM;
     goto drain_done;
@@ -5519,7 +5708,8 @@ drain_done:
   }
 
   uint32_t remaining = 0;
-  if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
+  if (state->fram_available &&
+      RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
     remaining = (uint32_t)FramLogGetBufferedRecords(&state->fram_log);
     RuntimeFramLogUnlock(state);
   }
@@ -5704,6 +5894,17 @@ DrainFramToSdOnStartBestEffort(runtime_state_t* state,
              esp_err_to_name(stats->result));
     return ESP_ERR_INVALID_ARG;
   }
+  if (!state->fram_available) {
+    stats->result = ESP_ERR_INVALID_STATE;
+    UpdateStartDrainCachedStatus(state, stats);
+    ESP_LOGW(kTag,
+             "start drain: flushed=%d remaining=%d duration=%d ms result=%s",
+             stats->flushed_records,
+             stats->remaining_records,
+             stats->duration_ms,
+             esp_err_to_name(stats->result));
+    return stats->result;
+  }
 
 #if !CONFIG_APP_START_DRAIN_ENABLE
   int32_t initial_remaining = 0;
@@ -5870,6 +6071,8 @@ ControlTask(void* context)
       }
     }
 
+    RuntimeFramRetryTick(state, now_ms);
+
     if (!state->fram_error_log.initialized) {
       if (next_errlog_init_ms == 0 || now_ms >= next_errlog_init_ms) {
         (void)RuntimeMaybeInitFramErrorLog(state);
@@ -5918,7 +6121,7 @@ ControlTask(void* context)
       if (state->reboot_alert_next_check_ms == 0 ||
           now_ms >= state->reboot_alert_next_check_ms) {
         bool stable = false;
-        if (state->i2c_bus.initialized && state->fram_i2c.initialized &&
+        if (state->i2c_bus.initialized && state->fram_available &&
             RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
           stable = RuntimeVerifyFram(state);
           RuntimeI2cUnlock();
@@ -6582,6 +6785,7 @@ RuntimeManagerInit(void)
     UpdateTimeHealthState(&g_state, TimeSyncIsSystemTimeValid());
   }
 
+  g_state.fram_available = false;
   esp_err_t fram_i2c_result = ESP_ERR_INVALID_STATE;
   if (g_state.i2c_bus.initialized) {
     fram_i2c_result = FramI2cInit(&g_state.fram_i2c,
@@ -6590,37 +6794,49 @@ RuntimeManagerInit(void)
                                   CONFIG_APP_FRAM_SIZE_BYTES,
                                   g_state.i2c_bus.frequency_hz);
   }
+  const int64_t fram_init_now_ms = esp_timer_get_time() / 1000;
   if (fram_i2c_result != ESP_OK) {
     if (first_error == ESP_OK) {
       first_error = fram_i2c_result;
     }
     ESP_LOGE(kTag, "FramI2cInit failed: %s", esp_err_to_name(fram_i2c_result));
-  }
-
-  esp_err_t fram_log_result =
-    FramLogInit(&g_state.fram_log, g_state.fram_io, FRAM_DATA_BYTES);
-  if (fram_log_result != ESP_OK) {
-    if (first_error == ESP_OK) {
-      first_error = fram_log_result;
-    }
-    ESP_LOGE(kTag, "FramLogInit failed: %s", esp_err_to_name(fram_log_result));
-  }
-
-  esp_err_t fram_errlog_result = FramErrorLogInit(&g_state.fram_error_log,
-                                                  g_state.fram_io,
-                                                  FRAM_ERRLOG_BASE,
-                                                  FRAM_ERRLOG_BYTES);
-  if (fram_errlog_result != ESP_OK) {
-    if (first_error == ESP_OK) {
-      first_error = fram_errlog_result;
-    }
-    ESP_LOGE(
-      kTag, "FramErrorLogInit failed: %s", esp_err_to_name(fram_errlog_result));
+    RuntimeSetFramUnavailable(
+      &g_state, "init", fram_i2c_result, fram_init_now_ms);
   } else {
-    fram_error_log_stats_t stats = { 0 };
-    if (FramErrorLogGetStats(&g_state.fram_error_log, &stats) == ESP_OK &&
-        stats.count > 0) {
-      (void)FramErrorLogDump(&g_state.fram_error_log, 0);
+    esp_err_t fram_log_result =
+      FramLogInit(&g_state.fram_log, g_state.fram_io, FRAM_DATA_BYTES);
+    if (fram_log_result != ESP_OK) {
+      if (first_error == ESP_OK) {
+        first_error = fram_log_result;
+      }
+      ESP_LOGE(
+        kTag, "FramLogInit failed: %s", esp_err_to_name(fram_log_result));
+      RuntimeSetFramUnavailable(
+        &g_state, "log init", fram_log_result, fram_init_now_ms);
+    } else {
+      g_state.fram_available = true;
+      g_state.fram_next_retry_ms = 0;
+      RuntimeSyncFramFallbackCounters(&g_state);
+      UpdateCachedBool(
+        &g_state, &g_state.cached_status.fram_io_error_active, false);
+      esp_err_t fram_errlog_result = FramErrorLogInit(&g_state.fram_error_log,
+                                                      g_state.fram_io,
+                                                      FRAM_ERRLOG_BASE,
+                                                      FRAM_ERRLOG_BYTES);
+      if (fram_errlog_result != ESP_OK) {
+        if (first_error == ESP_OK) {
+          first_error = fram_errlog_result;
+        }
+        ESP_LOGE(kTag,
+                 "FramErrorLogInit failed: %s",
+                 esp_err_to_name(fram_errlog_result));
+      } else {
+        fram_error_log_stats_t stats = { 0 };
+        if (FramErrorLogGetStats(&g_state.fram_error_log, &stats) == ESP_OK &&
+            stats.count > 0) {
+          (void)FramErrorLogDump(&g_state.fram_error_log, 0);
+        }
+      }
     }
   }
 
@@ -6637,7 +6853,9 @@ RuntimeManagerInit(void)
   if (g_state.sd_logger.is_mounted) {
     UpdateCachedBool(&g_state, &g_state.cached_status.sd_safe_to_remove, false);
   }
-  RestoreTimeJumpBackPendingFromFram(&g_state);
+  if (g_state.fram_available) {
+    RestoreTimeJumpBackPendingFromFram(&g_state);
+  }
 
   esp_err_t sensor_result = InitializeMax31865Sensor(&g_state, spi_host);
   if (sensor_result != ESP_OK && first_error == ESP_OK) {
