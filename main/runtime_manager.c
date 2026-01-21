@@ -415,7 +415,7 @@ RuntimeAttemptPreRebootAlertSend(runtime_state_t* state,
   int status = 0;
   esp_err_t err = ESP_OK;
   alert_ntfy_result_t result =
-    AlertNtfySend(&state->alert_manager.ntfy, &cfg, &note, &status, &err);
+    AlertNtfySend(&state->alert_manager.ntfy, &cfg, &note, NULL, &status, &err);
   if (result == ALERT_NTFY_OK) {
     return true;
   }
@@ -4701,7 +4701,7 @@ NetTxHandleAlertSend(runtime_state_t* state,
   int status = 0;
   esp_err_t err = ESP_OK;
   alert_ntfy_result_t result =
-    AlertNtfySend(&state->alert_manager.ntfy, &cfg, &note, &status, &err);
+    AlertNtfySend(&state->alert_manager.ntfy, &cfg, &note, NULL, &status, &err);
 
   if (result == ALERT_NTFY_OK) {
     state->alert_manager.ntfy.send_success++;
