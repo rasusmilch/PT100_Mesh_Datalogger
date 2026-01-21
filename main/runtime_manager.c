@@ -413,16 +413,23 @@ RuntimeAttemptPreRebootAlertSend(runtime_state_t* state,
   };
 
   int status = 0;
+  int retry_after_seconds = -1;
   esp_err_t err = ESP_OK;
   alert_ntfy_result_t result =
-    AlertNtfySend(&state->alert_manager.ntfy, &cfg, &note, NULL, &status, &err);
+    AlertNtfySend(&state->alert_manager.ntfy,
+                  &cfg,
+                  &note,
+                  &retry_after_seconds,
+                  &status,
+                  &err);
   if (result == ALERT_NTFY_OK) {
     return true;
   }
   ESP_LOGW(kTag,
-           "pre-reboot ntfy failed: err=%s status=%d",
+           "pre-reboot ntfy failed: err=%s status=%d retry_after=%d",
            esp_err_to_name(err),
-           status);
+           status,
+           retry_after_seconds);
   return false;
 }
 
@@ -4684,58 +4691,7 @@ NetTxHandleAlertSend(runtime_state_t* state,
   if (next_attempt_ms != NULL && now_ms < *next_attempt_ms) {
     return false;
   }
-
-  alert_notification_t note;
-  if (xQueueReceive(state->alert_manager.ntfy.queue, &note, 0) != pdTRUE) {
-    return false;
-  }
-
-  alert_ntfy_config_t cfg = {
-    .url = state->alert_manager.config.ntfy_url,
-    .topic = state->alert_manager.config.ntfy_topic,
-    .token = state->alert_manager.config.ntfy_token,
-    .root_id = state->alert_manager.root_id_string,
-    .http_timeout_ms = 0,
-  };
-
-  int status = 0;
-  esp_err_t err = ESP_OK;
-  alert_ntfy_result_t result =
-    AlertNtfySend(&state->alert_manager.ntfy, &cfg, &note, NULL, &status, &err);
-
-  if (result == ALERT_NTFY_OK) {
-    state->alert_manager.ntfy.send_success++;
-    state->alert_manager.ntfy.last_http_status = status;
-    state->alert_manager.ntfy.last_err = err;
-    state->alert_manager.ntfy.backoff_ms = 0;
-    if (next_attempt_ms != NULL) {
-      *next_attempt_ms = 0;
-    }
-    return true;
-  }
-
-  if (result == ALERT_NTFY_SKIPPED) {
-    state->alert_manager.ntfy.last_err = err;
-    return true;
-  }
-
-  state->alert_manager.ntfy.send_fail++;
-  state->alert_manager.ntfy.last_http_status = status;
-  state->alert_manager.ntfy.last_err = err;
-  state->alert_manager.ntfy.backoff_ms =
-    (state->alert_manager.ntfy.backoff_ms == 0)
-      ? 1000
-      : (state->alert_manager.ntfy.backoff_ms * 2);
-  if (state->alert_manager.ntfy.backoff_ms > 30000) {
-    state->alert_manager.ntfy.backoff_ms = 30000;
-  }
-  if (!state->stop_requested) {
-    (void)AlertNtfyEnqueue(&state->alert_manager.ntfy, &note);
-    if (next_attempt_ms != NULL) {
-      *next_attempt_ms = now_ms + (int64_t)state->alert_manager.ntfy.backoff_ms;
-    }
-  }
-  return true;
+  return AlertManagerPumpNtfy(&state->alert_manager, now_ms, next_attempt_ms);
 }
 
 static void

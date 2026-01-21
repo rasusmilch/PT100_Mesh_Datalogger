@@ -385,6 +385,17 @@ extern "C"
   void AlertManagerFormatLeafId(uint64_t leaf_id, char* out, size_t out_size);
 
   /**
+   * @brief Execute AlertManagerPumpNtfy.
+   * @param manager Parameter manager.
+   * @param now_ms Parameter now_ms.
+   * @param next_attempt_ms Parameter next_attempt_ms.
+   * @return Return the function result.
+   */
+  bool AlertManagerPumpNtfy(alert_manager_t* manager,
+                            int64_t now_ms,
+                            int64_t* next_attempt_ms);
+
+  /**
    * @brief Execute AlertManagerMonitorTask.
    * @param context Parameter context.
    * @note FreeRTOS task entry for the AlertManagerMonitorTask task.
