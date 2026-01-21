@@ -406,6 +406,24 @@ extern "C"
                             int64_t* next_attempt_ms);
 
   /**
+   * @brief Update ntfy send state after a send attempt.
+   * @param manager Parameter manager.
+   * @param result Parameter result.
+   * @param status Parameter status.
+   * @param retry_after_seconds Parameter retry_after_seconds.
+   * @param err Parameter err.
+   * @param now_ms Parameter now_ms.
+   * @param next_attempt_ms Parameter next_attempt_ms.
+   */
+  void AlertManagerUpdateNtfySendState(alert_manager_t* manager,
+                                       alert_ntfy_result_t result,
+                                       int status,
+                                       int retry_after_seconds,
+                                       esp_err_t err,
+                                       int64_t now_ms,
+                                       int64_t* next_attempt_ms);
+
+  /**
    * @brief Execute AlertManagerMonitorTask.
    * @param context Parameter context.
    * @note FreeRTOS task entry for the AlertManagerMonitorTask task.

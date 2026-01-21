@@ -73,6 +73,9 @@ static const uint32_t kFramOverrunActiveClearThreshold = 2;
 static const int64_t kCalTimeStableDelaySec = 60;
 static const uint32_t kBrokerOutboxDepth = CONFIG_APP_BROKER_OUTBOX_DEPTH;
 static const uint32_t kExportLogRateLimitMs = CONFIG_APP_EXPORT_RATE_LIMIT_MS;
+static const uint32_t kAlertHttpSendFailLogRateLimitMs = 60000;
+static const uint32_t kAlertHttpRetryDelayMs = 1000;
+static const uint32_t kAlertHttpMaxAttempts = 3;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const TickType_t kFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const TickType_t kI2cIoLockTimeoutTicks = pdMS_TO_TICKS(25);
@@ -131,6 +134,9 @@ GetSpiHost(void);
 
 static esp_err_t
 InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host);
+
+static void
+AlertHttpTask(void* context);
 
 /**
  * @brief Determine whether the app SPI bus is shared with non-SD devices.
@@ -233,6 +239,7 @@ RuntimeNotifyAllRunTasks(runtime_state_t* state)
   RuntimeNotifyTask(state->sd_flush_task);
   RuntimeNotifyTask(state->export_task);
   RuntimeNotifyTask(state->net_tx_task);
+  RuntimeNotifyTask(state->alert_http_task);
   RuntimeNotifyTask(state->wifi_direct_task);
 }
 
@@ -2644,6 +2651,18 @@ RuntimeMaybeInitFramErrorLog(runtime_state_t* state)
   if (result != ESP_OK) {
     return result;
   }
+  if (state->fram_error_log.state == FRAM_ERRLOG_STATE_CORRUPT &&
+      !state->errlog_corrupt_alerted) {
+    state->errlog_corrupt_alerted = true;
+    ESP_LOGW(kTag, "FRAM errlog corrupt; manual clear required");
+    int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    (void)RuntimeEnqueueSystemErrorNote(state,
+                                        ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG,
+                                        false,
+                                        now_epoch,
+                                        now_ms);
+  }
   RuntimeFlushPendingErrlog(state);
   return ESP_OK;
 }
@@ -2711,6 +2730,20 @@ RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms)
                esp_err_to_name(errlog_result));
     } else {
       RuntimeFlushPendingErrlog(state);
+      if (state->fram_error_log.state == FRAM_ERRLOG_STATE_CORRUPT &&
+          !state->errlog_corrupt_alerted) {
+        state->errlog_corrupt_alerted = true;
+        ESP_LOGW(kTag, "FRAM errlog corrupt; manual clear required");
+        int64_t now_epoch =
+          TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        (void)RuntimeEnqueueSystemErrorNote(
+          state,
+          ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG,
+          false,
+          now_epoch,
+          now_ms);
+      }
     }
   }
 
@@ -4863,7 +4896,22 @@ NetTxHandleAlertSend(runtime_state_t* state,
   if (next_attempt_ms != NULL && now_ms < *next_attempt_ms) {
     return false;
   }
-  return AlertManagerPumpNtfy(&state->alert_manager, now_ms, next_attempt_ms);
+  const uint32_t dropped_before = state->alert_manager.ntfy.job_dropped;
+  const bool did_work =
+    AlertManagerPumpNtfy(&state->alert_manager, now_ms, next_attempt_ms);
+  if (state->alert_manager.ntfy.job_dropped != dropped_before) {
+    int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+    if (LogRateLimitAllow(&state->last_ntfy_queue_full_log_ms,
+                          kExportLogRateLimitMs)) {
+      (void)RuntimeEnqueueSystemErrorNote(
+        state,
+        ALERT_SYSTEM_CODE_ERROR_NTFY_QUEUE,
+        false,
+        now_epoch,
+        (int64_t)now_ms);
+    }
+  }
+  return did_work;
 }
 
 static void
@@ -4876,6 +4924,120 @@ NetTxDrainAlertQueue(runtime_state_t* state)
   while (xQueueReceive(state->alert_manager.ntfy.queue, &note, 0) == pdTRUE) {
     (void)note;
   }
+}
+
+/**
+ * @brief Execute AlertHttpTask.
+ * @param context Parameter context.
+ * @note FreeRTOS task entry for the alert_http task.
+ */
+static void
+AlertHttpTask(void* context)
+{
+  runtime_state_t* state = (runtime_state_t*)context;
+  if (state == NULL) {
+    vTaskDelete(NULL);
+    return;
+  }
+
+  uint32_t min_stack_hwm_bytes = UINT32_MAX;
+  while (!state->stop_requested) {
+    const uint32_t hwm_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    if (hwm_bytes < min_stack_hwm_bytes) {
+      min_stack_hwm_bytes = hwm_bytes;
+      ESP_LOGI(kTag,
+               "alert_http stack watermark: %u bytes free",
+               (unsigned)min_stack_hwm_bytes);
+    }
+
+    alert_ntfy_job_t job = { 0 };
+    if (state->alert_manager.ntfy.job_queue == NULL ||
+        xQueueReceive(state->alert_manager.ntfy.job_queue,
+                      &job,
+                      pdMS_TO_TICKS(250)) != pdTRUE) {
+      continue;
+    }
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    int64_t ready_ms = job.next_attempt_ms;
+    if (state->alert_manager.ntfy.cooldown_until_ms > ready_ms) {
+      ready_ms = state->alert_manager.ntfy.cooldown_until_ms;
+    }
+    if (now_ms < ready_ms) {
+      RuntimeInterruptibleDelayTicks(
+        pdMS_TO_TICKS((uint32_t)(ready_ms - now_ms)));
+      if (state->stop_requested) {
+        break;
+      }
+    }
+
+    now_ms = esp_timer_get_time() / 1000;
+    if (!AlertManagerIsConfigured(&state->alert_manager) ||
+        !AlertManagerCanSend(state)) {
+      job.next_attempt_ms = now_ms + kAlertHttpRetryDelayMs;
+      (void)AlertNtfyEnqueueJob(&state->alert_manager.ntfy, &job);
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(kAlertHttpRetryDelayMs));
+      continue;
+    }
+
+    alert_ntfy_config_t cfg = {
+      .url = job.url,
+      .topic = job.topic,
+      .token = job.token,
+      .root_id = job.root_id,
+      .http_timeout_ms = job.http_timeout_ms,
+    };
+
+    int status = 0;
+    int retry_after_seconds = -1;
+    esp_err_t err = ESP_OK;
+    alert_ntfy_result_t result = AlertNtfySendText(&state->alert_manager.ntfy,
+                                                   &cfg,
+                                                   job.title,
+                                                   job.body,
+                                                   &retry_after_seconds,
+                                                   &status,
+                                                   &err);
+    AlertManagerUpdateNtfySendState(&state->alert_manager,
+                                    result,
+                                    status,
+                                    retry_after_seconds,
+                                    err,
+                                    now_ms,
+                                    NULL);
+
+    const char* result_name = "failed";
+    if (result == ALERT_NTFY_OK) {
+      result_name = "ok";
+    } else if (result == ALERT_NTFY_SKIPPED) {
+      result_name = "skipped";
+    }
+
+    ESP_LOGI(kTag,
+             "ntfy job %s: status=%d attempt=%" PRIu32,
+             result_name,
+             status,
+             job.attempt + 1);
+
+    if (result == ALERT_NTFY_FAILED) {
+      if (LogRateLimitAllow(&state->alert_manager.ntfy.last_send_fail_log_ms,
+                            kAlertHttpSendFailLogRateLimitMs)) {
+        ESP_LOGW(kTag,
+                 "ntfy send failed: err=%s status=%d retry_after=%d",
+                 esp_err_to_name(err),
+                 status,
+                 retry_after_seconds);
+      }
+      if (job.attempt + 1 < kAlertHttpMaxAttempts) {
+        job.attempt++;
+        job.next_attempt_ms = state->alert_manager.ntfy.cooldown_until_ms;
+        (void)AlertNtfyEnqueueJob(&state->alert_manager.ntfy, &job);
+      }
+    }
+  }
+
+  state->alert_http_task = NULL;
+  vTaskDelete(NULL);
 }
 
 static void
@@ -7129,7 +7291,8 @@ RuntimeStart(void)
     return ESP_OK;
   }
   if (g_state.sensor_task != NULL || g_state.storage_task != NULL ||
-      g_state.net_tx_task != NULL || g_state.wifi_direct_task != NULL) {
+      g_state.net_tx_task != NULL || g_state.alert_http_task != NULL ||
+      g_state.wifi_direct_task != NULL) {
     if (g_state.sensor_task != NULL) {
       ESP_LOGW(kTag, "Start blocked: sensor_task still alive");
     }
@@ -7138,6 +7301,9 @@ RuntimeStart(void)
     }
     if (g_state.net_tx_task != NULL) {
       ESP_LOGW(kTag, "Start blocked: net_tx_task still alive");
+    }
+    if (g_state.alert_http_task != NULL) {
+      ESP_LOGW(kTag, "Start blocked: alert_http_task still alive");
     }
     if (g_state.wifi_direct_task != NULL) {
       ESP_LOGW(kTag, "Start blocked: wifi_direct_task still alive");
@@ -7297,6 +7463,7 @@ RuntimeStart(void)
   BaseType_t sd_flush_created = pdPASS;
   BaseType_t export_created = pdPASS;
   BaseType_t net_tx_created = pdPASS;
+  BaseType_t alert_http_created = pdPASS;
   BaseType_t wifi_direct_created = pdPASS;
 
   const uint32_t kSensorStackBytes = 6144;
@@ -7386,6 +7553,22 @@ RuntimeStart(void)
     }
   }
 
+  if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
+    alert_http_created = xTaskCreate(&AlertHttpTask,
+                                     "alert_http",
+                                     kAlertHttpTaskStackBytes,
+                                     &g_state,
+                                     3,
+                                     &g_state.alert_http_task);
+    if (alert_http_created != pdPASS) {
+      g_state.alert_http_task = NULL;
+      ESP_LOGE(kTag, "Failed to create task alert_http");
+    } else {
+      RegisterStackMonitorTask(
+        "alert_http", &g_state.alert_http_task, kAlertHttpTaskStackBytes);
+    }
+  }
+
   if (role == APP_NODE_ROLE_ROOT) {
     AlertManagerEmitRootRestart(&g_state.alert_manager,
                                 esp_timer_get_time() / 1000);
@@ -7393,7 +7576,8 @@ RuntimeStart(void)
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
       sd_flush_created != pdPASS || export_created != pdPASS ||
-      net_tx_created != pdPASS || wifi_direct_created != pdPASS) {
+      net_tx_created != pdPASS || alert_http_created != pdPASS ||
+      wifi_direct_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.logger_running = false;
     UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);
@@ -7401,13 +7585,15 @@ RuntimeStart(void)
     const TickType_t wait_start = xTaskGetTickCount();
     while ((g_state.sensor_task != NULL || g_state.storage_task != NULL ||
             g_state.sd_flush_task != NULL || g_state.export_task != NULL ||
-            g_state.net_tx_task != NULL || g_state.wifi_direct_task != NULL) &&
+            g_state.net_tx_task != NULL || g_state.alert_http_task != NULL ||
+            g_state.wifi_direct_task != NULL) &&
            (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 1000)) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
     if (g_state.sensor_task == NULL && g_state.storage_task == NULL &&
         g_state.sd_flush_task == NULL && g_state.export_task == NULL &&
-        g_state.net_tx_task == NULL && g_state.wifi_direct_task == NULL) {
+        g_state.net_tx_task == NULL && g_state.alert_http_task == NULL &&
+        g_state.wifi_direct_task == NULL) {
       g_state.stop_requested = false;
       UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
     }
@@ -7446,14 +7632,16 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   const TickType_t wait_start = xTaskGetTickCount();
   while ((state->sensor_task != NULL || state->storage_task != NULL ||
           state->sd_flush_task != NULL || state->export_task != NULL ||
-          state->net_tx_task != NULL || state->wifi_direct_task != NULL) &&
+          state->net_tx_task != NULL || state->alert_http_task != NULL ||
+          state->wifi_direct_task != NULL) &&
          (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < 15000)) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 
   if (state->sensor_task != NULL || state->storage_task != NULL ||
       state->sd_flush_task != NULL || state->export_task != NULL ||
-      state->net_tx_task != NULL || state->wifi_direct_task != NULL) {
+      state->net_tx_task != NULL || state->alert_http_task != NULL ||
+      state->wifi_direct_task != NULL) {
     if (state->sensor_task != NULL) {
       ESP_LOGW(kTag,
                "Stop timeout: sensor_task still running (%p)",
@@ -7478,6 +7666,11 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
       ESP_LOGW(kTag,
                "Stop timeout: net_tx_task still running (%p)",
                state->net_tx_task);
+    }
+    if (state->alert_http_task != NULL) {
+      ESP_LOGW(kTag,
+               "Stop timeout: alert_http_task still running (%p)",
+               state->alert_http_task);
     }
     if (state->wifi_direct_task != NULL) {
       ESP_LOGW(kTag,

@@ -27,6 +27,14 @@ typedef struct
   int64_t last_event_uptime_ms;
 } alert_batch_t;
 
+typedef struct
+{
+  alert_notification_t notes[ALERT_NTFY_QUEUE_LEN];
+  alert_batch_t batch;
+  char title[ALERT_NTFY_JOB_TITLE_LEN];
+  char body[ALERT_NTFY_JOB_BODY_LEN];
+} alert_ntfy_batch_scratch_t;
+
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
 static uint64_t PackMacToId(const uint8_t mac[6]);
 #endif
@@ -117,6 +125,7 @@ static const int64_t kNtfyFailureMaxBackoffMs = 300000;
 static const uint32_t kAlertConfigVersion = 2;
 static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
+static alert_ntfy_batch_scratch_t g_ntfy_batch_scratch;
 
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
 /**
@@ -1741,6 +1750,12 @@ AlertNotificationDescribe(const alert_manager_t* manager,
         case ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT:
           error = "ntfy rate limit";
           break;
+        case ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG:
+          error = "fram errlog corrupt";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_NTFY_QUEUE:
+          error = "ntfy queue full";
+          break;
         default:
           break;
       }
@@ -1928,7 +1943,8 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
                             uint32_t wait_ms,
                             int64_t* next_attempt_ms)
 {
-  if (manager == NULL || manager->ntfy.queue == NULL) {
+  if (manager == NULL || manager->ntfy.queue == NULL ||
+      manager->ntfy.job_queue == NULL) {
     return false;
   }
   (void)now_epoch;
@@ -1941,51 +1957,99 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   }
 
   const size_t max_notes = ALERT_NTFY_QUEUE_LEN;
-  alert_notification_t notes[ALERT_NTFY_QUEUE_LEN];
-  size_t note_count =
-    AlertManagerDrainNtfyQueue(manager, notes, max_notes, wait_ms);
+  size_t note_count = AlertManagerDrainNtfyQueue(
+    manager, g_ntfy_batch_scratch.notes, max_notes, wait_ms);
   if (note_count == 0) {
     return false;
   }
 
-  alert_batch_t batch;
-  AlertManagerBatchInit(&batch);
+  AlertManagerBatchInit(&g_ntfy_batch_scratch.batch);
   for (size_t i = 0; i < note_count; ++i) {
-    AlertManagerBatchAdd(&batch, &notes[i]);
+    AlertManagerBatchAdd(&g_ntfy_batch_scratch.batch,
+                         &g_ntfy_batch_scratch.notes[i]);
   }
 
-  char title[64];
-  char body[1024];
   if (!AlertManagerBuildBatchMessage(
-        manager, &batch, title, sizeof(title), body, sizeof(body))) {
+        manager,
+        &g_ntfy_batch_scratch.batch,
+        g_ntfy_batch_scratch.title,
+        sizeof(g_ntfy_batch_scratch.title),
+        g_ntfy_batch_scratch.body,
+        sizeof(g_ntfy_batch_scratch.body))) {
     return false;
   }
 
-  alert_ntfy_config_t cfg = {
-    .url = manager->config.ntfy_url,
-    .topic = manager->config.ntfy_topic,
-    .token = manager->config.ntfy_token,
-    .root_id = manager->root_id_string,
-    .http_timeout_ms = 0,
-  };
+  alert_ntfy_job_t job = { 0 };
+  snprintf(job.url, sizeof(job.url), "%s", manager->config.ntfy_url);
+  snprintf(job.topic, sizeof(job.topic), "%s", manager->config.ntfy_topic);
+  snprintf(job.token, sizeof(job.token), "%s", manager->config.ntfy_token);
+  snprintf(job.root_id, sizeof(job.root_id), "%s", manager->root_id_string);
+  snprintf(job.title,
+           sizeof(job.title),
+           "%s",
+           g_ntfy_batch_scratch.title);
+  snprintf(job.body, sizeof(job.body), "%s", g_ntfy_batch_scratch.body);
+  job.http_timeout_ms = 0;
+  job.attempt = 0;
+  job.next_attempt_ms = now_ms;
 
-  int status = 0;
-  int retry_after_seconds = -1;
-  esp_err_t err = ESP_OK;
-  alert_ntfy_result_t result = AlertNtfySendText(&manager->ntfy,
-                                                 &cfg,
-                                                 title,
-                                                 body,
-                                                 &retry_after_seconds,
-                                                 &status,
-                                                 &err);
+  const bool queued = AlertNtfyEnqueueJob(&manager->ntfy, &job);
+  if (!queued) {
+    for (size_t i = 0; i < note_count; ++i) {
+      (void)AlertNtfyEnqueue(&manager->ntfy, &g_ntfy_batch_scratch.notes[i]);
+    }
+    manager->ntfy.cooldown_until_ms = now_ms + 1000;
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = manager->ntfy.cooldown_until_ms;
+    }
+    return true;
+  }
+
   manager->ntfy.last_attempt_ms = now_ms;
-
   ESP_LOGI(kTag,
-           "ntfy batch send: total=%" PRIu32 " unique=%u status=%d",
-           batch.total_count,
-           (unsigned)batch.entry_count,
-           status);
+           "ntfy batch queued: total=%" PRIu32 " unique=%u",
+           g_ntfy_batch_scratch.batch.total_count,
+           (unsigned)g_ntfy_batch_scratch.batch.entry_count);
+  return true;
+}
+
+bool
+AlertManagerPumpNtfy(alert_manager_t* manager,
+                     int64_t now_ms,
+                     int64_t* next_attempt_ms)
+{
+  if (manager == NULL || manager->ntfy.queue == NULL ||
+      manager->ntfy.job_queue == NULL) {
+    return false;
+  }
+  int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+  return AlertManagerSendBatchedNtfy(
+    manager, now_ms, now_epoch, 0, next_attempt_ms);
+}
+
+/**
+ * @brief Execute AlertManagerUpdateNtfySendState.
+ * @param manager Parameter manager.
+ * @param result Parameter result.
+ * @param status Parameter status.
+ * @param retry_after_seconds Parameter retry_after_seconds.
+ * @param err Parameter err.
+ * @param now_ms Parameter now_ms.
+ * @param next_attempt_ms Parameter next_attempt_ms.
+ */
+void
+AlertManagerUpdateNtfySendState(alert_manager_t* manager,
+                                alert_ntfy_result_t result,
+                                int status,
+                                int retry_after_seconds,
+                                esp_err_t err,
+                                int64_t now_ms,
+                                int64_t* next_attempt_ms)
+{
+  if (manager == NULL) {
+    return;
+  }
+  manager->ntfy.last_attempt_ms = now_ms;
 
   if (result == ALERT_NTFY_OK) {
     manager->ntfy.send_success++;
@@ -2000,12 +2064,12 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
     if (next_attempt_ms != NULL) {
       *next_attempt_ms = manager->ntfy.cooldown_until_ms;
     }
-    return true;
+    return;
   }
 
   if (result == ALERT_NTFY_SKIPPED) {
     manager->ntfy.last_err = err;
-    return true;
+    return;
   }
 
   manager->ntfy.send_fail++;
@@ -2036,28 +2100,6 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
       *next_attempt_ms = manager->ntfy.cooldown_until_ms;
     }
   }
-
-  for (size_t i = 0; i < note_count; ++i) {
-    (void)AlertNtfyEnqueue(&manager->ntfy, &notes[i]);
-  }
-
-  ESP_LOGW(kTag,
-           "ntfy send deferred: next_send_ms=%" PRId64,
-           manager->ntfy.cooldown_until_ms);
-  return true;
-}
-
-bool
-AlertManagerPumpNtfy(alert_manager_t* manager,
-                     int64_t now_ms,
-                     int64_t* next_attempt_ms)
-{
-  if (manager == NULL || manager->ntfy.queue == NULL) {
-    return false;
-  }
-  int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-  return AlertManagerSendBatchedNtfy(
-    manager, now_ms, now_epoch, 0, next_attempt_ms);
 }
 
 /**
