@@ -79,6 +79,7 @@ extern "C"
     uint32_t suppressed_count;
     bool pending_valid;
     alert_notification_t pending_note;
+    int64_t last_attempt_ms;
     int64_t last_sent_ms;
     bool last_sent_valid;
     alert_notification_t last_sent;

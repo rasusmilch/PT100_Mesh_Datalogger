@@ -1515,6 +1515,201 @@ BuildNtfySuppressedSummary(alert_manager_t* manager,
   note->payload.event_uptime_ms = now_ms;
 }
 
+bool
+AlertManagerPumpNtfy(alert_manager_t* manager,
+                     int64_t now_ms,
+                     int64_t* next_attempt_ms)
+{
+  if (manager == NULL || manager->ntfy.queue == NULL) {
+    return false;
+  }
+
+  if (manager->ntfy.cooldown_until_ms > now_ms) {
+    alert_notification_t pending;
+    bool drained = false;
+    while (xQueueReceive(manager->ntfy.queue, &pending, 0) == pdTRUE) {
+      manager->ntfy.pending_note = pending;
+      manager->ntfy.pending_valid = true;
+      manager->ntfy.suppressed_count++;
+      drained = true;
+    }
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = manager->ntfy.cooldown_until_ms;
+    }
+    return drained;
+  }
+
+  const int64_t min_interval_ms = ResolveNtfyMinIntervalMs(manager);
+  if (manager->ntfy.last_attempt_ms > 0 &&
+      (now_ms - manager->ntfy.last_attempt_ms) < min_interval_ms) {
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = manager->ntfy.last_attempt_ms + min_interval_ms;
+    }
+    return false;
+  }
+
+  if (kNtfySendSuppressedSummary && manager->ntfy.pending_valid &&
+      manager->ntfy.suppressed_count > 0) {
+    const int64_t now_epoch =
+      TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+    alert_notification_t summary;
+    BuildNtfySuppressedSummary(manager,
+                               &summary,
+                               manager->ntfy.suppressed_count,
+                               now_ms,
+                               now_epoch);
+    alert_ntfy_config_t cfg = {
+      .url = manager->config.ntfy_url,
+      .topic = manager->config.ntfy_topic,
+      .token = manager->config.ntfy_token,
+      .root_id = manager->root_id_string,
+      .http_timeout_ms = 0,
+    };
+
+    int status = 0;
+    int retry_after_seconds = -1;
+    esp_err_t err = ESP_OK;
+    alert_ntfy_result_t result =
+      AlertNtfySend(&manager->ntfy,
+                    &cfg,
+                    &summary,
+                    &retry_after_seconds,
+                    &status,
+                    &err);
+    manager->ntfy.last_attempt_ms = now_ms;
+    if (result == ALERT_NTFY_OK) {
+      manager->ntfy.send_success++;
+      manager->ntfy.last_http_status = status;
+      manager->ntfy.last_err = err;
+      manager->ntfy.backoff_ms = 0;
+      manager->ntfy.last_sent = summary;
+      manager->ntfy.last_sent_ms = now_ms;
+      manager->ntfy.last_sent_valid = true;
+      manager->ntfy.suppressed_count = 0;
+      manager->ntfy.rate_limited_count = 0;
+      return true;
+    }
+    if (result == ALERT_NTFY_SKIPPED) {
+      manager->ntfy.last_err = err;
+      return true;
+    }
+    manager->ntfy.send_fail++;
+    manager->ntfy.last_http_status = status;
+    manager->ntfy.last_err = err;
+    if (status == 429) {
+      manager->ntfy.rate_limited_count++;
+      const int64_t cooldown_ms =
+        ResolveNtfyCooldownMs(&manager->ntfy, retry_after_seconds);
+      manager->ntfy.cooldown_until_ms = now_ms + cooldown_ms;
+      if (next_attempt_ms != NULL) {
+        *next_attempt_ms = manager->ntfy.cooldown_until_ms;
+      }
+      return true;
+    }
+    manager->ntfy.rate_limited_count = 0;
+    manager->ntfy.backoff_ms =
+      (manager->ntfy.backoff_ms == 0) ? 1000 : (manager->ntfy.backoff_ms * 2);
+    if (manager->ntfy.backoff_ms > kNtfyFailureMaxBackoffMs) {
+      manager->ntfy.backoff_ms = kNtfyFailureMaxBackoffMs;
+    }
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = now_ms + (int64_t)manager->ntfy.backoff_ms;
+    }
+    return true;
+  }
+
+  alert_notification_t note;
+  bool have_note = false;
+  if (manager->ntfy.pending_valid) {
+    note = manager->ntfy.pending_note;
+    manager->ntfy.pending_valid = false;
+    have_note = true;
+  } else if (xQueueReceive(manager->ntfy.queue, &note, 0) == pdTRUE) {
+    have_note = true;
+  }
+  if (!have_note) {
+    return false;
+  }
+
+  if (manager->ntfy.last_sent_valid &&
+      (now_ms - manager->ntfy.last_sent_ms) <= kNtfyDedupeWindowMs &&
+      AlertNotificationMatches(&note, &manager->ntfy.last_sent)) {
+    return true;
+  }
+
+  alert_ntfy_config_t cfg = {
+    .url = manager->config.ntfy_url,
+    .topic = manager->config.ntfy_topic,
+    .token = manager->config.ntfy_token,
+    .root_id = manager->root_id_string,
+    .http_timeout_ms = 0,
+  };
+
+  int status = 0;
+  int retry_after_seconds = -1;
+  esp_err_t err = ESP_OK;
+  alert_ntfy_result_t result =
+    AlertNtfySend(&manager->ntfy,
+                  &cfg,
+                  &note,
+                  &retry_after_seconds,
+                  &status,
+                  &err);
+  manager->ntfy.last_attempt_ms = now_ms;
+
+  if (result == ALERT_NTFY_OK) {
+    manager->ntfy.send_success++;
+    manager->ntfy.last_http_status = status;
+    manager->ntfy.last_err = err;
+    manager->ntfy.backoff_ms = 0;
+    manager->ntfy.last_sent = note;
+    manager->ntfy.last_sent_ms = now_ms;
+    manager->ntfy.last_sent_valid = true;
+    manager->ntfy.cooldown_until_ms = 0;
+    manager->ntfy.suppressed_count = 0;
+    manager->ntfy.rate_limited_count = 0;
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = 0;
+    }
+    return true;
+  }
+
+  if (result == ALERT_NTFY_SKIPPED) {
+    manager->ntfy.last_err = err;
+    return true;
+  }
+
+  manager->ntfy.send_fail++;
+  manager->ntfy.last_http_status = status;
+  manager->ntfy.last_err = err;
+  if (status == 429) {
+    manager->ntfy.rate_limited_count++;
+    const int64_t cooldown_ms =
+      ResolveNtfyCooldownMs(&manager->ntfy, retry_after_seconds);
+    manager->ntfy.cooldown_until_ms = now_ms + cooldown_ms;
+    manager->ntfy.pending_note = note;
+    manager->ntfy.pending_valid = true;
+    manager->ntfy.suppressed_count++;
+    if (next_attempt_ms != NULL) {
+      *next_attempt_ms = manager->ntfy.cooldown_until_ms;
+    }
+    return true;
+  }
+
+  manager->ntfy.rate_limited_count = 0;
+  manager->ntfy.backoff_ms =
+    (manager->ntfy.backoff_ms == 0) ? 1000 : (manager->ntfy.backoff_ms * 2);
+  if (manager->ntfy.backoff_ms > kNtfyFailureMaxBackoffMs) {
+    manager->ntfy.backoff_ms = kNtfyFailureMaxBackoffMs;
+  }
+  manager->ntfy.pending_note = note;
+  manager->ntfy.pending_valid = true;
+  if (next_attempt_ms != NULL) {
+    *next_attempt_ms = now_ms + (int64_t)manager->ntfy.backoff_ms;
+  }
+  return true;
+}
+
 /**
  * @brief Execute AlertManagerSenderTask.
  * @param context Parameter context.
