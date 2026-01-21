@@ -173,6 +173,9 @@ UpdateCachedBool(runtime_state_t* state, bool* field, bool value);
 static void
 RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms);
 
+static void
+RestoreTimeJumpBackPendingFromFram(runtime_state_t* state);
+
 static esp_err_t
 LogFramErrorEvent(runtime_state_t* state,
                   uint16_t code,
@@ -432,13 +435,12 @@ RuntimeAttemptPreRebootAlertSend(runtime_state_t* state,
   int status = 0;
   int retry_after_seconds = -1;
   esp_err_t err = ESP_OK;
-  alert_ntfy_result_t result =
-    AlertNtfySend(&state->alert_manager.ntfy,
-                  &cfg,
-                  &note,
-                  &retry_after_seconds,
-                  &status,
-                  &err);
+  alert_ntfy_result_t result = AlertNtfySend(&state->alert_manager.ntfy,
+                                             &cfg,
+                                             &note,
+                                             &retry_after_seconds,
+                                             &status,
+                                             &err);
   if (result == ALERT_NTFY_OK) {
     return true;
   }
@@ -2665,10 +2667,10 @@ RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms)
   }
 
   esp_err_t i2c_result = FramI2cInit(&state->fram_i2c,
-                                    state->i2c_bus.handle,
-                                    (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
-                                    CONFIG_APP_FRAM_SIZE_BYTES,
-                                    state->i2c_bus.frequency_hz);
+                                     state->i2c_bus.handle,
+                                     (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
+                                     CONFIG_APP_FRAM_SIZE_BYTES,
+                                     state->i2c_bus.frequency_hz);
   if (i2c_result != ESP_OK) {
     RuntimeI2cUnlock();
     RuntimeSetFramUnavailable(state, "retry", i2c_result, now_ms);
@@ -4976,8 +4978,9 @@ StorageTask(void* context)
           &state->last_fram_log_lock_timeout_storage_log_ms,
           "storage");
       }
-      esp_err_t id_result =
-        fram_available ? ESP_ERR_TIMEOUT : RuntimeAssignRecordIds(state, &record);
+      esp_err_t id_result = fram_available
+                              ? ESP_ERR_TIMEOUT
+                              : RuntimeAssignRecordIds(state, &record);
       if (fram_available && fram_lock_ok) {
         id_result = RuntimeAssignRecordIds(state, &record);
       }
