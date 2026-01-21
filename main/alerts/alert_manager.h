@@ -57,6 +57,7 @@ extern "C"
     char ntfy_topic[64];
     char ntfy_token[128];
     uint32_t enable_mask;
+    uint32_t ntfy_min_send_interval_ms;
     uint32_t per_key_cooldown_ms;
     uint32_t global_max_per_minute;
     uint32_t missing_gap_ms;
@@ -263,6 +264,15 @@ extern "C"
   bool AlertManagerSetRateLimit(alert_manager_t* manager,
                                 uint32_t per_key_ms,
                                 uint32_t per_minute);
+
+  /**
+   * @brief Execute AlertManagerSetNtfyMinIntervalMs.
+   * @param manager Parameter manager.
+   * @param min_interval_ms Parameter min_interval_ms.
+   * @return Return the function result.
+   */
+  bool AlertManagerSetNtfyMinIntervalMs(alert_manager_t* manager,
+                                        uint32_t min_interval_ms);
 
   /**
    * @brief Execute AlertManagerSetNtfyUrl.

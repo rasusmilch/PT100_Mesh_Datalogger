@@ -125,6 +125,25 @@ extern "C"
                                     int* out_status,
                                     esp_err_t* out_err);
 
+  /**
+   * @brief Execute AlertNtfySendText.
+   * @param ntfy Parameter ntfy.
+   * @param cfg Parameter cfg.
+   * @param title Parameter title.
+   * @param body Parameter body.
+   * @param out_retry_after_seconds Parameter out_retry_after_seconds.
+   * @param out_status Parameter out_status.
+   * @param out_err Parameter out_err.
+   * @return Return the function result.
+   */
+  alert_ntfy_result_t AlertNtfySendText(alert_ntfy_t* ntfy,
+                                        const alert_ntfy_config_t* cfg,
+                                        const char* title,
+                                        const char* body,
+                                        int* out_retry_after_seconds,
+                                        int* out_status,
+                                        esp_err_t* out_err);
+
 #ifdef __cplusplus
 }
 #endif
