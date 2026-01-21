@@ -240,6 +240,11 @@ extern "C" {
     esp_err_t sd_last_io_err;
     int sd_last_errno;
     bool fram_full;
+    bool fram_available;
+    int64_t fram_next_retry_ms;
+    uint32_t last_fram_retry_log_ms;
+    uint32_t fram_fallback_sequence;
+    uint64_t fram_fallback_record_id;
     bool sd_was_mounted;
     TickType_t last_overrun_log_ticks;
     uint64_t last_overrun_records_total;
