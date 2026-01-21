@@ -14,6 +14,13 @@ extern "C"
 #endif
 
 #define ALERT_NTFY_QUEUE_LEN 32
+#define ALERT_NTFY_JOB_QUEUE_LEN 6
+#define ALERT_NTFY_JOB_TITLE_LEN 64
+#define ALERT_NTFY_JOB_BODY_LEN 1024
+#define ALERT_NTFY_JOB_URL_LEN 128
+#define ALERT_NTFY_JOB_TOPIC_LEN 64
+#define ALERT_NTFY_JOB_TOKEN_LEN 128
+#define ALERT_NTFY_JOB_ROOT_ID_LEN 32
 
   typedef enum
   {
@@ -37,6 +44,8 @@ extern "C"
     ALERT_SYSTEM_CODE_ERROR_STORAGE_STALL = 16,
     ALERT_SYSTEM_CODE_ERROR_SENSOR_SPI = 17,
     ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT = 18,
+    ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG = 19,
+    ALERT_SYSTEM_CODE_ERROR_NTFY_QUEUE = 20,
   } alert_system_code_t;
 
   typedef struct
@@ -65,6 +74,19 @@ extern "C"
 
   typedef struct
   {
+    char url[ALERT_NTFY_JOB_URL_LEN];
+    char topic[ALERT_NTFY_JOB_TOPIC_LEN];
+    char token[ALERT_NTFY_JOB_TOKEN_LEN];
+    char root_id[ALERT_NTFY_JOB_ROOT_ID_LEN];
+    char title[ALERT_NTFY_JOB_TITLE_LEN];
+    char body[ALERT_NTFY_JOB_BODY_LEN];
+    uint32_t http_timeout_ms;
+    uint32_t attempt;
+    int64_t next_attempt_ms;
+  } alert_ntfy_job_t;
+
+  typedef struct
+  {
     QueueHandle_t queue;
     StaticQueue_t queue_buffer;
     uint8_t queue_storage[sizeof(alert_notification_t) * ALERT_NTFY_QUEUE_LEN];
@@ -83,6 +105,14 @@ extern "C"
     int64_t last_sent_ms;
     bool last_sent_valid;
     alert_notification_t last_sent;
+    QueueHandle_t job_queue;
+    StaticQueue_t job_queue_buffer;
+    uint8_t job_queue_storage[sizeof(alert_ntfy_job_t) *
+                              ALERT_NTFY_JOB_QUEUE_LEN];
+    uint32_t job_dropped;
+    uint32_t job_last_drop_log_ms;
+    uint32_t last_send_log_ms;
+    uint32_t last_send_fail_log_ms;
   } alert_ntfy_t;
 
   typedef struct
@@ -107,6 +137,14 @@ extern "C"
    * @return Return the function result.
    */
   bool AlertNtfyEnqueue(alert_ntfy_t* ntfy, const alert_notification_t* note);
+
+  /**
+   * @brief Execute AlertNtfyEnqueueJob.
+   * @param ntfy Parameter ntfy.
+   * @param job Parameter job.
+   * @return Return the function result.
+   */
+  bool AlertNtfyEnqueueJob(alert_ntfy_t* ntfy, const alert_ntfy_job_t* job);
 
   /**
    * @brief Execute AlertNtfySend.

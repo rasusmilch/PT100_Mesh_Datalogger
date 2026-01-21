@@ -150,6 +150,7 @@ extern "C" {
     kStorageTaskStackBytes = 8192, // bytes
     kSdFlushTaskStackBytes = 12288, // bytes
     kNetTxTaskStackBytes = 10240, // bytes
+    kAlertHttpTaskStackBytes = 16384, // bytes
   };
 
   typedef struct
@@ -177,6 +178,7 @@ extern "C" {
     portMUX_TYPE errlog_latch_lock;
     uint64_t errlog_pending_active_mask;
     uint64_t errlog_pending_resolved_mask;
+    bool errlog_corrupt_alerted;
     sd_logger_t sd_logger;
     sd_card_detect_t sd_card_detect;
     StaticSemaphore_t sd_io_mutex_buf;
@@ -304,6 +306,7 @@ extern "C" {
     TaskHandle_t wifi_direct_task;
     TaskHandle_t control_task;
     TaskHandle_t net_tx_task;
+    TaskHandle_t alert_http_task;
 
     bool initialized;
     bool system_running;
@@ -367,6 +370,7 @@ extern "C" {
     uint32_t last_export_fail_log_ms;
     uint32_t last_broker_drop_log_ms;
     uint32_t last_broker_fail_log_ms;
+    uint32_t last_ntfy_queue_full_log_ms;
     uint32_t last_broker_bridge_disabled_log_ms;
     uint32_t last_mqtt_fail_log_ms;
   } runtime_state_t;

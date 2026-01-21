@@ -11,6 +11,8 @@
 
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "log_rate_limit.h"
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
 #include "esp_crt_bundle.h"
 #endif
@@ -35,6 +37,7 @@ static alert_ntfy_result_t AlertNtfySendHttp(alert_ntfy_t* ntfy,
                                              esp_err_t* out_err);
 
 static const char* kTag = "alert_ntfy";
+static const uint32_t kNtfyJobDropLogRateLimitMs = 60000;
 
 typedef struct
 {
@@ -335,6 +338,10 @@ AlertNtfyInit(alert_ntfy_t* ntfy)
                                    sizeof(alert_notification_t),
                                    ntfy->queue_storage,
                                    &ntfy->queue_buffer);
+  ntfy->job_queue = xQueueCreateStatic(ALERT_NTFY_JOB_QUEUE_LEN,
+                                       sizeof(alert_ntfy_job_t),
+                                       ntfy->job_queue_storage,
+                                       &ntfy->job_queue_buffer);
 }
 
 /**
@@ -360,6 +367,37 @@ AlertNtfyEnqueue(alert_ntfy_t* ntfy, const alert_notification_t* note)
     return true;
   }
   ntfy->dropped++;
+  return false;
+}
+
+/**
+ * @brief Execute AlertNtfyEnqueueJob.
+ * @param ntfy Parameter ntfy.
+ * @param job Parameter job.
+ * @return Return the function result.
+ */
+bool
+AlertNtfyEnqueueJob(alert_ntfy_t* ntfy, const alert_ntfy_job_t* job)
+{
+  if (ntfy == NULL || job == NULL || ntfy->job_queue == NULL) {
+    return false;
+  }
+  if (xQueueSend(ntfy->job_queue, job, 0) == pdTRUE) {
+    return true;
+  }
+  alert_ntfy_job_t dropped_job;
+  if (xQueueReceive(ntfy->job_queue, &dropped_job, 0) == pdTRUE) {
+    ntfy->job_dropped++;
+  }
+  if (xQueueSend(ntfy->job_queue, job, 0) == pdTRUE) {
+    return true;
+  }
+  ntfy->job_dropped++;
+  const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+  if (LogRateLimitAllow(&ntfy->job_last_drop_log_ms,
+                        kNtfyJobDropLogRateLimitMs)) {
+    ESP_LOGW(kTag, "ntfy job queue full; dropping newest");
+  }
   return false;
 }
 
@@ -505,6 +543,12 @@ AlertNtfySend(alert_ntfy_t* ntfy,
           break;
         case ALERT_SYSTEM_CODE_ERROR_NTFY_RATE_LIMIT:
           error = "ntfy_rate_limit";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG:
+          error = "fram_errlog";
+          break;
+        case ALERT_SYSTEM_CODE_ERROR_NTFY_QUEUE:
+          error = "ntfy_queue_full";
           break;
         default:
           known = false;

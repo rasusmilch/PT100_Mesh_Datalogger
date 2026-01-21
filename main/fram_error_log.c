@@ -13,11 +13,39 @@ static const char* kTag = "fram_errlog";
 static const uint32_t kFramErrorLogMagic = 0x474f4c45u; // 'ELOG'
 static const uint16_t kFramErrorLogSchema = 1;
 
+static const char* FramErrorLogStateToStringInternal(fram_errlog_state_t state);
+static fram_errlog_header_status_t
+FramErrorLogHeaderCheck(const fram_error_log_header_t* header);
+static bool FramErrlogBufferIsBlank(const uint8_t* buffer, size_t length);
+static bool FramErrlogRegionIsBlank(const fram_error_log_t* log);
+
 typedef struct
 {
   fram_error_log_header_t header;
-  bool valid;
+  fram_errlog_header_status_t status;
 } fram_error_log_header_state_t;
+
+/**
+ * @brief Convert errlog state to string (internal helper).
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+static const char*
+FramErrorLogStateToStringInternal(fram_errlog_state_t state)
+{
+  switch (state) {
+    case FRAM_ERRLOG_STATE_UNINIT:
+      return "uninit";
+    case FRAM_ERRLOG_STATE_OK:
+      return "ok";
+    case FRAM_ERRLOG_STATE_BLANK_INITED:
+      return "blank_inited";
+    case FRAM_ERRLOG_STATE_CORRUPT:
+      return "corrupt";
+    default:
+      return "unknown";
+  }
+}
 
 static size_t
 FramErrorLogHeaderSize(void)
@@ -47,17 +75,38 @@ FramErrorLogComputeEntryCrc(const fram_error_log_entry_t* entry)
   return Crc16CcittFalse(&temp, sizeof(temp));
 }
 
-static bool
-FramErrorLogHeaderValid(const fram_error_log_header_t* header)
+/**
+ * @brief Validate a header and return detailed status.
+ * @param header Parameter header.
+ * @return Return the function result.
+ */
+static fram_errlog_header_status_t
+FramErrorLogHeaderCheck(const fram_error_log_header_t* header)
 {
+  fram_errlog_header_status_t status = {
+    .valid = false,
+    .reason = FRAM_ERRLOG_HDR_BAD_MAGIC,
+  };
+  if (header == NULL) {
+    status.reason = FRAM_ERRLOG_HDR_IO_FAIL;
+    return status;
+  }
   if (header->magic != kFramErrorLogMagic) {
-    return false;
+    status.reason = FRAM_ERRLOG_HDR_BAD_MAGIC;
+    return status;
   }
   if (header->schema_ver != kFramErrorLogSchema) {
-    return false;
+    status.reason = FRAM_ERRLOG_HDR_BAD_SCHEMA;
+    return status;
   }
   const uint16_t crc = FramErrorLogComputeHeaderCrc(header);
-  return crc == header->crc16;
+  if (crc != header->crc16) {
+    status.reason = FRAM_ERRLOG_HDR_BAD_CRC;
+    return status;
+  }
+  status.valid = true;
+  status.reason = FRAM_ERRLOG_HDR_OK;
+  return status;
 }
 
 static esp_err_t
@@ -73,10 +122,11 @@ FramErrorLogReadHeaderCopy(const fram_error_log_t* log,
   esp_err_t result =
     log->io.read(log->io.context, addr, &out->header, header_size);
   if (result != ESP_OK) {
-    out->valid = false;
+    out->status.valid = false;
+    out->status.reason = FRAM_ERRLOG_HDR_IO_FAIL;
     return result;
   }
-  out->valid = FramErrorLogHeaderValid(&out->header);
+  out->status = FramErrorLogHeaderCheck(&out->header);
   return ESP_OK;
 }
 
@@ -113,6 +163,80 @@ FramErrorLogDefaultHeader(void)
   header.reserved = 0;
   header.crc16 = FramErrorLogComputeHeaderCrc(&header);
   return header;
+}
+
+/**
+ * @brief Check whether a buffer is blank (0xFF).
+ * @param buffer Parameter buffer.
+ * @param length Parameter length.
+ * @return Return the function result.
+ */
+static bool
+FramErrlogBufferIsBlank(const uint8_t* buffer, size_t length)
+{
+  if (buffer == NULL || length == 0) {
+    return false;
+  }
+  for (size_t i = 0; i < length; ++i) {
+    if (buffer[i] != 0xFFu) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * @brief Check whether the errlog region appears blank.
+ * @param log Parameter log.
+ * @return Return the function result.
+ */
+static bool
+FramErrlogRegionIsBlank(const fram_error_log_t* log)
+{
+  if (log == NULL) {
+    return false;
+  }
+  const size_t header_size = FramErrorLogHeaderSize();
+  const size_t entry_size = FramErrorLogEntrySize();
+  const size_t sample_bytes = 16;
+  uint8_t sample[16];
+  const size_t header_sample = (header_size < sample_bytes) ? header_size
+                                                            : sample_bytes;
+  const size_t entry_sample = (entry_size < sample_bytes) ? entry_size
+                                                          : sample_bytes;
+  const uint32_t header0_addr = log->base_addr;
+  const uint32_t header1_addr = log->base_addr + (uint32_t)header_size;
+  const uint32_t entry_base =
+    log->base_addr + (uint32_t)(2u * header_size);
+  const uint32_t last_entry_addr =
+    entry_base + (uint32_t)((log->entry_capacity - 1u) * entry_size);
+
+  if (log->io.read(log->io.context, header0_addr, sample, header_sample) !=
+      ESP_OK) {
+    return false;
+  }
+  if (!FramErrlogBufferIsBlank(sample, header_sample)) {
+    return false;
+  }
+  if (log->io.read(log->io.context, header1_addr, sample, header_sample) !=
+      ESP_OK) {
+    return false;
+  }
+  if (!FramErrlogBufferIsBlank(sample, header_sample)) {
+    return false;
+  }
+  if (log->io.read(log->io.context, entry_base, sample, entry_sample) !=
+      ESP_OK) {
+    return false;
+  }
+  if (!FramErrlogBufferIsBlank(sample, entry_sample)) {
+    return false;
+  }
+  if (log->io.read(log->io.context, last_entry_addr, sample, entry_sample) !=
+      ESP_OK) {
+    return false;
+  }
+  return FramErrlogBufferIsBlank(sample, entry_sample);
 }
 
 static uint64_t
@@ -157,6 +281,9 @@ FramErrorLogAppendInternal(fram_error_log_t* log,
     *logged_out = false;
   }
   if (log == NULL || !log->initialized || log->entry_capacity == 0) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (log->state == FRAM_ERRLOG_STATE_CORRUPT) {
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -258,6 +385,7 @@ FramErrorLogInit(fram_error_log_t* log,
     return ESP_ERR_INVALID_ARG;
   }
   memset(log, 0, sizeof(*log));
+  log->state = FRAM_ERRLOG_STATE_UNINIT;
   log->io = io;
   log->base_addr = base_addr;
   log->region_bytes = region_bytes;
@@ -280,8 +408,10 @@ FramErrorLogInit(fram_error_log_t* log,
   const esp_err_t read0 = FramErrorLogReadHeaderCopy(log, 0, &copy0);
   const esp_err_t read1 = FramErrorLogReadHeaderCopy(log, 1, &copy1);
 
-  const bool copy0_valid = (read0 == ESP_OK && copy0.valid);
-  const bool copy1_valid = (read1 == ESP_OK && copy1.valid);
+  const bool copy0_valid = (read0 == ESP_OK && copy0.status.valid);
+  const bool copy1_valid = (read1 == ESP_OK && copy1.status.valid);
+  log->copy0_status = copy0.status;
+  log->copy1_status = copy1.status;
 
   if (copy0_valid || copy1_valid) {
     if (copy0_valid && copy1_valid) {
@@ -297,6 +427,14 @@ FramErrorLogInit(fram_error_log_t* log,
       (void)FramErrorLogWriteHeaderCopies(log, &log->header);
     }
     log->initialized = true;
+    log->state = FRAM_ERRLOG_STATE_OK;
+    log->region_blank = false;
+    ESP_LOGW(kTag,
+             "errlog init: copy0=%s copy1=%s blank=%s state=%s",
+             FramErrorLogHeaderReasonToString(log->copy0_status.reason),
+             FramErrorLogHeaderReasonToString(log->copy1_status.reason),
+             "no",
+             FramErrorLogStateToStringInternal(log->state));
     return ESP_OK;
   }
 
@@ -306,12 +444,34 @@ FramErrorLogInit(fram_error_log_t* log,
              esp_err_to_name(read1));
   }
 
-  log->header = FramErrorLogDefaultHeader();
-  const esp_err_t write_result = FramErrorLogWriteHeaderCopies(log, &log->header);
-  if (write_result != ESP_OK) {
-    return write_result;
+  log->region_blank = FramErrlogRegionIsBlank(log);
+  if (log->region_blank) {
+    log->header = FramErrorLogDefaultHeader();
+    const esp_err_t write_result =
+      FramErrorLogWriteHeaderCopies(log, &log->header);
+    if (write_result != ESP_OK) {
+      return write_result;
+    }
+    log->initialized = true;
+    log->state = FRAM_ERRLOG_STATE_BLANK_INITED;
+    ESP_LOGW(kTag,
+             "errlog init: copy0=%s copy1=%s blank=%s state=%s",
+             FramErrorLogHeaderReasonToString(log->copy0_status.reason),
+             FramErrorLogHeaderReasonToString(log->copy1_status.reason),
+             "yes",
+             FramErrorLogStateToStringInternal(log->state));
+    return ESP_OK;
   }
+
+  log->header = FramErrorLogDefaultHeader();
   log->initialized = true;
+  log->state = FRAM_ERRLOG_STATE_CORRUPT;
+  ESP_LOGW(kTag,
+           "errlog init: copy0=%s copy1=%s blank=%s state=%s",
+           FramErrorLogHeaderReasonToString(log->copy0_status.reason),
+           FramErrorLogHeaderReasonToString(log->copy1_status.reason),
+           "no",
+           FramErrorLogStateToStringInternal(log->state));
   return ESP_OK;
 }
 
@@ -319,6 +479,9 @@ esp_err_t
 FramErrorLogGetStats(const fram_error_log_t* log, fram_error_log_stats_t* out)
 {
   if (log == NULL || out == NULL || !log->initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (log->state == FRAM_ERRLOG_STATE_CORRUPT) {
     return ESP_ERR_INVALID_STATE;
   }
   out->write_index = log->header.write_index;
@@ -339,6 +502,9 @@ FramErrorLogReadEntry(const fram_error_log_t* log,
     *crc_ok_out = false;
   }
   if (log == NULL || out == NULL || !log->initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (log->state == FRAM_ERRLOG_STATE_CORRUPT) {
     return ESP_ERR_INVALID_STATE;
   }
   if (log->entry_capacity == 0 || entry_index >= log->header.count) {
@@ -417,6 +583,14 @@ FramErrorLogClear(fram_error_log_t* log)
   }
   log->header = FramErrorLogDefaultHeader();
   const esp_err_t result = FramErrorLogWriteHeaderCopies(log, &log->header);
+  if (result == ESP_OK) {
+    log->state = FRAM_ERRLOG_STATE_OK;
+    log->region_blank = false;
+    log->copy0_status.valid = true;
+    log->copy0_status.reason = FRAM_ERRLOG_HDR_OK;
+    log->copy1_status.valid = true;
+    log->copy1_status.reason = FRAM_ERRLOG_HDR_OK;
+  }
   return result;
 }
 
@@ -424,6 +598,9 @@ esp_err_t
 FramErrorLogDump(const fram_error_log_t* log, uint32_t max_entries)
 {
   if (log == NULL || !log->initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (log->state == FRAM_ERRLOG_STATE_CORRUPT) {
     return ESP_ERR_INVALID_STATE;
   }
   const uint32_t count = log->header.count;
@@ -464,4 +641,61 @@ FramErrorLogDump(const fram_error_log_t* log, uint32_t max_entries)
              crc_ok ? "ok" : "bad");
   }
   return ESP_OK;
+}
+
+/**
+ * @brief Execute FramErrorLogGetStatus.
+ * @param log Parameter log.
+ * @param out Parameter out.
+ * @return Return the function result.
+ */
+esp_err_t
+FramErrorLogGetStatus(const fram_error_log_t* log,
+                      fram_error_log_status_t* out)
+{
+  if (log == NULL || out == NULL || !log->initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  out->state = log->state;
+  out->copy0 = log->copy0_status;
+  out->copy1 = log->copy1_status;
+  out->region_blank = log->region_blank;
+  return ESP_OK;
+}
+
+/**
+ * @brief Execute FramErrorLogHeaderReasonToString.
+ * @param reason Parameter reason.
+ * @return Return the function result.
+ */
+const char*
+FramErrorLogHeaderReasonToString(fram_errlog_header_reason_t reason)
+{
+  switch (reason) {
+    case FRAM_ERRLOG_HDR_OK:
+      return "ok";
+    case FRAM_ERRLOG_HDR_BAD_MAGIC:
+      return "bad_magic";
+    case FRAM_ERRLOG_HDR_BAD_SCHEMA:
+      return "bad_schema";
+    case FRAM_ERRLOG_HDR_BAD_CRC:
+      return "bad_crc";
+    case FRAM_ERRLOG_HDR_IO_FAIL:
+      return "io_fail";
+    case FRAM_ERRLOG_HDR_SHORT_READ:
+      return "short_read";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * @brief Execute FramErrorLogStateToString.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+const char*
+FramErrorLogStateToString(fram_errlog_state_t state)
+{
+  return FramErrorLogStateToStringInternal(state);
 }

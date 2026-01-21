@@ -2274,12 +2274,25 @@ CommandErrlog(int argc, char** argv)
     return 1;
   }
   if (argc < 2) {
-    printf("usage: errlog show [--last N] | errlog stats | errlog clear\n");
+    printf(
+      "usage: errlog show [--last N] | errlog stats | errlog status | errlog "
+      "clear\n");
     return 1;
   }
 
   const char* action = argv[1];
+  fram_error_log_status_t status = { 0 };
+  const esp_err_t status_result =
+    FramErrorLogGetStatus(g_runtime->fram_error_log, &status);
+  if (status_result != ESP_OK) {
+    printf("errlog status failed: %s\n", esp_err_to_name(status_result));
+    return 1;
+  }
   if (strcmp(action, "stats") == 0) {
+    if (status.state == FRAM_ERRLOG_STATE_CORRUPT) {
+      printf("FRAM errlog corrupt; run `errlog clear` to reinitialize.\n");
+      return 1;
+    }
     fram_error_log_stats_t stats = { 0 };
     const esp_err_t result =
       FramErrorLogGetStats(g_runtime->fram_error_log, &stats);
@@ -2298,6 +2311,19 @@ CommandErrlog(int argc, char** argv)
     return 0;
   }
 
+  if (strcmp(action, "status") == 0) {
+    printf("errlog state=%s blank=%s\n",
+           FramErrorLogStateToString(status.state),
+           status.region_blank ? "yes" : "no");
+    printf("header copy0: valid=%s reason=%s\n",
+           status.copy0.valid ? "yes" : "no",
+           FramErrorLogHeaderReasonToString(status.copy0.reason));
+    printf("header copy1: valid=%s reason=%s\n",
+           status.copy1.valid ? "yes" : "no",
+           FramErrorLogHeaderReasonToString(status.copy1.reason));
+    return 0;
+  }
+
   if (strcmp(action, "clear") == 0) {
     const esp_err_t result = FramErrorLogClear(g_runtime->fram_error_log);
     if (result != ESP_OK) {
@@ -2309,6 +2335,16 @@ CommandErrlog(int argc, char** argv)
   }
 
   if (strcmp(action, "show") == 0) {
+    if (status.state == FRAM_ERRLOG_STATE_CORRUPT) {
+      printf("FRAM errlog corrupt; run `errlog clear` to reinitialize.\n");
+      printf("header copy0: valid=%s reason=%s\n",
+             status.copy0.valid ? "yes" : "no",
+             FramErrorLogHeaderReasonToString(status.copy0.reason));
+      printf("header copy1: valid=%s reason=%s\n",
+             status.copy1.valid ? "yes" : "no",
+             FramErrorLogHeaderReasonToString(status.copy1.reason));
+      return 0;
+    }
     int last = 0;
     for (int i = 2; i < argc; ++i) {
       if (strcmp(argv[i], "--last") == 0 && (i + 1) < argc) {
@@ -2346,9 +2382,9 @@ CommandErrlog(int argc, char** argv)
       const esp_err_t result =
         FramErrorLogReadEntry(g_runtime->fram_error_log, i, &entry, &crc_ok);
       if (result != ESP_OK) {
-        printf(
-          "entry[%" PRIu32 "] read failed: %s\n", i, esp_err_to_name(result));
-        continue;
+      printf(
+        "entry[%" PRIu32 "] read failed: %s\n", i, esp_err_to_name(result));
+      continue;
       }
       char utc_buffer[32];
       char local_buffer[32];
@@ -2374,7 +2410,7 @@ CommandErrlog(int argc, char** argv)
 
   printf(
     "unknown action. usage: errlog show [--last N] | errlog stats | errlog "
-    "clear\n");
+    "status | errlog clear\n");
   return 1;
 }
 
@@ -5227,8 +5263,9 @@ RegisterCommands(void)
 
   const esp_console_cmd_t errlog_cmd = {
     .command = "errlog",
-    .help = "Error log commands: errlog show [--last N] | errlog stats | "
-            "errlog clear",
+    .help =
+      "Error log commands: errlog show [--last N] | errlog stats | errlog "
+      "status | errlog clear",
     .hint = NULL,
     .func = &CommandErrlog,
   };

@@ -330,6 +330,14 @@ PrintStatus(const alert_manager_t* manager)
          manager->ntfy.send_success,
          manager->ntfy.send_fail,
          manager->ntfy.last_http_status);
+  printf("http_queue: depth=%" PRIu32 " dropped=%" PRIu32 " backoff_ms=%" PRIu32
+         " cooldown_until_ms=%" PRId64 "\n",
+         manager->ntfy.job_queue != NULL
+           ? (uint32_t)uxQueueMessagesWaiting(manager->ntfy.job_queue)
+           : 0u,
+         manager->ntfy.job_dropped,
+         manager->ntfy.backoff_ms,
+         manager->ntfy.cooldown_until_ms);
 
   size_t active_count = 0;
   for (size_t leaf_index = 0; leaf_index < ALERT_MAX_LEAVES; ++leaf_index) {
