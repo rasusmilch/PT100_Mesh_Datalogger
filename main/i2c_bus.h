@@ -53,6 +53,13 @@ extern "C" {
   esp_err_t I2cBusRecoverLines(int sda_gpio, int scl_gpio);
 
 /**
+ * @brief Execute I2cBusLinesLookIdle.
+ * @param bus Parameter bus.
+ * @return Return the function result.
+ */
+  bool I2cBusLinesLookIdle(const i2c_bus_t* bus);
+
+/**
  * @brief Execute I2cBusAddDevice.
  * @param bus Parameter bus.
  * @param address Parameter address.

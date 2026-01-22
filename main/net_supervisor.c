@@ -1,10 +1,13 @@
 #include "net_supervisor.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 #include "app_net_config.h"
 #include "app_settings.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "runtime_manager.h"
@@ -89,6 +92,22 @@ ResetWifiState(bool* connected,
   }
 }
 
+/**
+ * @brief Execute ResetWifiAcquireBackoff.
+ * @param backoff_ms Parameter backoff_ms.
+ * @param next_attempt_ms Parameter next_attempt_ms.
+ */
+static void
+ResetWifiAcquireBackoff(uint32_t* backoff_ms, int64_t* next_attempt_ms)
+{
+  if (backoff_ms != NULL) {
+    *backoff_ms = 0;
+  }
+  if (next_attempt_ms != NULL) {
+    *next_attempt_ms = 0;
+  }
+}
+
 static void
 MaybeLogConnectionChange(bool connected, bool* last_connected)
 {
@@ -120,9 +139,16 @@ NetSupervisorTask(void* context)
   uint32_t time_sync_retry_ms = 30 * 1000;
   const uint32_t max_retry_delay_ms = 5 * 60 * 1000;
   const uint32_t max_time_sync_retry_ms = 5 * 60 * 1000;
+  const uint32_t min_wifi_acquire_backoff_ms = 1000;
+  const uint32_t max_wifi_acquire_backoff_ms = 5 * 60 * 1000;
+  uint32_t wifi_acquire_backoff_ms = 0;
+  int64_t wifi_next_acquire_attempt_ms = 0;
+  size_t last_wifi_acquire_free_internal = 0;
+  size_t last_wifi_acquire_largest_internal = 0;
 
   for (;;) {
     const TickType_t now_ticks = xTaskGetTickCount();
+    const int64_t now_ms = esp_timer_get_time() / 1000;
 
     const uint32_t net_mode_revision = AppSettingsGetNetModeRevision();
     const app_net_mode_t desired_net_mode = GetDesiredNetMode();
@@ -150,6 +176,8 @@ NetSupervisorTask(void* context)
         &next_time_sync_ticks,
         &retry_delay_ms,
         &time_sync_retry_ms);
+      ResetWifiAcquireBackoff(&wifi_acquire_backoff_ms,
+                              &wifi_next_acquire_attempt_ms);
       ESP_LOGI(kTag,
                "Net mode change -> %s",
                AppSettingsNetModeToString(desired_net_mode));
@@ -157,6 +185,8 @@ NetSupervisorTask(void* context)
 
     if (active_mode != desired_mode) {
       if (desired_mode == NET_SUP_MODE_MESH) {
+        ResetWifiAcquireBackoff(&wifi_acquire_backoff_ms,
+                                &wifi_next_acquire_attempt_ms);
         const esp_err_t mesh_result = RuntimeApplyNetMode(desired_net_mode);
         if (mesh_result == ESP_OK) {
           active_mode = NET_SUP_MODE_MESH;
@@ -172,21 +202,58 @@ NetSupervisorTask(void* context)
                    esp_err_to_name(mesh_result));
         }
       } else if (desired_mode == NET_SUP_MODE_WIFI) {
-        (void)RuntimeApplyNetMode(desired_net_mode);
-        const wifi_service_mode_t svc_mode = ToWifiServiceMode(desired_mode);
-        const esp_err_t acquire_result = WifiServiceAcquire(svc_mode);
-        if (acquire_result == ESP_OK) {
-          active_mode = NET_SUP_MODE_WIFI;
-          ResetWifiState(&connected,
-                         &next_connect_ticks,
-                         &next_time_sync_ticks,
-                         &retry_delay_ms,
-                         &time_sync_retry_ms);
-          ESP_LOGI(kTag, "Wi-Fi service acquired (mode=%d)", (int)svc_mode);
-        } else {
-          ESP_LOGW(kTag,
-                   "Wi-Fi service acquire failed: %s",
-                   esp_err_to_name(acquire_result));
+        if (wifi_next_acquire_attempt_ms == 0 ||
+            now_ms >= wifi_next_acquire_attempt_ms) {
+          (void)RuntimeApplyNetMode(desired_net_mode);
+          const wifi_service_mode_t svc_mode = ToWifiServiceMode(desired_mode);
+          const esp_err_t acquire_result = WifiServiceAcquire(svc_mode);
+          if (acquire_result == ESP_OK) {
+            active_mode = NET_SUP_MODE_WIFI;
+            ResetWifiState(&connected,
+                           &next_connect_ticks,
+                           &next_time_sync_ticks,
+                           &retry_delay_ms,
+                           &time_sync_retry_ms);
+            ResetWifiAcquireBackoff(&wifi_acquire_backoff_ms,
+                                    &wifi_next_acquire_attempt_ms);
+            ESP_LOGI(kTag, "Wi-Fi service acquired (mode=%d)", (int)svc_mode);
+          } else {
+            if (acquire_result == ESP_ERR_NO_MEM) {
+              last_wifi_acquire_free_internal =
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+              last_wifi_acquire_largest_internal =
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+              if (wifi_acquire_backoff_ms == 0) {
+                wifi_acquire_backoff_ms = min_wifi_acquire_backoff_ms;
+              } else {
+                wifi_acquire_backoff_ms =
+                  (wifi_acquire_backoff_ms < max_wifi_acquire_backoff_ms / 2)
+                    ? wifi_acquire_backoff_ms * 2
+                    : max_wifi_acquire_backoff_ms;
+                if (wifi_acquire_backoff_ms < min_wifi_acquire_backoff_ms) {
+                  wifi_acquire_backoff_ms = min_wifi_acquire_backoff_ms;
+                }
+                if (wifi_acquire_backoff_ms > max_wifi_acquire_backoff_ms) {
+                  wifi_acquire_backoff_ms = max_wifi_acquire_backoff_ms;
+                }
+              }
+              wifi_next_acquire_attempt_ms =
+                now_ms + wifi_acquire_backoff_ms;
+              ESP_LOGW(
+                kTag,
+                "Wi-Fi acquire deferred (%" PRIu32
+                " ms); next retry in %" PRIu32
+                " ms (heap free=%u, largest=%u)",
+                wifi_acquire_backoff_ms,
+                wifi_acquire_backoff_ms,
+                (unsigned)last_wifi_acquire_free_internal,
+                (unsigned)last_wifi_acquire_largest_internal);
+            } else {
+              ESP_LOGW(kTag,
+                       "Wi-Fi service acquire failed: %s",
+                       esp_err_to_name(acquire_result));
+            }
+          }
         }
       } else {
         (void)RuntimeApplyNetMode(desired_net_mode);
