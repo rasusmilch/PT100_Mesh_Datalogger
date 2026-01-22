@@ -4,10 +4,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "alerts/alert_manager.h"
 #include "app_settings.h"
 #include "esp_err.h"
-#include "fram_i2c.h"
 #include "fram_error_log.h"
+#include "fram_i2c.h"
 #include "fram_io.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
@@ -15,9 +16,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "heap_monitor.h"
-#include "log_record.h"
-#include "alerts/alert_manager.h"
 #include "i2c_bus.h"
+#include "log_record.h"
 #include "max31865_reader.h"
 #include "max7219_display.h"
 #include "mesh_transport.h"
@@ -28,7 +28,8 @@
 #include "time_sync.h"
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
   typedef struct
@@ -147,10 +148,10 @@ extern "C" {
   enum
   {
     kLogQueueDepth = 64,
-    kStorageTaskStackBytes = 4096, // bytes
-    kSdFlushTaskStackBytes = 3072, // bytes
-    kNetTxTaskStackBytes = 6144, // bytes
-    kAlertHttpTaskStackBytes = 9216, // bytes
+    kStorageTaskStackBytes = 8192,    // bytes
+    kSdFlushTaskStackBytes = 12288,   // bytes
+    kNetTxTaskStackBytes = 10240,     // bytes
+    kAlertHttpTaskStackBytes = 16384, // bytes
   };
 
   typedef struct
@@ -295,12 +296,12 @@ extern "C" {
     TaskHandle_t sensor_task;
     TaskHandle_t storage_task;
     StaticTask_t storage_task_tcb;
-    StackType_t storage_task_stack[kStorageTaskStackBytes /
-                                   sizeof(StackType_t)];
+    StackType_t
+      storage_task_stack[kStorageTaskStackBytes / sizeof(StackType_t)];
     TaskHandle_t sd_flush_task;
     StaticTask_t sd_flush_task_tcb;
-    StackType_t sd_flush_task_stack[kSdFlushTaskStackBytes /
-                                    sizeof(StackType_t)];
+    StackType_t
+      sd_flush_task_stack[kSdFlushTaskStackBytes / sizeof(StackType_t)];
     TaskHandle_t export_task;
     TaskHandle_t display_task;
     TaskHandle_t wifi_direct_task;
