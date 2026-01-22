@@ -3,10 +3,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-#include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_wifi.h"
 #include "esp_heap_trace.h"
+#include "esp_log.h"
+#include "esp_wifi.h"
 #include "heap_phase_log.h"
 #include "log_rate_limit.h"
 #include "net_stack.h"
@@ -42,12 +42,29 @@ static uint32_t s_wifi_heap_log_ms = 0;
 #define CONFIG_APP_WIFI_HEAP_TRACE_ENABLE 0
 #endif
 
-static esp_err_t EnsureMutex(void);
-static esp_err_t Lock(TickType_t timeout);
-static void Unlock(void);
-static void WifiServiceLogHeap(const char* phase);
-static void WifiServiceHeapTraceStart(const char* reason);
-static void WifiServiceHeapTraceStop(bool dump, const char* reason);
+#ifndef CONFIG_APP_WIFI_HEAP_TRACE_ENABLE
+#define CONFIG_APP_WIFI_HEAP_TRACE_ENABLE 0
+#endif
+
+// When APP_WIFI_HEAP_TRACE_ENABLE is disabled, dependent Kconfig symbols may
+// not be emitted into sdkconfig.h. Provide safe defaults so this file compiles
+// in all configurations.
+#ifndef CONFIG_APP_WIFI_HEAP_TRACE_LARGEST_INTERNAL_THRESHOLD_BYTES
+#define CONFIG_APP_WIFI_HEAP_TRACE_LARGEST_INTERNAL_THRESHOLD_BYTES 0
+#endif
+
+static esp_err_t
+EnsureMutex(void);
+static esp_err_t
+Lock(TickType_t timeout);
+static void
+Unlock(void);
+static void
+WifiServiceLogHeap(const char* phase);
+static void
+WifiServiceHeapTraceStart(const char* reason);
+static void
+WifiServiceHeapTraceStop(bool dump, const char* reason);
 
 /**
  * @brief Execute WifiServiceLogHeap.
@@ -71,14 +88,15 @@ WifiServiceLogHeap(const char* phase)
     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
   const size_t largest_dma_internal =
     heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-  ESP_LOGI(kTag,
-           "%s heap (internal): free=%u min=%u largest=%u dma_free=%u dma_largest=%u",
-           phase,
-           (unsigned)free_internal,
-           (unsigned)min_internal,
-           (unsigned)largest_internal,
-           (unsigned)free_dma_internal,
-           (unsigned)largest_dma_internal);
+  ESP_LOGI(
+    kTag,
+    "%s heap (internal): free=%u min=%u largest=%u dma_free=%u dma_largest=%u",
+    phase,
+    (unsigned)free_internal,
+    (unsigned)min_internal,
+    (unsigned)largest_internal,
+    (unsigned)free_dma_internal,
+    (unsigned)largest_dma_internal);
 }
 
 #if CONFIG_APP_WIFI_HEAP_TRACE_ENABLE && CONFIG_HEAP_TRACING
@@ -94,9 +112,8 @@ WifiServiceHeapTraceStart(const char* reason)
     esp_err_t init_result = heap_trace_init_standalone(
       s_wifi_heap_trace_records, CONFIG_APP_WIFI_HEAP_TRACE_RECORDS);
     if (init_result != ESP_OK) {
-      ESP_LOGW(kTag,
-               "heap trace init failed: %s",
-               esp_err_to_name(init_result));
+      ESP_LOGW(
+        kTag, "heap trace init failed: %s", esp_err_to_name(init_result));
       return;
     }
     s_wifi_heap_trace_initialized = true;
@@ -107,9 +124,8 @@ WifiServiceHeapTraceStart(const char* reason)
   }
   esp_err_t start_result = heap_trace_start(HEAP_TRACE_LEAKS);
   if (start_result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "heap trace start failed: %s",
-             esp_err_to_name(start_result));
+    ESP_LOGW(
+      kTag, "heap trace start failed: %s", esp_err_to_name(start_result));
     return;
   }
   s_wifi_heap_trace_active = true;
@@ -265,7 +281,8 @@ WifiServiceAcquire(wifi_service_mode_t mode)
         largest_dma_internal_pre_init <
           (size_t)CONFIG_APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES) {
       ESP_LOGE(kTag,
-               "insufficient heap for Wi-Fi init (free=%u, largest=%u, dma_free=%u, dma_largest=%u) "
+               "insufficient heap for Wi-Fi init (free=%u, largest=%u, "
+               "dma_free=%u, dma_largest=%u) "
                "thresholds (min_free=%u, min_dma_largest=%u)",
                (unsigned)free_internal_pre_init,
                (unsigned)largest_internal_pre_init,
@@ -301,7 +318,8 @@ WifiServiceAcquire(wifi_service_mode_t mode)
       const size_t largest_dma_internal_post_fail =
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
       ESP_LOGE(kTag,
-               "wifi init heap after failure (internal): free=%u min=%u largest=%u dma_free=%u dma_largest=%u",
+               "wifi init heap after failure (internal): free=%u min=%u "
+               "largest=%u dma_free=%u dma_largest=%u",
                (unsigned)free_internal_post_fail,
                (unsigned)min_internal_post_fail,
                (unsigned)largest_internal_post_fail,
@@ -348,10 +366,11 @@ WifiServiceAcquire(wifi_service_mode_t mode)
 
     if (free_internal < kMinInternalFreeForWifiStartBytes ||
         largest_internal < kMinInternalLargestForWifiStartBytes) {
-      ESP_LOGE(kTag,
-               "insufficient internal heap for Wi-Fi start (free=%u, largest=%u)",
-               (unsigned)free_internal,
-               (unsigned)largest_internal);
+      ESP_LOGE(
+        kTag,
+        "insufficient internal heap for Wi-Fi start (free=%u, largest=%u)",
+        (unsigned)free_internal,
+        (unsigned)largest_internal);
 
       // Unwind driver allocations so the rest of the system can continue.
       // Without this, a failed Wi-Fi start can strand the system in a low-heap
@@ -373,13 +392,15 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     HeapLogPhase("wifi_start_before");
     esp_err_t start_result = esp_wifi_start();
     HeapLogPhase("wifi_start_after");
-    if (start_result == ESP_ERR_WIFI_CONN || start_result == ESP_ERR_WIFI_STATE ||
+    if (start_result == ESP_ERR_WIFI_CONN ||
+        start_result == ESP_ERR_WIFI_STATE ||
         start_result == ESP_ERR_INVALID_STATE) {
       start_result = ESP_OK;
     }
     if (start_result != ESP_OK) {
       Unlock();
-      ESP_LOGE(kTag, "esp_wifi_start failed: %s", esp_err_to_name(start_result));
+      ESP_LOGE(
+        kTag, "esp_wifi_start failed: %s", esp_err_to_name(start_result));
       WifiServiceHeapTraceStop(true, "wifi_start_failed");
       return start_result;
     }
