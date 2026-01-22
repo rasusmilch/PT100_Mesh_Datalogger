@@ -170,6 +170,46 @@ RuntimeFramLogUnlock(runtime_state_t* state);
 static bool
 RuntimeVerifyFram(runtime_state_t* state);
 
+/**
+ * @brief Execute RuntimeRecoverI2cBusCommon.
+ * @param state Parameter state.
+ * @param reason Parameter reason.
+ * @param last_error Parameter last_error.
+ * @param lock_held Parameter lock_held.
+ * @return Return the function result.
+ */
+static bool
+RuntimeRecoverI2cBusCommon(runtime_state_t* state,
+                           const char* reason,
+                           esp_err_t last_error,
+                           bool lock_held);
+
+/**
+ * @brief Execute RuntimeRecoverI2cBusLocked.
+ * @param state Parameter state.
+ * @param reason Parameter reason.
+ */
+static void
+RuntimeRecoverI2cBusLocked(runtime_state_t* state, const char* reason);
+
+/**
+ * @brief Execute DiscardFramRecordsWithYield.
+ * @param state Parameter state.
+ * @param records_to_discard Parameter records_to_discard.
+ * @param fram_log_timeout_ticks Parameter fram_log_timeout_ticks.
+ * @param timeout_counter Parameter timeout_counter.
+ * @param last_log_ms Parameter last_log_ms.
+ * @param context Parameter context.
+ * @return Return the function result.
+ */
+static esp_err_t
+DiscardFramRecordsWithYield(runtime_state_t* state,
+                            uint32_t records_to_discard,
+                            TickType_t fram_log_timeout_ticks,
+                            uint32_t* timeout_counter,
+                            uint32_t* last_log_ms,
+                            const char* context);
+
 static void
 UpdateFramFillState(runtime_state_t* state);
 
@@ -1925,6 +1965,7 @@ SetDiagLogPolicy(void)
 static esp_err_t
 FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
 {
+  runtime_state_t* state = &g_state;
   if (context == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -1934,8 +1975,17 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
   if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
     return ESP_ERR_TIMEOUT;
   }
+  if (state->i2c_bus.initialized &&
+      !I2cBusLinesLookIdle(&state->i2c_bus)) {
+    RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy");
+  }
   esp_err_t result =
     FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
+  if (result == ESP_ERR_TIMEOUT || result == ESP_ERR_INVALID_STATE ||
+      result == ESP_ERR_INVALID_RESPONSE) {
+    RuntimeRecoverI2cBusLocked(state, "fram io error");
+    result = FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
+  }
   RuntimeI2cUnlock();
   return result;
 }
@@ -1951,6 +2001,7 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
 static esp_err_t
 FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
 {
+  runtime_state_t* state = &g_state;
   if (context == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -1960,8 +2011,18 @@ FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
   if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
     return ESP_ERR_TIMEOUT;
   }
+  if (state->i2c_bus.initialized &&
+      !I2cBusLinesLookIdle(&state->i2c_bus)) {
+    RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy");
+  }
   esp_err_t result =
     FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
+  if (result == ESP_ERR_TIMEOUT || result == ESP_ERR_INVALID_STATE ||
+      result == ESP_ERR_INVALID_RESPONSE) {
+    RuntimeRecoverI2cBusLocked(state, "fram io error");
+    result =
+      FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
+  }
   RuntimeI2cUnlock();
   return result;
 }
@@ -2782,10 +2843,19 @@ RuntimeVerifyFram(runtime_state_t* state)
   return memcmp(before, after, sizeof(before)) == 0;
 }
 
+/**
+ * @brief Execute RuntimeRecoverI2cBusCommon.
+ * @param state Parameter state.
+ * @param reason Parameter reason.
+ * @param last_error Parameter last_error.
+ * @param lock_held Parameter lock_held.
+ * @return Return the function result.
+ */
 static bool
-RuntimeRecoverI2cBus(runtime_state_t* state,
-                     const char* reason,
-                     esp_err_t last_error)
+RuntimeRecoverI2cBusCommon(runtime_state_t* state,
+                           const char* reason,
+                           esp_err_t last_error,
+                           bool lock_held)
 {
   if (state == NULL) {
     return false;
@@ -2795,7 +2865,7 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
   }
   state->i2c_recovery_in_progress = true;
 
-  if (!RuntimeI2cLock(kI2cRecoveryLockTimeoutTicks)) {
+  if (!lock_held && !RuntimeI2cLock(kI2cRecoveryLockTimeoutTicks)) {
     ESP_LOGW(kTag, "I2C recovery lock timeout");
     state->i2c_recovery_in_progress = false;
     return false;
@@ -2861,7 +2931,9 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
   state->fram_append_fail_streak = 0;
   state->fram_crc_fail_streak = 0;
   state->i2c_recovery_in_progress = false;
-  RuntimeI2cUnlock();
+  if (!lock_held) {
+    RuntimeI2cUnlock();
+  }
   ESP_LOGI(kTag, "I2C recovery succeeded");
   return true;
 
@@ -2869,7 +2941,9 @@ recovery_failed:
   LogFramErrorEvent(
     state, ERROR_I2C_RECOVERY_FAILED, false, (int32_t)result, 0);
   ESP_LOGE(kTag, "I2C recovery failed: %s", esp_err_to_name(result));
-  RuntimeI2cUnlock();
+  if (!lock_held) {
+    RuntimeI2cUnlock();
+  }
   state->i2c_recovery_in_progress = false;
   const int64_t event_uptime_ms = esp_timer_get_time() / 1000;
   const int64_t event_epoch =
@@ -2886,6 +2960,26 @@ recovery_failed:
   }
   esp_restart();
   return false;
+}
+
+static bool
+RuntimeRecoverI2cBus(runtime_state_t* state,
+                     const char* reason,
+                     esp_err_t last_error)
+{
+  return RuntimeRecoverI2cBusCommon(state, reason, last_error, false);
+}
+
+/**
+ * @brief Execute RuntimeRecoverI2cBusLocked.
+ * @param state Parameter state.
+ * @param reason Parameter reason.
+ */
+static void
+RuntimeRecoverI2cBusLocked(runtime_state_t* state, const char* reason)
+{
+  (void)RuntimeRecoverI2cBusCommon(
+    state, reason, ESP_ERR_INVALID_STATE, true);
 }
 
 static void
@@ -2945,6 +3039,55 @@ TrackFramAppendFailure(runtime_state_t* state, esp_err_t error)
     }
     (void)RuntimeRecoverI2cBus(state, "append", error);
   }
+}
+
+/**
+ * @brief Execute DiscardFramRecordsWithYield.
+ * @param state Parameter state.
+ * @param records_to_discard Parameter records_to_discard.
+ * @param fram_log_timeout_ticks Parameter fram_log_timeout_ticks.
+ * @param timeout_counter Parameter timeout_counter.
+ * @param last_log_ms Parameter last_log_ms.
+ * @param context Parameter context.
+ * @return Return the function result.
+ */
+static esp_err_t
+DiscardFramRecordsWithYield(runtime_state_t* state,
+                            uint32_t records_to_discard,
+                            TickType_t fram_log_timeout_ticks,
+                            uint32_t* timeout_counter,
+                            uint32_t* last_log_ms,
+                            const char* context)
+{
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  const uint32_t kDiscardChunkRecords = 16;
+  uint32_t remaining = records_to_discard;
+  while (remaining > 0) {
+    if (!RuntimeFramLogLockWithWarn(state,
+                                   fram_log_timeout_ticks,
+                                   timeout_counter,
+                                   last_log_ms,
+                                   context)) {
+      return ESP_ERR_TIMEOUT;
+    }
+    const uint32_t chunk =
+      (remaining < kDiscardChunkRecords) ? remaining : kDiscardChunkRecords;
+    for (uint32_t index = 0; index < chunk; ++index) {
+      esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
+      if (discard_result != ESP_OK) {
+        RuntimeFramLogUnlock(state);
+        return discard_result;
+      }
+    }
+    RuntimeFramLogUnlock(state);
+    remaining -= chunk;
+    if (remaining > 0) {
+      vTaskDelay(1);
+    }
+  }
+  return ESP_OK;
 }
 
 /**
@@ -3436,6 +3579,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
   const bool allow_full_flush = flush_all && state->stop_requested;
   TickType_t flush_start = xTaskGetTickCount();
   uint32_t total_flushed = 0;
+  uint32_t fram_lock_timeout_counter = 0;
+  uint32_t fram_lock_last_log_ms = 0;
   while (true) {
     uint32_t buffered = 0;
     if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
@@ -3567,29 +3712,16 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       state, batch_includes_time_jump_flag, last_record_id);
     RuntimeSdIoUnlock(state);
 
-    if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
-      return ESP_ERR_TIMEOUT;
+    esp_err_t discard_result = DiscardFramRecordsWithYield(
+      state,
+      records_used,
+      kFramLogLockTimeoutTicks,
+      &fram_lock_timeout_counter,
+      &fram_lock_last_log_ms,
+      "flush discard");
+    if (discard_result != ESP_OK) {
+      return discard_result;
     }
-    for (uint32_t index = 0; index < records_used; ++index) {
-      esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
-      if (discard_result != ESP_OK) {
-        RuntimeFramLogUnlock(state);
-        return discard_result;
-      }
-      if ((index % 16u) == 0u && (xTaskGetTickCount() - flush_start) >
-                                   pdMS_TO_TICKS(kSdFlushTimeSliceMs)) {
-        const TickType_t now_ticks = xTaskGetTickCount();
-        if (state->last_sd_flush_warn_ticks == 0 ||
-            (now_ticks - state->last_sd_flush_warn_ticks) >
-              pdMS_TO_TICKS(kSdFlushWarnIntervalMs)) {
-          ESP_LOGW(kTag, "SD flush time slice exceeded; yielding");
-          state->last_sd_flush_warn_ticks = now_ticks;
-        }
-        vTaskDelay(1);
-        flush_start = xTaskGetTickCount();
-      }
-    }
-    RuntimeFramLogUnlock(state);
 
     total_flushed += records_used;
     ESP_LOGI(kTag,
@@ -4057,24 +4189,17 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     HandleTimeJumpBackBatchWritten(
       state, batch_includes_time_jump_flag, last_record_id);
 
-    if (!RuntimeFramLogLockWithWarn(
-          state,
-          fram_log_timeout_ticks,
-          &state->fram_log_lock_timeout_count_sdflush,
-          &state->last_fram_log_lock_timeout_sdflush_log_ms,
-          "sd_flush discard")) {
-      result = ESP_ERR_TIMEOUT;
+    esp_err_t discard_result = DiscardFramRecordsWithYield(
+      state,
+      records_used,
+      fram_log_timeout_ticks,
+      &state->fram_log_lock_timeout_count_sdflush,
+      &state->last_fram_log_lock_timeout_sdflush_log_ms,
+      "sd_flush discard");
+    if (discard_result != ESP_OK) {
+      result = discard_result;
       goto flush_done;
     }
-    for (uint32_t index = 0; index < records_used; ++index) {
-      esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
-      if (discard_result != ESP_OK) {
-        RuntimeFramLogUnlock(state);
-        result = discard_result;
-        goto flush_done;
-      }
-    }
-    RuntimeFramLogUnlock(state);
 
     total_records_flushed += records_used;
     total_bytes_flushed += bytes_used;

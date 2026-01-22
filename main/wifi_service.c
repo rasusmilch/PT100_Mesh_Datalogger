@@ -19,7 +19,7 @@ static const char* kTag = "wifi_svc";
 // started), do a conservative preflight check and fail gracefully.
 // Wi-Fi start allocates additional internal heap (driver/task plumbing). If we
 // start too close to the edge, we can fail later in hard-to-debug ways.
-static const size_t kMinInternalFreeForWifiStartBytes = 20u * 1024u;
+static const size_t kMinInternalFreeForWifiStartBytes = 16u * 1024u;
 static const size_t kMinInternalLargestForWifiStartBytes = 2048u;
 
 static bool s_initialized = false;
