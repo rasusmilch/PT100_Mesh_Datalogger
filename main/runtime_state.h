@@ -307,6 +307,8 @@ extern "C" {
     TaskHandle_t control_task;
     TaskHandle_t net_tx_task;
     TaskHandle_t alert_http_task;
+    StackType_t* alert_http_task_stack;
+    StaticTask_t* alert_http_task_tcb;
 
     bool initialized;
     bool system_running;

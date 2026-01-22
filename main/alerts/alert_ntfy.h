@@ -88,8 +88,8 @@ extern "C"
   typedef struct
   {
     QueueHandle_t queue;
-    StaticQueue_t queue_buffer;
-    uint8_t queue_storage[sizeof(alert_notification_t) * ALERT_NTFY_QUEUE_LEN];
+    StaticQueue_t* queue_buffer;
+    uint8_t* queue_storage;
     uint32_t dropped;
     uint32_t send_success;
     uint32_t send_fail;
@@ -106,9 +106,8 @@ extern "C"
     bool last_sent_valid;
     alert_notification_t last_sent;
     QueueHandle_t job_queue;
-    StaticQueue_t job_queue_buffer;
-    uint8_t job_queue_storage[sizeof(alert_ntfy_job_t) *
-                              ALERT_NTFY_JOB_QUEUE_LEN];
+    StaticQueue_t* job_queue_buffer;
+    uint8_t* job_queue_storage;
     uint32_t job_dropped;
     uint32_t job_last_drop_log_ms;
     uint32_t last_send_log_ms;

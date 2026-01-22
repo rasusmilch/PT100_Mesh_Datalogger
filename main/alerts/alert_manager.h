@@ -19,6 +19,8 @@ extern "C"
 #define ALERT_MAX_LEAVES 1
 #define ALERT_MAX_LEAF_OVERRIDES 1
 
+  typedef struct alert_ntfy_batch_scratch_s alert_ntfy_batch_scratch_t;
+
   typedef enum
   {
     ALERT_TEMP_HIGH = 0,
@@ -101,6 +103,7 @@ extern "C"
     alert_config_t config;
     alert_leaf_state_t leaves[ALERT_MAX_LEAVES];
     alert_state_t states[ALERT_MAX_LEAVES][ALERT_TYPE_COUNT];
+    alert_ntfy_batch_scratch_t* ntfy_batch_scratch;
     alert_ntfy_t ntfy;
     const char* root_id_string;
     uint64_t local_leaf_id;

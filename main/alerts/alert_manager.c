@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mesh_lite.h"
 #include "esp_timer.h"
@@ -27,7 +28,7 @@ typedef struct
   int64_t last_event_uptime_ms;
 } alert_batch_t;
 
-typedef struct
+typedef struct alert_ntfy_batch_scratch_s
 {
   alert_notification_t notes[ALERT_NTFY_QUEUE_LEN];
   alert_batch_t batch;
@@ -125,8 +126,6 @@ static const int64_t kNtfyFailureMaxBackoffMs = 300000;
 static const uint32_t kAlertConfigVersion = 2;
 static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
-static alert_ntfy_batch_scratch_t g_ntfy_batch_scratch;
-
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
 /**
  * @brief Execute PackMacToId.
@@ -676,6 +675,13 @@ AlertManagerInit(alert_manager_t* manager,
   manager->root_id_string = root_id_string;
   manager->local_leaf_id = local_leaf_id;
   ApplyDefaults(manager);
+  manager->ntfy_batch_scratch = heap_caps_calloc(
+    1,
+    sizeof(*manager->ntfy_batch_scratch),
+    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (manager->ntfy_batch_scratch == NULL) {
+    ESP_LOGE(kTag, "Failed to allocate ntfy scratch storage in PSRAM");
+  }
   AlertNtfyInit(&manager->ntfy);
 }
 
@@ -1944,7 +1950,7 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
                             int64_t* next_attempt_ms)
 {
   if (manager == NULL || manager->ntfy.queue == NULL ||
-      manager->ntfy.job_queue == NULL) {
+      manager->ntfy.job_queue == NULL || manager->ntfy_batch_scratch == NULL) {
     return false;
   }
   (void)now_epoch;
@@ -1957,25 +1963,25 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   }
 
   const size_t max_notes = ALERT_NTFY_QUEUE_LEN;
+  alert_ntfy_batch_scratch_t* scratch = manager->ntfy_batch_scratch;
   size_t note_count = AlertManagerDrainNtfyQueue(
-    manager, g_ntfy_batch_scratch.notes, max_notes, wait_ms);
+    manager, scratch->notes, max_notes, wait_ms);
   if (note_count == 0) {
     return false;
   }
 
-  AlertManagerBatchInit(&g_ntfy_batch_scratch.batch);
+  AlertManagerBatchInit(&scratch->batch);
   for (size_t i = 0; i < note_count; ++i) {
-    AlertManagerBatchAdd(&g_ntfy_batch_scratch.batch,
-                         &g_ntfy_batch_scratch.notes[i]);
+    AlertManagerBatchAdd(&scratch->batch, &scratch->notes[i]);
   }
 
   if (!AlertManagerBuildBatchMessage(
         manager,
-        &g_ntfy_batch_scratch.batch,
-        g_ntfy_batch_scratch.title,
-        sizeof(g_ntfy_batch_scratch.title),
-        g_ntfy_batch_scratch.body,
-        sizeof(g_ntfy_batch_scratch.body))) {
+        &scratch->batch,
+        scratch->title,
+        sizeof(scratch->title),
+        scratch->body,
+        sizeof(scratch->body))) {
     return false;
   }
 
@@ -1984,11 +1990,8 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   snprintf(job.topic, sizeof(job.topic), "%s", manager->config.ntfy_topic);
   snprintf(job.token, sizeof(job.token), "%s", manager->config.ntfy_token);
   snprintf(job.root_id, sizeof(job.root_id), "%s", manager->root_id_string);
-  snprintf(job.title,
-           sizeof(job.title),
-           "%s",
-           g_ntfy_batch_scratch.title);
-  snprintf(job.body, sizeof(job.body), "%s", g_ntfy_batch_scratch.body);
+  snprintf(job.title, sizeof(job.title), "%s", scratch->title);
+  snprintf(job.body, sizeof(job.body), "%s", scratch->body);
   job.http_timeout_ms = 0;
   job.attempt = 0;
   job.next_attempt_ms = now_ms;
@@ -1996,7 +1999,7 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   const bool queued = AlertNtfyEnqueueJob(&manager->ntfy, &job);
   if (!queued) {
     for (size_t i = 0; i < note_count; ++i) {
-      (void)AlertNtfyEnqueue(&manager->ntfy, &g_ntfy_batch_scratch.notes[i]);
+      (void)AlertNtfyEnqueue(&manager->ntfy, &scratch->notes[i]);
     }
     manager->ntfy.cooldown_until_ms = now_ms + 1000;
     if (next_attempt_ms != NULL) {
@@ -2008,8 +2011,8 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   manager->ntfy.last_attempt_ms = now_ms;
   ESP_LOGI(kTag,
            "ntfy batch queued: total=%" PRIu32 " unique=%u",
-           g_ntfy_batch_scratch.batch.total_count,
-           (unsigned)g_ntfy_batch_scratch.batch.entry_count);
+           scratch->batch.total_count,
+           (unsigned)scratch->batch.entry_count);
   return true;
 }
 
