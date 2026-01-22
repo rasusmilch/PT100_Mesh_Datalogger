@@ -26,6 +26,12 @@ static const uint32_t kWifiHeapLogRateLimitMs = 5000;
 static const size_t kMinInternalFreeForWifiStartBytes = 16u * 1024u;
 static const size_t kMinInternalLargestForWifiStartBytes = 2048u;
 
+// If the largest DMA-capable internal heap block is only slightly below the
+// configured threshold, allow a best-effort attempt at esp_wifi_init() anyway.
+// This helps with edge cases where the pre-check is more conservative than the
+// actual Wi-Fi init path.
+static const size_t kWifiInitLargestDmaSlackBytes = 2048u;
+
 static bool s_initialized = false;
 static wifi_service_mode_t s_active_mode = WIFI_SERVICE_MODE_NONE;
 static int s_refcount = 0;
@@ -276,23 +282,42 @@ WifiServiceAcquire(wifi_service_mode_t mode)
 
     WifiServiceLogHeap("pre-init");
 
-    if (free_internal_pre_init <
-          (size_t)CONFIG_APP_WIFI_INIT_MIN_FREE_INTERNAL_BYTES ||
-        largest_dma_internal_pre_init <
-          (size_t)CONFIG_APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES) {
+    const size_t min_free_internal =
+      (size_t)CONFIG_APP_WIFI_INIT_MIN_FREE_INTERNAL_BYTES;
+    const size_t min_dma_largest =
+      (size_t)CONFIG_APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES;
+
+    const bool dma_largest_borderline =
+      (largest_dma_internal_pre_init < min_dma_largest) &&
+      (largest_dma_internal_pre_init + kWifiInitLargestDmaSlackBytes >=
+       min_dma_largest);
+
+    if (free_internal_pre_init < min_free_internal ||
+        (!dma_largest_borderline &&
+         largest_dma_internal_pre_init < min_dma_largest)) {
       ESP_LOGE(kTag,
                "insufficient heap for Wi-Fi init (free=%u, largest=%u, "
-               "dma_free=%u, dma_largest=%u) "
-               "thresholds (min_free=%u, min_dma_largest=%u)",
+               "dma_free=%u, dma_largest=%u) thresholds (min_free=%u, "
+               "min_dma_largest=%u)",
                (unsigned)free_internal_pre_init,
                (unsigned)largest_internal_pre_init,
                (unsigned)free_dma_internal_pre_init,
                (unsigned)largest_dma_internal_pre_init,
-               (unsigned)CONFIG_APP_WIFI_INIT_MIN_FREE_INTERNAL_BYTES,
-               (unsigned)CONFIG_APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES);
-      WifiServiceHeapTraceStop(true, "wifi_init_precheck_failed");
+               (unsigned)min_free_internal,
+               (unsigned)min_dma_largest);
+      WifiServiceHeapTraceStop(true /* log */,
+                               "wifi init heap precheck failed");
       Unlock();
       return ESP_ERR_NO_MEM;
+    }
+
+    if (dma_largest_borderline) {
+      ESP_LOGW(kTag,
+               "Wi-Fi init DMA largest block below threshold but within slack "
+               "(dma_largest=%u min=%u slack=%u); attempting init anyway",
+               (unsigned)largest_dma_internal_pre_init,
+               (unsigned)min_dma_largest,
+               (unsigned)kWifiInitLargestDmaSlackBytes);
     }
 
     wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
@@ -410,8 +435,11 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     const size_t largest_internal_after_start =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     WifiServiceLogHeap("post-start");
-    if (largest_internal_after_start <
-        (size_t)CONFIG_APP_WIFI_HEAP_TRACE_LARGEST_INTERNAL_THRESHOLD_BYTES) {
+    const int largest_internal_threshold_bytes =
+      CONFIG_APP_WIFI_HEAP_TRACE_LARGEST_INTERNAL_THRESHOLD_BYTES;
+    if ((largest_internal_threshold_bytes > 0) &&
+        (largest_internal_after_start <
+         (size_t)largest_internal_threshold_bytes)) {
       WifiServiceHeapTraceStop(true, "wifi_start_largest_internal_drop");
     } else {
       WifiServiceHeapTraceStop(false, "wifi_start_complete");
