@@ -170,6 +170,38 @@ StackMonitorMaybeSample(stack_monitor_t* monitor)
 }
 
 /**
+ * @brief Lookup the minimum free stack bytes for a named task.
+ *
+ * Searches for a matching task name in the monitor registry and copies the
+ * entry's minimum observed free bytes into @p out_bytes.
+ *
+ * @param monitor Pointer to the monitor registry.
+ * @param name Task name to search for.
+ * @param out_bytes Output pointer for the min free bytes.
+ * @return true if a matching entry was found.
+ */
+bool
+StackMonitorGetMinFreeBytes(const stack_monitor_t* monitor,
+                            const char* name,
+                            uint32_t* out_bytes)
+{
+  if (monitor == NULL || name == NULL || out_bytes == NULL) {
+    return false;
+  }
+  for (size_t i = 0; i < monitor->entry_count; ++i) {
+    const stack_monitor_entry_t* entry = &monitor->entries[i];
+    if (entry->task_name == NULL) {
+      continue;
+    }
+    if (strcmp(entry->task_name, name) == 0) {
+      *out_bytes = entry->min_free_bytes;
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * @brief Print a fixed-width stack usage report with recommended stack sizes.
  *
  * The report includes each entry's configured allocation, last and minimum
