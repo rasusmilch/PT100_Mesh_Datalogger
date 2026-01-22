@@ -3,8 +3,8 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <math.h>
-#include <stdio.h>
 #include <stdalign.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -899,7 +899,9 @@ RuntimeFramLogLock(runtime_state_t* state, TickType_t timeout_ticks)
     return false;
   }
   if (xSemaphoreTake(state->fram_log_mutex, timeout_ticks) != pdTRUE) {
-    ESP_LOGW(kTag, "FRAM log mutex timeout");
+    const TaskHandle_t holder = xSemaphoreGetMutexHolder(state->fram_log_mutex);
+    const char* holder_name = (holder != NULL) ? pcTaskGetName(holder) : "none";
+    ESP_LOGW(kTag, "FRAM log mutex timeout (holder=%s)", holder_name);
     return false;
   }
   return true;
@@ -1987,8 +1989,7 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
   if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
     return ESP_ERR_TIMEOUT;
   }
-  if (state->i2c_bus.initialized &&
-      !I2cBusLinesLookIdle(&state->i2c_bus)) {
+  if (state->i2c_bus.initialized && !I2cBusLinesLookIdle(&state->i2c_bus)) {
     RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy");
   }
   esp_err_t result =
@@ -2023,8 +2024,7 @@ FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
   if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
     return ESP_ERR_TIMEOUT;
   }
-  if (state->i2c_bus.initialized &&
-      !I2cBusLinesLookIdle(&state->i2c_bus)) {
+  if (state->i2c_bus.initialized && !I2cBusLinesLookIdle(&state->i2c_bus)) {
     RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy");
   }
   esp_err_t result =
@@ -2730,11 +2730,8 @@ RuntimeMaybeInitFramErrorLog(runtime_state_t* state)
     ESP_LOGW(kTag, "FRAM errlog corrupt; manual clear required");
     int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
     int64_t now_ms = esp_timer_get_time() / 1000;
-    (void)RuntimeEnqueueSystemErrorNote(state,
-                                        ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG,
-                                        false,
-                                        now_epoch,
-                                        now_ms);
+    (void)RuntimeEnqueueSystemErrorNote(
+      state, ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG, false, now_epoch, now_ms);
   }
   RuntimeFlushPendingErrlog(state);
   return ESP_OK;
@@ -2811,11 +2808,7 @@ RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms)
           TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
         int64_t now_ms = esp_timer_get_time() / 1000;
         (void)RuntimeEnqueueSystemErrorNote(
-          state,
-          ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG,
-          false,
-          now_epoch,
-          now_ms);
+          state, ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG, false, now_epoch, now_ms);
       }
     }
   }
@@ -2990,8 +2983,7 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
 static void
 RuntimeRecoverI2cBusLocked(runtime_state_t* state, const char* reason)
 {
-  (void)RuntimeRecoverI2cBusCommon(
-    state, reason, ESP_ERR_INVALID_STATE, true);
+  (void)RuntimeRecoverI2cBusCommon(state, reason, ESP_ERR_INVALID_STATE, true);
 }
 
 static void
@@ -3078,10 +3070,10 @@ DiscardFramRecordsWithYield(runtime_state_t* state,
   uint32_t remaining = records_to_discard;
   while (remaining > 0) {
     if (!RuntimeFramLogLockWithWarn(state,
-                                   fram_log_timeout_ticks,
-                                   timeout_counter,
-                                   last_log_ms,
-                                   context)) {
+                                    fram_log_timeout_ticks,
+                                    timeout_counter,
+                                    last_log_ms,
+                                    context)) {
       return ESP_ERR_TIMEOUT;
     }
     const uint32_t chunk =
@@ -3724,13 +3716,13 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       state, batch_includes_time_jump_flag, last_record_id);
     RuntimeSdIoUnlock(state);
 
-    esp_err_t discard_result = DiscardFramRecordsWithYield(
-      state,
-      records_used,
-      kFramLogLockTimeoutTicks,
-      &fram_lock_timeout_counter,
-      &fram_lock_last_log_ms,
-      "flush discard");
+    esp_err_t discard_result =
+      DiscardFramRecordsWithYield(state,
+                                  records_used,
+                                  kFramLogLockTimeoutTicks,
+                                  &fram_lock_timeout_counter,
+                                  &fram_lock_last_log_ms,
+                                  "flush discard");
     if (discard_result != ESP_OK) {
       return discard_result;
     }
@@ -5040,12 +5032,11 @@ NetTxHandleAlertSend(runtime_state_t* state,
     int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
     if (LogRateLimitAllow(&state->last_ntfy_queue_full_log_ms,
                           kExportLogRateLimitMs)) {
-      (void)RuntimeEnqueueSystemErrorNote(
-        state,
-        ALERT_SYSTEM_CODE_ERROR_NTFY_QUEUE,
-        false,
-        now_epoch,
-        (int64_t)now_ms);
+      (void)RuntimeEnqueueSystemErrorNote(state,
+                                          ALERT_SYSTEM_CODE_ERROR_NTFY_QUEUE,
+                                          false,
+                                          now_epoch,
+                                          (int64_t)now_ms);
     }
   }
   return did_work;
@@ -5079,10 +5070,10 @@ CreateAlertHttpTaskWithPsrStack(runtime_state_t* state, uint32_t stack_bytes)
     (stack_bytes + sizeof(StackType_t) - 1) / sizeof(StackType_t);
   const size_t stack_alloc_bytes = stack_words * sizeof(StackType_t);
   if (state->alert_http_task_stack == NULL) {
-    state->alert_http_task_stack = heap_caps_aligned_alloc(
-      alignof(StackType_t),
-      stack_alloc_bytes,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    state->alert_http_task_stack =
+      heap_caps_aligned_alloc(alignof(StackType_t),
+                              stack_alloc_bytes,
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   }
   if (state->alert_http_task_tcb == NULL) {
     state->alert_http_task_tcb = heap_caps_calloc(
@@ -5308,7 +5299,11 @@ static void
 StorageTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
-  const TickType_t fram_log_timeout_ticks = pdMS_TO_TICKS(50);
+  // SD flush snapshots legitimately hold the FRAM log mutex while scanning and
+  // batching records. Ensure storage can wait out a snapshot and still commit
+  // samples to FRAM instead of skipping writes.
+  const TickType_t fram_log_timeout_ticks =
+    pdMS_TO_TICKS(kSdFlushMaxMsPerPass * 4u);
 
   while (!state->stop_requested ||
          uxQueueMessagesWaiting(state->log_queue) > 0) {
