@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdalign.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -16,6 +17,7 @@
 #include "display_attention.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_mesh_lite.h"
@@ -99,6 +101,7 @@ static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
 static runtime_state_t g_state;
 static app_runtime_t g_runtime;
+static bool g_alert_http_psram_failure_logged = false;
 static RTC_DATA_ATTR runtime_reboot_alert_latch_t g_reboot_alert_latch = {
   .magic = kRebootAlertLatchMagic,
   .version = kRebootAlertLatchVersion,
@@ -137,6 +140,15 @@ InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host);
 
 static void
 AlertHttpTask(void* context);
+
+/**
+ * @brief Create the alert_http task with a PSRAM-backed stack.
+ * @param state Runtime state (owns the task memory).
+ * @param stack_bytes Stack size in bytes.
+ * @return pdPASS on success, or pdFAIL on failure.
+ */
+static BaseType_t
+CreateAlertHttpTaskWithPsrStack(runtime_state_t* state, uint32_t stack_bytes);
 
 /**
  * @brief Determine whether the app SPI bus is shared with non-SD devices.
@@ -4927,6 +4939,75 @@ NetTxDrainAlertQueue(runtime_state_t* state)
 }
 
 /**
+ * @brief Create the alert_http task with a PSRAM-backed stack.
+ * @param state Runtime state (owns the task memory).
+ * @param stack_bytes Stack size in bytes.
+ * @return pdPASS on success, or pdFAIL on failure.
+ */
+static BaseType_t
+CreateAlertHttpTaskWithPsrStack(runtime_state_t* state, uint32_t stack_bytes)
+{
+  if (state == NULL) {
+    return pdFAIL;
+  }
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
+  return xTaskCreatePinnedToCoreWithCaps(AlertHttpTask,
+                                         "alert_http",
+                                         stack_bytes,
+                                         state,
+                                         3,
+                                         &state->alert_http_task,
+                                         tskNO_AFFINITY,
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+  const size_t stack_words =
+    (stack_bytes + sizeof(StackType_t) - 1) / sizeof(StackType_t);
+  const size_t stack_alloc_bytes = stack_words * sizeof(StackType_t);
+  if (state->alert_http_task_stack == NULL) {
+    state->alert_http_task_stack = heap_caps_aligned_alloc(
+      alignof(StackType_t),
+      stack_alloc_bytes,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  if (state->alert_http_task_tcb == NULL) {
+    state->alert_http_task_tcb = heap_caps_calloc(
+      1, sizeof(StaticTask_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  if (state->alert_http_task_stack == NULL ||
+      state->alert_http_task_tcb == NULL) {
+    if (!g_alert_http_psram_failure_logged) {
+      ESP_LOGE(kTag, "Failed to allocate PSRAM for alert_http task");
+      g_alert_http_psram_failure_logged = true;
+    }
+    heap_caps_free(state->alert_http_task_stack);
+    heap_caps_free(state->alert_http_task_tcb);
+    state->alert_http_task_stack = NULL;
+    state->alert_http_task_tcb = NULL;
+    return pdFAIL;
+  }
+  TaskHandle_t task =
+    xTaskCreateStaticPinnedToCore(AlertHttpTask,
+                                  "alert_http",
+                                  stack_words,
+                                  state,
+                                  3,
+                                  state->alert_http_task_stack,
+                                  state->alert_http_task_tcb,
+                                  tskNO_AFFINITY);
+  if (task == NULL) {
+    if (!g_alert_http_psram_failure_logged) {
+      ESP_LOGE(kTag, "Failed to create alert_http task with PSRAM stack");
+      g_alert_http_psram_failure_logged = true;
+    }
+    return pdFAIL;
+  }
+  state->alert_http_task = task;
+  return pdPASS;
+#endif
+}
+
+/**
  * @brief Execute AlertHttpTask.
  * @param context Parameter context.
  * @note FreeRTOS task entry for the alert_http task.
@@ -7554,15 +7635,14 @@ RuntimeStart(void)
   }
 
   if (role == APP_NODE_ROLE_SENSOR || role == APP_NODE_ROLE_ROOT) {
-    alert_http_created = xTaskCreate(&AlertHttpTask,
-                                     "alert_http",
-                                     kAlertHttpTaskStackBytes,
-                                     &g_state,
-                                     3,
-                                     &g_state.alert_http_task);
+    alert_http_created =
+      CreateAlertHttpTaskWithPsrStack(&g_state, kAlertHttpTaskStackBytes);
     if (alert_http_created != pdPASS) {
       g_state.alert_http_task = NULL;
-      ESP_LOGE(kTag, "Failed to create task alert_http");
+      if (!g_alert_http_psram_failure_logged) {
+        ESP_LOGW(kTag, "alert_http task deferred (PSRAM alloc failed)");
+        g_alert_http_psram_failure_logged = true;
+      }
     } else {
       RegisterStackMonitorTask(
         "alert_http", &g_state.alert_http_task, kAlertHttpTaskStackBytes);
@@ -7576,8 +7656,7 @@ RuntimeStart(void)
 
   if (sensor_created != pdPASS || storage_created != pdPASS ||
       sd_flush_created != pdPASS || export_created != pdPASS ||
-      net_tx_created != pdPASS || alert_http_created != pdPASS ||
-      wifi_direct_created != pdPASS) {
+      net_tx_created != pdPASS || wifi_direct_created != pdPASS) {
     g_state.stop_requested = true;
     g_state.logger_running = false;
     UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, true);

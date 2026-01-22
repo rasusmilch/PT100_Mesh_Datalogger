@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "esp_http_client.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "log_rate_limit.h"
@@ -334,14 +335,43 @@ AlertNtfyInit(alert_ntfy_t* ntfy)
     return;
   }
   memset(ntfy, 0, sizeof(*ntfy));
-  ntfy->queue = xQueueCreateStatic(ALERT_NTFY_QUEUE_LEN,
-                                   sizeof(alert_notification_t),
-                                   ntfy->queue_storage,
-                                   &ntfy->queue_buffer);
-  ntfy->job_queue = xQueueCreateStatic(ALERT_NTFY_JOB_QUEUE_LEN,
-                                       sizeof(alert_ntfy_job_t),
-                                       ntfy->job_queue_storage,
-                                       &ntfy->job_queue_buffer);
+  const size_t queue_storage_bytes =
+    sizeof(alert_notification_t) * ALERT_NTFY_QUEUE_LEN;
+  ntfy->queue_storage = heap_caps_calloc(
+    1, queue_storage_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  ntfy->queue_buffer = heap_caps_calloc(
+    1, sizeof(StaticQueue_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (ntfy->queue_storage != NULL && ntfy->queue_buffer != NULL) {
+    ntfy->queue = xQueueCreateStatic(ALERT_NTFY_QUEUE_LEN,
+                                     sizeof(alert_notification_t),
+                                     ntfy->queue_storage,
+                                     ntfy->queue_buffer);
+  } else {
+    ESP_LOGE(kTag, "Failed to allocate ntfy queue storage in PSRAM");
+    heap_caps_free(ntfy->queue_storage);
+    heap_caps_free(ntfy->queue_buffer);
+    ntfy->queue_storage = NULL;
+    ntfy->queue_buffer = NULL;
+  }
+
+  const size_t job_queue_storage_bytes =
+    sizeof(alert_ntfy_job_t) * ALERT_NTFY_JOB_QUEUE_LEN;
+  ntfy->job_queue_storage = heap_caps_calloc(
+    1, job_queue_storage_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  ntfy->job_queue_buffer = heap_caps_calloc(
+    1, sizeof(StaticQueue_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (ntfy->job_queue_storage != NULL && ntfy->job_queue_buffer != NULL) {
+    ntfy->job_queue = xQueueCreateStatic(ALERT_NTFY_JOB_QUEUE_LEN,
+                                         sizeof(alert_ntfy_job_t),
+                                         ntfy->job_queue_storage,
+                                         ntfy->job_queue_buffer);
+  } else {
+    ESP_LOGE(kTag, "Failed to allocate ntfy job queue storage in PSRAM");
+    heap_caps_free(ntfy->job_queue_storage);
+    heap_caps_free(ntfy->job_queue_buffer);
+    ntfy->job_queue_storage = NULL;
+    ntfy->job_queue_buffer = NULL;
+  }
 }
 
 /**

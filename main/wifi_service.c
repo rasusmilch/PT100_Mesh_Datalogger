@@ -6,10 +6,14 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_wifi.h"
+#include "log_rate_limit.h"
 #include "net_stack.h"
 #include "wifi_manager.h"
 
 static const char* kTag = "wifi_svc";
+static const uint32_t kWifiHeapLogRateLimitMs = 5000;
+static const size_t kWifiInitBudgetInternalBytes = 130u * 1024u;
+static const size_t kMinInternalLargestForWifiInitBytes = 4096u;
 
 // Wi-Fi/COEX uses esp_timer and other internal-only allocations. When internal
 // heap is extremely low/fragmented, esp_wifi_start() may abort inside IDF
@@ -28,6 +32,42 @@ static int s_refcount = 0;
 static bool s_wifi_initialized = false;
 static bool s_wifi_started = false;
 static SemaphoreHandle_t s_mutex = NULL;
+static uint32_t s_wifi_heap_log_ms = 0;
+
+#ifndef CONFIG_APP_WIFI_HEAP_DEBUG
+#define CONFIG_APP_WIFI_HEAP_DEBUG 0
+#endif
+
+static esp_err_t EnsureMutex(void);
+static esp_err_t Lock(TickType_t timeout);
+static void Unlock(void);
+static void WifiServiceLogHeap(const char* phase);
+
+/**
+ * @brief Execute WifiServiceLogHeap.
+ * @param phase Parameter phase.
+ */
+static void
+WifiServiceLogHeap(const char* phase)
+{
+  if (!CONFIG_APP_WIFI_HEAP_DEBUG || phase == NULL) {
+    return;
+  }
+  if (!LogRateLimitAllow(&s_wifi_heap_log_ms, kWifiHeapLogRateLimitMs)) {
+    return;
+  }
+  const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const size_t min_internal =
+    heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+  const size_t largest_internal =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  ESP_LOGI(kTag,
+           "%s heap (internal): free=%u min=%u largest=%u",
+           phase,
+           (unsigned)free_internal,
+           (unsigned)min_internal,
+           (unsigned)largest_internal);
+}
 
 /**
  * @brief Execute EnsureMutex.
@@ -124,16 +164,20 @@ WifiServiceAcquire(wifi_service_mode_t mode)
   if (!s_wifi_initialized) {
     const size_t free_internal_pre_init =
       heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    const size_t min_internal_pre_init =
-      heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     const size_t largest_internal_pre_init =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
-    ESP_LOGI(kTag,
-             "pre-init heap (internal): free=%u min=%u largest=%u",
-             (unsigned)free_internal_pre_init,
-             (unsigned)min_internal_pre_init,
-             (unsigned)largest_internal_pre_init);
+    WifiServiceLogHeap("pre-init");
+
+    if (free_internal_pre_init < kWifiInitBudgetInternalBytes ||
+        largest_internal_pre_init < kMinInternalLargestForWifiInitBytes) {
+      ESP_LOGE(kTag,
+               "insufficient internal heap for Wi-Fi init (free=%u, largest=%u)",
+               (unsigned)free_internal_pre_init,
+               (unsigned)largest_internal_pre_init);
+      Unlock();
+      return ESP_ERR_NO_MEM;
+    }
 
     wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t init_result = esp_wifi_init(&wifi_config);
@@ -157,6 +201,7 @@ WifiServiceAcquire(wifi_service_mode_t mode)
                (unsigned)largest_internal_post_fail);
       return init_result;
     }
+    WifiServiceLogHeap("post-init");
     s_wifi_initialized = true;
   }
 
@@ -186,15 +231,9 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     }
 
     const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    const size_t min_internal =
-      heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     const size_t largest_internal =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    ESP_LOGI(kTag,
-             "internal heap before wifi_start: free=%u min=%u largest=%u",
-             (unsigned)free_internal,
-             (unsigned)min_internal,
-             (unsigned)largest_internal);
+    WifiServiceLogHeap("pre-start");
 
     if (free_internal < kMinInternalFreeForWifiStartBytes ||
         largest_internal < kMinInternalLargestForWifiStartBytes) {
@@ -232,6 +271,7 @@ WifiServiceAcquire(wifi_service_mode_t mode)
 
     s_wifi_started = true;
     s_active_mode = mode;
+    WifiServiceLogHeap("post-start");
     if (mode == WIFI_SERVICE_MODE_DIAGNOSTIC_STA) {
       WifiManagerNotifyWifiStarted();
     }
