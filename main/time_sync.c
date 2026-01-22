@@ -229,6 +229,27 @@ TimeSyncInit(time_sync_t* time_sync, i2c_bus_t* i2c_bus, uint8_t ds3231_addr)
 }
 
 /**
+ * @brief Execute TimeSyncDeinit.
+ * @param time_sync Parameter time_sync.
+ * @return Return the function result.
+ */
+esp_err_t
+TimeSyncDeinit(time_sync_t* time_sync)
+{
+  if (time_sync == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  esp_err_t result = ESP_OK;
+  if (time_sync->ds3231_device != NULL) {
+    result = i2c_master_bus_rm_device(time_sync->ds3231_device);
+  }
+
+  memset(time_sync, 0, sizeof(*time_sync));
+  return result;
+}
+
+/**
  * @brief Execute Ds3231ReadTime.
  * @param time_sync Parameter time_sync.
  * @param time_out Parameter time_out.

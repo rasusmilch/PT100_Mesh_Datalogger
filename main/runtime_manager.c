@@ -32,6 +32,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "heap_event_log.h"
 #include "heap_monitor.h"
 #include "i2c_bus.h"
 #include "log_rate_limit.h"
@@ -91,6 +92,7 @@ static const int32_t kStopDrainHardMaxDefaultMs = 15000;
 static const int64_t kNetTxStallDropMs = 30000;
 static const uint32_t kI2cRecoveryTriggerCount = 3;
 static const int64_t kFramRetryIntervalMs = 30000;
+static const uint32_t kFramInvalidHeapLogEvery = 10;
 static const uint32_t kRebootAlertLatchMagic = 0x5254424C;
 static const uint16_t kRebootAlertLatchVersion = 1;
 static const uint32_t kRebootAlertWifiWaitMs = 2500;
@@ -1126,6 +1128,7 @@ SdMaintenanceTick(runtime_state_t* state)
     ESP_LOGW(kTag,
              "SD recovered (mounted). fail_count=%u backoff cleared",
              (unsigned)state->sd_fail_count);
+    HeapEventLog("sd_recovered", "mounted", 0);
   }
 
   if (RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
@@ -2886,6 +2889,9 @@ RuntimeRecoverI2cBusCommon(runtime_state_t* state,
            "I2C recovery start (%s): %s",
            (reason != NULL) ? reason : "unknown",
            esp_err_to_name(last_error));
+  HeapEventLog("i2c_recovery_start",
+               (reason != NULL) ? reason : "unknown",
+               last_error);
   LogFramErrorEvent(
     state, ERROR_I2C_RECOVERY_START, false, (int32_t)last_error, 0);
   UpdateCachedBool(state, &state->cached_status.i2c_recovery_active, true);
@@ -2901,9 +2907,13 @@ RuntimeRecoverI2cBusCommon(runtime_state_t* state,
       kTag, "I2C line recovery failed: %s", esp_err_to_name(recover_result));
   }
 
+  (void)TimeSyncDeinit(&state->time_sync);
+  (void)FramI2cDeinit(&state->fram_i2c);
+
   esp_err_t result = I2cBusDeinit(&state->i2c_bus);
   if (result != ESP_OK) {
     ESP_LOGW(kTag, "I2C bus deinit failed: %s", esp_err_to_name(result));
+    goto recovery_failed;
   }
 
   result = I2cBusInit(&state->i2c_bus, port, sda_gpio, scl_gpio, frequency_hz);
@@ -2946,9 +2956,15 @@ RuntimeRecoverI2cBusCommon(runtime_state_t* state,
     RuntimeI2cUnlock();
   }
   ESP_LOGI(kTag, "I2C recovery succeeded");
+  HeapEventLog("i2c_recovery_ok",
+               (reason != NULL) ? reason : "unknown",
+               0);
   return true;
 
 recovery_failed:
+  HeapEventLog("i2c_recovery_fail",
+               (reason != NULL) ? reason : "unknown",
+               result);
   LogFramErrorEvent(
     state, ERROR_I2C_RECOVERY_FAILED, false, (int32_t)result, 0);
   ESP_LOGE(kTag, "I2C recovery failed: %s", esp_err_to_name(result));
@@ -3003,6 +3019,12 @@ TrackFramInvalidResponse(runtime_state_t* state, const char* context)
            "FRAM invalid response (%s); streak=%" PRIu32,
            (context != NULL) ? context : "unknown",
            state->fram_crc_fail_streak);
+  if (state->fram_crc_fail_streak == 1 ||
+      (state->fram_crc_fail_streak % kFramInvalidHeapLogEvery) == 0u) {
+    HeapEventLog("fram_invalid_response",
+                 (context != NULL) ? context : "unknown",
+                 ESP_ERR_INVALID_RESPONSE);
+  }
   if (state->fram_crc_fail_streak >= kI2cRecoveryTriggerCount) {
     state->fram_crc_fail_streak = 0;
     if (!state->cached_status.fram_io_error_active) {
@@ -3432,6 +3454,7 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
   RuntimeFramLogUnlock(state);
   if (consume_result == ESP_ERR_INVALID_RESPONSE) {
     ESP_LOGE(kTag, "FRAM corruption while aligning with SD contents");
+    HeapEventLog("fram_sd_align_fail", "consume_up_to_id", consume_result);
     return consume_result;
   }
   if (consume_result != ESP_OK) {
@@ -3608,10 +3631,15 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     }
     esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
-      ESP_LOGE(kTag, "Cannot flush: corrupted FRAM record at head");
-      HandleTimeJumpBackCorruptSkip(state, &first_record);
-      (void)FramLogSkipCorruptedRecord(&state->fram_log);
+      ESP_LOGW(
+        kTag,
+        "FRAM invalid response persists after retries; discarding oldest record");
+      esp_err_t skip_result = FramLogSkipCorruptedRecord(&state->fram_log);
       RuntimeFramLogUnlock(state);
+      TrackFramInvalidResponse(state, "sd_sync");
+      if (skip_result != ESP_OK) {
+        return skip_result;
+      }
       return ESP_ERR_INVALID_RESPONSE;
     }
     if (peek_result != ESP_OK) {
@@ -3928,6 +3956,9 @@ MarkSdFailure(runtime_state_t* state,
   const char* errno_str = (errno_value != 0) ? strerror(errno_value) : "n/a";
   const char* action_label = did_unmount ? "unmount+backoff" : "backoff";
   const char* context_label = (context != NULL) ? context : "SD";
+  if (did_unmount) {
+    HeapEventLog("sd_unmount_backoff", op_label, error);
+  }
   ESP_LOGW(kTag,
            "%s: op=%s err=%s (%d) errno=%d (%s) action=%s backoff_until=%u",
            context_label,
@@ -4101,8 +4132,10 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     }
     esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
-      ESP_LOGW(kTag, "Skipping corrupted FRAM record during SD flush");
-      HandleTimeJumpBackCorruptSkip(state, &first_record);
+      ESP_LOGW(
+        kTag,
+        "FRAM invalid response persists after retries; discarding oldest "
+        "record during SD flush");
       esp_err_t skip_result = FramLogSkipCorruptedRecord(&state->fram_log);
       RuntimeFramLogUnlock(state);
       if (skip_result != ESP_OK) {
@@ -7037,7 +7070,7 @@ RuntimeManagerInit(void)
 #if CONFIG_APP_MAX7219_ENABLE
   esp_err_t display_result = InitializeMax7219Display(&g_state);
   if (display_result == ESP_OK && g_state.display_initialized) {
-    const uint32_t kDisplayTaskStackBytes = 4096;
+    const uint32_t kDisplayTaskStackBytes = 3584;
     BaseType_t display_created = xTaskCreate(&DisplayTask,
                                              "display",
                                              kDisplayTaskStackBytes,
@@ -7318,7 +7351,7 @@ RuntimeManagerInit(void)
     }
   }
 
-  const uint32_t kControlTaskStackBytes = 12288;
+  const uint32_t kControlTaskStackBytes = 4096;
   BaseType_t control_created = xTaskCreate(&ControlTask,
                                            "control",
                                            kControlTaskStackBytes,
@@ -7659,8 +7692,8 @@ RuntimeStart(void)
   BaseType_t alert_http_created = pdPASS;
   BaseType_t wifi_direct_created = pdPASS;
 
-  const uint32_t kSensorStackBytes = 6144;
-  const uint32_t kExportStackBytes = 6144;
+  const uint32_t kSensorStackBytes = 3584;
+  const uint32_t kExportStackBytes = 3584;
 
   if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
     ESP_LOGI(kTag, "Wi-Fi direct handled by net supervisor");
