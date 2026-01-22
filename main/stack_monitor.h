@@ -76,6 +76,18 @@ extern "C" {
   void StackMonitorMaybeSample(stack_monitor_t* monitor);
 
   /**
+   * @brief Lookup the minimum free stack bytes for a named task.
+   *
+   * @param monitor Pointer to the monitor registry; ignored if NULL.
+   * @param name Task name to search for; ignored if NULL.
+   * @param out_bytes Output pointer for the minimum free bytes.
+   * @return true if a matching entry was found and @p out_bytes was updated.
+   */
+  bool StackMonitorGetMinFreeBytes(const stack_monitor_t* monitor,
+                                   const char* name,
+                                   uint32_t* out_bytes);
+
+  /**
    * @brief Print a tab-separated report for registered tasks.
    *
    * The report includes configured allocation, last and minimum observed free

@@ -148,10 +148,10 @@ extern "C"
   enum
   {
     kLogQueueDepth = 64,
-    kStorageTaskStackBytes = 8192,    // bytes
-    kSdFlushTaskStackBytes = 12288,   // bytes
-    kNetTxTaskStackBytes = 10240,     // bytes
-    kAlertHttpTaskStackBytes = 16384, // bytes
+    kStorageTaskStackBytes = 6144,    // bytes
+    kSdFlushTaskStackBytes = 4096,    // bytes
+    kNetTxTaskStackBytes = 6144,      // bytes
+    kAlertHttpTaskStackBytes = 11264, // bytes
   };
 
   typedef struct

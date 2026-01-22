@@ -243,6 +243,19 @@ LogFramErrorEvent(runtime_state_t* state,
                   int32_t detail0,
                   int32_t detail1);
 
+static uint32_t
+GetStackMonitorMinBytes(const char* name);
+
+static void
+LogDrainPreflight(const runtime_state_t* state, const char* reason);
+
+static void
+LogDrainPostflight(const runtime_state_t* state,
+                   const char* reason,
+                   int32_t flushed_records,
+                   int32_t remaining_records,
+                   uint32_t duration_ms);
+
 static void
 RuntimeNotifyTask(TaskHandle_t handle)
 {
@@ -280,6 +293,84 @@ RegisterStackMonitorTask(const char* name,
         &g_stack_monitor, name, handle_ptr, stack_alloc_bytes)) {
     ESP_LOGW(kTag, "Stack monitor registry full; skipping %s", name);
   }
+}
+
+static uint32_t
+GetStackMonitorMinBytes(const char* name)
+{
+  uint32_t min_bytes = 0;
+  if (!StackMonitorGetMinFreeBytes(&g_stack_monitor, name, &min_bytes)) {
+    return 0;
+  }
+  return min_bytes;
+}
+
+static void
+LogDrainPreflight(const runtime_state_t* state, const char* reason)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  StackMonitorMaybeSample(&g_stack_monitor);
+  const runtime_cached_status_t* cached = &state->cached_status;
+  const uint32_t fram_count = cached->fram_count;
+  const uint32_t fram_capacity = cached->fram_capacity;
+  const uint32_t watermark = cached->fram_flush_watermark_records;
+  const uint32_t fram_pct =
+    (fram_capacity > 0u) ? (fram_count * 100u) / fram_capacity : 0u;
+
+  ESP_LOGI(kTag,
+           "Drain preflight(%s): fram=%" PRIu32 "/%" PRIu32 " wm=%" PRIu32
+           " (%" PRIu32 "%%) sd=mounted:%u degraded:%u backoff:%" PRIu32
+           "ms heap=int:%" PRIu32 "/%" PRIu32 " psram:%" PRIu32 "/%" PRIu32
+           " stack_min(ctrl:%" PRIu32 " stor:%" PRIu32 " flush:%" PRIu32
+           " net:%" PRIu32 " http:%" PRIu32 ")",
+           (reason != NULL) ? reason : "unknown",
+           fram_count,
+           fram_capacity,
+           watermark,
+           fram_pct,
+           cached->sd_mounted ? 1u : 0u,
+           cached->sd_degraded ? 1u : 0u,
+           cached->sd_backoff_remaining_ms,
+           cached->heap_internal_free_bytes,
+           cached->heap_internal_largest_free_block_bytes,
+           cached->heap_psram_free_bytes,
+           cached->heap_psram_largest_free_block_bytes,
+           GetStackMonitorMinBytes("control"),
+           GetStackMonitorMinBytes("storage"),
+           GetStackMonitorMinBytes("sd_flush"),
+           GetStackMonitorMinBytes("net_tx"),
+           GetStackMonitorMinBytes("alert_http"));
+}
+
+static void
+LogDrainPostflight(const runtime_state_t* state,
+                   const char* reason,
+                   int32_t flushed_records,
+                   int32_t remaining_records,
+                   uint32_t duration_ms)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  StackMonitorMaybeSample(&g_stack_monitor);
+  ESP_LOGI(kTag,
+           "Drain post(%s): flushed=%" PRIi32 " remaining=%" PRIi32
+           " duration=%" PRIu32
+           "ms stack_min(ctrl:%" PRIu32 " stor:%" PRIu32 " flush:%" PRIu32
+           " net:%" PRIu32 " http:%" PRIu32 ")",
+           (reason != NULL) ? reason : "unknown",
+           flushed_records,
+           remaining_records,
+           duration_ms,
+           GetStackMonitorMinBytes("control"),
+           GetStackMonitorMinBytes("storage"),
+           GetStackMonitorMinBytes("sd_flush"),
+           GetStackMonitorMinBytes("net_tx"),
+           GetStackMonitorMinBytes("alert_http"));
 }
 
 static void
@@ -5463,6 +5554,10 @@ SdFlushTask(void* context)
   state->last_flush_ticks = xTaskGetTickCount();
   state->sd_next_flush_allowed_ticks = state->last_flush_ticks;
   TickType_t last_sd_detect_poll_ticks = 0;
+  bool last_watermark_hit = false;
+  bool watermark_flush_active = false;
+  uint32_t watermark_start_records = 0;
+  TickType_t watermark_start_ticks = 0;
 
   while (!state->stop_requested) {
     const TickType_t now_ticks = xTaskGetTickCount();
@@ -5537,8 +5632,15 @@ SdFlushTask(void* context)
       state->last_flush_ticks = now_ticks;
     }
     if (watermark_hit && state->fram_available) {
+      if (!last_watermark_hit) {
+        watermark_flush_active = true;
+        watermark_start_records = buffered;
+        watermark_start_ticks = now_ticks;
+        LogDrainPreflight(state, "watermark");
+      }
       state->sd_flush_pending = true;
     }
+    last_watermark_hit = watermark_hit;
 
     if (!state->sd_logger.is_mounted) {
       RuntimeMarkersSetSdFlush(state, SD_020_MAINTENANCE);
@@ -5633,6 +5735,28 @@ SdFlushTask(void* context)
         state->sd_flush_pending = more_pending;
         if (!more_pending) {
           state->sd_start_drain_pending = false;
+          if (watermark_flush_active) {
+            uint32_t remaining = 0;
+            (void)ReadFramBufferedRecords(state, &remaining);
+            int32_t flushed_estimate =
+              (int32_t)watermark_start_records - (int32_t)remaining;
+            if (flushed_estimate < 0) {
+              flushed_estimate = 0;
+            }
+            const uint32_t duration_ms =
+              (watermark_start_ticks > 0)
+                ? (uint32_t)pdTICKS_TO_MS(
+                    xTaskGetTickCount() - watermark_start_ticks)
+                : 0u;
+            LogDrainPostflight(state,
+                               "watermark",
+                               flushed_estimate,
+                               (int32_t)remaining,
+                               duration_ms);
+            watermark_flush_active = false;
+            watermark_start_records = 0;
+            watermark_start_ticks = 0;
+          }
         }
       }
       state->sd_next_flush_allowed_ticks =
@@ -6024,6 +6148,7 @@ DrainFramToSd(runtime_state_t* state,
     (yield_every_records > 0) ? yield_every_records : drain_records_per_pass;
 
   int32_t records_since_yield = 0;
+  TickType_t last_progress_log_ticks = 0;
 
   RuntimeDiagHeapCheck(state, "DrainFramToSd loop (before)", false);
   while (true) {
@@ -6068,10 +6193,17 @@ DrainFramToSd(runtime_state_t* state,
         remaining = FramLogGetBufferedRecords(&state->fram_log);
         RuntimeFramLogUnlock(state);
       }
-      ESP_LOGI(kTag,
-               "Drain progress: flushed=%d remaining=%u",
-               flushed_records,
-               (unsigned)remaining);
+      const TickType_t now_ticks = xTaskGetTickCount();
+      const bool should_log =
+        (last_progress_log_ticks == 0) ||
+        (pdTICKS_TO_MS(now_ticks - last_progress_log_ticks) >= 1000u);
+      if (should_log) {
+        ESP_LOGI(kTag,
+                 "Drain progress: flushed=%d remaining=%u",
+                 flushed_records,
+                 (unsigned)remaining);
+        last_progress_log_ticks = now_ticks;
+      }
     }
 #endif
     if (!more_pending) {
@@ -7070,7 +7202,7 @@ RuntimeManagerInit(void)
 #if CONFIG_APP_MAX7219_ENABLE
   esp_err_t display_result = InitializeMax7219Display(&g_state);
   if (display_result == ESP_OK && g_state.display_initialized) {
-    const uint32_t kDisplayTaskStackBytes = 3584;
+    const uint32_t kDisplayTaskStackBytes = 4608;
     BaseType_t display_created = xTaskCreate(&DisplayTask,
                                              "display",
                                              kDisplayTaskStackBytes,
@@ -7351,7 +7483,7 @@ RuntimeManagerInit(void)
     }
   }
 
-  const uint32_t kControlTaskStackBytes = 4096;
+  const uint32_t kControlTaskStackBytes = 6144;
   BaseType_t control_created = xTaskCreate(&ControlTask,
                                            "control",
                                            kControlTaskStackBytes,
