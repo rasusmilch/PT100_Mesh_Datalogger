@@ -71,6 +71,15 @@ static void
 WifiServiceHeapTraceStart(const char* reason);
 static void
 WifiServiceHeapTraceStop(bool dump, const char* reason);
+static bool
+WifiHasSufficientHeapForWifiInit_(bool log_as_warning,
+                                  size_t free_internal,
+                                  size_t largest_internal,
+                                  size_t free_dma_internal,
+                                  size_t largest_dma_internal,
+                                  bool* dma_largest_borderline);
+static esp_err_t
+WifiServiceEnsureDriverInitializedLocked_(bool log_failure_as_warning);
 
 /**
  * @brief Execute WifiServiceLogHeap.
@@ -173,6 +182,147 @@ WifiServiceHeapTraceStop(bool dump, const char* reason)
 #endif
 
 /**
+ * @brief Determine whether heap is sufficient for Wi-Fi init.
+ * @param log_as_warning Parameter log_as_warning.
+ * @param free_internal Parameter free_internal.
+ * @param largest_internal Parameter largest_internal.
+ * @param free_dma_internal Parameter free_dma_internal.
+ * @param largest_dma_internal Parameter largest_dma_internal.
+ * @param dma_largest_borderline Parameter dma_largest_borderline.
+ * @return Return the function result.
+ */
+static bool
+WifiHasSufficientHeapForWifiInit_(bool log_as_warning,
+                                  size_t free_internal,
+                                  size_t largest_internal,
+                                  size_t free_dma_internal,
+                                  size_t largest_dma_internal,
+                                  bool* dma_largest_borderline)
+{
+  const size_t min_free_internal =
+    (size_t)CONFIG_APP_WIFI_INIT_MIN_FREE_INTERNAL_BYTES;
+  const size_t min_dma_largest =
+    (size_t)CONFIG_APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES;
+
+  const bool is_borderline =
+    (largest_dma_internal < min_dma_largest) &&
+    (largest_dma_internal + kWifiInitLargestDmaSlackBytes >= min_dma_largest);
+
+  if (dma_largest_borderline != NULL) {
+    *dma_largest_borderline = is_borderline;
+  }
+
+  if (free_internal < min_free_internal ||
+      (!is_borderline && largest_dma_internal < min_dma_largest)) {
+    if (log_as_warning) {
+      ESP_LOGW(kTag,
+               "insufficient heap for Wi-Fi init (free=%u, largest=%u, "
+               "dma_free=%u, dma_largest=%u) thresholds (min_free=%u, "
+               "min_dma_largest=%u)",
+               (unsigned)free_internal,
+               (unsigned)largest_internal,
+               (unsigned)free_dma_internal,
+               (unsigned)largest_dma_internal,
+               (unsigned)min_free_internal,
+               (unsigned)min_dma_largest);
+    } else {
+      ESP_LOGE(kTag,
+               "insufficient heap for Wi-Fi init (free=%u, largest=%u, "
+               "dma_free=%u, dma_largest=%u) thresholds (min_free=%u, "
+               "min_dma_largest=%u)",
+               (unsigned)free_internal,
+               (unsigned)largest_internal,
+               (unsigned)free_dma_internal,
+               (unsigned)largest_dma_internal,
+               (unsigned)min_free_internal,
+               (unsigned)min_dma_largest);
+    }
+    return false;
+  }
+
+  if (is_borderline) {
+    ESP_LOGW(kTag,
+             "Wi-Fi init DMA largest block below threshold but within slack "
+             "(dma_largest=%u min=%u slack=%u); attempting init anyway",
+             (unsigned)largest_dma_internal,
+             (unsigned)min_dma_largest,
+             (unsigned)kWifiInitLargestDmaSlackBytes);
+  }
+
+  return true;
+}
+
+/**
+ * @brief Ensure the Wi-Fi driver is initialized (mutex held).
+ * @param log_failure_as_warning Parameter log_failure_as_warning.
+ * @return Return the function result.
+ */
+static esp_err_t
+WifiServiceEnsureDriverInitializedLocked_(bool log_failure_as_warning)
+{
+  if (s_wifi_initialized) {
+    return ESP_OK;
+  }
+
+  const size_t free_internal_pre_init =
+    heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const size_t largest_internal_pre_init =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  const size_t free_dma_internal_pre_init =
+    heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  const size_t largest_dma_internal_pre_init =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+
+  WifiServiceLogHeap("pre-init");
+
+  if (!WifiHasSufficientHeapForWifiInit_(log_failure_as_warning,
+                                         free_internal_pre_init,
+                                         largest_internal_pre_init,
+                                         free_dma_internal_pre_init,
+                                         largest_dma_internal_pre_init,
+                                         NULL)) {
+    WifiServiceHeapTraceStop(true /* log */, "wifi init heap precheck failed");
+    return ESP_ERR_NO_MEM;
+  }
+
+  wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
+  HeapLogPhase("wifi_init_before");
+  esp_err_t init_result = esp_wifi_init(&wifi_config);
+  HeapLogPhase("wifi_init_after");
+  if (init_result == ESP_ERR_WIFI_INIT_STATE ||
+      init_result == ESP_ERR_INVALID_STATE) {
+    init_result = ESP_OK;
+  }
+  if (init_result != ESP_OK) {
+    ESP_LOGE(kTag, "esp_wifi_init failed: %s", esp_err_to_name(init_result));
+    WifiServiceHeapTraceStop(true, "wifi_init_failed");
+    const size_t free_internal_post_fail =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t min_internal_post_fail =
+      heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    const size_t largest_internal_post_fail =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const size_t free_dma_internal_post_fail =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    const size_t largest_dma_internal_post_fail =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    ESP_LOGE(kTag,
+             "wifi init heap after failure (internal): free=%u min=%u "
+             "largest=%u dma_free=%u dma_largest=%u",
+             (unsigned)free_internal_post_fail,
+             (unsigned)min_internal_post_fail,
+             (unsigned)largest_internal_post_fail,
+             (unsigned)free_dma_internal_post_fail,
+             (unsigned)largest_dma_internal_post_fail);
+    return init_result;
+  }
+
+  WifiServiceLogHeap("post-init");
+  s_wifi_initialized = true;
+  return ESP_OK;
+}
+
+/**
  * @brief Execute EnsureMutex.
  * @return Return the function result.
  */
@@ -271,89 +421,12 @@ WifiServiceAcquire(wifi_service_mode_t mode)
   }
 
   if (!s_wifi_initialized) {
-    const size_t free_internal_pre_init =
-      heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    const size_t largest_internal_pre_init =
-      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    const size_t free_dma_internal_pre_init =
-      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    const size_t largest_dma_internal_pre_init =
-      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-
-    WifiServiceLogHeap("pre-init");
-
-    const size_t min_free_internal =
-      (size_t)CONFIG_APP_WIFI_INIT_MIN_FREE_INTERNAL_BYTES;
-    const size_t min_dma_largest =
-      (size_t)CONFIG_APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES;
-
-    const bool dma_largest_borderline =
-      (largest_dma_internal_pre_init < min_dma_largest) &&
-      (largest_dma_internal_pre_init + kWifiInitLargestDmaSlackBytes >=
-       min_dma_largest);
-
-    if (free_internal_pre_init < min_free_internal ||
-        (!dma_largest_borderline &&
-         largest_dma_internal_pre_init < min_dma_largest)) {
-      ESP_LOGE(kTag,
-               "insufficient heap for Wi-Fi init (free=%u, largest=%u, "
-               "dma_free=%u, dma_largest=%u) thresholds (min_free=%u, "
-               "min_dma_largest=%u)",
-               (unsigned)free_internal_pre_init,
-               (unsigned)largest_internal_pre_init,
-               (unsigned)free_dma_internal_pre_init,
-               (unsigned)largest_dma_internal_pre_init,
-               (unsigned)min_free_internal,
-               (unsigned)min_dma_largest);
-      WifiServiceHeapTraceStop(true /* log */,
-                               "wifi init heap precheck failed");
+    esp_err_t ensure_result =
+      WifiServiceEnsureDriverInitializedLocked_(false);
+    if (ensure_result != ESP_OK) {
       Unlock();
-      return ESP_ERR_NO_MEM;
+      return ensure_result;
     }
-
-    if (dma_largest_borderline) {
-      ESP_LOGW(kTag,
-               "Wi-Fi init DMA largest block below threshold but within slack "
-               "(dma_largest=%u min=%u slack=%u); attempting init anyway",
-               (unsigned)largest_dma_internal_pre_init,
-               (unsigned)min_dma_largest,
-               (unsigned)kWifiInitLargestDmaSlackBytes);
-    }
-
-    wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
-    HeapLogPhase("wifi_init_before");
-    esp_err_t init_result = esp_wifi_init(&wifi_config);
-    HeapLogPhase("wifi_init_after");
-    if (init_result == ESP_ERR_WIFI_INIT_STATE ||
-        init_result == ESP_ERR_INVALID_STATE) {
-      init_result = ESP_OK;
-    }
-    if (init_result != ESP_OK) {
-      Unlock();
-      ESP_LOGE(kTag, "esp_wifi_init failed: %s", esp_err_to_name(init_result));
-      WifiServiceHeapTraceStop(true, "wifi_init_failed");
-      const size_t free_internal_post_fail =
-        heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-      const size_t min_internal_post_fail =
-        heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-      const size_t largest_internal_post_fail =
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-      const size_t free_dma_internal_post_fail =
-        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-      const size_t largest_dma_internal_post_fail =
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-      ESP_LOGE(kTag,
-               "wifi init heap after failure (internal): free=%u min=%u "
-               "largest=%u dma_free=%u dma_largest=%u",
-               (unsigned)free_internal_post_fail,
-               (unsigned)min_internal_post_fail,
-               (unsigned)largest_internal_post_fail,
-               (unsigned)free_dma_internal_post_fail,
-               (unsigned)largest_dma_internal_post_fail);
-      return init_result;
-    }
-    WifiServiceLogHeap("post-init");
-    s_wifi_initialized = true;
   }
 
   if (s_refcount == 0 && !s_wifi_started) {
@@ -452,6 +525,39 @@ WifiServiceAcquire(wifi_service_mode_t mode)
   ++s_refcount;
   Unlock();
   return ESP_OK;
+}
+
+/**
+ * @brief Execute WifiServiceReserveEarly.
+ * @return Return the function result.
+ */
+esp_err_t
+WifiServiceReserveEarly(void)
+{
+  esp_err_t init_result = WifiServiceInitOnce();
+  if (init_result != ESP_OK) {
+    return init_result;
+  }
+
+  esp_err_t lock_result = Lock(pdMS_TO_TICKS(5000));
+  if (lock_result != ESP_OK) {
+    return lock_result;
+  }
+
+  esp_err_t result = ESP_OK;
+  if (!s_wifi_initialized) {
+    result = WifiServiceEnsureDriverInitializedLocked_(true);
+    if (result == ESP_OK) {
+      result = WifiManagerInit();
+      if (result != ESP_OK) {
+        ESP_LOGE(
+          kTag, "WifiManagerInit failed: %s", esp_err_to_name(result));
+      }
+    }
+  }
+
+  Unlock();
+  return result;
 }
 
 /**

@@ -34,6 +34,7 @@
 #include "freertos/task.h"
 #include "heap_event_log.h"
 #include "heap_monitor.h"
+#include "heap_phase_log.h"
 #include "i2c_bus.h"
 #include "log_rate_limit.h"
 #include "max31865_reader.h"
@@ -7144,6 +7145,21 @@ RuntimeManagerInit(void)
   g_state.last_rtd_ema_enabled = g_state.settings.rtd_ema_enabled;
   AppSettingsApplyTimeZone(&g_state.settings);
   UnitsGpioInit(&g_state.settings);
+
+#if CONFIG_APP_WIFI_EARLY_RESERVE
+  if (g_state.settings.net_mode != APP_NET_MODE_NONE) {
+    HeapLogPhase("wifi_reserve_before");
+    esp_err_t reserve_result = WifiServiceReserveEarly();
+    if (reserve_result == ESP_OK) {
+      ESP_LOGI(kTag, "wifi early reserve ok");
+    } else {
+      ESP_LOGW(kTag,
+               "wifi early reserve failed: %s",
+               esp_err_to_name(reserve_result));
+    }
+    HeapLogPhase("wifi_reserve_after");
+  }
+#endif
 
   esp_err_t net_config_result = AppNetConfigInit();
   if (net_config_result != ESP_OK) {
