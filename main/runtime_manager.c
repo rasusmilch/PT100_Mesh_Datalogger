@@ -899,8 +899,14 @@ RuntimeFramLogLock(runtime_state_t* state, TickType_t timeout_ticks)
     return false;
   }
   if (xSemaphoreTake(state->fram_log_mutex, timeout_ticks) != pdTRUE) {
-    const TaskHandle_t holder = xSemaphoreGetMutexHolder(state->fram_log_mutex);
-    const char* holder_name = (holder != NULL) ? pcTaskGetName(holder) : "none";
+    const char* holder_name = "unknown";
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+      const TaskHandle_t holder =
+        xSemaphoreGetMutexHolder(state->fram_log_mutex);
+      holder_name = (holder != NULL) ? pcTaskGetName(holder) : "none";
+    } else {
+      holder_name = "scheduler-not-started";
+    }
     ESP_LOGW(kTag, "FRAM log mutex timeout (holder=%s)", holder_name);
     return false;
   }
