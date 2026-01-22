@@ -46,6 +46,30 @@ config APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES
     Minimum largest free DMA-capable internal block required before attempting
     Wi-Fi init.
 
+config APP_WIFI_HEAP_TRACE_ENABLE
+  bool "Enable heap trace around Wi-Fi start"
+  default n
+  depends on HEAP_TRACING
+  help
+    When enabled, collect and dump heap trace records around Wi-Fi init/start
+    when failures occur or the internal largest free block drops below a
+    threshold.
+
+config APP_WIFI_HEAP_TRACE_RECORDS
+  int "Wi-Fi heap trace record count"
+  default 200
+  depends on APP_WIFI_HEAP_TRACE_ENABLE
+  help
+    Number of heap trace records kept during Wi-Fi init/start.
+
+config APP_WIFI_HEAP_TRACE_LARGEST_INTERNAL_THRESHOLD_BYTES
+  int "Wi-Fi heap trace internal largest free block threshold (bytes)"
+  default 4096
+  depends on APP_WIFI_HEAP_TRACE_ENABLE
+  help
+    Dump heap trace results after Wi-Fi init/start if the largest internal
+    free block drops below this threshold.
+
 config APP_MEM_GUARD_ENABLE
   bool "Enable mem guard allocation tracking"
   default y

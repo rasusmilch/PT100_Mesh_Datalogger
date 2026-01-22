@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_wifi.h"
+#include "esp_heap_trace.h"
 #include "heap_phase_log.h"
 #include "log_rate_limit.h"
 #include "net_stack.h"
@@ -37,10 +38,16 @@ static uint32_t s_wifi_heap_log_ms = 0;
 #define CONFIG_APP_WIFI_HEAP_DEBUG 0
 #endif
 
+#ifndef CONFIG_APP_WIFI_HEAP_TRACE_ENABLE
+#define CONFIG_APP_WIFI_HEAP_TRACE_ENABLE 0
+#endif
+
 static esp_err_t EnsureMutex(void);
 static esp_err_t Lock(TickType_t timeout);
 static void Unlock(void);
 static void WifiServiceLogHeap(const char* phase);
+static void WifiServiceHeapTraceStart(const char* reason);
+static void WifiServiceHeapTraceStop(bool dump, const char* reason);
 
 /**
  * @brief Execute WifiServiceLogHeap.
@@ -73,6 +80,75 @@ WifiServiceLogHeap(const char* phase)
            (unsigned)free_dma_internal,
            (unsigned)largest_dma_internal);
 }
+
+#if CONFIG_APP_WIFI_HEAP_TRACE_ENABLE && CONFIG_HEAP_TRACING
+static bool s_wifi_heap_trace_initialized = false;
+static bool s_wifi_heap_trace_active = false;
+static heap_trace_record_t
+  s_wifi_heap_trace_records[CONFIG_APP_WIFI_HEAP_TRACE_RECORDS];
+
+static void
+WifiServiceHeapTraceStart(const char* reason)
+{
+  if (!s_wifi_heap_trace_initialized) {
+    esp_err_t init_result = heap_trace_init_standalone(
+      s_wifi_heap_trace_records, CONFIG_APP_WIFI_HEAP_TRACE_RECORDS);
+    if (init_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "heap trace init failed: %s",
+               esp_err_to_name(init_result));
+      return;
+    }
+    s_wifi_heap_trace_initialized = true;
+  }
+  if (s_wifi_heap_trace_active) {
+    heap_trace_stop();
+    s_wifi_heap_trace_active = false;
+  }
+  esp_err_t start_result = heap_trace_start(HEAP_TRACE_LEAKS);
+  if (start_result != ESP_OK) {
+    ESP_LOGW(kTag,
+             "heap trace start failed: %s",
+             esp_err_to_name(start_result));
+    return;
+  }
+  s_wifi_heap_trace_active = true;
+  if (reason != NULL) {
+    ESP_LOGI(kTag, "heap trace start: %s", reason);
+  }
+}
+
+static void
+WifiServiceHeapTraceStop(bool dump, const char* reason)
+{
+  if (!s_wifi_heap_trace_active) {
+    return;
+  }
+  heap_trace_stop();
+  s_wifi_heap_trace_active = false;
+  if (dump) {
+    if (reason != NULL) {
+      ESP_LOGW(kTag, "heap trace dump: %s", reason);
+    } else {
+      ESP_LOGW(kTag, "heap trace dump");
+    }
+    heap_trace_dump();
+  }
+}
+#else
+static void
+WifiServiceHeapTraceStart(const char* reason)
+{
+  (void)reason;
+}
+
+static void
+WifiServiceHeapTraceStop(bool dump, const char* reason)
+{
+  (void)dump;
+  (void)reason;
+}
+#endif
 
 /**
  * @brief Execute EnsureMutex.
@@ -146,6 +222,8 @@ WifiServiceInitOnce(void)
 esp_err_t
 WifiServiceAcquire(wifi_service_mode_t mode)
 {
+  const bool should_trace_window = (s_refcount == 0 && !s_wifi_started);
+
   if (mode == WIFI_SERVICE_MODE_NONE) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -164,6 +242,10 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     Unlock();
     ESP_LOGW(kTag, "service already active (mode=%d)", (int)s_active_mode);
     return ESP_ERR_INVALID_STATE;
+  }
+
+  if (should_trace_window) {
+    WifiServiceHeapTraceStart("wifi_service_start");
   }
 
   if (!s_wifi_initialized) {
@@ -191,6 +273,7 @@ WifiServiceAcquire(wifi_service_mode_t mode)
                (unsigned)largest_dma_internal_pre_init,
                (unsigned)CONFIG_APP_WIFI_INIT_MIN_FREE_INTERNAL_BYTES,
                (unsigned)CONFIG_APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES);
+      WifiServiceHeapTraceStop(true, "wifi_init_precheck_failed");
       Unlock();
       return ESP_ERR_NO_MEM;
     }
@@ -206,6 +289,7 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     if (init_result != ESP_OK) {
       Unlock();
       ESP_LOGE(kTag, "esp_wifi_init failed: %s", esp_err_to_name(init_result));
+      WifiServiceHeapTraceStop(true, "wifi_init_failed");
       const size_t free_internal_post_fail =
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
       const size_t min_internal_post_fail =
@@ -252,6 +336,7 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     }
 
     if (mode_result != ESP_OK) {
+      WifiServiceHeapTraceStop(false, "wifi_start_skipped");
       Unlock();
       return mode_result;
     }
@@ -280,6 +365,7 @@ WifiServiceAcquire(wifi_service_mode_t mode)
       }
       s_wifi_started = false;
       s_active_mode = WIFI_SERVICE_MODE_NONE;
+      WifiServiceHeapTraceStop(true, "wifi_start_precheck_failed");
       Unlock();
       return ESP_ERR_NO_MEM;
     }
@@ -294,12 +380,21 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     if (start_result != ESP_OK) {
       Unlock();
       ESP_LOGE(kTag, "esp_wifi_start failed: %s", esp_err_to_name(start_result));
+      WifiServiceHeapTraceStop(true, "wifi_start_failed");
       return start_result;
     }
 
     s_wifi_started = true;
     s_active_mode = mode;
+    const size_t largest_internal_after_start =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     WifiServiceLogHeap("post-start");
+    if (largest_internal_after_start <
+        (size_t)CONFIG_APP_WIFI_HEAP_TRACE_LARGEST_INTERNAL_THRESHOLD_BYTES) {
+      WifiServiceHeapTraceStop(true, "wifi_start_largest_internal_drop");
+    } else {
+      WifiServiceHeapTraceStop(false, "wifi_start_complete");
+    }
     if (mode == WIFI_SERVICE_MODE_DIAGNOSTIC_STA) {
       WifiManagerNotifyWifiStarted();
     }
