@@ -46,6 +46,13 @@ config APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES
     Minimum largest free DMA-capable internal block required before attempting
     Wi-Fi init.
 
+config APP_WIFI_EARLY_RESERVE
+  bool "Initialize Wi-Fi driver early"
+  default y
+  help
+    Initialize Wi-Fi driver early (esp_wifi_init) to avoid DMA heap
+    fragmentation; start/connect later.
+
 config APP_WIFI_HEAP_TRACE_ENABLE
   bool "Enable heap trace around Wi-Fi start"
   default n

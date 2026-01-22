@@ -32,6 +32,13 @@ esp_err_t WifiServiceInitOnce(void);
  */
 esp_err_t WifiServiceAcquire(wifi_service_mode_t mode);
 
+// Reserves the Wi-Fi driver early without starting radio/connect.
+/**
+ * @brief Execute WifiServiceReserveEarly.
+ * @return Return the function result.
+ */
+esp_err_t WifiServiceReserveEarly(void);
+
 // Releases the Wi-Fi service. Stops esp_wifi when the last user releases.
 /**
  * @brief Execute WifiServiceRelease.
