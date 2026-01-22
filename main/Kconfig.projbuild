@@ -33,6 +33,19 @@ config APP_WIFI_ALLOW_PASSWORD_PRINT
   help
     When disabled, Wi-Fi passwords should only be logged in masked form.
 
+config APP_WIFI_INIT_MIN_FREE_INTERNAL_BYTES
+  int "Wi-Fi init minimum internal free heap (bytes)"
+  default 81920
+  help
+    Minimum internal free heap required before attempting Wi-Fi init.
+
+config APP_WIFI_INIT_MIN_LARGEST_DMA_INTERNAL_BYTES
+  int "Wi-Fi init minimum DMA-capable internal block (bytes)"
+  default 32768
+  help
+    Minimum largest free DMA-capable internal block required before attempting
+    Wi-Fi init.
+
 config APP_MEM_GUARD_ENABLE
   bool "Enable mem guard allocation tracking"
   default y
