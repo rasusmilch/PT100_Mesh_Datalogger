@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_wifi.h"
+#include "heap_phase_log.h"
 #include "log_rate_limit.h"
 #include "net_stack.h"
 #include "wifi_manager.h"
@@ -195,7 +196,9 @@ WifiServiceAcquire(wifi_service_mode_t mode)
     }
 
     wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
+    HeapLogPhase("wifi_init_before");
     esp_err_t init_result = esp_wifi_init(&wifi_config);
+    HeapLogPhase("wifi_init_after");
     if (init_result == ESP_ERR_WIFI_INIT_STATE ||
         init_result == ESP_ERR_INVALID_STATE) {
       init_result = ESP_OK;
@@ -238,7 +241,9 @@ WifiServiceAcquire(wifi_service_mode_t mode)
           mode_result = ESP_ERR_INVALID_STATE;
         }
         if (mode_result == ESP_OK) {
+          HeapLogPhase("wifi_set_mode_before");
           mode_result = esp_wifi_set_mode(WIFI_MODE_APSTA);
+          HeapLogPhase("wifi_set_mode_after");
         }
         break;
       default:
@@ -279,7 +284,9 @@ WifiServiceAcquire(wifi_service_mode_t mode)
       return ESP_ERR_NO_MEM;
     }
 
+    HeapLogPhase("wifi_start_before");
     esp_err_t start_result = esp_wifi_start();
+    HeapLogPhase("wifi_start_after");
     if (start_result == ESP_ERR_WIFI_CONN || start_result == ESP_ERR_WIFI_STATE ||
         start_result == ESP_ERR_INVALID_STATE) {
       start_result = ESP_OK;
