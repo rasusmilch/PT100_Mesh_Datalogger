@@ -47,6 +47,13 @@ extern "C"
                          i2c_bus_t* i2c_bus,
                          uint8_t ds3231_addr);
 
+  /**
+   * @brief Execute TimeSyncDeinit.
+   * @param time_sync Parameter time_sync.
+   * @return Return the function result.
+   */
+  esp_err_t TimeSyncDeinit(time_sync_t* time_sync);
+
   // If DS3231 has a plausible time, set system clock from RTC.
   /**
    * @brief Execute TimeSyncSetSystemFromRtc.

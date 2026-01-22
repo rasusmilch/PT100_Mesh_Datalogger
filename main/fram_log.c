@@ -6,6 +6,8 @@
 #include "crc16.h"
 #include "esp_log.h"
 #include "esp_rom_crc.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char* kTag = "fram_log";
 
@@ -742,25 +744,34 @@ FramLogPeekOldest(const fram_log_t* log, log_record_t* record_out)
   }
   // Read raw bytes and validate. Always return populated bytes.
   const uint32_t address = RecordAddressForIndex(log, log->read_index);
-  esp_err_t result = IoRead(log, address, record_out, sizeof(*record_out));
-  if (result != ESP_OK) {
-    return result;
+  const uint32_t slot = log->read_index % log->capacity_records;
+  const int kMaxAttempts = 3;
+  fram_log_validate_result_t last_reason = OK;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    log_record_t candidate;
+    const esp_err_t read_result =
+      IoRead(log, address, &candidate, sizeof(candidate));
+    if (read_result != ESP_OK) {
+      return read_result;
+    }
+    *record_out = candidate;
+    uint16_t actual_crc = 0;
+    last_reason = FramLogValidateRecord(record_out, &actual_crc);
+    if (last_reason == OK) {
+      return ESP_OK;
+    }
+    if (attempt < (kMaxAttempts - 1)) {
+      ESP_LOGW(kTag,
+               "PeekOldest retry attempt=%d slot=%u addr=0x%04x last_reason=%s",
+               attempt + 1,
+               (unsigned)slot,
+               (unsigned)address,
+               FramLogValidateResultToString(last_reason));
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
   }
-  if (record_out->magic != LOG_RECORD_MAGIC) {
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-  if (record_out->schema_version != LOG_RECORD_SCHEMA_VER) {
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-  const uint16_t expected_crc = record_out->crc16_ccitt;
-  record_out->crc16_ccitt = 0;
-  const uint16_t actual_crc =
-    Crc16CcittFalse(record_out, sizeof(*record_out) - sizeof(uint16_t));
-  record_out->crc16_ccitt = expected_crc;
-  if (expected_crc != actual_crc) {
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-  return ESP_OK;
+  ((fram_log_t*)log)->saw_corruption = true;
+  return ESP_ERR_INVALID_RESPONSE;
 }
 
 /**
@@ -933,17 +944,36 @@ FramLogConsumeUpToRecordId(fram_log_t* log,
   }
 
   uint32_t consumed = 0;
+  uint32_t invalid_discards = 0;
+  const uint32_t kMaxInvalidDiscards = 8;
   esp_err_t status = ESP_OK;
 
   while (FramLogGetBufferedRecords(log) > 0) {
     log_record_t peeked;
     esp_err_t peek_result = FramLogPeekOldest(log, &peeked);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
-      ESP_LOGE(kTag,
-               "Encountered corrupted record while consuming up to id=%" PRIu64,
-               max_record_id_inclusive);
-      status = ESP_ERR_INVALID_RESPONSE;
-      break;
+      if (invalid_discards >= kMaxInvalidDiscards) {
+        ESP_LOGE(
+          kTag,
+          "Exceeded invalid record discard limit while consuming up to id=%"
+          PRIu64,
+          max_record_id_inclusive);
+        status = ESP_ERR_INVALID_RESPONSE;
+        break;
+      }
+      ESP_LOGW(kTag,
+               "Discarding invalid FRAM record while consuming up to id=%"
+               PRIu64
+               " (discarded=%u)",
+               max_record_id_inclusive,
+               (unsigned)(invalid_discards + 1u));
+      esp_err_t skip_result = FramLogSkipCorruptedRecord(log);
+      if (skip_result != ESP_OK) {
+        status = skip_result;
+        break;
+      }
+      invalid_discards++;
+      continue;
     }
     if (peek_result != ESP_OK) {
       status = peek_result;

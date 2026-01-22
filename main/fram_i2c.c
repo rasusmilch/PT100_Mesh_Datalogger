@@ -94,6 +94,27 @@ FramI2cInit(fram_i2c_t* fram,
 }
 
 /**
+ * @brief Execute FramI2cDeinit.
+ * @param fram Parameter fram.
+ * @return Return the function result.
+ */
+esp_err_t
+FramI2cDeinit(fram_i2c_t* fram)
+{
+  if (fram == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  esp_err_t result = ESP_OK;
+  if (fram->device != NULL) {
+    result = i2c_master_bus_rm_device(fram->device);
+  }
+
+  memset(fram, 0, sizeof(*fram));
+  return result;
+}
+
+/**
  * @brief Execute FramI2cRead.
  * @param fram Parameter fram.
  * @param addr Parameter addr.

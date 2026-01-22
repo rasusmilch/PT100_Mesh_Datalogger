@@ -78,6 +78,13 @@ extern "C" {
  */
   esp_err_t FramI2cReadDeviceId(const fram_i2c_t* fram, fram_device_id_t* out);
 
+/**
+ * @brief Execute FramI2cDeinit.
+ * @param fram Parameter fram.
+ * @return Return the function result.
+ */
+  esp_err_t FramI2cDeinit(fram_i2c_t* fram);
+
 #ifdef __cplusplus
 }
 #endif

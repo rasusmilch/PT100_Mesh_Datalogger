@@ -25,6 +25,7 @@ idf_component_register(
     "fram_i2c.c"
     "fram_log.c"
     "fram_spi.c"
+    "heap_event_log.c"
     "heap_monitor.c"
     "heap_phase_log.c"
     "i2c_bus.c"
