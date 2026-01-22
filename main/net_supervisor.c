@@ -145,6 +145,8 @@ NetSupervisorTask(void* context)
   int64_t wifi_next_acquire_attempt_ms = 0;
   size_t last_wifi_acquire_free_internal = 0;
   size_t last_wifi_acquire_largest_internal = 0;
+  size_t last_wifi_acquire_free_dma_internal = 0;
+  size_t last_wifi_acquire_largest_dma_internal = 0;
 
   for (;;) {
     const TickType_t now_ticks = xTaskGetTickCount();
@@ -223,6 +225,11 @@ NetSupervisorTask(void* context)
                 heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
               last_wifi_acquire_largest_internal =
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+              last_wifi_acquire_free_dma_internal =
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+              last_wifi_acquire_largest_dma_internal =
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
+                                                 MALLOC_CAP_DMA);
               if (wifi_acquire_backoff_ms == 0) {
                 wifi_acquire_backoff_ms = min_wifi_acquire_backoff_ms;
               } else {
@@ -243,11 +250,13 @@ NetSupervisorTask(void* context)
                 kTag,
                 "Wi-Fi acquire deferred (%" PRIu32
                 " ms); next retry in %" PRIu32
-                " ms (heap free=%u, largest=%u)",
+                " ms (heap free=%u, largest=%u, dma_free=%u, dma_largest=%u)",
                 wifi_acquire_backoff_ms,
                 wifi_acquire_backoff_ms,
                 (unsigned)last_wifi_acquire_free_internal,
-                (unsigned)last_wifi_acquire_largest_internal);
+                (unsigned)last_wifi_acquire_largest_internal,
+                (unsigned)last_wifi_acquire_free_dma_internal,
+                (unsigned)last_wifi_acquire_largest_dma_internal);
             } else {
               ESP_LOGW(kTag,
                        "Wi-Fi service acquire failed: %s",
