@@ -8,8 +8,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "esp_mac.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_mesh_lite.h"
 #include "esp_mesh_lite_core.h"
 #include "esp_mesh_lite_port.h"
@@ -424,7 +424,8 @@ ApplyMeshSoftApChannelBestEffort(int channel)
              esp_err_to_name(get_result));
 
     memset(&ap_config, 0, sizeof(ap_config));
-    strlcpy((char*)ap_config.ap.ssid, kMeshSoftApSsid, sizeof(ap_config.ap.ssid));
+    strlcpy(
+      (char*)ap_config.ap.ssid, kMeshSoftApSsid, sizeof(ap_config.ap.ssid));
     ap_config.ap.ssid_len = (uint8_t)strlen((const char*)ap_config.ap.ssid);
 
     strlcpy((char*)ap_config.ap.password,
@@ -458,9 +459,8 @@ ApplyMeshSoftApChannelBestEffort(int channel)
 
   esp_err_t set_result = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
   if (set_result != ESP_OK) {
-    ESP_LOGW(kTag,
-             "esp_wifi_set_config(AP) failed: %s",
-             esp_err_to_name(set_result));
+    ESP_LOGW(
+      kTag, "esp_wifi_set_config(AP) failed: %s", esp_err_to_name(set_result));
     return;
   }
 
@@ -479,9 +479,10 @@ StopMeshLiteBackgroundWorkBestEffort(void)
   // If Wi-Fi teardown posts late DISCONNECTED/STOP events, Mesh-Lite may
   // re-arm its reconnect timer. Make the timer effectively inert before we
   // stop it, so even if it is restarted it will not spam scans.
-  esp_mesh_lite_set_wifi_reconnect_interval(/*retry_connect_parent_interval=*/3600,
-                                           /*retry_connect_parent_count=*/1,
-                                           /*reconnect_interval=*/3600);
+  esp_mesh_lite_set_wifi_reconnect_interval(
+    /*retry_connect_parent_interval=*/3600,
+    /*retry_connect_parent_count=*/1,
+    /*reconnect_interval=*/3600);
 
   // Stop Mesh-Lite reconnect scans (this is the source of the ESP_FAIL:0x3002
   // spam when Wi-Fi has already been stopped).
@@ -559,7 +560,7 @@ MeshTransportStart(mesh_transport_t* mesh,
                    void* record_rx_context,
                    mesh_publish_record_rx_callback_t publish_record_rx_callback,
                    void* publish_record_rx_context,
-                   const time_sync_t* time_sync)
+                   time_sync_t* time_sync)
 {
   if (mesh == NULL) {
     return ESP_ERR_INVALID_ARG;
@@ -594,16 +595,14 @@ MeshTransportStart(mesh_transport_t* mesh,
   pt100_mesh_addr_t mesh_id = { 0 };
   char mesh_id_str[20] = { 0 };
   if (AppNetConfigGetMeshId(&mesh_id)) {
-    snprintf(mesh_id_str,
-             sizeof(mesh_id_str),
-             MACSTR,
-             MAC2STR(mesh_id.addr));
+    snprintf(mesh_id_str, sizeof(mesh_id_str), MACSTR, MAC2STR(mesh_id.addr));
     ESP_LOGI(kTag,
              "mesh id=%s source=%s",
              mesh_id_str,
              AppNetConfigMeshIdIsOverridden() ? "nvs" : "kconfig");
   } else {
-    ESP_LOGW(kTag, "mesh id invalid (source=%s)",
+    ESP_LOGW(kTag,
+             "mesh id invalid (source=%s)",
              AppNetConfigMeshIdIsOverridden() ? "nvs" : "kconfig");
   }
 
@@ -611,8 +610,9 @@ MeshTransportStart(mesh_transport_t* mesh,
   esp_mesh_lite_init(&mesh_lite_config);
 
   // Routerless root nodes do not configure an upstream STA SSID, but Mesh-Lite
-  // can still run its reconnect/scan loop and repeatedly call esp_wifi_connect()
-  // which then fails with ESP_ERR_WIFI_SSID (0x300a) and spams the console.
+  // can still run its reconnect/scan loop and repeatedly call
+  // esp_wifi_connect() which then fails with ESP_ERR_WIFI_SSID (0x300a) and
+  // spams the console.
   //
   // Mitigation:
   //  - Rate-limit Mesh-Lite reconnect/scan intervals to a large value.
@@ -658,15 +658,14 @@ MeshTransportStart(mesh_transport_t* mesh,
     esp_err_t router_result = esp_mesh_lite_set_router_config(&router_config);
     if (router_result != ESP_OK) {
       if (router_result == ESP_ERR_INVALID_STATE) {
-        // Non-fatal: router config may already be set, or mesh-lite may already be
-        // running. Proceed so logging can continue.
+        // Non-fatal: router config may already be set, or mesh-lite may already
+        // be running. Proceed so logging can continue.
         ESP_LOGW(kTag,
                  "Set router config returned %s; continuing",
                  esp_err_to_name(router_result));
       } else {
-        ESP_LOGW(kTag,
-                 "Set router config failed: %s",
-                 esp_err_to_name(router_result));
+        ESP_LOGW(
+          kTag, "Set router config failed: %s", esp_err_to_name(router_result));
         return router_result;
       }
     }
@@ -898,8 +897,8 @@ MeshTransportStop(mesh_transport_t* mesh)
   }
 
   // Wi-Fi teardown triggers WIFI_EVENT_STA_STOP / DISCONNECTED events.
-  // Mesh-Lite may re-arm its reconnect timer in those handlers, so yield briefly
-  // and then stop background work again.
+  // Mesh-Lite may re-arm its reconnect timer in those handlers, so yield
+  // briefly and then stop background work again.
   vTaskDelay(pdMS_TO_TICKS(250));
 
   // One more best-effort stop after Wi-Fi teardown to ensure no background

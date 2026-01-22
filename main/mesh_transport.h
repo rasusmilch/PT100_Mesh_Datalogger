@@ -36,7 +36,9 @@ extern "C"
     void* record_rx_context;
     mesh_publish_record_rx_callback_t publish_record_rx_callback;
     void* publish_record_rx_context;
-    const time_sync_t* time_sync; // used for RTC updates on time sync messages
+    
+    // NOTE: TimeSyncSetSystemEpoch() mutates the pointed-to state.
+    time_sync_t* time_sync; // used for RTC updates on time sync messages
   } mesh_transport_t;
 
 /**
@@ -78,7 +80,7 @@ extern "C"
                                mesh_publish_record_rx_callback_t
                                  publish_record_rx_callback,
                                void* publish_record_rx_context,
-                               const time_sync_t* time_sync);
+                               time_sync_t* time_sync);
 
 /**
  * @brief Execute MeshTransportIsConnected.
