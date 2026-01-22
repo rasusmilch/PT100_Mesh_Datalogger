@@ -4,6 +4,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "heap_phase_log.h"
 #include "net_supervisor.h"
 #include "nvs_flash.h"
 #include "run_gpio.h"
@@ -53,6 +54,7 @@ app_main(void)
   // Run init on a dedicated task with an explicit stack size (bytes).
 
   InitNvs();
+  HeapLogPhase("nvs_init");
 
   static const uint32_t kAppInitStackBytes = 16384; // 16 KB
   static const UBaseType_t kAppInitPriority = 5;
@@ -82,12 +84,14 @@ AppInitTask(void* context)
            "Reset reason: %s (%d)",
            RuntimeMarkersResetReasonToString(reset_reason),
            (int)reset_reason);
+  HeapLogPhase("startup_begin");
 
   esp_err_t runtime_result = RuntimeManagerInit();
   if (runtime_result != ESP_OK) {
     ESP_LOGE(
       kTag, "Runtime init reported error: %s", esp_err_to_name(runtime_result));
   }
+  HeapLogPhase("runtime_init");
 
   g_runtime = RuntimeGetRuntime();
   if (g_runtime != NULL) {
@@ -96,8 +100,11 @@ AppInitTask(void* context)
       ESP_LOGE(
         kTag, "Net supervisor start failed: %s", esp_err_to_name(net_result));
     }
+    HeapLogPhase("net_supervisor_start");
     ESP_ERROR_CHECK(ConsoleCommandsStart((app_runtime_t*)g_runtime, boot_mode));
+    HeapLogPhase("console_start");
     RunGpioInit();
+    HeapLogPhase("run_gpio_init");
   } else {
     ESP_LOGE(kTag, "Runtime unavailable; console not started");
     vTaskDelete(NULL);
@@ -105,15 +112,18 @@ AppInitTask(void* context)
   }
 
   if (boot_mode == APP_BOOT_MODE_RUN) {
+    HeapLogPhase("pre_run_mode");
     LogAppInitStackWatermark("before EnterRunMode");
     esp_err_t start_result = EnterRunMode();
     LogAppInitStackWatermark("after EnterRunMode");
+    HeapLogPhase("post_run_mode");
     if (start_result != ESP_OK) {
       ESP_LOGE(
         kTag, "Failed to start runtime: %s", esp_err_to_name(start_result));
     }
   } else {
     (void)EnterDiagMode();
+    HeapLogPhase("diag_mode");
     ESP_LOGI(kTag, "Diagnostics mode active (boot default)");
   }
 
