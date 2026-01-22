@@ -165,8 +165,7 @@ AppSettingsDisplayUnitsToString(app_display_units_t units)
  * @return Return the function result.
  */
 bool
-AppSettingsParseDisplayUnits(const char* value,
-                             app_display_units_t* units_out)
+AppSettingsParseDisplayUnits(const char* value, app_display_units_t* units_out)
 {
   if (value == NULL || units_out == NULL) {
     return false;
@@ -297,8 +296,8 @@ ApplyDefaults(app_settings_t* settings)
   settings->sd_batch_bytes_target = (uint32_t)CONFIG_APP_SD_BATCH_BYTES_TARGET;
   settings->rtc_resync_period_ms = 3600000u;
   CalibrationModelInitIdentity(&settings->calibration);
-  memset(&settings->calibration_context, 0,
-         sizeof(settings->calibration_context));
+  memset(
+    &settings->calibration_context, 0, sizeof(settings->calibration_context));
   settings->calibration_context_valid = false;
   settings->calibration_points_count = 0;
   memset(settings->calibration_points, 0, sizeof(settings->calibration_points));
@@ -323,11 +322,18 @@ ApplyDefaults(app_settings_t* settings)
   settings->units_gpio_pin = CONFIG_APP_UNITS_GPIO_DEFAULT_PIN;
   settings->units_gpio_pull =
     (app_units_gpio_pull_t)CONFIG_APP_UNITS_GPIO_DEFAULT_PULL;
-  settings->units_gpio_c_level_high =
-    (CONFIG_APP_UNITS_GPIO_DEFAULT_LEVEL_FOR_C != 0);
-  settings->display_attention_policy = AppSettingsDefaultDisplayAttentionPolicy();
-  settings->display_attention_mask =
-    AppSettingsDefaultDisplayAttentionMask();
+
+  // Bool Kconfig symbols are only defined when enabled. When disabled, the
+  // macro is undefined (not 0), so avoid using it in a runtime expression.
+#if CONFIG_APP_UNITS_GPIO_DEFAULT_LEVEL_FOR_C
+  settings->units_gpio_c_level_high = true;
+#else
+  settings->units_gpio_c_level_high = false;
+#endif
+
+  settings->display_attention_policy =
+    AppSettingsDefaultDisplayAttentionPolicy();
+  settings->display_attention_mask = AppSettingsDefaultDisplayAttentionMask();
   settings->net_mode = APP_NET_MODE_MESH;
   settings->mqtt_enabled = false;
   snprintf(settings->mqtt_broker_uri,
@@ -561,8 +567,10 @@ AppSettingsLoad(app_settings_t* settings_out)
       sizeof(calibration_point_t) * (size_t)cal_points_count;
     if (points_bytes > 0) {
       size_t points_bytes_copy = points_bytes;
-      esp_err_t points_result = nvs_get_blob(
-        handle, kKeyCalPoints, settings_out->calibration_points, &points_bytes_copy);
+      esp_err_t points_result = nvs_get_blob(handle,
+                                             kKeyCalPoints,
+                                             settings_out->calibration_points,
+                                             &points_bytes_copy);
       if (points_result == ESP_OK && points_bytes_copy == points_bytes) {
         settings_out->calibration_points_count = cal_points_count;
       } else {
@@ -583,7 +591,8 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->calibration_context = loaded_context;
     settings_out->calibration_context_valid = true;
   } else {
-    memset(&settings_out->calibration_context, 0,
+    memset(&settings_out->calibration_context,
+           0,
            sizeof(settings_out->calibration_context));
     settings_out->calibration_context_valid = false;
   }
@@ -615,17 +624,14 @@ AppSettingsLoad(app_settings_t* settings_out)
                                  &settings_out->cal_due_unit);
 
   uint16_t cal_due_override_count = settings_out->cal_due_override_count;
-  result = nvs_get_u16(handle,
-                       kKeyCalDueOverrideCount,
-                       &cal_due_override_count);
+  result =
+    nvs_get_u16(handle, kKeyCalDueOverrideCount, &cal_due_override_count);
   if (result == ESP_OK) {
     settings_out->cal_due_override_count = cal_due_override_count;
   }
 
   uint8_t cal_due_override_unit = settings_out->cal_due_override_unit;
-  result = nvs_get_u8(handle,
-                      kKeyCalDueOverrideUnit,
-                      &cal_due_override_unit);
+  result = nvs_get_u8(handle, kKeyCalDueOverrideUnit, &cal_due_override_unit);
   if (result == ESP_OK) {
     settings_out->cal_due_override_unit = cal_due_override_unit;
   }
@@ -646,7 +652,8 @@ AppSettingsLoad(app_settings_t* settings_out)
 
   size_t tz_len = sizeof(settings_out->tz_posix);
   result = nvs_get_str(handle, kKeyTzPosix, settings_out->tz_posix, &tz_len);
-  if (result != ESP_OK || tz_len == 0 || tz_len > sizeof(settings_out->tz_posix)) {
+  if (result != ESP_OK || tz_len == 0 ||
+      tz_len > sizeof(settings_out->tz_posix)) {
     snprintf(settings_out->tz_posix,
              sizeof(settings_out->tz_posix),
              "%s",
@@ -668,8 +675,7 @@ AppSettingsLoad(app_settings_t* settings_out)
   uint8_t allow_children_set = settings_out->allow_children_set ? 1 : 0;
   esp_err_t allow_children_set_result =
     nvs_get_u8(handle, kKeyAllowChildrenSet, &allow_children_set);
-  const bool allow_children_set_present =
-    (allow_children_set_result == ESP_OK);
+  const bool allow_children_set_present = (allow_children_set_result == ESP_OK);
   if (allow_children_set_present && allow_children_set <= 1) {
     settings_out->allow_children_set = (allow_children_set == 1);
   }
@@ -726,8 +732,7 @@ AppSettingsLoad(app_settings_t* settings_out)
 
   uint8_t net_mode = (uint8_t)settings_out->net_mode;
   result = nvs_get_u8(handle, kKeyNetMode, &net_mode);
-  if (result == ESP_OK &&
-      net_mode <= (uint8_t)APP_NET_MODE_NONE) {
+  if (result == ESP_OK && net_mode <= (uint8_t)APP_NET_MODE_NONE) {
     settings_out->net_mode = (app_net_mode_t)net_mode;
   }
 
@@ -738,10 +743,8 @@ AppSettingsLoad(app_settings_t* settings_out)
   }
 
   size_t broker_len = sizeof(settings_out->mqtt_broker_uri);
-  result = nvs_get_str(handle,
-                       kKeyMqttBrokerUri,
-                       settings_out->mqtt_broker_uri,
-                       &broker_len);
+  result = nvs_get_str(
+    handle, kKeyMqttBrokerUri, settings_out->mqtt_broker_uri, &broker_len);
   if (result != ESP_OK || broker_len == 0 ||
       broker_len > sizeof(settings_out->mqtt_broker_uri)) {
     snprintf(settings_out->mqtt_broker_uri,
@@ -751,10 +754,8 @@ AppSettingsLoad(app_settings_t* settings_out)
   }
 
   size_t prefix_len = sizeof(settings_out->mqtt_topic_prefix);
-  result = nvs_get_str(handle,
-                       kKeyMqttTopicPrefix,
-                       settings_out->mqtt_topic_prefix,
-                       &prefix_len);
+  result = nvs_get_str(
+    handle, kKeyMqttTopicPrefix, settings_out->mqtt_topic_prefix, &prefix_len);
   if (result != ESP_OK || prefix_len == 0 ||
       prefix_len > sizeof(settings_out->mqtt_topic_prefix)) {
     snprintf(settings_out->mqtt_topic_prefix,
@@ -795,9 +796,8 @@ AppSettingsLoad(app_settings_t* settings_out)
   esp_err_t mask_result =
     nvs_get_u32(handle, kKeyDisplayAttentionMask, &display_attention_mask);
   if (!policy_present && mask_result == ESP_OK) {
-    settings_out->display_attention_policy =
-      DisplayAttentionPolicyFromMask(
-        (display_attention_mask_t)display_attention_mask);
+    settings_out->display_attention_policy = DisplayAttentionPolicyFromMask(
+      (display_attention_mask_t)display_attention_mask);
     esp_err_t migrate_result =
       nvs_set_u32(handle,
                   kKeyDisplayAttentionPolicy,
@@ -831,7 +831,11 @@ AppSettingsLoad(app_settings_t* settings_out)
   nvs_close(handle);
   ESP_LOGI(
     kTag,
-    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u rtc_resync_ms=%u deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u display_units=%s net_mode=%s mqtt_en=%u mqtt_uri=%s mqtt_pfx=%s mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
+    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u rtc_resync_ms=%u "
+    "deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u "
+    "display_units=%s net_mode=%s mqtt_en=%u mqtt_uri=%s mqtt_pfx=%s "
+    "mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s disp_attn_pol=0x%08" PRIX32
+    " disp_attn_mask=0x%08" PRIX32,
     (unsigned)settings_out->log_period_ms,
     (unsigned)settings_out->fram_flush_watermark_records,
     (unsigned)settings_out->sd_flush_period_ms,
@@ -992,12 +996,12 @@ AppSettingsSaveCalibrationWithContext(const calibration_model_t* model,
                           sizeof(double) * CALIBRATION_MAX_POINTS);
   }
   if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyCalContextVersion,
-                        kCalibrationContextVersion);
+    result =
+      nvs_set_u8(handle, kKeyCalContextVersion, kCalibrationContextVersion);
   }
   if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyCalContextConversion,
-                        context->conversion_mode);
+    result =
+      nvs_set_u8(handle, kKeyCalContextConversion, context->conversion_mode);
   }
   if (result == ESP_OK) {
     result = nvs_set_u8(handle, kKeyCalContextWires, context->wires);
@@ -1010,8 +1014,8 @@ AppSettingsSaveCalibrationWithContext(const calibration_model_t* model,
       handle, kKeyCalContextRref, &context->rref_ohm, sizeof(double));
   }
   if (result == ESP_OK) {
-    result = nvs_set_blob(
-      handle, kKeyCalContextR0, &context->r0_ohm, sizeof(double));
+    result =
+      nvs_set_blob(handle, kKeyCalContextR0, &context->r0_ohm, sizeof(double));
   }
   if (result == ESP_OK) {
     result =
@@ -1051,9 +1055,8 @@ AppSettingsSaveCalibrationSchedule(const app_settings_t* settings)
 
   result = nvs_set_i64(handle, kKeyCalLastUtc, settings->cal_last_utc);
   if (result == ESP_OK) {
-    result = nvs_set_i64(handle,
-                         kKeyCalLastOverrideUtc,
-                         settings->cal_last_override_utc);
+    result = nvs_set_i64(
+      handle, kKeyCalLastOverrideUtc, settings->cal_last_override_utc);
   }
   if (result == ESP_OK) {
     result = nvs_set_u16(handle, kKeyCalDueCount, due_count);
@@ -1062,14 +1065,10 @@ AppSettingsSaveCalibrationSchedule(const app_settings_t* settings)
     result = nvs_set_u8(handle, kKeyCalDueUnit, due_unit);
   }
   if (result == ESP_OK) {
-    result = nvs_set_u16(handle,
-                         kKeyCalDueOverrideCount,
-                         due_override_count);
+    result = nvs_set_u16(handle, kKeyCalDueOverrideCount, due_override_count);
   }
   if (result == ESP_OK) {
-    result = nvs_set_u8(handle,
-                        kKeyCalDueOverrideUnit,
-                        due_override_unit);
+    result = nvs_set_u8(handle, kKeyCalDueOverrideUnit, due_override_unit);
   }
   if (result == ESP_OK) {
     result = nvs_commit(handle);
@@ -1095,10 +1094,9 @@ AppSettingsBuildCalibrationContextFromReader(calibration_context_t* context,
   context->filter_hz = reader->filter_hz;
   context->rref_ohm = reader->rref_ohm;
   context->r0_ohm = reader->rtd_nominal_ohm;
-  context->table_version =
-    (reader->conversion == kMax31865ConversionTablePt100)
-      ? (uint32_t)PT100_TABLE_LENGTH
-      : 0u;
+  context->table_version = (reader->conversion == kMax31865ConversionTablePt100)
+                             ? (uint32_t)PT100_TABLE_LENGTH
+                             : 0u;
 }
 
 /**
@@ -1260,8 +1258,7 @@ AppSettingsSaveAllowChildren(bool allow_children, bool explicit_setting)
 
   result = nvs_set_u8(handle, kKeyAllowChildren, allow_children ? 1 : 0);
   if (result == ESP_OK) {
-    result =
-      nvs_set_u8(handle, kKeyAllowChildrenSet, explicit_setting ? 1 : 0);
+    result = nvs_set_u8(handle, kKeyAllowChildrenSet, explicit_setting ? 1 : 0);
   }
   if (result == ESP_OK) {
     result = nvs_commit(handle);
@@ -1328,8 +1325,7 @@ AppSettingsSaveUnitsGpioPin(int32_t pin)
 esp_err_t
 AppSettingsSaveUnitsGpioPull(app_units_gpio_pull_t pull)
 {
-  if (pull < APP_UNITS_GPIO_PULL_NONE ||
-      pull > APP_UNITS_GPIO_PULL_DOWN) {
+  if (pull < APP_UNITS_GPIO_PULL_NONE || pull > APP_UNITS_GPIO_PULL_DOWN) {
     return ESP_ERR_INVALID_ARG;
   }
   nvs_handle_t handle;
@@ -1588,7 +1584,8 @@ uint32_t
 AppSettingsDefaultDisplayAttentionPolicy(void)
 {
   uint32_t policy = 0;
-  policy = DisplayAttentionPolicySet(policy, kDispAttnItemSdOut, DISP_SEV_ERROR);
+  policy =
+    DisplayAttentionPolicySet(policy, kDispAttnItemSdOut, DISP_SEV_ERROR);
   policy = DisplayAttentionPolicySet(policy, kDispAttnItemSdIo, DISP_SEV_ERROR);
   policy =
     DisplayAttentionPolicySet(policy, kDispAttnItemFramOvr, DISP_SEV_ERROR);

@@ -9,8 +9,8 @@
 #include <strings.h>
 #include <time.h>
 
-#include "esp_http_client.h"
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "log_rate_limit.h"
@@ -18,24 +18,33 @@
 #include "esp_crt_bundle.h"
 #endif
 
-static void AlertNtfyApplyTlsLogPolicy(void);
-static void FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size);
-static const char* SeverityToPriority(int severity);
-static int AlertNtfyParseRetryAfterSeconds(const char* value);
-static esp_err_t AlertNtfyHttpEventHandler(esp_http_client_event_t* evt);
-static void FormatLeafId(uint64_t leaf_id, char* out, size_t out_size);
-static void FormatMilliC(int32_t milli_c, char* out, size_t out_size);
-static void AppendTimeLine(const alert_notification_payload_t* payload,
-                           char* body,
-                           size_t body_size);
-static alert_ntfy_result_t AlertNtfySendHttp(alert_ntfy_t* ntfy,
-                                             const alert_ntfy_config_t* cfg,
-                                             const char* title,
-                                             const char* body,
-                                             const char* priority,
-                                             int* out_retry_after_seconds,
-                                             int* out_status,
-                                             esp_err_t* out_err);
+static void
+AlertNtfyApplyTlsLogPolicy(void);
+static void
+FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size);
+static const char*
+SeverityToPriority(int severity);
+static int
+AlertNtfyParseRetryAfterSeconds(const char* value);
+static esp_err_t
+AlertNtfyHttpEventHandler(esp_http_client_event_t* evt);
+static void
+FormatLeafId(uint64_t leaf_id, char* out, size_t out_size);
+static void
+FormatMilliC(int32_t milli_c, char* out, size_t out_size);
+static void
+AppendTimeLine(const alert_notification_payload_t* payload,
+               char* body,
+               size_t body_size);
+static alert_ntfy_result_t
+AlertNtfySendHttp(alert_ntfy_t* ntfy,
+                  const alert_ntfy_config_t* cfg,
+                  const char* title,
+                  const char* body,
+                  const char* priority,
+                  int* out_retry_after_seconds,
+                  int* out_status,
+                  esp_err_t* out_err);
 
 static const char* kTag = "alert_ntfy";
 static const uint32_t kNtfyJobDropLogRateLimitMs = 60000;
@@ -129,8 +138,7 @@ AlertNtfyHttpEventHandler(esp_http_client_event_t* evt)
   if (strcasecmp(evt->header_key, "Retry-After") != 0) {
     return ESP_OK;
   }
-  alert_ntfy_http_context_t* ctx =
-    (alert_ntfy_http_context_t*)evt->user_data;
+  alert_ntfy_http_context_t* ctx = (alert_ntfy_http_context_t*)evt->user_data;
   int seconds = AlertNtfyParseRetryAfterSeconds(evt->header_value);
   if (seconds > 0) {
     ctx->retry_after_seconds = seconds;
@@ -208,10 +216,8 @@ AppendTimeLine(const alert_notification_payload_t* payload,
   char time_str[32];
   if (payload->event_epoch > 0) {
     FormatEpoch(payload->event_epoch, time_str, sizeof(time_str));
-    snprintf(body + strlen(body),
-             body_size - strlen(body),
-             "time: %s\n",
-             time_str);
+    snprintf(
+      body + strlen(body), body_size - strlen(body), "time: %s\n", time_str);
   } else {
     snprintf(body + strlen(body),
              body_size - strlen(body),
@@ -423,7 +429,6 @@ AlertNtfyEnqueueJob(alert_ntfy_t* ntfy, const alert_ntfy_job_t* job)
     return true;
   }
   ntfy->job_dropped++;
-  const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
   if (LogRateLimitAllow(&ntfy->job_last_drop_log_ms,
                         kNtfyJobDropLogRateLimitMs)) {
     ESP_LOGW(kTag, "ntfy job queue full; dropping newest");
@@ -459,10 +464,8 @@ AlertNtfySend(alert_ntfy_t* ntfy,
   FormatLeafId(note->leaf_id, leaf_id, sizeof(leaf_id));
 
   char title[64];
-  snprintf(title,
-           sizeof(title),
-           "PT100 %s",
-           note->resolved ? "RESOLVED" : "ALERT");
+  snprintf(
+    title, sizeof(title), "PT100 %s", note->resolved ? "RESOLVED" : "ALERT");
 
   char body[512];
   snprintf(body,
@@ -475,9 +478,8 @@ AlertNtfySend(alert_ntfy_t* ntfy,
     case ALERT_TEMP_HIGH: {
       char temp_str[24];
       char limit_str[24];
-      FormatMilliC(note->payload.current_temp_milli_c,
-                   temp_str,
-                   sizeof(temp_str));
+      FormatMilliC(
+        note->payload.current_temp_milli_c, temp_str, sizeof(temp_str));
       FormatMilliC(note->payload.limit_milli_c, limit_str, sizeof(limit_str));
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
@@ -489,9 +491,8 @@ AlertNtfySend(alert_ntfy_t* ntfy,
     case ALERT_TEMP_LOW: {
       char temp_str[24];
       char limit_str[24];
-      FormatMilliC(note->payload.current_temp_milli_c,
-                   temp_str,
-                   sizeof(temp_str));
+      FormatMilliC(
+        note->payload.current_temp_milli_c, temp_str, sizeof(temp_str));
       FormatMilliC(note->payload.limit_milli_c, limit_str, sizeof(limit_str));
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
@@ -604,9 +605,8 @@ AlertNtfySend(alert_ntfy_t* ntfy,
       break;
     }
     default:
-      snprintf(body + strlen(body),
-               sizeof(body) - strlen(body),
-               "type: unknown\n");
+      snprintf(
+        body + strlen(body), sizeof(body) - strlen(body), "type: unknown\n");
       break;
   }
 
