@@ -237,9 +237,8 @@ FramLogValidateRecord(const log_record_t* record, uint16_t* actual_crc_out)
   log_record_t temp_record;
   memcpy(&temp_record, record, sizeof(temp_record));
   temp_record.crc16_ccitt = 0;
-  const uint16_t actual_crc =
-    Crc16CcittFalse(&temp_record,
-                    sizeof(temp_record) - sizeof(temp_record.crc16_ccitt));
+  const uint16_t actual_crc = Crc16CcittFalse(
+    &temp_record, sizeof(temp_record) - sizeof(temp_record.crc16_ccitt));
 
   if (actual_crc_out != NULL) {
     *actual_crc_out = actual_crc;
@@ -833,8 +832,14 @@ FramLogDiscardOldest(fram_log_t* log)
   log->record_count--;
   log->records_since_header_persist++;
 
-  // During SD flush we want best durability; persist header eagerly.
-  return FramLogPersistHeader(log);
+  // Persist periodically to avoid holding the FRAM log mutex for long durations
+  // during bulk discards. Callers that require best durability should
+  // explicitly call FramLogPersistHeader() after completing a bulk discard.
+  if (log->records_since_header_persist >=
+      (uint32_t)CONFIG_APP_FRAM_HEADER_UPDATE_EVERY_N_RECORDS) {
+    return FramLogPersistHeader(log);
+  }
+  return ESP_OK;
 }
 
 /**
@@ -953,20 +958,19 @@ FramLogConsumeUpToRecordId(fram_log_t* log,
     esp_err_t peek_result = FramLogPeekOldest(log, &peeked);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
       if (invalid_discards >= kMaxInvalidDiscards) {
-        ESP_LOGE(
-          kTag,
-          "Exceeded invalid record discard limit while consuming up to id=%"
-          PRIu64,
-          max_record_id_inclusive);
+        ESP_LOGE(kTag,
+                 "Exceeded invalid record discard limit while consuming up to "
+                 "id=%" PRIu64,
+                 max_record_id_inclusive);
         status = ESP_ERR_INVALID_RESPONSE;
         break;
       }
-      ESP_LOGW(kTag,
-               "Discarding invalid FRAM record while consuming up to id=%"
-               PRIu64
-               " (discarded=%u)",
-               max_record_id_inclusive,
-               (unsigned)(invalid_discards + 1u));
+      ESP_LOGW(
+        kTag,
+        "Discarding invalid FRAM record while consuming up to id=%" PRIu64
+        " (discarded=%u)",
+        max_record_id_inclusive,
+        (unsigned)(invalid_discards + 1u));
       esp_err_t skip_result = FramLogSkipCorruptedRecord(log);
       if (skip_result != ESP_OK) {
         status = skip_result;

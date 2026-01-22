@@ -2889,9 +2889,8 @@ RuntimeRecoverI2cBusCommon(runtime_state_t* state,
            "I2C recovery start (%s): %s",
            (reason != NULL) ? reason : "unknown",
            esp_err_to_name(last_error));
-  HeapEventLog("i2c_recovery_start",
-               (reason != NULL) ? reason : "unknown",
-               last_error);
+  HeapEventLog(
+    "i2c_recovery_start", (reason != NULL) ? reason : "unknown", last_error);
   LogFramErrorEvent(
     state, ERROR_I2C_RECOVERY_START, false, (int32_t)last_error, 0);
   UpdateCachedBool(state, &state->cached_status.i2c_recovery_active, true);
@@ -2956,15 +2955,12 @@ RuntimeRecoverI2cBusCommon(runtime_state_t* state,
     RuntimeI2cUnlock();
   }
   ESP_LOGI(kTag, "I2C recovery succeeded");
-  HeapEventLog("i2c_recovery_ok",
-               (reason != NULL) ? reason : "unknown",
-               0);
+  HeapEventLog("i2c_recovery_ok", (reason != NULL) ? reason : "unknown", 0);
   return true;
 
 recovery_failed:
-  HeapEventLog("i2c_recovery_fail",
-               (reason != NULL) ? reason : "unknown",
-               result);
+  HeapEventLog(
+    "i2c_recovery_fail", (reason != NULL) ? reason : "unknown", result);
   LogFramErrorEvent(
     state, ERROR_I2C_RECOVERY_FAILED, false, (int32_t)result, 0);
   ESP_LOGE(kTag, "I2C recovery failed: %s", esp_err_to_name(result));
@@ -3106,11 +3102,24 @@ DiscardFramRecordsWithYield(runtime_state_t* state,
     }
     const uint32_t chunk =
       (remaining < kDiscardChunkRecords) ? remaining : kDiscardChunkRecords;
+    const bool final_chunk = (chunk == remaining);
+
     for (uint32_t index = 0; index < chunk; ++index) {
       esp_err_t discard_result = FramLogDiscardOldest(&state->fram_log);
       if (discard_result != ESP_OK) {
         RuntimeFramLogUnlock(state);
         return discard_result;
+      }
+    }
+
+    if (final_chunk) {
+      // Ensure the updated read index/count are durably persisted once the bulk
+      // discard completes.
+      esp_err_t persist_result = FramLogPersistHeader(&state->fram_log);
+      if (persist_result != ESP_OK) {
+        ESP_LOGW(kTag,
+                 "FRAM header persist after discard failed: %s",
+                 esp_err_to_name(persist_result));
       }
     }
     RuntimeFramLogUnlock(state);
@@ -3631,9 +3640,9 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     }
     esp_err_t peek_result = FramLogPeekOldest(&state->fram_log, &first_record);
     if (peek_result == ESP_ERR_INVALID_RESPONSE) {
-      ESP_LOGW(
-        kTag,
-        "FRAM invalid response persists after retries; discarding oldest record");
+      ESP_LOGW(kTag,
+               "FRAM invalid response persists after retries; discarding "
+               "oldest record");
       esp_err_t skip_result = FramLogSkipCorruptedRecord(&state->fram_log);
       RuntimeFramLogUnlock(state);
       TrackFramInvalidResponse(state, "sd_sync");
