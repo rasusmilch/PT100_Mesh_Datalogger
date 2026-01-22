@@ -5075,17 +5075,6 @@ CreateAlertHttpTaskWithPsrStack(runtime_state_t* state, uint32_t stack_bytes)
   if (state == NULL) {
     return pdFAIL;
   }
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
-  return xTaskCreatePinnedToCoreWithCaps(AlertHttpTask,
-                                         "alert_http",
-                                         stack_bytes,
-                                         state,
-                                         3,
-                                         &state->alert_http_task,
-                                         tskNO_AFFINITY,
-                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
   const size_t stack_words =
     (stack_bytes + sizeof(StackType_t) - 1) / sizeof(StackType_t);
   const size_t stack_alloc_bytes = stack_words * sizeof(StackType_t);
@@ -5097,18 +5086,16 @@ CreateAlertHttpTaskWithPsrStack(runtime_state_t* state, uint32_t stack_bytes)
   }
   if (state->alert_http_task_tcb == NULL) {
     state->alert_http_task_tcb = heap_caps_calloc(
-      1, sizeof(StaticTask_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   }
-  if (state->alert_http_task_stack == NULL ||
-      state->alert_http_task_tcb == NULL) {
+  if (state->alert_http_task_stack == NULL) {
     if (!g_alert_http_psram_failure_logged) {
       ESP_LOGE(kTag, "Failed to allocate PSRAM for alert_http task");
       g_alert_http_psram_failure_logged = true;
     }
-    heap_caps_free(state->alert_http_task_stack);
-    heap_caps_free(state->alert_http_task_tcb);
-    state->alert_http_task_stack = NULL;
-    state->alert_http_task_tcb = NULL;
+    return pdFAIL;
+  }
+  if (state->alert_http_task_tcb == NULL) {
     return pdFAIL;
   }
   TaskHandle_t task =
@@ -5129,7 +5116,6 @@ CreateAlertHttpTaskWithPsrStack(runtime_state_t* state, uint32_t stack_bytes)
   }
   state->alert_http_task = task;
   return pdPASS;
-#endif
 }
 
 /**
