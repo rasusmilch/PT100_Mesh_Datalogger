@@ -121,6 +121,25 @@ I2cBusRecoverLines(int sda_gpio, int scl_gpio)
 }
 
 /**
+ * @brief Execute I2cBusLinesLookIdle.
+ * @param bus Parameter bus.
+ * @return Return the function result.
+ */
+bool
+I2cBusLinesLookIdle(const i2c_bus_t* bus)
+{
+  if (bus == NULL) {
+    return false;
+  }
+  if (bus->sda_gpio < 0 || bus->scl_gpio < 0) {
+    return false;
+  }
+  const int sda_level = gpio_get_level(bus->sda_gpio);
+  const int scl_level = gpio_get_level(bus->scl_gpio);
+  return (sda_level != 0) && (scl_level != 0);
+}
+
+/**
  * @brief Execute I2cBusAddDevice.
  * @param bus Parameter bus.
  * @param address Parameter address.
