@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "i2c_bus.h"
 #include "runtime_manager.h"
 
@@ -26,11 +27,37 @@
 static const char* kTag = "time_sync";
 static char s_last_sntp_server[64] = "";
 static int64_t s_last_sntp_attempt_epoch = 0;
+static int64_t s_last_sntp_attempt_uptime_us = 0;
 static esp_err_t s_last_sntp_result = ESP_ERR_INVALID_STATE;
 static int64_t s_last_sntp_success_epoch = 0;
 static int64_t s_last_rtc_set_epoch = 0;
 static bool s_esp_netif_sntp_initialized = false;
 static const TickType_t kI2cLockTimeoutTicks = pdMS_TO_TICKS(50);
+static volatile bool s_sntp_time_set_callback_fired = false;
+static volatile int64_t s_sntp_time_set_epoch_utc = 0;
+static volatile int64_t s_sntp_time_set_uptime_us = 0;
+
+static uint32_t TickNow(void);
+static bool TickIsDue(uint32_t now_ticks, uint32_t due_ticks);
+static uint32_t Ds3231BackoffMs(uint32_t consecutive_failures);
+static void Ds3231ScheduleNextProbe(time_sync_t* time_sync);
+static esp_err_t Ds3231ProbeAndUpdateReady(time_sync_t* time_sync);
+static void Ds3231MarkFault(time_sync_t* time_sync);
+static uint8_t BcdToBinary(uint8_t bcd);
+static uint8_t BinaryToBcd(uint8_t value);
+static bool YearLooksValid(int year_since_1900);
+static int64_t DaysFromCivil(int year, unsigned month, unsigned day);
+static esp_err_t Ds3231ReadTime(const time_sync_t* time_sync,
+                                struct tm* time_out);
+static esp_err_t Ds3231ReadTimeWithRetries(time_sync_t* time_sync,
+                                           struct tm* time_out);
+static esp_err_t Ds3231WriteTime(const time_sync_t* time_sync,
+                                 const struct tm* time_value);
+static esp_err_t Ds3231WriteTimeWithRetries(time_sync_t* time_sync,
+                                            const struct tm* time_value);
+static bool LocalTmFieldsMatch(const struct tm* left, const struct tm* right);
+static void SntpTimeSyncCallback(struct timeval* tv);
+static void SntpResetVerificationState(void);
 
 static uint32_t
 TickNow(void)
@@ -608,6 +635,25 @@ LocalTmFieldsMatch(const struct tm* left, const struct tm* right)
          left->tm_sec == right->tm_sec;
 }
 
+static void
+SntpTimeSyncCallback(struct timeval* tv)
+{
+  if (tv == NULL) {
+    return;
+  }
+  s_sntp_time_set_epoch_utc = (int64_t)tv->tv_sec;
+  s_sntp_time_set_uptime_us = esp_timer_get_time();
+  s_sntp_time_set_callback_fired = true;
+}
+
+static void
+SntpResetVerificationState(void)
+{
+  s_sntp_time_set_callback_fired = false;
+  s_sntp_time_set_epoch_utc = 0;
+  s_sntp_time_set_uptime_us = 0;
+}
+
 /**
  * @brief Execute TimeParseLocalIso.
  * @param iso Parameter iso.
@@ -770,10 +816,18 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
     return ESP_ERR_INVALID_ARG;
   }
 
+  const int64_t system_epoch_before = (int64_t)time(NULL);
+  const int64_t attempt_uptime_us = esp_timer_get_time();
   strncpy(s_last_sntp_server, sntp_server, sizeof(s_last_sntp_server) - 1);
   s_last_sntp_server[sizeof(s_last_sntp_server) - 1] = '\0';
-  s_last_sntp_attempt_epoch = (int64_t)time(NULL);
+  s_last_sntp_attempt_epoch = system_epoch_before;
+  s_last_sntp_attempt_uptime_us = attempt_uptime_us;
   s_last_sntp_result = ESP_ERR_INVALID_STATE;
+  SntpResetVerificationState();
+
+  esp_err_t wait_result = ESP_ERR_TIMEOUT;
+  bool verified_set = false;
+  int64_t system_epoch_after = system_epoch_before;
 
 #if APP_USE_ESP_NETIF_SNTP
   // esp_netif_sntp_init() may only be called once unless the service is
@@ -786,6 +840,7 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
 
   esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(sntp_server);
   config.smooth_sync = false;
+  config.sync_cb = SntpTimeSyncCallback;
   const esp_err_t init_result = esp_netif_sntp_init(&config);
   if (init_result != ESP_OK) {
     ESP_LOGW(kTag, "SNTP init failed: %s", esp_err_to_name(init_result));
@@ -794,24 +849,30 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
   }
   s_esp_netif_sntp_initialized = true;
 
-  esp_err_t wait_result = ESP_ERR_TIMEOUT;
   const TickType_t start_ticks = xTaskGetTickCount();
   while (true) {
 #ifdef esp_netif_sntp_sync_wait
     wait_result = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(250));
-    if (wait_result == ESP_OK && TimeSyncIsSystemTimeValid()) {
-      break;
-    }
 #else
     // No sync_wait symbol; poll for valid time instead.
-
-    if (TimeSyncIsSystemTimeValid()) {
-      wait_result = ESP_OK;
-      break;
-    }
     wait_result = ESP_ERR_TIMEOUT;
     vTaskDelay(pdMS_TO_TICKS(200));
 #endif
+
+    const bool callback_fired = s_sntp_time_set_callback_fired;
+    const int64_t callback_epoch =
+      s_sntp_time_set_epoch_utc;
+    const int64_t system_epoch_now = (int64_t)time(NULL);
+    const int64_t callback_delta =
+      llabs(system_epoch_now - callback_epoch);
+    const int64_t kCallbackToleranceSeconds = 2;
+    if (callback_fired && TimeSyncIsSystemTimeValid() &&
+        callback_delta <= kCallbackToleranceSeconds) {
+      verified_set = true;
+      system_epoch_after = system_epoch_now;
+      wait_result = ESP_OK;
+      break;
+    }
 
     const int elapsed_ms =
       (int)pdTICKS_TO_MS(xTaskGetTickCount() - start_ticks);
@@ -824,40 +885,86 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
   // Stop + destroy the SNTP service; we run it only for one-off sync requests.
   esp_netif_sntp_deinit();
   s_esp_netif_sntp_initialized = false;
-
-  if (wait_result != ESP_OK) {
-    ESP_LOGW(kTag, "SNTP timeout/failure: %s", esp_err_to_name(wait_result));
-    s_last_sntp_result = wait_result;
-    return wait_result;
-  }
 #else
   // Legacy SNTP API (lwIP-based).
+  sntp_stop();
   sntp_setoperatingmode(SNTP_OPMODE_POLL);
   sntp_setservername(0, sntp_server);
+  sntp_set_time_sync_notification_cb(SntpTimeSyncCallback);
   sntp_init();
 
   const TickType_t start_ticks = xTaskGetTickCount();
-  while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET) {
+  while (true) {
+    if (sntp_get_sync_status() != SNTP_SYNC_STATUS_RESET) {
+      wait_result = ESP_OK;
+    }
+    const bool callback_fired = s_sntp_time_set_callback_fired;
+    const int64_t callback_epoch =
+      s_sntp_time_set_epoch_utc;
+    const int64_t system_epoch_now = (int64_t)time(NULL);
+    const int64_t callback_delta =
+      llabs(system_epoch_now - callback_epoch);
+    const int64_t kCallbackToleranceSeconds = 2;
+    if (callback_fired && TimeSyncIsSystemTimeValid() &&
+        callback_delta <= kCallbackToleranceSeconds) {
+      verified_set = true;
+      system_epoch_after = system_epoch_now;
+      break;
+    }
     vTaskDelay(pdMS_TO_TICKS(200));
     const int elapsed_ms =
       (int)pdTICKS_TO_MS(xTaskGetTickCount() - start_ticks);
     if (elapsed_ms >= timeout_ms) {
       ESP_LOGW(kTag, "SNTP timeout after %dms", elapsed_ms);
-      s_last_sntp_result = ESP_ERR_TIMEOUT;
-      return ESP_ERR_TIMEOUT;
+      wait_result = ESP_ERR_TIMEOUT;
+      break;
     }
   }
 #endif
 
-  if (!TimeSyncIsSystemTimeValid()) {
-    ESP_LOGW(kTag, "SNTP completed, but system time still not plausible");
-    s_last_sntp_result = ESP_ERR_INVALID_STATE;
-    return ESP_ERR_INVALID_STATE;
+  if (!verified_set) {
+    system_epoch_after = (int64_t)time(NULL);
+  }
+  const bool callback_fired = s_sntp_time_set_callback_fired;
+  const int64_t callback_epoch = s_sntp_time_set_epoch_utc;
+  const int64_t callback_uptime_us = s_sntp_time_set_uptime_us;
+  const int64_t delta_seconds = system_epoch_after - system_epoch_before;
+
+  ESP_LOGI(kTag,
+           "SNTP attempt summary: server=%s verified=%s callback=%s "
+           "before=%" PRId64 " after=%" PRId64 " delta=%" PRId64
+           " cb_epoch=%" PRId64,
+           s_last_sntp_server,
+           verified_set ? "yes" : "no",
+           callback_fired ? "yes" : "no",
+           system_epoch_before,
+           system_epoch_after,
+           delta_seconds,
+           callback_epoch);
+
+  ESP_LOGI(kTag,
+           "SNTP callback state: fired=%s cb_epoch=%" PRId64
+           " cb_uptime_us=%" PRId64 " attempt_uptime_us=%" PRId64,
+           callback_fired ? "yes" : "no",
+           callback_epoch,
+           callback_uptime_us,
+           s_last_sntp_attempt_uptime_us);
+
+  if (!verified_set) {
+    if (wait_result == ESP_OK) {
+      wait_result = ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGW(kTag,
+             "SNTP wait failed: result=%s callback=%s",
+             esp_err_to_name(wait_result),
+             callback_fired ? "yes" : "no");
+    s_last_sntp_result = wait_result;
+    return wait_result;
   }
 
   ESP_LOGI(kTag, "SNTP synced");
   s_last_sntp_result = ESP_OK;
-  s_last_sntp_success_epoch = (int64_t)time(NULL);
+  s_last_sntp_success_epoch = callback_epoch;
   return ESP_OK;
 }
 
