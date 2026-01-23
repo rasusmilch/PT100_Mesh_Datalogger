@@ -1658,8 +1658,11 @@ FormatTemperatureText(char* out,
   }
 
   if (abs_tenths >= 1000) {
-    const int32_t whole = tenths / 10;
-    snprintf(out, out_len, "%ld%c", (long)whole, unit_char);
+    const int32_t whole = abs_tenths / 10;
+    const int32_t frac = abs_tenths % 10;
+    const char* sign = (tenths < 0) ? "-" : "";
+    snprintf(out, out_len, "%s%ld.%01ld%c", sign, (long)whole, (long)frac,
+             unit_char);
     return;
   }
 
@@ -1669,10 +1672,6 @@ FormatTemperatureText(char* out,
     snprintf(out, out_len, "-%ld.%ld%c", (long)whole, (long)frac, unit_char);
   } else {
     snprintf(out, out_len, "%ld.%ld%c", (long)whole, (long)frac, unit_char);
-  }
-  if (strlen(out) > 5) {
-    const int32_t whole_no_decimal = tenths / 10;
-    snprintf(out, out_len, "%ld%c", (long)whole_no_decimal, unit_char);
   }
 }
 
