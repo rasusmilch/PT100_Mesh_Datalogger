@@ -148,8 +148,12 @@ extern "C"
   enum
   {
     kLogQueueDepth = 64,
-    kStorageTaskStackBytes = 6144,    // bytes
-    kSdFlushTaskStackBytes = 4096,    // bytes
+    kStorageTaskStackBytes = 6144, // bytes
+
+    // SD flush traverses FatFs/VFS/Newlib and the SDSPI DMA path. 4KB proved
+    // marginal during watermark drains and day-rollover file creation (very
+    // low observed watermark), which can lead to corruption/trace traps.
+    kSdFlushTaskStackBytes = 8192,    // bytes
     kNetTxTaskStackBytes = 6144,      // bytes
     kAlertHttpTaskStackBytes = 11264, // bytes
   };
