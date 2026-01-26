@@ -2596,12 +2596,8 @@ CalConsoleOpStartLive(uint32_t every_ms, int seconds)
   g_cal_console_op.start_us = esp_timer_get_time();
   g_cal_console_op.stable_start_us = -1;
   g_cal_console_op.last_sample_count = 0;
-  BaseType_t created = xTaskCreate(&CalConsoleOpTask,
-                                   "cal_op",
-                                   6144,
-                                   NULL,
-                                   2,
-                                   &g_cal_console_op.task_handle);
+  BaseType_t created = xTaskCreate(
+    &CalConsoleOpTask, "cal_op", 6144, NULL, 2, &g_cal_console_op.task_handle);
   if (created != pdPASS) {
     g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
     g_cal_console_op.task_handle = NULL;
@@ -2637,12 +2633,8 @@ CalConsoleOpStartCapture(double actual_temp_c,
   g_cal_console_op.start_us = esp_timer_get_time();
   g_cal_console_op.stable_start_us = -1;
   g_cal_console_op.last_sample_count = 0;
-  BaseType_t created = xTaskCreate(&CalConsoleOpTask,
-                                   "cal_op",
-                                   6144,
-                                   NULL,
-                                   2,
-                                   &g_cal_console_op.task_handle);
+  BaseType_t created = xTaskCreate(
+    &CalConsoleOpTask, "cal_op", 6144, NULL, 2, &g_cal_console_op.task_handle);
   if (created != pdPASS) {
     g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
     g_cal_console_op.task_handle = NULL;
@@ -2842,18 +2834,13 @@ CalConsoleOpTask(void* task_arg)
     const size_t sample_count = CalWindowGetSampleCount();
     const int64_t now_us = esp_timer_get_time();
     const bool print_due =
-      (sample_count != last_sample_count) ||
-      (last_print_us == 0) ||
-      (now_us - last_print_us >=
-       (int64_t)print_every_ms * 1000LL);
+      (sample_count != last_sample_count) || (last_print_us == 0) ||
+      (now_us - last_print_us >= (int64_t)print_every_ms * 1000LL);
 
     if (mode == CAL_CONSOLE_OP_LIVE) {
       if (print_due) {
-        PrintCalWindowLine_("cal live",
-                            sample_count,
-                            last_raw_mC,
-                            mean_raw_mC,
-                            stddev_mC);
+        PrintCalWindowLine_(
+          "cal live", sample_count, last_raw_mC, mean_raw_mC, stddev_mC);
         last_print_us = now_us;
         last_sample_count = sample_count;
       }
@@ -2864,8 +2851,7 @@ CalConsoleOpTask(void* task_arg)
       }
     } else if (mode == CAL_CONSOLE_OP_CAPTURE) {
       const double stddev_c = stddev_mC / 1000.0;
-      const bool stable =
-        CalWindowIsReady() && (stddev_c <= stable_stddev_c);
+      const bool stable = CalWindowIsReady() && (stddev_c <= stable_stddev_c);
       if (stable) {
         if (stable_start_us < 0) {
           stable_start_us = now_us;
@@ -2879,17 +2865,16 @@ CalConsoleOpTask(void* task_arg)
         (stable_start_us >= 0) ? (now_us - stable_start_us) / 1000000.0 : 0.0;
 
       if (print_due) {
-        printf(
-          "cal capture: t=%.1fs n=%u mean=%.3fC std=%.3fC stable=%.1f/%ds "
-          "thr=%.3fC actual=%.3fC\n",
-          elapsed_s,
-          (unsigned)sample_count,
-          mean_raw_mC / 1000.0,
-          stddev_c,
-          stable_elapsed_s,
-          min_seconds,
-          stable_stddev_c,
-          actual_temp_c);
+        printf("cal capture: t=%.1fs n=%u mean=%.3fC std=%.3fC stable=%.1f/%ds "
+               "thr=%.3fC actual=%.3fC\n",
+               elapsed_s,
+               (unsigned)sample_count,
+               mean_raw_mC / 1000.0,
+               stddev_c,
+               stable_elapsed_s,
+               min_seconds,
+               stable_stddev_c,
+               actual_temp_c);
         last_print_us = now_us;
         last_sample_count = sample_count;
       }
@@ -3088,9 +3073,8 @@ CommandCal(int argc, char** argv)
         if (strncmp(arg, "--", 2) == 0) {
           const char* option = arg + 2;
           const char* value_eq = strchr(option, '=');
-          if (value_eq == NULL &&
-              (strncmp(option, "every_ms", 8) == 0 ||
-               strncmp(option, "seconds", 7) == 0)) {
+          if (value_eq == NULL && (strncmp(option, "every_ms", 8) == 0 ||
+                                   strncmp(option, "seconds", 7) == 0)) {
             if (i + 1 < argc) {
               ++i;
             }
@@ -3133,8 +3117,8 @@ CommandCal(int argc, char** argv)
         return 1;
       }
 
-      if (every_ms <= 0 || (seconds_positional_set || seconds_option_set) &&
-                             seconds <= 0) {
+      if ((every_ms <= 0 || (seconds_positional_set || seconds_option_set)) &&
+          (seconds <= 0)) {
         printf("usage: cal live [seconds] [--every_ms 1000]\n");
         return 1;
       }
