@@ -239,6 +239,25 @@ PrintRtdEmaSettings(const app_settings_t* settings,
   }
 }
 
+static void
+PrintRtdFaultSettings(const app_settings_t* settings,
+                      const runtime_state_t* state)
+{
+  if (settings == NULL) {
+    return;
+  }
+  printf("rtd_fault_assert_ms: %u\n",
+         (unsigned)settings->rtd_fault_assert_ms);
+  printf("rtd_fault_clear_ms: %u\n",
+         (unsigned)settings->rtd_fault_clear_ms);
+  if (state != NULL) {
+    printf("rtd_fault_suppressed_count: %u\n",
+           (unsigned)state->rtd_fault_suppressed_count);
+    printf("rtd_fault_last_status: 0x%02X\n",
+           state->rtd_fault_last_status);
+  }
+}
+
 /**
  * @brief Execute ParseDisplayAttentionName.
  * @param value Parameter value.
@@ -956,7 +975,7 @@ CommandRtd(int argc, char** argv)
   }
   if (argc < 2) {
     printf("usage: rtd show | rtd ema show | rtd ema on|off | rtd ema alpha "
-           "<0.0..1.0>\n");
+           "<0.0..1.0> | rtd fault [assert_ms clear_ms]\n");
     return 1;
   }
 
@@ -968,9 +987,53 @@ CommandRtd(int argc, char** argv)
     return 0;
   }
 
+  if (strcmp(action, "fault") == 0) {
+    if (argc == 2) {
+      PrintRtdFaultSettings(settings, RuntimeGetState());
+      return 0;
+    }
+    if (argc != 4) {
+      printf("usage: rtd fault [assert_ms clear_ms]\n");
+      return 1;
+    }
+    char* end = NULL;
+    const uint32_t max_ms = 60000u;
+    long long assert_value = strtoll(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0' || assert_value < 0) {
+      printf("assert_ms must be a non-negative integer\n");
+      return 1;
+    }
+    long long clear_value = strtoll(argv[3], &end, 10);
+    if (end == argv[3] || *end != '\0' || clear_value < 0) {
+      printf("clear_ms must be a non-negative integer\n");
+      return 1;
+    }
+    uint32_t assert_ms = (uint32_t)assert_value;
+    uint32_t clear_ms = (uint32_t)clear_value;
+    if (assert_value > (long long)max_ms) {
+      assert_ms = max_ms;
+      printf("assert_ms clamped to %u\n", (unsigned)max_ms);
+    }
+    if (clear_value > (long long)max_ms) {
+      clear_ms = max_ms;
+      printf("clear_ms clamped to %u\n", (unsigned)max_ms);
+    }
+    settings->rtd_fault_assert_ms = assert_ms;
+    settings->rtd_fault_clear_ms = clear_ms;
+    const esp_err_t result =
+      AppSettingsSaveRtdFaultDebounceMs(assert_ms, clear_ms);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    printf("rtd_fault_assert_ms set to %u\n", (unsigned)assert_ms);
+    printf("rtd_fault_clear_ms set to %u\n", (unsigned)clear_ms);
+    return 0;
+  }
+
   if (strcmp(action, "ema") != 0) {
     printf("usage: rtd show | rtd ema show | rtd ema on|off | rtd ema alpha "
-           "<0.0..1.0>\n");
+           "<0.0..1.0> | rtd fault [assert_ms clear_ms]\n");
     return 1;
   }
 
@@ -1032,7 +1095,7 @@ CommandRtd(int argc, char** argv)
   }
 
   printf("usage: rtd show | rtd ema show | rtd ema on|off | rtd ema alpha "
-         "<0.0..1.0>\n");
+         "<0.0..1.0> | rtd fault [assert_ms clear_ms]\n");
   return 1;
 }
 

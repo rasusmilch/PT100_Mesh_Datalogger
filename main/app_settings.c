@@ -44,6 +44,8 @@ static const char* kKeyCalContextR0 = "cal_ctx_r0";
 static const char* kKeyCalContextTableVer = "cal_ctx_table";
 static const char* kKeyRtdEmaEnabled = "rtd_ema_en";
 static const char* kKeyRtdEmaAlphaPermille = "rtd_ema_alpha";
+static const char* kKeyRtdFaultAssertMs = "rtd_f_as_ms";
+static const char* kKeyRtdFaultClearMs = "rtd_f_cl_ms";
 static const char* kKeyTzPosix = "tz_posix";
 static const char* kKeyDstEnabled = "dst_enabled";
 static const char* kKeyNodeRole = "node_role";
@@ -64,6 +66,7 @@ static const char* kKeyMqttQos = "mqtt_qos";
 static const char* kKeyMqttRetain = "mqtt_ret";
 static const char* kKeyMqttBridgeMode = "mqtt_bmode";
 static const uint8_t kCalibrationContextVersion = 1;
+static const uint32_t kRtdFaultDebounceMaxMs = 60000u;
 static uint32_t g_display_attention_policy = 0;
 static display_attention_mask_t g_display_attention_mask = 0;
 static uint32_t g_net_mode_revision = 0;
@@ -309,6 +312,8 @@ ApplyDefaults(app_settings_t* settings)
   settings->cal_due_override_unit = 0;
   settings->rtd_ema_enabled = false;
   settings->rtd_ema_alpha_permille = 200;
+  settings->rtd_fault_assert_ms = 2000u;
+  settings->rtd_fault_clear_ms = 3000u;
   snprintf(settings->tz_posix,
            sizeof(settings->tz_posix),
            "%s",
@@ -650,6 +655,18 @@ AppSettingsLoad(app_settings_t* settings_out)
     settings_out->rtd_ema_alpha_permille = (uint16_t)rtd_ema_alpha;
   }
 
+  uint32_t rtd_fault_assert_ms = settings_out->rtd_fault_assert_ms;
+  result = nvs_get_u32(handle, kKeyRtdFaultAssertMs, &rtd_fault_assert_ms);
+  if (result == ESP_OK && rtd_fault_assert_ms <= kRtdFaultDebounceMaxMs) {
+    settings_out->rtd_fault_assert_ms = rtd_fault_assert_ms;
+  }
+
+  uint32_t rtd_fault_clear_ms = settings_out->rtd_fault_clear_ms;
+  result = nvs_get_u32(handle, kKeyRtdFaultClearMs, &rtd_fault_clear_ms);
+  if (result == ESP_OK && rtd_fault_clear_ms <= kRtdFaultDebounceMaxMs) {
+    settings_out->rtd_fault_clear_ms = rtd_fault_clear_ms;
+  }
+
   size_t tz_len = sizeof(settings_out->tz_posix);
   result = nvs_get_str(handle, kKeyTzPosix, settings_out->tz_posix, &tz_len);
   if (result != ESP_OK || tz_len == 0 ||
@@ -834,8 +851,8 @@ AppSettingsLoad(app_settings_t* settings_out)
     "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u rtc_resync_ms=%u "
     "deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u "
     "display_units=%s net_mode=%s mqtt_en=%u mqtt_uri=%s mqtt_pfx=%s "
-    "mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s disp_attn_pol=0x%08" PRIX32
-    " disp_attn_mask=0x%08" PRIX32,
+    "mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s rtd_f_as_ms=%u rtd_f_cl_ms=%u "
+    "disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
     (unsigned)settings_out->log_period_ms,
     (unsigned)settings_out->fram_flush_watermark_records,
     (unsigned)settings_out->sd_flush_period_ms,
@@ -855,6 +872,8 @@ AppSettingsLoad(app_settings_t* settings_out)
     (unsigned)settings_out->mqtt_qos,
     settings_out->mqtt_retain ? 1u : 0u,
     AppSettingsMqttBridgeModeToString(settings_out->mqtt_bridge_mode),
+    (unsigned)settings_out->rtd_fault_assert_ms,
+    (unsigned)settings_out->rtd_fault_clear_ms,
     (uint32_t)settings_out->display_attention_policy,
     (uint32_t)settings_out->display_attention_mask);
   return ESP_OK;
@@ -1181,6 +1200,34 @@ AppSettingsSaveRtdEmaAlphaPermille(uint16_t permille)
     return result;
   }
   result = nvs_set_u32(handle, kKeyRtdEmaAlphaPermille, permille);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return result;
+}
+
+/**
+ * @brief Execute AppSettingsSaveRtdFaultDebounceMs.
+ * @param assert_ms Parameter assert_ms.
+ * @param clear_ms Parameter clear_ms.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveRtdFaultDebounceMs(uint32_t assert_ms, uint32_t clear_ms)
+{
+  if (assert_ms > kRtdFaultDebounceMaxMs || clear_ms > kRtdFaultDebounceMaxMs) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = nvs_set_u32(handle, kKeyRtdFaultAssertMs, assert_ms);
+  if (result == ESP_OK) {
+    result = nvs_set_u32(handle, kKeyRtdFaultClearMs, clear_ms);
+  }
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }

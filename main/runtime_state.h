@@ -277,9 +277,13 @@ extern "C"
     uint32_t last_fram_log_lock_timeout_sdflush_log_ms;
     bool i2c_recovery_in_progress;
 
-    // Sensor fault logging state (rate-limited).
+    // Sensor fault logging/debounce state (rate-limited).
     bool last_sensor_fault_present;
-    uint8_t last_sensor_fault_status;
+    int64_t rtd_fault_pending_since_ms;
+    int64_t rtd_clear_pending_since_ms;
+    bool rtd_fault_pending_was_raw;
+    uint32_t rtd_fault_suppressed_count;
+    uint8_t rtd_fault_last_status;
     TickType_t last_sensor_fault_log_ticks;
     TickType_t last_sensor_spi_log_ticks;
     uint32_t sensor_spi_invalid_streak;
