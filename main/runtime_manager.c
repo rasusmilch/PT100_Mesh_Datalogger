@@ -215,6 +215,9 @@ RuntimeRecoverI2cBusCommon(runtime_state_t* state,
 static void
 RuntimeRecoverI2cBusLocked(runtime_state_t* state, const char* reason);
 
+static void
+RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context);
+
 /**
  * @brief Execute DiscardFramRecordsWithYield.
  * @param state Parameter state.
@@ -3898,104 +3901,25 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
   return (total_flushed > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
-/**
- * @brief Execute MarkSdFailure.
- * @param state Parameter state.
- * @param context Parameter context.
- * @param operation Parameter operation.
- * @param error Parameter error.
- * @param errno_value Parameter errno_value.
- * @param did_unmount Parameter did_unmount.
- */
-static bool
-SdHardResetLocked(runtime_state_t* state, const char* context)
+static void
+RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context)
 {
-  if (state == NULL) {
-    return false;
+  const int64_t event_epoch = (int64_t)time(NULL);
+  const uint32_t event_uptime_ms =
+    (uint32_t)(esp_timer_get_time() / 1000);
+  const bool ntfy_sent = RuntimeAttemptPreRebootAlertSend(
+    state, ALERT_SYSTEM_CODE_ERROR_SD_IO, event_epoch, event_uptime_ms);
+  if (ntfy_sent) {
+    RuntimeRebootAlertLatchClear();
+  } else {
+    RuntimeRebootAlertLatchSet(
+      ALERT_SYSTEM_CODE_ERROR_SD_IO, event_epoch, event_uptime_ms);
   }
-  const TickType_t now_ticks = xTaskGetTickCount();
-  const TickType_t min_interval_ticks = pdMS_TO_TICKS(30000);
-  if (state->sd_last_bus_reset_ticks != 0 &&
-      (now_ticks - state->sd_last_bus_reset_ticks) < min_interval_ticks) {
-    ESP_LOGW(kTag,
-             "%s: SD hard reset skipped (rate limited)",
-             (context != NULL) ? context : "SD reset");
-    return false;
-  }
-
-  ESP_LOGW(
-    kTag, "%s: performing SD hard reset", (context != NULL) ? context : "SD");
-  if (!RuntimePauseSpiUsers(state, 2000u)) {
-    RuntimeResumeSpiUsers(state);
-    return false;
-  }
-
-  if (!RuntimeSpiBusLock(state, kSdIoLockTimeoutTicks)) {
-    RuntimeResumeSpiUsers(state);
-    return false;
-  }
-
-  if (!RuntimeSdFsLock(state, kSdIoLockTimeoutTicks)) {
-    ESP_LOGW(kTag,
-             "%s: SD reset skipped; SD lock unavailable",
-             (context != NULL) ? context : "SD reset");
-    RuntimeSpiBusUnlock(state);
-    RuntimeResumeSpiUsers(state);
-    return false;
-  }
-
-  const bool bus_shared = RuntimeIsAppSpiBusShared(state);
-
-  if (state->sd_logger.is_mounted) {
-    (void)SdLoggerUnmount(&state->sd_logger);
-  }
-  RuntimeSdFsUnlock(state);
-
-  if (!bus_shared && state->sensor.is_initialized) {
-    (void)Max31865ReaderDeinit(&state->sensor);
-  }
-
-#if CONFIG_APP_MAX7219_ENABLE
-#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
-  const bool display_on_app_bus = true;
-#else
-  const bool display_on_app_bus = false;
-#endif
-  const bool display_reinit =
-    display_on_app_bus && state->display_initialized && !bus_shared;
-  if (display_reinit) {
-    (void)Max7219DisplayDeinit(&state->display);
-    state->display_initialized = false;
-  }
-#endif
-
-  if (!bus_shared) {
-    (void)spi_bus_free(GetSpiHost());
-    vTaskDelay(pdMS_TO_TICKS(20));
-    (void)InitSpiBus(GetSpiHost());
-
-    const esp_err_t sensor_init_result =
-      InitializeMax31865Sensor(state, GetSpiHost());
-    if (sensor_init_result != ESP_OK) {
-      ESP_LOGW(kTag,
-               "MAX31865 reinit failed after SPI reset: %s",
-               esp_err_to_name(sensor_init_result));
-    }
-  }
-
-#if CONFIG_APP_MAX7219_ENABLE
-  if (display_reinit) {
-    (void)InitializeMax7219Display(state);
-  }
-#endif
-
-  RuntimeSpiBusUnlock(state);
-  RuntimeResumeSpiUsers(state);
-
-  state->sd_backoff_until_ticks = now_ticks + pdMS_TO_TICKS(500);
-  state->sd_last_bus_reset_ticks = now_ticks;
-  state->sd_bus_reset_count++;
-  return true;
+  ESP_LOGE(kTag,
+           "%s: SD I/O escalation detected; rebooting to avoid SPI reset path",
+           (context != NULL) ? context : "SD");
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  esp_restart();
 }
 
 static void
@@ -4014,6 +3938,8 @@ MarkSdFailure(runtime_state_t* state,
   state->sd_fail_count++;
   if (errno_value == EIO && did_unmount && state->sd_fail_count >= 3u) {
     if (!state->sd_reset_pending) {
+      // SD hard reset recovery tears down the SPI bus and can corrupt heap
+      // state under IPC; reboot to return to a known-good state.
       state->sd_reset_pending = true;
       state->sd_reset_pending_since_ticks = now_ticks;
       state->sd_reset_pending_context = context;
@@ -4021,6 +3947,8 @@ MarkSdFailure(runtime_state_t* state,
       ESP_LOGW(kTag,
                "%s: SD reset requested after EIO escalation",
                (context != NULL) ? context : "SD");
+      RuntimeRebootOnSdEioEscalation(state, context);
+      return;
     }
   }
   ReduceSdMaxFreqOnEio(state, errno_value);
@@ -4088,12 +4016,7 @@ SdResetPendingTick(runtime_state_t* state)
   const char* context = (state->sd_reset_pending_context != NULL)
                           ? state->sd_reset_pending_context
                           : "SD reset";
-  if (SdHardResetLocked(state, context)) {
-    state->sd_reset_pending = false;
-    state->sd_reset_pending_context = NULL;
-    state->sd_reset_pending_errno = 0;
-    state->sd_reset_pending_since_ticks = 0;
-  }
+  RuntimeRebootOnSdEioEscalation(state, context);
 }
 
 static void

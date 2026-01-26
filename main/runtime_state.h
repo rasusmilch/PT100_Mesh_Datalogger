@@ -241,6 +241,7 @@ extern "C"
     bool sd_last_io_error_active;
     uint32_t sd_io_error_streak;
     uint32_t sd_io_success_streak;
+    // Set after SD EIO escalation; triggers a reboot instead of SPI teardown.
     bool sd_reset_pending;
     const char* sd_reset_pending_context;
     int sd_reset_pending_errno;
