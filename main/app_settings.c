@@ -141,6 +141,12 @@ static uint32_t g_settings_blob_generation = 0;
 static bool g_saved_settings_valid = false;
 static app_settings_t g_saved_settings;
 
+static esp_err_t
+AppSettingsSaveBlob(const app_settings_t* settings);
+
+static esp_err_t
+OpenNvs(nvs_handle_t* handle_out);
+
 /**
  * @brief Execute DefaultNodeRole.
  * @return Return the function result.
@@ -646,8 +652,8 @@ SettingsPayloadFromSettings(const app_settings_t* settings,
   payload->rtc_resync_period_ms = settings->rtc_resync_period_ms;
   payload->calibration = settings->calibration;
   payload->calibration_context = settings->calibration_context;
-  payload->calibration_context_valid = settings->calibration_context_valid ? 1u
-                                                                           : 0u;
+  payload->calibration_context_valid =
+    settings->calibration_context_valid ? 1u : 0u;
   memcpy(payload->calibration_points,
          settings->calibration_points,
          sizeof(payload->calibration_points));
@@ -662,10 +668,8 @@ SettingsPayloadFromSettings(const app_settings_t* settings,
   payload->rtd_ema_alpha_permille = settings->rtd_ema_alpha_permille;
   payload->rtd_fault_assert_ms = settings->rtd_fault_assert_ms;
   payload->rtd_fault_clear_ms = settings->rtd_fault_clear_ms;
-  snprintf(payload->tz_posix,
-           sizeof(payload->tz_posix),
-           "%s",
-           settings->tz_posix);
+  snprintf(
+    payload->tz_posix, sizeof(payload->tz_posix), "%s", settings->tz_posix);
   payload->dst_enabled = settings->dst_enabled ? 1u : 0u;
   payload->node_role = (uint8_t)settings->node_role;
   payload->allow_children = settings->allow_children ? 1u : 0u;
@@ -730,14 +734,13 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
     settings_out->calibration.mode =
       (calibration_fit_mode_t)payload->calibration.mode;
   } else if (settings_out->calibration.is_valid) {
-    settings_out->calibration.mode =
-      (settings_out->calibration.degree > 1) ? CAL_FIT_MODE_POLY
-                                             : CAL_FIT_MODE_LINEAR;
+    settings_out->calibration.mode = (settings_out->calibration.degree > 1)
+                                       ? CAL_FIT_MODE_POLY
+                                       : CAL_FIT_MODE_LINEAR;
   }
 
   if (payload->calibration_points_count <= CALIBRATION_MAX_POINTS) {
-    settings_out->calibration_points_count =
-      payload->calibration_points_count;
+    settings_out->calibration_points_count = payload->calibration_points_count;
     memcpy(settings_out->calibration_points,
            payload->calibration_points,
            sizeof(settings_out->calibration_points));
@@ -791,8 +794,7 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
     settings_out->rtd_fault_clear_ms = payload->rtd_fault_clear_ms;
   }
 
-  const size_t tz_len =
-    strnlen(payload->tz_posix, sizeof(payload->tz_posix));
+  const size_t tz_len = strnlen(payload->tz_posix, sizeof(payload->tz_posix));
   if (tz_len > 0 && tz_len < sizeof(payload->tz_posix)) {
     memcpy(settings_out->tz_posix,
            payload->tz_posix,
@@ -863,8 +865,8 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
     memcpy(settings_out->mqtt_topic_prefix,
            payload->mqtt_topic_prefix,
            sizeof(settings_out->mqtt_topic_prefix));
-    settings_out->mqtt_topic_prefix[sizeof(settings_out->mqtt_topic_prefix) -
-                                    1] = '\0';
+    settings_out
+      ->mqtt_topic_prefix[sizeof(settings_out->mqtt_topic_prefix) - 1] = '\0';
   }
 
   if (payload->mqtt_qos <= 1) {
@@ -880,7 +882,8 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
 }
 
 /**
- * @brief Initialize a settings snapshot using the last saved settings or defaults.
+ * @brief Initialize a settings snapshot using the last saved settings or
+ * defaults.
  * @param settings_out Parameter settings_out.
  */
 static void
@@ -936,9 +939,8 @@ AppSettingsSaveBlob(const app_settings_t* settings)
   SettingsPayloadFromSettings(settings, &blob.payload);
   blob.header.crc32_le = ComputeSettingsBlobCrc32(&blob);
 
-  const char* key =
-    ((blob.header.generation % 2u) == 0u) ? kKeySettingsBlob0
-                                          : kKeySettingsBlob1;
+  const char* key = ((blob.header.generation % 2u) == 0u) ? kKeySettingsBlob0
+                                                          : kKeySettingsBlob1;
 
   nvs_handle_t handle;
   esp_err_t result = OpenNvs(&handle);
@@ -1105,8 +1107,8 @@ AppSettingsLoadLegacy(nvs_handle_t handle,
   uint8_t cal_due_override_unit = settings_out->cal_due_override_unit;
   result = nvs_get_u8(handle, kKeyCalDueOverrideUnit, &cal_due_override_unit);
   if (result == ESP_ERR_NVS_NOT_FOUND) {
-    result = nvs_get_u8(
-      handle, kKeyCalDueOverrideUnitLegacy, &cal_due_override_unit);
+    result =
+      nvs_get_u8(handle, kKeyCalDueOverrideUnitLegacy, &cal_due_override_unit);
     if (result == ESP_ERR_NVS_KEY_TOO_LONG) {
       result = ESP_ERR_NVS_NOT_FOUND;
     }
@@ -1851,10 +1853,8 @@ AppSettingsSaveMqttBrokerUri(const char* uri)
   }
   app_settings_t settings;
   InitSettingsSnapshot(&settings);
-  snprintf(settings.mqtt_broker_uri,
-           sizeof(settings.mqtt_broker_uri),
-           "%s",
-           uri);
+  snprintf(
+    settings.mqtt_broker_uri, sizeof(settings.mqtt_broker_uri), "%s", uri);
   return PersistSettingsSnapshot(&settings);
 }
 
