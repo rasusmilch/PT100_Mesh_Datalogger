@@ -110,6 +110,17 @@ ParseUtcDateString(const char* value, int64_t* epoch_out);
 static bool
 ParseCalDueUnit(const char* value, uint8_t* unit_out);
 /**
+ * @brief Resolve the actual temperature argument for cal capture.
+ * @param raw_c Raw temperature argument (fallback positional value).
+ * @param actual_c Actual temperature argument (preferred positional value).
+ * @param actual_temp_c_out Output resolved actual temperature in Celsius.
+ * @return true when exactly one positional value was supplied.
+ */
+static bool
+ResolveCalCaptureActualTemp(const struct arg_dbl* raw_c,
+                            const struct arg_dbl* actual_c,
+                            double* actual_temp_c_out);
+/**
  * @brief Print system time in UTC and local time using current TZ/DST settings.
  * @param runtime Runtime context.
  */
@@ -2489,6 +2500,34 @@ static struct
 } g_cal_args;
 
 /**
+ * @brief Resolve the actual temperature argument for cal capture.
+ * @param raw_c Raw temperature argument (fallback positional value).
+ * @param actual_c Actual temperature argument (preferred positional value).
+ * @param actual_temp_c_out Output resolved actual temperature in Celsius.
+ * @return true when exactly one positional value was supplied.
+ */
+static bool
+ResolveCalCaptureActualTemp(const struct arg_dbl* raw_c,
+                            const struct arg_dbl* actual_c,
+                            double* actual_temp_c_out)
+{
+  if (raw_c == NULL || actual_c == NULL || actual_temp_c_out == NULL) {
+    return false;
+  }
+  const int raw_count = raw_c->count;
+  const int actual_count = actual_c->count;
+  if (raw_count + actual_count != 1) {
+    return false;
+  }
+  if (actual_count == 1) {
+    *actual_temp_c_out = actual_c->dval[0];
+  } else {
+    *actual_temp_c_out = raw_c->dval[0];
+  }
+  return true;
+}
+
+/**
  * @brief Execute CommandCal.
  * @param argc Parameter argc.
  * @param argv Parameter argv.
@@ -2804,7 +2843,9 @@ CommandCal(int argc, char** argv)
   }
 
   if (strcmp(action, "capture") == 0) {
-    if (g_cal_args.actual_c->count != 1) {
+    double actual_temp_c = 0.0;
+    if (!ResolveCalCaptureActualTemp(
+          g_cal_args.raw_c, g_cal_args.actual_c, &actual_temp_c)) {
       printf("usage: cal capture <actual_temp_c> "
              "[--stable_stddev_c 0.05] [--min_seconds 5] "
              "[--timeout_seconds 120]\n");
@@ -2816,7 +2857,6 @@ CommandCal(int argc, char** argv)
       return 1;
     }
 
-    const double actual_temp_c = g_cal_args.actual_c->dval[0];
     const double stable_stddev_c = (g_cal_args.stable_stddev_c->count > 0)
                                      ? g_cal_args.stable_stddev_c->dval[0]
                                      : 0.05;
