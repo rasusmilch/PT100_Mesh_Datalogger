@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "esp_log.h"
+#include "esp_rom_crc.h"
 #include "max31865_reader.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -30,7 +31,8 @@ static const char* kKeyCalLastOverrideUtc = "cal_last_ovr";
 static const char* kKeyCalDueCount = "cal_due_cnt";
 static const char* kKeyCalDueUnit = "cal_due_unit";
 static const char* kKeyCalDueOverrideCount = "cal_due_ovr_cnt";
-static const char* kKeyCalDueOverrideUnit = "cal_due_ovr_unit";
+static const char* kKeyCalDueOverrideUnit = "cal_due_ovr_u";
+static const char* kKeyCalDueOverrideUnitLegacy = "cal_due_ovr_unit";
 // NVS key names are limited to 15 characters (not including the NUL).
 // Keep this <= 15 to avoid ESP_ERR_NVS_KEY_TOO_LONG.
 static const char* kKeyCalPointsCount = "cal_pt_count";
@@ -70,6 +72,74 @@ static const uint32_t kRtdFaultDebounceMaxMs = 60000u;
 static uint32_t g_display_attention_policy = 0;
 static display_attention_mask_t g_display_attention_mask = 0;
 static uint32_t g_net_mode_revision = 0;
+static const char* kKeySettingsBlob0 = "cfg0";
+static const char* kKeySettingsBlob1 = "cfg1";
+
+#define APP_SETTINGS_BLOB_MAGIC 0x53455454u // 'SETT'
+#define APP_SETTINGS_BLOB_VERSION 1u
+
+#pragma pack(push, 1)
+typedef struct
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t reserved;
+  uint32_t size;
+  uint32_t generation;
+  uint32_t crc32_le;
+} app_settings_blob_header_t;
+
+typedef struct
+{
+  uint32_t log_period_ms;
+  uint32_t fram_flush_watermark_records;
+  uint32_t sd_flush_period_ms;
+  uint32_t sd_batch_bytes_target;
+  uint32_t rtc_resync_period_ms;
+  calibration_model_t calibration;
+  calibration_context_t calibration_context;
+  uint8_t calibration_context_valid;
+  calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
+  uint8_t calibration_points_count;
+  int64_t cal_last_utc;
+  int64_t cal_last_override_utc;
+  uint16_t cal_due_count;
+  uint8_t cal_due_unit;
+  uint16_t cal_due_override_count;
+  uint8_t cal_due_override_unit;
+  uint8_t rtd_ema_enabled;
+  uint16_t rtd_ema_alpha_permille;
+  uint32_t rtd_fault_assert_ms;
+  uint32_t rtd_fault_clear_ms;
+  char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
+  uint8_t dst_enabled;
+  uint8_t node_role;
+  uint8_t allow_children;
+  uint8_t allow_children_set;
+  uint8_t display_units;
+  int32_t units_gpio_pin;
+  uint8_t units_gpio_pull;
+  uint8_t units_gpio_c_level_high;
+  uint32_t display_attention_policy;
+  uint8_t net_mode;
+  uint8_t mqtt_enabled;
+  char mqtt_broker_uri[128];
+  char mqtt_topic_prefix[64];
+  uint8_t mqtt_qos;
+  uint8_t mqtt_retain;
+  uint8_t mqtt_bridge_mode;
+} app_settings_persist_payload_t;
+
+typedef struct
+{
+  app_settings_blob_header_t header;
+  app_settings_persist_payload_t payload;
+} app_settings_blob_t;
+#pragma pack(pop)
+
+static uint32_t g_settings_blob_generation = 0;
+static bool g_saved_settings_valid = false;
+static app_settings_t g_saved_settings;
 
 /**
  * @brief Execute DefaultNodeRole.
@@ -480,38 +550,435 @@ ValidateCalibrationDueSettings(uint16_t* count, uint8_t* unit)
 }
 
 /**
- * @brief Execute OpenNvs.
- * @param handle_out Parameter handle_out.
- * @return Return the function result.
+ * @brief Compute the CRC32 for a settings blob with the CRC field cleared.
+ * @param blob Parameter blob.
+ * @return Return the computed CRC32 value.
  */
-static esp_err_t
-OpenNvs(nvs_handle_t* handle_out)
+static uint32_t
+ComputeSettingsBlobCrc32(const app_settings_blob_t* blob)
 {
-  return nvs_open(kNvsNamespace, NVS_READWRITE, handle_out);
+  if (blob == NULL) {
+    return 0;
+  }
+  app_settings_blob_t temp;
+  memcpy(&temp, blob, sizeof(temp));
+  temp.header.crc32_le = 0;
+  return esp_rom_crc32_le(0, (const uint8_t*)&temp, sizeof(temp));
 }
 
 /**
- * @brief Execute AppSettingsLoad.
- * @param settings_out Parameter settings_out.
- * @return Return the function result.
+ * @brief Determine if a settings blob passes basic integrity checks.
+ * @param blob Parameter blob.
+ * @return Return true when the blob header and CRC are valid.
  */
-esp_err_t
-AppSettingsLoad(app_settings_t* settings_out)
+static bool
+SettingsBlobLooksValid(const app_settings_blob_t* blob)
+{
+  if (blob == NULL) {
+    return false;
+  }
+  if (blob->header.magic != APP_SETTINGS_BLOB_MAGIC) {
+    return false;
+  }
+  if (blob->header.version != APP_SETTINGS_BLOB_VERSION) {
+    return false;
+  }
+  if (blob->header.size != sizeof(app_settings_persist_payload_t)) {
+    return false;
+  }
+  const uint32_t crc = ComputeSettingsBlobCrc32(blob);
+  return crc == blob->header.crc32_le;
+}
+
+/**
+ * @brief Read a settings blob from NVS and validate its header/CRC.
+ * @param handle Parameter handle.
+ * @param key Parameter key.
+ * @param blob_out Parameter blob_out.
+ * @return Return true when a valid blob was read.
+ */
+static bool
+ReadSettingsBlob(nvs_handle_t handle,
+                 const char* key,
+                 app_settings_blob_t* blob_out)
+{
+  if (key == NULL || blob_out == NULL) {
+    return false;
+  }
+  size_t blob_size = sizeof(*blob_out);
+  esp_err_t result = nvs_get_blob(handle, key, blob_out, &blob_size);
+  if (result != ESP_OK || blob_size != sizeof(*blob_out)) {
+    return false;
+  }
+  return SettingsBlobLooksValid(blob_out);
+}
+
+/**
+ * @brief Determine whether a generation counter is newer than a reference.
+ * @param generation Parameter generation.
+ * @param reference Parameter reference.
+ * @return Return true when generation is newer than reference.
+ */
+static bool
+SettingsGenerationIsNewer(uint32_t generation, uint32_t reference)
+{
+  return (int32_t)(generation - reference) > 0;
+}
+
+/**
+ * @brief Populate a persisted payload from the current settings.
+ * @param settings Parameter settings.
+ * @param payload Parameter payload.
+ */
+static void
+SettingsPayloadFromSettings(const app_settings_t* settings,
+                            app_settings_persist_payload_t* payload)
+{
+  if (settings == NULL || payload == NULL) {
+    return;
+  }
+  memset(payload, 0, sizeof(*payload));
+  payload->log_period_ms = settings->log_period_ms;
+  payload->fram_flush_watermark_records =
+    settings->fram_flush_watermark_records;
+  payload->sd_flush_period_ms = settings->sd_flush_period_ms;
+  payload->sd_batch_bytes_target = settings->sd_batch_bytes_target;
+  payload->rtc_resync_period_ms = settings->rtc_resync_period_ms;
+  payload->calibration = settings->calibration;
+  payload->calibration_context = settings->calibration_context;
+  payload->calibration_context_valid = settings->calibration_context_valid ? 1u
+                                                                           : 0u;
+  memcpy(payload->calibration_points,
+         settings->calibration_points,
+         sizeof(payload->calibration_points));
+  payload->calibration_points_count = settings->calibration_points_count;
+  payload->cal_last_utc = settings->cal_last_utc;
+  payload->cal_last_override_utc = settings->cal_last_override_utc;
+  payload->cal_due_count = settings->cal_due_count;
+  payload->cal_due_unit = settings->cal_due_unit;
+  payload->cal_due_override_count = settings->cal_due_override_count;
+  payload->cal_due_override_unit = settings->cal_due_override_unit;
+  payload->rtd_ema_enabled = settings->rtd_ema_enabled ? 1u : 0u;
+  payload->rtd_ema_alpha_permille = settings->rtd_ema_alpha_permille;
+  payload->rtd_fault_assert_ms = settings->rtd_fault_assert_ms;
+  payload->rtd_fault_clear_ms = settings->rtd_fault_clear_ms;
+  snprintf(payload->tz_posix,
+           sizeof(payload->tz_posix),
+           "%s",
+           settings->tz_posix);
+  payload->dst_enabled = settings->dst_enabled ? 1u : 0u;
+  payload->node_role = (uint8_t)settings->node_role;
+  payload->allow_children = settings->allow_children ? 1u : 0u;
+  payload->allow_children_set = settings->allow_children_set ? 1u : 0u;
+  payload->display_units = (uint8_t)settings->display_units;
+  payload->units_gpio_pin = settings->units_gpio_pin;
+  payload->units_gpio_pull = (uint8_t)settings->units_gpio_pull;
+  payload->units_gpio_c_level_high =
+    settings->units_gpio_c_level_high ? 1u : 0u;
+  payload->display_attention_policy = settings->display_attention_policy;
+  payload->net_mode = (uint8_t)settings->net_mode;
+  payload->mqtt_enabled = settings->mqtt_enabled ? 1u : 0u;
+  snprintf(payload->mqtt_broker_uri,
+           sizeof(payload->mqtt_broker_uri),
+           "%s",
+           settings->mqtt_broker_uri);
+  snprintf(payload->mqtt_topic_prefix,
+           sizeof(payload->mqtt_topic_prefix),
+           "%s",
+           settings->mqtt_topic_prefix);
+  payload->mqtt_qos = settings->mqtt_qos;
+  payload->mqtt_retain = settings->mqtt_retain ? 1u : 0u;
+  payload->mqtt_bridge_mode = (uint8_t)settings->mqtt_bridge_mode;
+}
+
+/**
+ * @brief Overlay persisted values onto defaults with range validation.
+ * @param payload Parameter payload.
+ * @param settings_out Parameter settings_out.
+ */
+static void
+ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
+                       app_settings_t* settings_out)
+{
+  if (payload == NULL || settings_out == NULL) {
+    return;
+  }
+  if (payload->log_period_ms >= 100 && payload->log_period_ms <= 3600000) {
+    settings_out->log_period_ms = payload->log_period_ms;
+  }
+  if (payload->fram_flush_watermark_records >= 1) {
+    settings_out->fram_flush_watermark_records =
+      payload->fram_flush_watermark_records;
+  }
+  if (payload->sd_flush_period_ms >= 1000) {
+    settings_out->sd_flush_period_ms = payload->sd_flush_period_ms;
+  }
+  if (payload->sd_batch_bytes_target >= 4096) {
+    settings_out->sd_batch_bytes_target = payload->sd_batch_bytes_target;
+  }
+  if (payload->rtc_resync_period_ms <= 86400000u) {
+    settings_out->rtc_resync_period_ms = payload->rtc_resync_period_ms;
+  }
+
+  if (payload->calibration.degree <= CALIBRATION_MAX_DEGREE) {
+    settings_out->calibration = payload->calibration;
+  } else {
+    CalibrationModelInitIdentity(&settings_out->calibration);
+  }
+  if (settings_out->calibration.is_valid &&
+      payload->calibration.mode <= CAL_FIT_MODE_POLY) {
+    settings_out->calibration.mode =
+      (calibration_fit_mode_t)payload->calibration.mode;
+  } else if (settings_out->calibration.is_valid) {
+    settings_out->calibration.mode =
+      (settings_out->calibration.degree > 1) ? CAL_FIT_MODE_POLY
+                                             : CAL_FIT_MODE_LINEAR;
+  }
+
+  if (payload->calibration_points_count <= CALIBRATION_MAX_POINTS) {
+    settings_out->calibration_points_count =
+      payload->calibration_points_count;
+    memcpy(settings_out->calibration_points,
+           payload->calibration_points,
+           sizeof(settings_out->calibration_points));
+  } else {
+    settings_out->calibration_points_count = 0;
+    memset(settings_out->calibration_points,
+           0,
+           sizeof(settings_out->calibration_points));
+  }
+
+  if (payload->calibration_context_valid <= 1) {
+    settings_out->calibration_context_valid =
+      (payload->calibration_context_valid == 1);
+  }
+  if (settings_out->calibration_context_valid) {
+    settings_out->calibration_context = payload->calibration_context;
+  } else {
+    memset(&settings_out->calibration_context,
+           0,
+           sizeof(settings_out->calibration_context));
+  }
+
+  if (payload->cal_last_utc >= 0) {
+    settings_out->cal_last_utc = payload->cal_last_utc;
+  }
+  if (payload->cal_last_override_utc >= 0) {
+    settings_out->cal_last_override_utc = payload->cal_last_override_utc;
+  }
+
+  settings_out->cal_due_count = payload->cal_due_count;
+  settings_out->cal_due_unit = payload->cal_due_unit;
+  ValidateCalibrationDueSettings(&settings_out->cal_due_count,
+                                 &settings_out->cal_due_unit);
+
+  settings_out->cal_due_override_count = payload->cal_due_override_count;
+  settings_out->cal_due_override_unit = payload->cal_due_override_unit;
+  ValidateCalibrationDueSettings(&settings_out->cal_due_override_count,
+                                 &settings_out->cal_due_override_unit);
+
+  if (payload->rtd_ema_enabled <= 1) {
+    settings_out->rtd_ema_enabled = (payload->rtd_ema_enabled == 1);
+  }
+  if (payload->rtd_ema_alpha_permille >= 1 &&
+      payload->rtd_ema_alpha_permille <= 1000) {
+    settings_out->rtd_ema_alpha_permille = payload->rtd_ema_alpha_permille;
+  }
+  if (payload->rtd_fault_assert_ms <= kRtdFaultDebounceMaxMs) {
+    settings_out->rtd_fault_assert_ms = payload->rtd_fault_assert_ms;
+  }
+  if (payload->rtd_fault_clear_ms <= kRtdFaultDebounceMaxMs) {
+    settings_out->rtd_fault_clear_ms = payload->rtd_fault_clear_ms;
+  }
+
+  const size_t tz_len =
+    strnlen(payload->tz_posix, sizeof(payload->tz_posix));
+  if (tz_len > 0 && tz_len < sizeof(payload->tz_posix)) {
+    memcpy(settings_out->tz_posix,
+           payload->tz_posix,
+           sizeof(settings_out->tz_posix));
+    settings_out->tz_posix[sizeof(settings_out->tz_posix) - 1] = '\0';
+  }
+
+  if (payload->dst_enabled <= 1) {
+    settings_out->dst_enabled = (payload->dst_enabled == 1);
+  }
+
+  if (payload->node_role <= (uint8_t)APP_NODE_ROLE_RELAY) {
+    settings_out->node_role = (app_node_role_t)payload->node_role;
+  }
+
+  const bool allow_children_set = (payload->allow_children_set == 1);
+  settings_out->allow_children_set = allow_children_set;
+  if (allow_children_set) {
+    if (payload->allow_children <= 1) {
+      settings_out->allow_children = (payload->allow_children == 1);
+    }
+  } else {
+    settings_out->allow_children =
+      AppSettingsRoleDefaultAllowsChildren(settings_out->node_role);
+  }
+
+  if (payload->display_units <= (uint8_t)APP_DISPLAY_UNITS_F) {
+    settings_out->display_units = (app_display_units_t)payload->display_units;
+  }
+
+  if (payload->units_gpio_pin >= -1 && payload->units_gpio_pin <= 48) {
+    settings_out->units_gpio_pin = payload->units_gpio_pin;
+  }
+  if (payload->units_gpio_pull <= (uint8_t)APP_UNITS_GPIO_PULL_DOWN) {
+    settings_out->units_gpio_pull =
+      (app_units_gpio_pull_t)payload->units_gpio_pull;
+  }
+  if (payload->units_gpio_c_level_high <= 1) {
+    settings_out->units_gpio_c_level_high =
+      (payload->units_gpio_c_level_high == 1);
+  }
+
+  settings_out->display_attention_policy = payload->display_attention_policy;
+  settings_out->display_attention_mask =
+    DisplayAttentionMaskFromPolicy(settings_out->display_attention_policy);
+
+  if (payload->net_mode <= (uint8_t)APP_NET_MODE_NONE) {
+    settings_out->net_mode = (app_net_mode_t)payload->net_mode;
+  }
+
+  if (payload->mqtt_enabled <= 1) {
+    settings_out->mqtt_enabled = (payload->mqtt_enabled == 1);
+  }
+
+  const size_t broker_len =
+    strnlen(payload->mqtt_broker_uri, sizeof(payload->mqtt_broker_uri));
+  if (broker_len > 0 && broker_len < sizeof(payload->mqtt_broker_uri)) {
+    memcpy(settings_out->mqtt_broker_uri,
+           payload->mqtt_broker_uri,
+           sizeof(settings_out->mqtt_broker_uri));
+    settings_out->mqtt_broker_uri[sizeof(settings_out->mqtt_broker_uri) - 1] =
+      '\0';
+  }
+
+  const size_t prefix_len =
+    strnlen(payload->mqtt_topic_prefix, sizeof(payload->mqtt_topic_prefix));
+  if (prefix_len > 0 && prefix_len < sizeof(payload->mqtt_topic_prefix)) {
+    memcpy(settings_out->mqtt_topic_prefix,
+           payload->mqtt_topic_prefix,
+           sizeof(settings_out->mqtt_topic_prefix));
+    settings_out->mqtt_topic_prefix[sizeof(settings_out->mqtt_topic_prefix) -
+                                    1] = '\0';
+  }
+
+  if (payload->mqtt_qos <= 1) {
+    settings_out->mqtt_qos = payload->mqtt_qos;
+  }
+  if (payload->mqtt_retain <= 1) {
+    settings_out->mqtt_retain = (payload->mqtt_retain == 1);
+  }
+  if (payload->mqtt_bridge_mode <= (uint8_t)MQTT_BRIDGE_BOTH) {
+    settings_out->mqtt_bridge_mode =
+      (mqtt_bridge_mode_t)payload->mqtt_bridge_mode;
+  }
+}
+
+/**
+ * @brief Initialize a settings snapshot using the last saved settings or defaults.
+ * @param settings_out Parameter settings_out.
+ */
+static void
+InitSettingsSnapshot(app_settings_t* settings_out)
 {
   if (settings_out == NULL) {
+    return;
+  }
+  if (g_saved_settings_valid) {
+    *settings_out = g_saved_settings;
+  } else {
+    ApplyDefaults(settings_out);
+  }
+}
+
+/**
+ * @brief Persist a settings snapshot and update the cached copy on success.
+ * @param settings Parameter settings.
+ * @return Return the function result.
+ */
+static esp_err_t
+PersistSettingsSnapshot(app_settings_t* settings)
+{
+  if (settings == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  ApplyDefaults(settings_out);
+  const esp_err_t result = AppSettingsSaveBlob(settings);
+  if (result == ESP_OK) {
+    g_saved_settings = *settings;
+    g_saved_settings_valid = true;
+  }
+  return result;
+}
+
+/**
+ * @brief Save the settings blob with redundant A/B storage.
+ * @param settings Parameter settings.
+ * @return Return the function result.
+ */
+static esp_err_t
+AppSettingsSaveBlob(const app_settings_t* settings)
+{
+  if (settings == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  app_settings_blob_t blob;
+  memset(&blob, 0, sizeof(blob));
+  blob.header.magic = APP_SETTINGS_BLOB_MAGIC;
+  blob.header.version = APP_SETTINGS_BLOB_VERSION;
+  blob.header.size = sizeof(app_settings_persist_payload_t);
+  blob.header.generation = g_settings_blob_generation + 1u;
+  SettingsPayloadFromSettings(settings, &blob.payload);
+  blob.header.crc32_le = ComputeSettingsBlobCrc32(&blob);
+
+  const char* key =
+    ((blob.header.generation % 2u) == 0u) ? kKeySettingsBlob0
+                                          : kKeySettingsBlob1;
 
   nvs_handle_t handle;
   esp_err_t result = OpenNvs(&handle);
   if (result != ESP_OK) {
-    ESP_LOGW(kTag, "nvs_open failed: %s", esp_err_to_name(result));
     return result;
   }
 
+  result = nvs_set_blob(handle, key, &blob, sizeof(blob));
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+
+  if (result == ESP_OK) {
+    g_settings_blob_generation = blob.header.generation;
+  }
+  return result;
+}
+
+/**
+ * @brief Load settings from legacy per-key storage.
+ * @param handle Parameter handle.
+ * @param settings_out Parameter settings_out.
+ * @param migrated_out Parameter migrated_out.
+ * @return Return the function result.
+ */
+static esp_err_t
+AppSettingsLoadLegacy(nvs_handle_t handle,
+                      app_settings_t* settings_out,
+                      bool* migrated_out)
+{
+  if (settings_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (migrated_out != NULL) {
+    *migrated_out = false;
+  }
+
   uint32_t log_period_ms = 0;
-  result = nvs_get_u32(handle, kKeyLogPeriodMs, &log_period_ms);
+  esp_err_t result = nvs_get_u32(handle, kKeyLogPeriodMs, &log_period_ms);
   if (result == ESP_OK && log_period_ms >= 100 && log_period_ms <= 3600000) {
     settings_out->log_period_ms = log_period_ms;
   }
@@ -637,6 +1104,13 @@ AppSettingsLoad(app_settings_t* settings_out)
 
   uint8_t cal_due_override_unit = settings_out->cal_due_override_unit;
   result = nvs_get_u8(handle, kKeyCalDueOverrideUnit, &cal_due_override_unit);
+  if (result == ESP_ERR_NVS_NOT_FOUND) {
+    result = nvs_get_u8(
+      handle, kKeyCalDueOverrideUnitLegacy, &cal_due_override_unit);
+    if (result == ESP_ERR_NVS_KEY_TOO_LONG) {
+      result = ESP_ERR_NVS_NOT_FOUND;
+    }
+  }
   if (result == ESP_OK) {
     settings_out->cal_due_override_unit = cal_due_override_unit;
   }
@@ -828,6 +1302,9 @@ AppSettingsLoad(app_settings_t* settings_out)
                esp_err_to_name(migrate_result));
     } else {
       ESP_LOGI(kTag, "display attention policy migrated from legacy mask");
+      if (migrated_out != NULL) {
+        *migrated_out = true;
+      }
     }
   } else if (!policy_present && mask_result != ESP_OK &&
              mask_result != ESP_ERR_NVS_NOT_FOUND) {
@@ -845,7 +1322,19 @@ AppSettingsLoad(app_settings_t* settings_out)
   g_display_attention_policy = settings_out->display_attention_policy;
   g_display_attention_mask = settings_out->display_attention_mask;
 
-  nvs_close(handle);
+  return ESP_OK;
+}
+
+/**
+ * @brief Log a summary of the loaded settings.
+ * @param settings Parameter settings.
+ */
+static void
+LogSettingsLoaded(const app_settings_t* settings)
+{
+  if (settings == NULL) {
+    return;
+  }
   ESP_LOGI(
     kTag,
     "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u rtc_resync_ms=%u "
@@ -853,29 +1342,126 @@ AppSettingsLoad(app_settings_t* settings_out)
     "display_units=%s net_mode=%s mqtt_en=%u mqtt_uri=%s mqtt_pfx=%s "
     "mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s rtd_f_as_ms=%u rtd_f_cl_ms=%u "
     "disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
-    (unsigned)settings_out->log_period_ms,
-    (unsigned)settings_out->fram_flush_watermark_records,
-    (unsigned)settings_out->sd_flush_period_ms,
-    (unsigned)settings_out->sd_batch_bytes_target,
-    (unsigned)settings_out->rtc_resync_period_ms,
-    (unsigned)settings_out->calibration.degree,
-    (unsigned)settings_out->calibration_points_count,
-    settings_out->tz_posix,
-    settings_out->dst_enabled ? 1u : 0u,
-    AppSettingsRoleToString(settings_out->node_role),
-    settings_out->allow_children ? 1u : 0u,
-    AppSettingsDisplayUnitsToString(settings_out->display_units),
-    AppSettingsNetModeToString(settings_out->net_mode),
-    settings_out->mqtt_enabled ? 1u : 0u,
-    settings_out->mqtt_broker_uri,
-    settings_out->mqtt_topic_prefix,
-    (unsigned)settings_out->mqtt_qos,
-    settings_out->mqtt_retain ? 1u : 0u,
-    AppSettingsMqttBridgeModeToString(settings_out->mqtt_bridge_mode),
-    (unsigned)settings_out->rtd_fault_assert_ms,
-    (unsigned)settings_out->rtd_fault_clear_ms,
-    (uint32_t)settings_out->display_attention_policy,
-    (uint32_t)settings_out->display_attention_mask);
+    (unsigned)settings->log_period_ms,
+    (unsigned)settings->fram_flush_watermark_records,
+    (unsigned)settings->sd_flush_period_ms,
+    (unsigned)settings->sd_batch_bytes_target,
+    (unsigned)settings->rtc_resync_period_ms,
+    (unsigned)settings->calibration.degree,
+    (unsigned)settings->calibration_points_count,
+    settings->tz_posix,
+    settings->dst_enabled ? 1u : 0u,
+    AppSettingsRoleToString(settings->node_role),
+    settings->allow_children ? 1u : 0u,
+    AppSettingsDisplayUnitsToString(settings->display_units),
+    AppSettingsNetModeToString(settings->net_mode),
+    settings->mqtt_enabled ? 1u : 0u,
+    settings->mqtt_broker_uri,
+    settings->mqtt_topic_prefix,
+    (unsigned)settings->mqtt_qos,
+    settings->mqtt_retain ? 1u : 0u,
+    AppSettingsMqttBridgeModeToString(settings->mqtt_bridge_mode),
+    (unsigned)settings->rtd_fault_assert_ms,
+    (unsigned)settings->rtd_fault_clear_ms,
+    (uint32_t)settings->display_attention_policy,
+    (uint32_t)settings->display_attention_mask);
+}
+
+/**
+ * @brief Execute OpenNvs.
+ * @param handle_out Parameter handle_out.
+ * @return Return the function result.
+ */
+static esp_err_t
+OpenNvs(nvs_handle_t* handle_out)
+{
+  return nvs_open(kNvsNamespace, NVS_READWRITE, handle_out);
+}
+
+/**
+ * @brief Execute AppSettingsLoad.
+ * @param settings_out Parameter settings_out.
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsLoad(app_settings_t* settings_out)
+{
+  if (settings_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  ApplyDefaults(settings_out);
+
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "nvs_open failed: %s", esp_err_to_name(result));
+    return result;
+  }
+
+  app_settings_blob_t blob0;
+  app_settings_blob_t blob1;
+  bool valid_blob0 = ReadSettingsBlob(handle, kKeySettingsBlob0, &blob0);
+  bool valid_blob1 = ReadSettingsBlob(handle, kKeySettingsBlob1, &blob1);
+
+  const app_settings_blob_t* selected_blob = NULL;
+  const char* selected_key = NULL;
+  if (valid_blob0 && valid_blob1) {
+    if (SettingsGenerationIsNewer(blob0.header.generation,
+                                  blob1.header.generation)) {
+      selected_blob = &blob0;
+      selected_key = kKeySettingsBlob0;
+    } else {
+      selected_blob = &blob1;
+      selected_key = kKeySettingsBlob1;
+    }
+  } else if (valid_blob0) {
+    selected_blob = &blob0;
+    selected_key = kKeySettingsBlob0;
+  } else if (valid_blob1) {
+    selected_blob = &blob1;
+    selected_key = kKeySettingsBlob1;
+  }
+
+  if (selected_blob != NULL) {
+    ApplyPersistedSettings(&selected_blob->payload, settings_out);
+    g_settings_blob_generation = selected_blob->header.generation;
+    g_display_attention_policy = settings_out->display_attention_policy;
+    g_display_attention_mask = settings_out->display_attention_mask;
+    g_saved_settings = *settings_out;
+    g_saved_settings_valid = true;
+    nvs_close(handle);
+    ESP_LOGI(kTag,
+             "settings: loaded from blob %s gen=%" PRIu32,
+             selected_key,
+             g_settings_blob_generation);
+    LogSettingsLoaded(settings_out);
+    return ESP_OK;
+  }
+
+  bool legacy_migrated = false;
+  result = AppSettingsLoadLegacy(handle, settings_out, &legacy_migrated);
+  nvs_close(handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  g_saved_settings = *settings_out;
+  g_saved_settings_valid = true;
+  g_settings_blob_generation = 0;
+
+  const esp_err_t migrate_result = AppSettingsSaveBlob(settings_out);
+  if (migrate_result == ESP_OK) {
+    ESP_LOGI(kTag,
+             "settings: loaded legacy keys (blob missing/invalid), migrated "
+             "to blob gen=%" PRIu32,
+             g_settings_blob_generation);
+  } else {
+    ESP_LOGW(kTag,
+             "settings: loaded legacy keys (blob missing/invalid); "
+             "migration failed: %s",
+             esp_err_to_name(migrate_result));
+  }
+  LogSettingsLoaded(settings_out);
   return ESP_OK;
 }
 
@@ -887,17 +1473,10 @@ AppSettingsLoad(app_settings_t* settings_out)
 esp_err_t
 AppSettingsSaveLogPeriodMs(uint32_t log_period_ms)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeyLogPeriodMs, log_period_ms);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.log_period_ms = log_period_ms;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -908,17 +1487,10 @@ AppSettingsSaveLogPeriodMs(uint32_t log_period_ms)
 esp_err_t
 AppSettingsSaveFramFlushWatermarkRecords(uint32_t watermark_records)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeyFlushWatermark, watermark_records);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.fram_flush_watermark_records = watermark_records;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -929,17 +1501,10 @@ AppSettingsSaveFramFlushWatermarkRecords(uint32_t watermark_records)
 esp_err_t
 AppSettingsSaveSdFlushPeriodMs(uint32_t period_ms)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeySdFlushPeriodMs, period_ms);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.sd_flush_period_ms = period_ms;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -950,17 +1515,10 @@ AppSettingsSaveSdFlushPeriodMs(uint32_t period_ms)
 esp_err_t
 AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeySdBatchBytes, batch_bytes);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.sd_batch_bytes_target = batch_bytes;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -971,17 +1529,10 @@ AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
 esp_err_t
 AppSettingsSaveRtcResyncPeriodMs(uint32_t period_ms)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeyRtcResyncPeriodMs, period_ms);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.rtc_resync_period_ms = period_ms;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -997,54 +1548,12 @@ AppSettingsSaveCalibrationWithContext(const calibration_model_t* model,
   if (model == NULL || !model->is_valid || context == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_u8(handle, kKeyCalDegree, model->degree);
-  if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyCalMode, (uint8_t)model->mode);
-  }
-  if (result == ESP_OK) {
-    result = nvs_set_blob(handle,
-                          kKeyCalCoeffs,
-                          model->coefficients,
-                          sizeof(double) * CALIBRATION_MAX_POINTS);
-  }
-  if (result == ESP_OK) {
-    result =
-      nvs_set_u8(handle, kKeyCalContextVersion, kCalibrationContextVersion);
-  }
-  if (result == ESP_OK) {
-    result =
-      nvs_set_u8(handle, kKeyCalContextConversion, context->conversion_mode);
-  }
-  if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyCalContextWires, context->wires);
-  }
-  if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyCalContextFilter, context->filter_hz);
-  }
-  if (result == ESP_OK) {
-    result = nvs_set_blob(
-      handle, kKeyCalContextRref, &context->rref_ohm, sizeof(double));
-  }
-  if (result == ESP_OK) {
-    result =
-      nvs_set_blob(handle, kKeyCalContextR0, &context->r0_ohm, sizeof(double));
-  }
-  if (result == ESP_OK) {
-    result =
-      nvs_set_u32(handle, kKeyCalContextTableVer, context->table_version);
-  }
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.calibration = *model;
+  settings.calibration_context = *context;
+  settings.calibration_context_valid = true;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1059,41 +1568,12 @@ AppSettingsSaveCalibrationSchedule(const app_settings_t* settings)
     return ESP_ERR_INVALID_ARG;
   }
 
-  uint16_t due_count = settings->cal_due_count;
-  uint8_t due_unit = settings->cal_due_unit;
-  uint16_t due_override_count = settings->cal_due_override_count;
-  uint8_t due_override_unit = settings->cal_due_override_unit;
-  ValidateCalibrationDueSettings(&due_count, &due_unit);
-  ValidateCalibrationDueSettings(&due_override_count, &due_override_unit);
-
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_i64(handle, kKeyCalLastUtc, settings->cal_last_utc);
-  if (result == ESP_OK) {
-    result = nvs_set_i64(
-      handle, kKeyCalLastOverrideUtc, settings->cal_last_override_utc);
-  }
-  if (result == ESP_OK) {
-    result = nvs_set_u16(handle, kKeyCalDueCount, due_count);
-  }
-  if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyCalDueUnit, due_unit);
-  }
-  if (result == ESP_OK) {
-    result = nvs_set_u16(handle, kKeyCalDueOverrideCount, due_override_count);
-  }
-  if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyCalDueOverrideUnit, due_override_unit);
-  }
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t snapshot = *settings;
+  ValidateCalibrationDueSettings(&snapshot.cal_due_count,
+                                 &snapshot.cal_due_unit);
+  ValidateCalibrationDueSettings(&snapshot.cal_due_override_count,
+                                 &snapshot.cal_due_override_unit);
+  return PersistSettingsSnapshot(&snapshot);
 }
 
 /**
@@ -1134,32 +1614,16 @@ AppSettingsSaveCalibrationPoints(const calibration_point_t* points,
   if (points_count > 0 && points == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  memset(settings.calibration_points, 0, sizeof(settings.calibration_points));
+  if (points_count > 0) {
+    memcpy(settings.calibration_points,
+           points,
+           sizeof(calibration_point_t) * points_count);
   }
-
-  result = nvs_set_u8(handle, kKeyCalPointsCount, (uint8_t)points_count);
-  if (result == ESP_OK) {
-    if (points_count > 0) {
-      result = nvs_set_blob(handle,
-                            kKeyCalPoints,
-                            points,
-                            sizeof(calibration_point_t) * points_count);
-    } else {
-      esp_err_t erase_result = nvs_erase_key(handle, kKeyCalPoints);
-      if (erase_result != ESP_OK && erase_result != ESP_ERR_NVS_NOT_FOUND) {
-        result = erase_result;
-      }
-    }
-  }
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  settings.calibration_points_count = (uint8_t)points_count;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1170,17 +1634,10 @@ AppSettingsSaveCalibrationPoints(const calibration_point_t* points,
 esp_err_t
 AppSettingsSaveRtdEmaEnabled(bool enabled)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u8(handle, kKeyRtdEmaEnabled, enabled ? 1 : 0);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.rtd_ema_enabled = enabled;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1194,17 +1651,10 @@ AppSettingsSaveRtdEmaAlphaPermille(uint16_t permille)
   if (permille < 1 || permille > 1000) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeyRtdEmaAlphaPermille, permille);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.rtd_ema_alpha_permille = permille;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1219,20 +1669,11 @@ AppSettingsSaveRtdFaultDebounceMs(uint32_t assert_ms, uint32_t clear_ms)
   if (assert_ms > kRtdFaultDebounceMaxMs || clear_ms > kRtdFaultDebounceMaxMs) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeyRtdFaultAssertMs, assert_ms);
-  if (result == ESP_OK) {
-    result = nvs_set_u32(handle, kKeyRtdFaultClearMs, clear_ms);
-  }
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.rtd_fault_assert_ms = assert_ms;
+  settings.rtd_fault_clear_ms = clear_ms;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1248,22 +1689,11 @@ AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
       strlen(tz_posix) >= APP_SETTINGS_TZ_POSIX_MAX_LEN) {
     return ESP_ERR_INVALID_ARG;
   }
-
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_str(handle, kKeyTzPosix, tz_posix);
-  if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyDstEnabled, dst_enabled ? 1 : 0);
-  }
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  snprintf(settings.tz_posix, sizeof(settings.tz_posix), "%s", tz_posix);
+  settings.dst_enabled = dst_enabled;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1274,18 +1704,10 @@ AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
 esp_err_t
 AppSettingsSaveNodeRole(app_node_role_t node_role)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_u8(handle, kKeyNodeRole, (uint8_t)node_role);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.node_role = node_role;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1297,21 +1719,11 @@ AppSettingsSaveNodeRole(app_node_role_t node_role)
 esp_err_t
 AppSettingsSaveAllowChildren(bool allow_children, bool explicit_setting)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_u8(handle, kKeyAllowChildren, allow_children ? 1 : 0);
-  if (result == ESP_OK) {
-    result = nvs_set_u8(handle, kKeyAllowChildrenSet, explicit_setting ? 1 : 0);
-  }
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.allow_children = allow_children;
+  settings.allow_children_set = explicit_setting;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1325,18 +1737,10 @@ AppSettingsSaveDisplayUnits(app_display_units_t units)
   if (units != APP_DISPLAY_UNITS_C && units != APP_DISPLAY_UNITS_F) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_u8(handle, kKeyDisplayUnits, (uint8_t)units);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.display_units = units;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1350,18 +1754,10 @@ AppSettingsSaveUnitsGpioPin(int32_t pin)
   if (pin < -1 || pin > 48) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_i32(handle, kKeyUnitsGpioPin, pin);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.units_gpio_pin = pin;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1375,18 +1771,10 @@ AppSettingsSaveUnitsGpioPull(app_units_gpio_pull_t pull)
   if (pull < APP_UNITS_GPIO_PULL_NONE || pull > APP_UNITS_GPIO_PULL_DOWN) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_u8(handle, kKeyUnitsGpioPull, (uint8_t)pull);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.units_gpio_pull = pull;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1397,18 +1785,10 @@ AppSettingsSaveUnitsGpioPull(app_units_gpio_pull_t pull)
 esp_err_t
 AppSettingsSaveUnitsGpioCLevel(bool c_level_high)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_u8(handle, kKeyUnitsGpioCLevel, c_level_high ? 1 : 0);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.units_gpio_c_level_high = c_level_high;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1423,17 +1803,10 @@ AppSettingsSaveNetMode(app_net_mode_t mode)
       mode != APP_NET_MODE_NONE) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  result = nvs_set_u8(handle, kKeyNetMode, (uint8_t)mode);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.net_mode = mode;
+  const esp_err_t result = PersistSettingsSnapshot(&settings);
   if (result == ESP_OK) {
     g_net_mode_revision++;
   }
@@ -1458,17 +1831,10 @@ AppSettingsGetNetModeRevision(void)
 esp_err_t
 AppSettingsSaveMqttEnabled(bool enabled)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u8(handle, kKeyMqttEnabled, enabled ? 1 : 0);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.mqtt_enabled = enabled;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1483,17 +1849,13 @@ AppSettingsSaveMqttBrokerUri(const char* uri)
       strlen(uri) >= sizeof(((app_settings_t*)0)->mqtt_broker_uri)) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_str(handle, kKeyMqttBrokerUri, uri);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  snprintf(settings.mqtt_broker_uri,
+           sizeof(settings.mqtt_broker_uri),
+           "%s",
+           uri);
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1508,17 +1870,13 @@ AppSettingsSaveMqttTopicPrefix(const char* prefix)
       strlen(prefix) >= sizeof(((app_settings_t*)0)->mqtt_topic_prefix)) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_str(handle, kKeyMqttTopicPrefix, prefix);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  snprintf(settings.mqtt_topic_prefix,
+           sizeof(settings.mqtt_topic_prefix),
+           "%s",
+           prefix);
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1532,17 +1890,10 @@ AppSettingsSaveMqttQos(uint8_t qos)
   if (qos > 1) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u8(handle, kKeyMqttQos, qos);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.mqtt_qos = qos;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1553,17 +1904,10 @@ AppSettingsSaveMqttQos(uint8_t qos)
 esp_err_t
 AppSettingsSaveMqttRetain(bool retain)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u8(handle, kKeyMqttRetain, retain ? 1 : 0);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.mqtt_retain = retain;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1577,17 +1921,10 @@ AppSettingsSaveMqttBridgeMode(mqtt_bridge_mode_t mode)
   if (mode > MQTT_BRIDGE_BOTH) {
     return ESP_ERR_INVALID_ARG;
   }
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u8(handle, kKeyMqttBridgeMode, (uint8_t)mode);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
-  return result;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.mqtt_bridge_mode = mode;
+  return PersistSettingsSnapshot(&settings);
 }
 
 /**
@@ -1653,19 +1990,14 @@ AppSettingsDefaultDisplayAttentionPolicy(void)
 esp_err_t
 AppSettingsSaveDisplayAttentionPolicy(uint32_t policy)
 {
-  nvs_handle_t handle;
-  esp_err_t result = OpenNvs(&handle);
-  if (result != ESP_OK) {
-    return result;
-  }
-  result = nvs_set_u32(handle, kKeyDisplayAttentionPolicy, policy);
-  if (result == ESP_OK) {
-    result = nvs_commit(handle);
-  }
-  nvs_close(handle);
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.display_attention_policy = policy;
+  settings.display_attention_mask = DisplayAttentionMaskFromPolicy(policy);
+  const esp_err_t result = PersistSettingsSnapshot(&settings);
   if (result == ESP_OK) {
     g_display_attention_policy = policy;
-    g_display_attention_mask = DisplayAttentionMaskFromPolicy(policy);
+    g_display_attention_mask = settings.display_attention_mask;
   }
   return result;
 }
