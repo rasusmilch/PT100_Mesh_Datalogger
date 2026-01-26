@@ -246,15 +246,12 @@ PrintRtdFaultSettings(const app_settings_t* settings,
   if (settings == NULL) {
     return;
   }
-  printf("rtd_fault_assert_ms: %u\n",
-         (unsigned)settings->rtd_fault_assert_ms);
-  printf("rtd_fault_clear_ms: %u\n",
-         (unsigned)settings->rtd_fault_clear_ms);
+  printf("rtd_fault_assert_ms: %u\n", (unsigned)settings->rtd_fault_assert_ms);
+  printf("rtd_fault_clear_ms: %u\n", (unsigned)settings->rtd_fault_clear_ms);
   if (state != NULL) {
     printf("rtd_fault_suppressed_count: %u\n",
            (unsigned)state->rtd_fault_suppressed_count);
-    printf("rtd_fault_last_status: 0x%02X\n",
-           state->rtd_fault_last_status);
+    printf("rtd_fault_last_status: 0x%02X\n", state->rtd_fault_last_status);
   }
 }
 
@@ -2329,11 +2326,10 @@ CommandErrlog(int argc, char** argv)
       pending_resolved = state->errlog_pending_resolved_mask;
       taskEXIT_CRITICAL(&state->errlog_latch_lock);
     }
-    printf(
-      "FRAM errlog unavailable; pending_latches=0x%016" PRIx64
-      "/0x%016" PRIx64 "\n",
-      pending_active,
-      pending_resolved);
+    printf("FRAM errlog unavailable; pending_latches=0x%016" PRIx64
+           "/0x%016" PRIx64 "\n",
+           pending_active,
+           pending_resolved);
     return 1;
   }
   if (argc < 2) {
@@ -2445,9 +2441,9 @@ CommandErrlog(int argc, char** argv)
       const esp_err_t result =
         FramErrorLogReadEntry(g_runtime->fram_error_log, i, &entry, &crc_ok);
       if (result != ESP_OK) {
-      printf(
-        "entry[%" PRIu32 "] read failed: %s\n", i, esp_err_to_name(result));
-      continue;
+        printf(
+          "entry[%" PRIu32 "] read failed: %s\n", i, esp_err_to_name(result));
+        continue;
       }
       char utc_buffer[32];
       char local_buffer[32];
@@ -3498,21 +3494,40 @@ BoilingPointCFromStationInHg(float station_inHg)
 }
 
 /**
- * @brief Execute CommandBoilPt.
- * @param argc Parameter argc.
- * @param argv Parameter argv.
- * @return Return the function result.
+ * @brief Compute and print the boiling point of water from barometric pressure.
+ *
+ * This console command accepts pressure in inches of mercury (inHg). With one
+ * argument, the value is treated as station pressure directly. With a second
+ * optional argument (elevation in feet), the first value is treated as
+ * sea-level pressure (altimeter/METAR) and converted to station pressure before
+ * computing the boiling point.
+ *
+ * Usage:
+ *   boilpt <inHg> [elev_ft]
+ *
+ * Examples:
+ *   boilpt 29.81 1300   (sea-level/altimeter pressure + elevation -> station
+ * pressure) boilpt 28.90        (station pressure directly)
+ *
+ * @param argc Number of command-line arguments, including the command name in
+ * argv[0].
+ * @param argv Argument vector. argv[1] is required (pressure in inHg). argv[2]
+ * is optional (elevation in feet) and enables sea-level to station pressure
+ * conversion.
+ * @return 0 on success; non-zero on argument/parse/validation errors.
  */
 static int
 CommandBoilPt(int argc, char** argv)
 {
   if (argc < 2) {
     printf("usage: boilpt <inHg> [elev_ft]\n");
-    printf("  Example (altimeter + elevation): boilpt 29.81 1300\n");
+    printf(
+      "  Example (altimeter [METAR A####] + elevation): boilpt 29.81 1300\n");
     printf("  Example (station pressure):       boilpt 28.90\n");
     return 1;
   }
 
+  // Parse required pressure argument in inches of mercury.
   char* endptr = NULL;
   const float in_hg = strtof(argv[1], &endptr);
   if (endptr == argv[1] || isnan(in_hg) || in_hg <= 0.0f) {
@@ -3521,6 +3536,8 @@ CommandBoilPt(int argc, char** argv)
   }
 
   if (argc >= 3) {
+    // Optional elevation provided: treat argv[1] as sea-level/altimeter
+    // pressure and convert it to station pressure at the given elevation.
     endptr = NULL;
     const float elev_ft = strtof(argv[2], &endptr);
     if (endptr == argv[2] || isnan(elev_ft)) {
@@ -3546,7 +3563,8 @@ CommandBoilPt(int argc, char** argv)
     return 0;
   }
 
-  // Back-compat: single arg -> treat as station pressure directly.
+  // Single argument: treat argv[1] as station pressure directly (no elevation
+  // conversion).
   const float boil_c = BoilingPointCFromStationInHg(in_hg);
   if (isnan(boil_c)) {
     printf("ERR invalid pressure\n");
