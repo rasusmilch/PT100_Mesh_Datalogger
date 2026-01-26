@@ -4,6 +4,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -72,6 +73,35 @@ static void
 FormatLocalEpochIso8601(int64_t epoch_utc, char* buffer, size_t buffer_size);
 static void
 FormatErrlogFlags(uint16_t flags, char* buffer, size_t buffer_size);
+static bool
+CalConsoleOpIsActive(void);
+static esp_err_t
+CalConsoleOpStartLive(uint32_t every_ms, int seconds);
+static esp_err_t
+CalConsoleOpStartCapture(double actual_temp_c,
+                         double stable_stddev_c,
+                         int min_seconds,
+                         int timeout_seconds);
+static void
+CalConsoleOpRequestCancel(void);
+static void
+CalConsoleOpTask(void* task_arg);
+static void
+PrintCalWindowLine_(const char* prefix,
+                    size_t sample_count,
+                    int32_t last_raw_mC,
+                    int32_t mean_raw_mC,
+                    int32_t stddev_mC);
+static const char*
+FindOptionValue_(int argc, char** argv, const char* name);
+static bool
+OptionPresent_(int argc, char** argv, const char* name);
+static bool
+ParseOptionInt_(int argc, char** argv, const char* name, int* value_out);
+static bool
+ParseOptionDouble_(int argc, char** argv, const char* name, double* value_out);
+static bool
+ParseTempC_(const char* text, double* value_out);
 
 /**
  * @brief Print the compact calibration schedule and due status block.
@@ -109,17 +139,6 @@ ParseUtcDateString(const char* value, int64_t* epoch_out);
  */
 static bool
 ParseCalDueUnit(const char* value, uint8_t* unit_out);
-/**
- * @brief Resolve the actual temperature argument for cal capture.
- * @param raw_c Raw temperature argument (fallback positional value).
- * @param actual_c Actual temperature argument (preferred positional value).
- * @param actual_temp_c_out Output resolved actual temperature in Celsius.
- * @return true when exactly one positional value was supplied.
- */
-static bool
-ResolveCalCaptureActualTemp(const struct arg_dbl* raw_c,
-                            const struct arg_dbl* actual_c,
-                            double* actual_temp_c_out);
 /**
  * @brief Print system time in UTC and local time using current TZ/DST settings.
  * @param runtime Runtime context.
@@ -173,6 +192,32 @@ MaybePushCalRawSampleFromSensor(void)
   int32_t raw_milli_c = (int32_t)llround(sample.temperature_c * 1000.0);
   CalWindowPushRawSample(raw_milli_c);
 }
+
+typedef enum
+{
+  CAL_CONSOLE_OP_NONE = 0,
+  CAL_CONSOLE_OP_LIVE,
+  CAL_CONSOLE_OP_CAPTURE
+} cal_console_op_mode_t;
+
+typedef struct
+{
+  cal_console_op_mode_t mode;
+  TaskHandle_t task_handle;
+  volatile bool cancel_requested;
+  uint32_t print_every_ms;
+  int live_seconds;
+  double capture_actual_temp_c;
+  double capture_stable_stddev_c;
+  int capture_min_seconds;
+  int capture_timeout_seconds;
+  int64_t start_us;
+  int64_t stable_start_us;
+  size_t last_sample_count;
+} cal_console_op_state_t;
+
+static cal_console_op_state_t g_cal_console_op = { 0 };
+static SemaphoreHandle_t g_cal_console_op_mutex = NULL;
 
 static app_runtime_t* g_runtime = NULL;
 static app_boot_mode_t g_boot_mode = APP_BOOT_MODE_DIAGNOSTICS;
@@ -2499,32 +2544,414 @@ static struct
   struct arg_end* end;
 } g_cal_args;
 
-/**
- * @brief Resolve the actual temperature argument for cal capture.
- * @param raw_c Raw temperature argument (fallback positional value).
- * @param actual_c Actual temperature argument (preferred positional value).
- * @param actual_temp_c_out Output resolved actual temperature in Celsius.
- * @return true when exactly one positional value was supplied.
- */
 static bool
-ResolveCalCaptureActualTemp(const struct arg_dbl* raw_c,
-                            const struct arg_dbl* actual_c,
-                            double* actual_temp_c_out)
+CalConsoleOpLock_(TickType_t ticks)
 {
-  if (raw_c == NULL || actual_c == NULL || actual_temp_c_out == NULL) {
+  if (g_cal_console_op_mutex == NULL) {
     return false;
   }
-  const int raw_count = raw_c->count;
-  const int actual_count = actual_c->count;
-  if (raw_count + actual_count != 1) {
+  return xSemaphoreTake(g_cal_console_op_mutex, ticks) == pdTRUE;
+}
+
+static void
+CalConsoleOpUnlock_(void)
+{
+  if (g_cal_console_op_mutex == NULL) {
+    return;
+  }
+  (void)xSemaphoreGive(g_cal_console_op_mutex);
+}
+
+static bool
+CalConsoleOpIsActive(void)
+{
+  bool active = false;
+  if (!CalConsoleOpLock_(pdMS_TO_TICKS(50))) {
     return false;
   }
-  if (actual_count == 1) {
-    *actual_temp_c_out = actual_c->dval[0];
-  } else {
-    *actual_temp_c_out = raw_c->dval[0];
+  active = (g_cal_console_op.mode != CAL_CONSOLE_OP_NONE);
+  CalConsoleOpUnlock_();
+  return active;
+}
+
+static esp_err_t
+CalConsoleOpStartLive(uint32_t every_ms, int seconds)
+{
+  if (!CalConsoleOpLock_(pdMS_TO_TICKS(100))) {
+    return ESP_ERR_INVALID_STATE;
   }
+  if (g_cal_console_op.mode != CAL_CONSOLE_OP_NONE) {
+    CalConsoleOpUnlock_();
+    return ESP_ERR_INVALID_STATE;
+  }
+  g_cal_console_op.mode = CAL_CONSOLE_OP_LIVE;
+  g_cal_console_op.task_handle = NULL;
+  g_cal_console_op.cancel_requested = false;
+  g_cal_console_op.print_every_ms = every_ms;
+  g_cal_console_op.live_seconds = seconds;
+  g_cal_console_op.capture_actual_temp_c = 0.0;
+  g_cal_console_op.capture_stable_stddev_c = 0.0;
+  g_cal_console_op.capture_min_seconds = 0;
+  g_cal_console_op.capture_timeout_seconds = 0;
+  g_cal_console_op.start_us = esp_timer_get_time();
+  g_cal_console_op.stable_start_us = -1;
+  g_cal_console_op.last_sample_count = 0;
+  BaseType_t created = xTaskCreate(&CalConsoleOpTask,
+                                   "cal_op",
+                                   6144,
+                                   NULL,
+                                   2,
+                                   &g_cal_console_op.task_handle);
+  if (created != pdPASS) {
+    g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
+    g_cal_console_op.task_handle = NULL;
+    CalConsoleOpUnlock_();
+    return ESP_ERR_NO_MEM;
+  }
+  CalConsoleOpUnlock_();
+  return ESP_OK;
+}
+
+static esp_err_t
+CalConsoleOpStartCapture(double actual_temp_c,
+                         double stable_stddev_c,
+                         int min_seconds,
+                         int timeout_seconds)
+{
+  if (!CalConsoleOpLock_(pdMS_TO_TICKS(100))) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (g_cal_console_op.mode != CAL_CONSOLE_OP_NONE) {
+    CalConsoleOpUnlock_();
+    return ESP_ERR_INVALID_STATE;
+  }
+  g_cal_console_op.mode = CAL_CONSOLE_OP_CAPTURE;
+  g_cal_console_op.task_handle = NULL;
+  g_cal_console_op.cancel_requested = false;
+  g_cal_console_op.print_every_ms = 1000;
+  g_cal_console_op.live_seconds = 0;
+  g_cal_console_op.capture_actual_temp_c = actual_temp_c;
+  g_cal_console_op.capture_stable_stddev_c = stable_stddev_c;
+  g_cal_console_op.capture_min_seconds = min_seconds;
+  g_cal_console_op.capture_timeout_seconds = timeout_seconds;
+  g_cal_console_op.start_us = esp_timer_get_time();
+  g_cal_console_op.stable_start_us = -1;
+  g_cal_console_op.last_sample_count = 0;
+  BaseType_t created = xTaskCreate(&CalConsoleOpTask,
+                                   "cal_op",
+                                   6144,
+                                   NULL,
+                                   2,
+                                   &g_cal_console_op.task_handle);
+  if (created != pdPASS) {
+    g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
+    g_cal_console_op.task_handle = NULL;
+    CalConsoleOpUnlock_();
+    return ESP_ERR_NO_MEM;
+  }
+  CalConsoleOpUnlock_();
+  return ESP_OK;
+}
+
+static void
+CalConsoleOpRequestCancel(void)
+{
+  if (!CalConsoleOpLock_(pdMS_TO_TICKS(50))) {
+    return;
+  }
+  if (g_cal_console_op.mode != CAL_CONSOLE_OP_NONE) {
+    g_cal_console_op.cancel_requested = true;
+  }
+  CalConsoleOpUnlock_();
+}
+
+static void
+PrintCalWindowLine_(const char* prefix,
+                    size_t sample_count,
+                    int32_t last_raw_mC,
+                    int32_t mean_raw_mC,
+                    int32_t stddev_mC)
+{
+  if (prefix == NULL) {
+    return;
+  }
+  printf("%s: n=%u last=%.3fC mean=%.3fC std=%.3fC\n",
+         prefix,
+         (unsigned)sample_count,
+         last_raw_mC / 1000.0,
+         mean_raw_mC / 1000.0,
+         stddev_mC / 1000.0);
+}
+
+static const char*
+FindOptionValue_(int argc, char** argv, const char* name)
+{
+  if (argv == NULL || name == NULL) {
+    return NULL;
+  }
+  const size_t name_len = strlen(name);
+  for (int i = 2; i < argc; ++i) {
+    const char* arg = argv[i];
+    if (arg == NULL || strncmp(arg, "--", 2) != 0) {
+      continue;
+    }
+    const char* option = arg + 2;
+    if (strncmp(option, name, name_len) != 0) {
+      continue;
+    }
+    if (option[name_len] == '=') {
+      return option + name_len + 1;
+    }
+    if (option[name_len] == '\0') {
+      if (i + 1 < argc) {
+        return argv[i + 1];
+      }
+      return NULL;
+    }
+  }
+  return NULL;
+}
+
+static bool
+OptionPresent_(int argc, char** argv, const char* name)
+{
+  if (argv == NULL || name == NULL) {
+    return false;
+  }
+  const size_t name_len = strlen(name);
+  for (int i = 2; i < argc; ++i) {
+    const char* arg = argv[i];
+    if (arg == NULL || strncmp(arg, "--", 2) != 0) {
+      continue;
+    }
+    const char* option = arg + 2;
+    if (strncmp(option, name, name_len) != 0) {
+      continue;
+    }
+    if (option[name_len] == '\0' || option[name_len] == '=') {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool
+ParseOptionInt_(int argc, char** argv, const char* name, int* value_out)
+{
+  if (value_out == NULL) {
+    return false;
+  }
+  const char* value = FindOptionValue_(argc, argv, name);
+  if (value == NULL) {
+    return false;
+  }
+  char* end = NULL;
+  long parsed = strtol(value, &end, 10);
+  if (end == value || *end != '\0' || parsed < INT_MIN || parsed > INT_MAX) {
+    return false;
+  }
+  *value_out = (int)parsed;
   return true;
+}
+
+static bool
+ParseOptionDouble_(int argc, char** argv, const char* name, double* value_out)
+{
+  if (value_out == NULL) {
+    return false;
+  }
+  const char* value = FindOptionValue_(argc, argv, name);
+  if (value == NULL) {
+    return false;
+  }
+  char* end = NULL;
+  double parsed = strtod(value, &end);
+  if (end == value || *end != '\0') {
+    return false;
+  }
+  *value_out = parsed;
+  return true;
+}
+
+static bool
+ParseTempC_(const char* text, double* value_out)
+{
+  if (text == NULL || value_out == NULL) {
+    return false;
+  }
+  char* end = NULL;
+  double parsed = strtod(text, &end);
+  if (end == text) {
+    return false;
+  }
+  if (*end == '\0') {
+    *value_out = parsed;
+    return true;
+  }
+  if (end[1] == '\0' && (end[0] == 'C' || end[0] == 'c')) {
+    *value_out = parsed;
+    return true;
+  }
+  return false;
+}
+
+static void
+CalConsoleOpTask(void* task_arg)
+{
+  (void)task_arg;
+  if (!CalConsoleOpLock_(pdMS_TO_TICKS(200))) {
+    vTaskDelete(NULL);
+    return;
+  }
+  g_cal_console_op.start_us = esp_timer_get_time();
+  g_cal_console_op.stable_start_us = -1;
+  g_cal_console_op.last_sample_count = 0;
+  const cal_console_op_mode_t mode = g_cal_console_op.mode;
+  const uint32_t print_every_ms = g_cal_console_op.print_every_ms;
+  const int live_seconds = g_cal_console_op.live_seconds;
+  const double actual_temp_c = g_cal_console_op.capture_actual_temp_c;
+  const double stable_stddev_c = g_cal_console_op.capture_stable_stddev_c;
+  const int min_seconds = g_cal_console_op.capture_min_seconds;
+  const int timeout_seconds = g_cal_console_op.capture_timeout_seconds;
+  CalConsoleOpUnlock_();
+
+  if (mode == CAL_CONSOLE_OP_CAPTURE) {
+    CalWindowClear();
+  }
+
+  const int64_t start_us = esp_timer_get_time();
+  int64_t stable_start_us = -1;
+  int64_t last_print_us = 0;
+  size_t last_sample_count = 0;
+
+  while (true) {
+    if (g_cal_console_op.cancel_requested) {
+      if (mode == CAL_CONSOLE_OP_CAPTURE) {
+        printf("cal capture aborted\n");
+      }
+      printf("cal: stopped\n");
+      break;
+    }
+
+    MaybePushCalRawSampleFromSensor();
+
+    int32_t last_raw_mC = 0;
+    int32_t mean_raw_mC = 0;
+    int32_t stddev_mC = 0;
+    CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
+    const size_t sample_count = CalWindowGetSampleCount();
+    const int64_t now_us = esp_timer_get_time();
+    const bool print_due =
+      (sample_count != last_sample_count) ||
+      (last_print_us == 0) ||
+      (now_us - last_print_us >=
+       (int64_t)print_every_ms * 1000LL);
+
+    if (mode == CAL_CONSOLE_OP_LIVE) {
+      if (print_due) {
+        PrintCalWindowLine_("cal live",
+                            sample_count,
+                            last_raw_mC,
+                            mean_raw_mC,
+                            stddev_mC);
+        last_print_us = now_us;
+        last_sample_count = sample_count;
+      }
+      if (live_seconds > 0 &&
+          now_us - start_us >= (int64_t)live_seconds * 1000000LL) {
+        printf("cal live complete\n");
+        break;
+      }
+    } else if (mode == CAL_CONSOLE_OP_CAPTURE) {
+      const double stddev_c = stddev_mC / 1000.0;
+      const bool stable =
+        CalWindowIsReady() && (stddev_c <= stable_stddev_c);
+      if (stable) {
+        if (stable_start_us < 0) {
+          stable_start_us = now_us;
+        }
+      } else {
+        stable_start_us = -1;
+      }
+
+      const double elapsed_s = (now_us - start_us) / 1000000.0;
+      const double stable_elapsed_s =
+        (stable_start_us >= 0) ? (now_us - stable_start_us) / 1000000.0 : 0.0;
+
+      if (print_due) {
+        printf(
+          "cal capture: t=%.1fs n=%u mean=%.3fC std=%.3fC stable=%.1f/%ds "
+          "thr=%.3fC actual=%.3fC\n",
+          elapsed_s,
+          (unsigned)sample_count,
+          mean_raw_mC / 1000.0,
+          stddev_c,
+          stable_elapsed_s,
+          min_seconds,
+          stable_stddev_c,
+          actual_temp_c);
+        last_print_us = now_us;
+        last_sample_count = sample_count;
+      }
+
+      if (stable_elapsed_s >= (double)min_seconds) {
+        if (g_runtime == NULL || g_runtime->settings == NULL) {
+          printf("cal capture failed: runtime unavailable\n");
+          break;
+        }
+        app_settings_t* settings = g_runtime->settings;
+        if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
+          printf("cal capture failed: already have %u points\n",
+                 (unsigned)settings->calibration_points_count);
+          break;
+        }
+        calibration_point_t* point =
+          &settings->calibration_points[settings->calibration_points_count];
+        point->raw_avg_mC = mean_raw_mC;
+        point->actual_mC = (int32_t)llround(actual_temp_c * 1000.0);
+        point->raw_stddev_mC = stddev_mC;
+        point->sample_count = (uint16_t)sample_count;
+        point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
+        point->timestamp_epoch_sec =
+          point->time_valid ? (int64_t)time(NULL) : 0;
+        settings->calibration_points_count++;
+        esp_err_t save_result = AppSettingsSaveCalibrationPoints(
+          settings->calibration_points, settings->calibration_points_count);
+        if (save_result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(save_result));
+          break;
+        }
+        printf(
+          "cal capture OK: point=#%u actual=%.3fC mean_raw=%.3fC std=%.3fC "
+          "saved\n",
+          (unsigned)settings->calibration_points_count,
+          actual_temp_c,
+          mean_raw_mC / 1000.0,
+          stddev_c);
+        break;
+      }
+
+      if (elapsed_s >= (double)timeout_seconds) {
+        printf("cal capture failed: timeout after %d seconds\n",
+               timeout_seconds);
+        break;
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(print_every_ms));
+  }
+
+  if (CalConsoleOpLock_(pdMS_TO_TICKS(200))) {
+    g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
+    g_cal_console_op.task_handle = NULL;
+    g_cal_console_op.cancel_requested = false;
+    g_cal_console_op.start_us = 0;
+    g_cal_console_op.stable_start_us = -1;
+    g_cal_console_op.last_sample_count = 0;
+    CalConsoleOpUnlock_();
+  }
+
+  vTaskDelete(NULL);
 }
 
 /**
@@ -2635,6 +3062,201 @@ CommandCal(int argc, char** argv)
         return 1;
       }
       printf("calibration %s cleared\n", target);
+      return 0;
+    }
+
+    if (strcmp(action, "stop") == 0) {
+      if (!CalConsoleOpIsActive()) {
+        printf("cal: no active operation\n");
+        return 0;
+      }
+      CalConsoleOpRequestCancel();
+      printf("cal: cancel requested (waiting for stop)\n");
+      return 0;
+    }
+
+    if (strcmp(action, "live") == 0) {
+      int every_ms = 1000;
+      int seconds = 0;
+      bool seconds_positional_set = false;
+      bool seconds_option_set = false;
+      for (int i = 2; i < argc; ++i) {
+        const char* arg = argv[i];
+        if (arg == NULL) {
+          continue;
+        }
+        if (strncmp(arg, "--", 2) == 0) {
+          const char* option = arg + 2;
+          const char* value_eq = strchr(option, '=');
+          if (value_eq == NULL &&
+              (strncmp(option, "every_ms", 8) == 0 ||
+               strncmp(option, "seconds", 7) == 0)) {
+            if (i + 1 < argc) {
+              ++i;
+            }
+          }
+          continue;
+        }
+        if (seconds_positional_set) {
+          printf("usage: cal live [seconds] [--every_ms 1000]\n");
+          return 1;
+        }
+        char* end = NULL;
+        long parsed = strtol(arg, &end, 10);
+        if (end == arg || *end != '\0' || parsed > INT_MAX ||
+            parsed < INT_MIN) {
+          printf("usage: cal live [seconds] [--every_ms 1000]\n");
+          return 1;
+        }
+        seconds = (int)parsed;
+        seconds_positional_set = true;
+      }
+
+      int option_value = 0;
+      if (ParseOptionInt_(argc, argv, "every_ms", &option_value)) {
+        every_ms = option_value;
+      } else if (OptionPresent_(argc, argv, "every_ms")) {
+        printf("usage: cal live [seconds] [--every_ms 1000]\n");
+        return 1;
+      }
+
+      if (ParseOptionInt_(argc, argv, "seconds", &option_value)) {
+        seconds = option_value;
+        seconds_option_set = true;
+      } else if (OptionPresent_(argc, argv, "seconds")) {
+        printf("usage: cal live [seconds] [--every_ms 1000]\n");
+        return 1;
+      }
+
+      if (seconds_positional_set && seconds_option_set) {
+        printf("usage: cal live [seconds] [--every_ms 1000]\n");
+        return 1;
+      }
+
+      if (every_ms <= 0 || (seconds_positional_set || seconds_option_set) &&
+                             seconds <= 0) {
+        printf("usage: cal live [seconds] [--every_ms 1000]\n");
+        return 1;
+      }
+
+      esp_err_t result = CalConsoleOpStartLive((uint32_t)every_ms, seconds);
+      if (result == ESP_ERR_INVALID_STATE) {
+        printf("cal: operation already active\n");
+        return 1;
+      }
+      if (result != ESP_OK) {
+        printf("cal live failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+      printf("cal live started (use 'cal stop' to abort)\n");
+      return 0;
+    }
+
+    if (strcmp(action, "capture") == 0) {
+      const char* temp_arg = NULL;
+      for (int i = 2; i < argc; ++i) {
+        const char* arg = argv[i];
+        if (arg == NULL) {
+          continue;
+        }
+        if (strncmp(arg, "--", 2) == 0) {
+          const char* option = arg + 2;
+          const char* value_eq = strchr(option, '=');
+          if (value_eq == NULL &&
+              (strncmp(option, "stable_stddev_c", 15) == 0 ||
+               strncmp(option, "min_seconds", 11) == 0 ||
+               strncmp(option, "timeout_seconds", 15) == 0)) {
+            if (i + 1 < argc) {
+              ++i;
+            }
+          }
+          continue;
+        }
+        if (temp_arg != NULL) {
+          printf("usage: cal capture <actual_temp_c> "
+                 "[--stable_stddev_c 0.05] [--min_seconds 5] "
+                 "[--timeout_seconds 120]\n");
+          return 1;
+        }
+        temp_arg = arg;
+      }
+
+      if (temp_arg == NULL) {
+        printf("usage: cal capture <actual_temp_c> "
+               "[--stable_stddev_c 0.05] [--min_seconds 5] "
+               "[--timeout_seconds 120]\n");
+        return 1;
+      }
+
+      double actual_temp_c = 0.0;
+      if (!ParseTempC_(temp_arg, &actual_temp_c)) {
+        const size_t len = strlen(temp_arg);
+        if (len > 0 && (temp_arg[len - 1] == 'F' || temp_arg[len - 1] == 'f')) {
+          printf("invalid temperature: Fahrenheit suffix not supported\n");
+        } else {
+          printf("invalid temperature: expected Celsius value (e.g., 98.5C)\n");
+        }
+        return 1;
+      }
+
+      if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
+        printf("already have %u points; run 'cal apply' or 'cal clear'\n",
+               (unsigned)settings->calibration_points_count);
+        return 1;
+      }
+
+      double stable_stddev_c = 0.05;
+      int min_seconds = 5;
+      int timeout_seconds = 120;
+
+      double option_double = 0.0;
+      int option_int = 0;
+
+      if (ParseOptionDouble_(argc, argv, "stable_stddev_c", &option_double)) {
+        stable_stddev_c = option_double;
+      } else if (OptionPresent_(argc, argv, "stable_stddev_c")) {
+        printf("usage: cal capture <actual_temp_c> "
+               "[--stable_stddev_c 0.05] [--min_seconds 5] "
+               "[--timeout_seconds 120]\n");
+        return 1;
+      }
+
+      if (ParseOptionInt_(argc, argv, "min_seconds", &option_int)) {
+        min_seconds = option_int;
+      } else if (OptionPresent_(argc, argv, "min_seconds")) {
+        printf("usage: cal capture <actual_temp_c> "
+               "[--stable_stddev_c 0.05] [--min_seconds 5] "
+               "[--timeout_seconds 120]\n");
+        return 1;
+      }
+
+      if (ParseOptionInt_(argc, argv, "timeout_seconds", &option_int)) {
+        timeout_seconds = option_int;
+      } else if (OptionPresent_(argc, argv, "timeout_seconds")) {
+        printf("usage: cal capture <actual_temp_c> "
+               "[--stable_stddev_c 0.05] [--min_seconds 5] "
+               "[--timeout_seconds 120]\n");
+        return 1;
+      }
+
+      if (stable_stddev_c <= 0.0 || min_seconds <= 0 || timeout_seconds <= 0) {
+        printf("usage: cal capture <actual_temp_c> "
+               "[--stable_stddev_c 0.05] [--min_seconds 5] "
+               "[--timeout_seconds 120]\n");
+        return 1;
+      }
+
+      esp_err_t result = CalConsoleOpStartCapture(
+        actual_temp_c, stable_stddev_c, min_seconds, timeout_seconds);
+      if (result == ESP_ERR_INVALID_STATE) {
+        printf("cal: operation already active\n");
+        return 1;
+      }
+      if (result != ESP_OK) {
+        printf("cal capture failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+      printf("cal capture started (use 'cal stop' to abort)\n");
       return 0;
     }
   }
@@ -2814,125 +3436,14 @@ CommandCal(int argc, char** argv)
     return 0;
   }
 
-  if (strcmp(action, "live") == 0) {
-    const int every_ms =
-      (g_cal_args.every_ms->count > 0) ? g_cal_args.every_ms->ival[0] : 500;
-    const int seconds =
-      (g_cal_args.seconds->count > 0) ? g_cal_args.seconds->ival[0] : 10;
-    if (every_ms <= 0 || seconds <= 0) {
-      printf("usage: cal live [--every_ms 500] [--seconds 10]\n");
-      return 1;
-    }
-
-    const int64_t duration_us = (int64_t)seconds * 1000000LL;
-    const int64_t start_us = esp_timer_get_time();
-    while (esp_timer_get_time() - start_us < duration_us) {
-      int32_t last_raw_mC = 0;
-      int32_t mean_raw_mC = 0;
-      int32_t stddev_mC = 0;
-      MaybePushCalRawSampleFromSensor();
-
-      CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
-      printf("raw_last_C=%.3f raw_avg_C=%.3f raw_stddev_C=%.3f\n",
-             last_raw_mC / 1000.0,
-             mean_raw_mC / 1000.0,
-             stddev_mC / 1000.0);
-      vTaskDelay(pdMS_TO_TICKS((uint32_t)every_ms));
-    }
-    return 0;
-  }
-
-  if (strcmp(action, "capture") == 0) {
-    double actual_temp_c = 0.0;
-    if (!ResolveCalCaptureActualTemp(
-          g_cal_args.raw_c, g_cal_args.actual_c, &actual_temp_c)) {
-      printf("usage: cal capture <actual_temp_c> "
-             "[--stable_stddev_c 0.05] [--min_seconds 5] "
-             "[--timeout_seconds 120]\n");
-      return 1;
-    }
-    if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
-      printf("already have %u points; run 'cal apply' or 'cal clear'\n",
-             (unsigned)settings->calibration_points_count);
-      return 1;
-    }
-
-    const double stable_stddev_c = (g_cal_args.stable_stddev_c->count > 0)
-                                     ? g_cal_args.stable_stddev_c->dval[0]
-                                     : 0.05;
-    const int min_seconds =
-      (g_cal_args.min_seconds->count > 0) ? g_cal_args.min_seconds->ival[0] : 5;
-    const int timeout_seconds = (g_cal_args.timeout_seconds->count > 0)
-                                  ? g_cal_args.timeout_seconds->ival[0]
-                                  : 120;
-    if (stable_stddev_c <= 0.0 || min_seconds <= 0 || timeout_seconds <= 0) {
-      printf("usage: cal capture <actual_temp_c> "
-             "[--stable_stddev_c 0.05] [--min_seconds 5] "
-             "[--timeout_seconds 120]\n");
-      return 1;
-    }
-
-    const int64_t start_us = esp_timer_get_time();
-    int64_t stable_start_us = -1;
-    while (esp_timer_get_time() - start_us <
-           (int64_t)timeout_seconds * 1000000LL) {
-      int32_t last_raw_mC = 0;
-      int32_t mean_raw_mC = 0;
-      int32_t stddev_mC = 0;
-      MaybePushCalRawSampleFromSensor();
-
-      CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
-      const double stddev_c = stddev_mC / 1000.0;
-
-      if (CalWindowIsReady() && stddev_c <= stable_stddev_c) {
-        if (stable_start_us < 0) {
-          stable_start_us = esp_timer_get_time();
-        }
-        if (esp_timer_get_time() - stable_start_us >=
-            (int64_t)min_seconds * 1000000LL) {
-          calibration_point_t* point =
-            &settings->calibration_points[settings->calibration_points_count];
-          point->raw_avg_mC = mean_raw_mC;
-          point->actual_mC = (int32_t)llround(actual_temp_c * 1000.0);
-          point->raw_stddev_mC = stddev_mC;
-          point->sample_count = (uint16_t)CalWindowGetSampleCount();
-          point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
-          point->timestamp_epoch_sec =
-            point->time_valid ? (int64_t)time(NULL) : 0;
-          settings->calibration_points_count++;
-          printf("cal capture ok: raw_last=%.3fC raw_avg=%.3fC "
-                 "raw_std=%.3fC actual=%.3fC\n",
-                 last_raw_mC / 1000.0,
-                 mean_raw_mC / 1000.0,
-                 stddev_c,
-                 actual_temp_c);
-          esp_err_t save_result = AppSettingsSaveCalibrationPoints(
-            settings->calibration_points, settings->calibration_points_count);
-          if (save_result != ESP_OK) {
-            printf("save failed: %s\n", esp_err_to_name(save_result));
-            return 1;
-          }
-          return 0;
-        }
-      } else {
-        stable_start_us = -1;
-      }
-
-      vTaskDelay(pdMS_TO_TICKS(200));
-    }
-
-    printf("cal capture failed: timed out after %d seconds\n", timeout_seconds);
-    return 1;
-  }
-
   printf("unknown action. usage: cal status | cal set date <YYYY-MM-DD> | "
          "cal clear date | cal set due <count> <days|months|years> | "
          "cal clear due | cal set due_override <count> <days|months|years> | "
          "cal clear due_override | cal clear | cal add <raw_c> <actual_c> | "
-         "cal list | cal show | cal apply | cal live [--every_ms 500] "
-         "[--seconds 10] | cal capture <actual_temp_c> "
+         "cal list | cal show | cal apply | cal live [seconds] "
+         "[--every_ms 1000] | cal capture <actual_temp_c> "
          "[--stable_stddev_c 0.05] [--min_seconds 5] "
-         "[--timeout_seconds 120]\n");
+         "[--timeout_seconds 120] | cal stop\n");
   return 1;
 }
 
@@ -5422,8 +5933,8 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&rtd_cmd));
 
-  g_cal_args.action =
-    arg_str1(NULL, NULL, "<action>", "clear|add|list|show|apply|live|capture");
+  g_cal_args.action = arg_str1(
+    NULL, NULL, "<action>", "clear|add|list|show|apply|live|capture|stop");
   g_cal_args.raw_c =
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw temperature (C) from 'raw'");
   g_cal_args.actual_c =
@@ -5457,22 +5968,23 @@ RegisterCommands(void)
       "show |\n"
       "             cal apply [--mode linear|piecewise|polyN] "
       "[--allow_wide_slope] |\n"
-      "             cal live [--every_ms 500] [--seconds 10] | cal capture "
+      "             cal live [seconds] [--every_ms 1000] | cal capture "
       "<actual_temp_c>\n"
       "             [--stable_stddev_c 0.05] [--min_seconds 5] "
-      "[--timeout_seconds 120]\n"
+      "[--timeout_seconds 120] | cal stop\n"
       "Workflow:\n"
       "        - cal clear\n"
       "        - let node settle at reference temp\n"
-      "        - cal live --seconds 10\n"
-      "        - cal capture 0.00 --stable_stddev_c 0.05 --min_seconds 10\n"
+      "        - cal live --every_ms 1000\n"
+      "        - cal capture 0.00C --stable_stddev_c 0.05 --min_seconds 10\n"
       "        - move to another reference\n"
       "        - cal capture 100.00 ...\n"
       "        - cal apply\n"
       "        - cal show.\n\n"
-      "Notes: *may want to use boilpt command*; capture uses windowed\n"
-      "average after stability; live/capture show raw vs average; apply uses\n"
-      "least-squares and reports residuals; calibration invalidates when\n"
+      "Notes: *may want to use boilpt command*; live runs until stopped when\n"
+      "seconds is omitted; capture uses windowed average after stability;\n"
+      "live/capture show raw vs average; apply uses least-squares and reports\n"
+      "residuals; calibration invalidates when\n"
       "conversion mode, wire count, filter Hz, Rref, R0, or PT100 table\n"
       "changes.\n\n",
     .hint = NULL,
@@ -5699,6 +6211,12 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   }
   g_runtime = runtime;
   g_boot_mode = boot_mode;
+  if (g_cal_console_op_mutex == NULL) {
+    g_cal_console_op_mutex = xSemaphoreCreateMutex();
+    if (g_cal_console_op_mutex == NULL) {
+      return ESP_ERR_NO_MEM;
+    }
+  }
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 
