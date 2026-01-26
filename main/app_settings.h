@@ -93,6 +93,8 @@ extern "C"
     uint8_t cal_due_override_unit;
     bool rtd_ema_enabled;
     uint16_t rtd_ema_alpha_permille;
+    uint32_t rtd_fault_assert_ms;
+    uint32_t rtd_fault_clear_ms;
     char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
     bool dst_enabled;
     app_node_role_t node_role;
@@ -212,6 +214,16 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t AppSettingsSaveRtdEmaAlphaPermille(uint16_t permille);
+
+  // Persists RTD fault debounce settings.
+/**
+ * @brief Execute AppSettingsSaveRtdFaultDebounceMs.
+ * @param assert_ms Parameter assert_ms.
+ * @param clear_ms Parameter clear_ms.
+ * @return Return the function result.
+ */
+  esp_err_t AppSettingsSaveRtdFaultDebounceMs(uint32_t assert_ms,
+                                              uint32_t clear_ms);
 
   // Persists updated timezone string + DST toggle.
 /**

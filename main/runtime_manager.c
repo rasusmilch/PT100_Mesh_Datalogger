@@ -185,6 +185,14 @@ RuntimeFramLogUnlock(runtime_state_t* state);
 static bool
 RuntimeVerifyFram(runtime_state_t* state);
 
+static void
+UpdateDebouncedRtdFault(runtime_state_t* state,
+                        const app_settings_t* settings,
+                        bool raw_fault_present,
+                        bool sd_flush_busy,
+                        int64_t now_ms,
+                        uint8_t raw_fault_status);
+
 /**
  * @brief Execute RuntimeRecoverI2cBusCommon.
  * @param state Parameter state.
@@ -4481,6 +4489,81 @@ TrackSensorSpiInvalid(runtime_state_t* state, int64_t now_ms)
 }
 
 /**
+ * @brief Update the debounced RTD fault state from raw MAX31865 indications.
+ * @param state Runtime state to update.
+ * @param settings Settings that contain the debounce timings.
+ * @param raw_fault_present True when a raw fault is detected.
+ * @param sd_flush_busy True when SD flush contention should freeze updates.
+ * @param now_ms Current monotonic time in milliseconds.
+ * @param raw_fault_status Raw MAX31865 fault status when available.
+ */
+static void
+UpdateDebouncedRtdFault(runtime_state_t* state,
+                        const app_settings_t* settings,
+                        bool raw_fault_present,
+                        bool sd_flush_busy,
+                        int64_t now_ms,
+                        uint8_t raw_fault_status)
+{
+  if (state == NULL || settings == NULL) {
+    return;
+  }
+  if (sd_flush_busy) {
+    if (state->rtd_fault_pending_since_ms != 0) {
+      state->rtd_fault_pending_since_ms = now_ms;
+    }
+    if (state->rtd_clear_pending_since_ms != 0) {
+      state->rtd_clear_pending_since_ms = now_ms;
+    }
+    return;
+  }
+
+  if (raw_fault_present) {
+    state->rtd_clear_pending_since_ms = 0;
+    state->rtd_fault_last_status = raw_fault_status;
+    if (!state->last_sensor_fault_present) {
+      if (state->rtd_fault_pending_since_ms == 0) {
+        state->rtd_fault_pending_since_ms = now_ms;
+      }
+      if ((now_ms - state->rtd_fault_pending_since_ms) >=
+          (int64_t)settings->rtd_fault_assert_ms) {
+        state->last_sensor_fault_present = true;
+        state->rtd_fault_pending_since_ms = 0;
+        ESP_LOGI(kTag,
+                 "RTD fault active: status=0x%02X assert_ms=%" PRIu32,
+                 state->rtd_fault_last_status,
+                 settings->rtd_fault_assert_ms);
+      }
+    } else {
+      state->rtd_fault_pending_since_ms = 0;
+    }
+    return;
+  }
+
+  if (state->rtd_fault_pending_since_ms != 0 &&
+      !state->last_sensor_fault_present) {
+    state->rtd_fault_suppressed_count++;
+  }
+  state->rtd_fault_pending_since_ms = 0;
+
+  if (state->last_sensor_fault_present) {
+    if (state->rtd_clear_pending_since_ms == 0) {
+      state->rtd_clear_pending_since_ms = now_ms;
+    }
+    if ((now_ms - state->rtd_clear_pending_since_ms) >=
+        (int64_t)settings->rtd_fault_clear_ms) {
+      state->last_sensor_fault_present = false;
+      state->rtd_clear_pending_since_ms = 0;
+      ESP_LOGI(kTag,
+               "RTD fault resolved: clear_ms=%" PRIu32,
+               settings->rtd_fault_clear_ms);
+    }
+  } else {
+    state->rtd_clear_pending_since_ms = 0;
+  }
+}
+
+/**
  * @brief Execute SensorTask.
  * @param context Parameter context.
  * @note FreeRTOS task entry for the SensorTask task.
@@ -4539,6 +4622,20 @@ SensorTask(void* context)
       }
     }
 
+    const bool raw_rtd_fault_present =
+      (result == ESP_OK && sample.fault_present) ||
+      (result != ESP_OK && result != ESP_ERR_INVALID_RESPONSE);
+    const uint8_t raw_rtd_fault_status =
+      (result == ESP_OK) ? sample.fault_status : 0xFFu;
+    if (result != ESP_ERR_INVALID_RESPONSE) {
+      UpdateDebouncedRtdFault(state,
+                              &state->settings,
+                              raw_rtd_fault_present,
+                              sd_flush_spi_busy,
+                              now_ms,
+                              raw_rtd_fault_status);
+    }
+
     double disp_raw_temp_c = raw_temp_c;
     if (result == ESP_OK && !sample.fault_present && ema_enabled &&
         state->sensor.ema_valid) {
@@ -4591,8 +4688,8 @@ SensorTask(void* context)
     const TickType_t now_ticks = xTaskGetTickCount();
     if (result == ESP_OK && sample.fault_present) {
       const bool changed =
-        !state->last_sensor_fault_present ||
-        state->last_sensor_fault_status != sample.fault_status;
+        !state->rtd_fault_pending_was_raw ||
+        state->rtd_fault_last_status != sample.fault_status;
       const bool rate_ok =
         (state->last_sensor_fault_log_ticks == 0) ||
         (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
@@ -4612,8 +4709,8 @@ SensorTask(void* context)
                  temp_milli_c);
         state->last_sensor_fault_log_ticks = now_ticks;
       }
-      state->last_sensor_fault_present = true;
-      state->last_sensor_fault_status = sample.fault_status;
+      state->rtd_fault_pending_was_raw = true;
+      state->rtd_fault_last_status = sample.fault_status;
     } else if (result == ESP_ERR_INVALID_RESPONSE) {
       const bool rate_ok =
         (state->last_sensor_spi_log_ticks == 0) ||
@@ -4626,8 +4723,8 @@ SensorTask(void* context)
       // Best-effort: skip fault logging/state changes when SD flush holds the
       // shared SPI bus.
     } else if (result != ESP_OK) {
-      const bool changed = !state->last_sensor_fault_present ||
-                           state->last_sensor_fault_status != 0xFFu;
+      const bool changed = !state->rtd_fault_pending_was_raw ||
+                           state->rtd_fault_last_status != 0xFFu;
       const bool rate_ok =
         (state->last_sensor_fault_log_ticks == 0) ||
         (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
@@ -4636,14 +4733,13 @@ SensorTask(void* context)
         ESP_LOGW(kTag, "MAX31865 read failed: %s", esp_err_to_name(result));
         state->last_sensor_fault_log_ticks = now_ticks;
       }
-      state->last_sensor_fault_present = true;
-      state->last_sensor_fault_status = 0xFFu;
+      state->rtd_fault_pending_was_raw = true;
+      state->rtd_fault_last_status = 0xFFu;
     } else {
-      if (state->last_sensor_fault_present) {
+      if (state->rtd_fault_pending_was_raw) {
         ESP_LOGW(kTag, "MAX31865 fault cleared");
       }
-      state->last_sensor_fault_present = false;
-      state->last_sensor_fault_status = 0;
+      state->rtd_fault_pending_was_raw = false;
     }
     UpdateCachedBool(state,
                      &state->cached_status.sensor_fault_present,
