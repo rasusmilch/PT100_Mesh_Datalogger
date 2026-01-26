@@ -1,91 +1,3 @@
-I (68485694) time_sync: SNTP attempt summary: server=pool.ntp.org verified=yes callback=yes before=1769284419 after=1769284420 delta=1 cb_epoch=1769284420
-I (68485694) time_sync: SNTP callback state: fired=yes cb_epoch=1769284420 cb_uptime_us=68485042986 attempt_uptime_us=68483674063
-I (68485694) time_sync: SNTP synced
-I (68485694) time_sync: RTC updated from system time
-I (68485694) net_sup: Time synchronized (SNTP -> RTC UTC)
-I (68953564) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79871/31732 psram:1955000/1933300 stack_min(ctrl:3324 stor:3196 flush:4068 net:1836 http:4076)
-I (68960234) runtime: Drain post(watermark): flushed=512 remaining=0 duration=6670ms stack_min(ctrl:3324 stor:3196 flush:4068 net:1836 http:4076)
-I (69553724) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79919/31732 psram:1955000/1933300 stack_min(ctrl:3324 stor:3196 flush:4068 net:1836 http:4076)
-I (69560374) runtime: Drain post(watermark): flushed=512 remaining=0 duration=6650ms stack_min(ctrl:3324 stor:3196 flush:4068 net:1836 http:4076)
-I (70153864) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79919/31732 psram:1955000/1933300 stack_min(ctrl:3324 stor:3196 flush:4068 net:1836 http:4076)
-I (70160514) runtime: Drain post(watermark): flushed=512 remaining=0 duration=6650ms stack_min(ctrl:3324 stor:3196 flush:4068 net:1836 http:4076)
-I (70754074) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79919/31732 psram:1955000/1933300 stack_min(ctrl:3324 stor:3196 flush:4068 net:1836 http:4076)
-I (70760764) runtime: Drain post(watermark): flushed=512 remaining=0 duration=6690ms stack_min(ctrl:3324 stor:3196 flush:4068 net:1836 http:4076)
-stack
-task            alloc  last_free   min_free  peak_used  recommended
-display          4608       2032       2032       2576         3840
-control          6144       3324       3324       2820         4096
-sensor           3584       1312       1312       2272         3328
-storage          6144       3196       3196       2948         4096
-sd_flush         8192       4068       4068       4124         5376
-export           3584       1084       1084       2500         3584
-net_tx           6144       1836       1836       4308         5376
-alert_http      11264       4076       4076       7188         8448
-pt100> status
-node_id: 98:A3:16:12:57:B0
-runtime_running: yes
-time_valid: yes
-log_period_ms: 1000
-rtc_resync_period_ms: 3600000
-sd_flush_period_ms: 600000
-sd_batch_target_bytes: 4096
-node_role: SENSOR
-net_mode: WIFI
-allow_children: no
-tz_posix: CST6CDT,M3.2.0/2,M11.1.0/2
-dst_enabled: yes
-mqtt_enabled: no
-mqtt_broker_uri: mqtt://192.168.1.50
-mqtt_topic_prefix: pt100
-mqtt_qos: 0
-mqtt_retain: no
-rtd_ema_enabled: yes
-rtd_ema_alpha: 0.200
-rtd_ema_valid: yes
-utc_time: 2026-01-24 20:38:30Z (epoch=1769287110)
-local_time: 2026-01-24 14:38:30 (utc_offset_sec=-21600 dst_in_effect=0)
-fram_count: 344
-fram_capacity: 656
-fram_fill_pct: 52
-fram_overrun_records_total: 0
-fram_flush_watermark_records: 512
-fram_full: no
-fram_count/seq: 344/158793
-fram_corrupt_detect_count: 0
-fram_corrupt_skip_count: 0
-fram_corrupt_last_reason: ok
-fram_corrupt_last_slot: 0
-fram_corrupt_last_addr: 0x0000
-fram_corrupt_last_magic: 0x00000000
-fram_corrupt_last_schema: 0
-fram_corrupt_last_exp_crc: 0x0000
-fram_corrupt_last_act_crc: 0x0000
-data_csv_drop_count: 0
-data_csv_write_fail_count: 0
-mqtt_connected: no
-export_outbox_depth/used: 16/0
-export_drop_count: 0
-export_send_fail_count: 0
-calibration: mode=linear degree=1 coeffs=[0, 1, 0, 0]
-Calibration:
-  Last UTC:  n/a
-  Due every: disabled
-  Due date:  n/a
-  Overdue:   no
-  Time valid: yes
-  Time stable: yes
-  Check: active
-sd_mounted: yes
-sd_card_present: yes
-sd_safe_to_remove: no
-sd_card_detect_gpio: 3
-sd_card_detect_present_level: low
-sd_degraded: no
-sd_fail_count: 0
-sd_backoff_remaining_ms: 0
-sd_last_record_id: 158448
-heap_internal_free_bytes: 79919
-heap_internal_largest_free_block_bytes: 31732
 heap_internal_min_free_bytes: 36739
 heap_internal_min_largest_free_block_bytes: 31732
 heap_internal_frag_percent: 61
@@ -837,3 +749,96 @@ I (176519694) net_sup: Time synchronized (SNTP -> RTC UTC)
 I (176957214) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79495/31732 psram:1955000/1933300 stack_min(ctrl:3308 stor:3196 flush:4004 net:1836 http:4076)
 I (176964074) runtime: Drain post(watermark): flushed=512 remaining=0 duration=6860ms stack_min(ctrl:3308 stor:3196 flush:4004 net:1836 http:4076)
 W (177014584) fram_log: PeekOldest retry attempt=1 slot=66 addr=0x0d60 last_reason=bad-crc
+status
+node_id: 98:A3:16:12:57:B0
+runtime_running: yes
+time_valid: yes
+log_period_ms: 1000
+rtc_resync_period_ms: 3600000
+sd_flush_period_ms: 600000
+sd_batch_target_bytes: 4096
+node_role: SENSOR
+net_mode: WIFI
+allow_children: no
+tz_posix: CST6CDT,M3.2.0/2,M11.1.0/2
+dst_enabled: yes
+mqtt_enabled: no
+mqtt_broker_uri: mqtt://192.168.1.50
+mqtt_topic_prefix: pt100
+mqtt_qos: 0
+mqtt_retain: no
+rtd_ema_enabled: yes
+rtd_ema_alpha: 0.200
+rtd_ema_valid: yes
+utc_time: 2026-01-26 02:06:57Z (epoch=1769393217)
+local_time: 2026-01-25 20:06:57 (utc_offset_sec=-21600 dst_in_effect=0)
+fram_count: 255
+fram_capacity: 656
+fram_fill_pct: 38
+fram_overrun_records_total: 0
+fram_flush_watermark_records: 512
+fram_full: no
+fram_count/seq: 255/258862
+fram_corrupt_detect_count: 0
+fram_corrupt_skip_count: 0
+fram_corrupt_last_reason: ok
+fram_corrupt_last_slot: 0
+fram_corrupt_last_addr: 0x0000
+fram_corrupt_last_magic: 0x00000000
+fram_corrupt_last_schema: 0
+fram_corrupt_last_exp_crc: 0x0000
+fram_corrupt_last_act_crc: 0x0000
+data_csv_drop_count: 0
+data_csv_write_fail_count: 0
+mqtt_connected: no
+export_outbox_depth/used: 16/0
+export_drop_count: 0
+export_send_fail_count: 0
+calibration: mode=linear degree=1 coeffs=[0, 1, 0, 0]
+Calibration:
+  Last UTC:  n/a
+  Due every: disabled
+  Due date:  n/a
+  Overdue:   no
+  Time valid: yes
+  Time stable: yes
+  Check: active
+sd_mounted: yes
+sd_card_present: yes
+sd_safe_to_remove: no
+sd_card_detect_gpio: 3
+sd_card_detect_present_level: low
+sd_degraded: no
+sd_fail_count: 0
+sd_backoff_remaining_ms: 0
+sd_last_record_id: 258606
+heap_internal_free_bytes: 79495
+heap_internal_largest_free_block_bytes: 31732
+heap_internal_min_free_bytes: 35535
+heap_internal_min_largest_free_block_bytes: 31732
+heap_internal_frag_percent: 61
+heap_internal_warn: no
+heap_internal_crit: no
+heap_psram_free_bytes: 1955000
+heap_psram_largest_free_block_bytes: 1933300
+heap_psram_min_free_bytes: 1947216
+heap_psram_min_largest_free_block_bytes: 1933300
+heap_psram_frag_percent: 2
+heap_psram_warn: no
+heap_psram_crit: no
+allocs_since_run: 0
+mesh_connected: no
+wifi_connected: yes
+wifi_ip: 192.168.4.149
+cal_points: 0
+pt100> stack
+task            alloc  last_free   min_free  peak_used  recommended
+display          4608       2032       2032       2576         3840
+control          6144       3308       3308       2836         4096
+sensor           3584        848        848       2736         3840
+storage          6144       3196       3196       2948         4096
+sd_flush         8192       4004       4004       4188         5376
+export           3584       1052       1052       2532         3584
+net_tx           6144       1836       1836       4308         5376
+alert_http      11264       4076       4076       7188         8448
+pt100> 
