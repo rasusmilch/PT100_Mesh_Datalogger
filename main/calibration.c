@@ -584,6 +584,15 @@ CalWindowPushRawSample(int32_t raw_milli_c)
 }
 
 /**
+ * @brief Execute CalWindowClear.
+ */
+void
+CalWindowClear(void)
+{
+  memset(&g_cal_window, 0, sizeof(g_cal_window));
+}
+
+/**
  * @brief Execute CalWindowIsReady.
  * @return Return the function result.
  */

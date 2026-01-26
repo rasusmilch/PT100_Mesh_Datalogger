@@ -136,6 +136,10 @@ extern "C"
    */
   void CalWindowPushRawSample(int32_t raw_milli_c);
   /**
+   * @brief Execute CalWindowClear.
+   */
+  void CalWindowClear(void);
+  /**
    * @brief Execute CalWindowIsReady.
    * @return Return the function result.
    */
