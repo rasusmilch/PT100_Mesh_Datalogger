@@ -93,3 +93,6 @@ main.tar.gz
 *.zip
 dependencies.yml
 *.csv
+main/console
+*.txt
+host_tools/*.txt
