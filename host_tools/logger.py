@@ -1,9 +1,11 @@
 import argparse
 import ctypes
 import os
+import queue
 import re
 import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -47,6 +49,33 @@ class BufferConfig:
     fsync: bool
 
 
+@dataclass
+class InputConfig:
+    interactive: Optional[bool]
+    input_eol: str
+    input_encoding: str
+    local_echo: bool
+    input_log: bool
+    escape_prefix: str
+
+
+class StdinLineReader(threading.Thread):
+    """Reads stdin lines into a queue for interactive serial input."""
+
+    def __init__(self, stop_event: threading.Event, line_queue: queue.Queue[str]):
+        super().__init__(daemon=True)
+        self._stop_event = stop_event
+        self._line_queue = line_queue
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            line = sys.stdin.readline()
+            if line == "":
+                break
+            cleaned = line.rstrip("\r\n")
+            self._line_queue.put(cleaned)
+
+
 class SerialSessionLogger:
     def __init__(
         self,
@@ -56,6 +85,7 @@ class SerialSessionLogger:
         reconnect: ReconnectConfig,
         reset: ResetConfig,
         buffer_config: BufferConfig,
+        input_config: InputConfig,
         auto_color: bool,
         vid: Optional[int],
         pid: Optional[int],
@@ -67,6 +97,7 @@ class SerialSessionLogger:
         self.reconnect = reconnect
         self.reset = reset
         self.buffer_config = buffer_config
+        self.input_config = input_config
         self.auto_color = auto_color
         self.vid = vid
         self.pid = pid
@@ -79,10 +110,15 @@ class SerialSessionLogger:
         self._warned_no_color = False
         self._color_enabled = auto_color
         self._connected_once = False
+        self._interactive_enabled = False
+        self._input_queue: Optional[queue.Queue[str]] = None
+        self._input_stop_event: Optional[threading.Event] = None
+        self._input_thread: Optional[StdinLineReader] = None
 
     def run(self) -> int:
         self._setup_color()
         self._setup_signal_handlers()
+        self._setup_input_reader()
         txt_filename = self._open_output_file()
         self._write_marker(
             f"=== LOGGER STARTED {self._timestamp()} output={txt_filename} ==="
@@ -90,56 +126,82 @@ class SerialSessionLogger:
 
         backoff_seconds = self.reconnect.initial_seconds
 
-        while not self._stop_requested:
-            port = self._resolve_port()
-            if not port:
-                message = "No serial port found matching criteria"
-                if not self.reconnect.enabled:
-                    self._write_marker(f"=== LOGGER STOPPED {self._timestamp()} error={message} ===")
+        try:
+            while not self._stop_requested:
+                port = self._resolve_port()
+                if not port:
+                    message = "No serial port found matching criteria"
+                    if not self.reconnect.enabled:
+                        self._write_marker(
+                            f"=== LOGGER STOPPED {self._timestamp()} error={message} ==="
+                        )
+                        self._flush_buffer()
+                        return 1
+                    self._write_marker(
+                        f"=== DISCONNECTED {self._timestamp()} error={message} ==="
+                    )
                     self._flush_buffer()
-                    return 1
-                self._write_marker(f"=== DISCONNECTED {self._timestamp()} error={message} ===")
-                self._flush_buffer()
-                time.sleep(backoff_seconds)
-                backoff_seconds = min(
-                    backoff_seconds * self.reconnect.backoff, self.reconnect.max_seconds
-                )
-                continue
+                    time.sleep(backoff_seconds)
+                    backoff_seconds = min(
+                        backoff_seconds * self.reconnect.backoff,
+                        self.reconnect.max_seconds,
+                    )
+                    continue
 
-            try:
-                with serial.Serial(port, self.baud, timeout=1) as ser:
-                    self._handle_connected(port, ser)
-                    backoff_seconds = self.reconnect.initial_seconds
-                    self._read_loop(ser)
-            except (serial.SerialException, OSError, UnicodeDecodeError) as exc:
-                self._write_marker(
-                    f"=== DISCONNECTED {self._timestamp()} error={exc} ==="
-                )
-                self._flush_buffer()
-                if not self.reconnect.enabled:
+                try:
+                    with serial.Serial(port, self.baud, timeout=0.1) as ser:
+                        self._handle_connected(port, ser)
+                        backoff_seconds = self.reconnect.initial_seconds
+                        self._read_loop(ser)
+                except (serial.SerialException, OSError, UnicodeDecodeError) as exc:
+                    self._write_marker(
+                        f"=== DISCONNECTED {self._timestamp()} error={exc} ==="
+                    )
+                    self._flush_buffer()
+                    if not self.reconnect.enabled:
+                        self._write_marker(
+                            f"=== LOGGER STOPPED {self._timestamp()} error={exc} ==="
+                        )
+                        self._flush_buffer()
+                        return 1
+                    time.sleep(backoff_seconds)
+                    backoff_seconds = min(
+                        backoff_seconds * self.reconnect.backoff,
+                        self.reconnect.max_seconds,
+                    )
+                except Exception as exc:
+                    self._write_marker(
+                        f"=== DISCONNECTED {self._timestamp()} error={exc} ==="
+                    )
+                    self._flush_buffer()
                     self._write_marker(
                         f"=== LOGGER STOPPED {self._timestamp()} error={exc} ==="
                     )
                     self._flush_buffer()
-                    return 1
-                time.sleep(backoff_seconds)
-                backoff_seconds = min(
-                    backoff_seconds * self.reconnect.backoff, self.reconnect.max_seconds
-                )
-            except Exception as exc:
-                self._write_marker(
-                    f"=== DISCONNECTED {self._timestamp()} error={exc} ==="
-                )
-                self._flush_buffer()
-                self._write_marker(
-                    f"=== LOGGER STOPPED {self._timestamp()} error={exc} ==="
-                )
-                self._flush_buffer()
-                raise
+                    raise
+        finally:
+            self._shutdown_input_reader()
 
         self._write_marker(f"=== LOGGER STOPPED {self._timestamp()} ===")
         self._flush_buffer()
         return 0
+
+    def _setup_input_reader(self) -> None:
+        interactive = self.input_config.interactive
+        if interactive is None:
+            interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        self._interactive_enabled = bool(interactive)
+        if not self._interactive_enabled:
+            return
+        self._input_queue = queue.Queue()
+        self._input_stop_event = threading.Event()
+        self._input_thread = StdinLineReader(self._input_stop_event, self._input_queue)
+        self._input_thread.start()
+
+    def _shutdown_input_reader(self) -> None:
+        if not self._input_stop_event:
+            return
+        self._input_stop_event.set()
 
     def _setup_signal_handlers(self) -> None:
         signal.signal(signal.SIGINT, self._handle_stop_signal)
@@ -257,6 +319,7 @@ class SerialSessionLogger:
 
     def _read_loop(self, ser: serial.Serial) -> None:
         while not self._stop_requested:
+            self._drain_input_queue(ser)
             line = ser.readline()
             if not line:
                 continue
@@ -272,6 +335,93 @@ class SerialSessionLogger:
             self._log_buffer.append(formatted)
             self._flush_if_needed()
 
+    def _drain_input_queue(self, ser: serial.Serial) -> None:
+        if not self._interactive_enabled or not self._input_queue:
+            return
+        max_per_tick = 50
+        for _ in range(max_per_tick):
+            try:
+                user_line = self._input_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._send_user_line(ser, user_line)
+
+    def _send_user_line(self, ser: serial.Serial, user_line: str) -> None:
+        """Send a line from stdin to the serial device or handle escape commands."""
+        if self._handle_escape_command(ser, user_line):
+            return
+        payload = self._encode_user_line(user_line)
+        if payload is None:
+            return
+        ser.write(payload)
+        ser.flush()
+        if self.input_config.local_echo:
+            self._print_local_echo(user_line)
+        if self.input_config.input_log:
+            self._write_marker(self._format_tx_marker(user_line), print_console=False)
+
+    def _encode_user_line(self, user_line: str) -> Optional[bytes]:
+        """Encode the user line with configured encoding and EOL settings."""
+        eol_bytes = self._eol_bytes()
+        try:
+            encoded = user_line.encode(self.input_config.input_encoding)
+        except UnicodeEncodeError as exc:
+            print(f"TX encode error: {exc}")
+            return None
+        return encoded + eol_bytes
+
+    def _eol_bytes(self) -> bytes:
+        eol = self.input_config.input_eol
+        if eol == "crlf":
+            return b"\r\n"
+        if eol == "cr":
+            return b"\r"
+        return b"\n"
+
+    def _handle_escape_command(self, ser: serial.Serial, command_line: str) -> bool:
+        """Handle escape-prefixed commands. Returns True if consumed."""
+        prefix = self.input_config.escape_prefix
+        if not command_line.startswith(prefix):
+            return False
+        command = command_line[len(prefix) :].strip()
+        if command in {".", "quit"}:
+            self._stop_requested = True
+            return True
+        if command == "help":
+            self._print_escape_help(prefix)
+            return True
+        if command == "reset":
+            try:
+                self._reset_target(ser)
+                time.sleep(self.reset.delay_seconds)
+            except Exception as exc:
+                print(f"Reset failed: {exc}")
+            return True
+        if command == "reconnect":
+            ser.close()
+            raise serial.SerialException("User requested reconnect")
+        print(f"Unknown escape command: {command_line!r}")
+        return True
+
+    def _print_escape_help(self, prefix: str) -> None:
+        """Print quick help for escape commands."""
+        print("Escape commands:")
+        print(f"  {prefix}. or {prefix}quit    Quit logger")
+        print(f"  {prefix}reset              Reset target now")
+        print(f"  {prefix}reconnect          Force reconnect")
+        print(f"  {prefix}help               Show this help")
+
+    def _format_tx_marker(self, user_line: str) -> str:
+        return f">>> <{self._timestamp()}> {user_line}"
+
+    def _print_local_echo(self, user_line: str) -> None:
+        timestamp = self._timestamp()
+        message = f">>> <{timestamp}> {user_line}"
+        if self._color_enabled:
+            print(f"\x1b[90m{message}{ANSI_RESET}")
+        else:
+            print(message)
+
     def _write_console_line(self, decoded: str, timestamp: str) -> None:
         prefix = f"<{timestamp}> "
         if self._color_enabled and not ANSI_ESCAPE_PATTERN.search(decoded):
@@ -283,8 +433,9 @@ class SerialSessionLogger:
                     return
         print(f"{prefix}{decoded}")
 
-    def _write_marker(self, text: str) -> None:
-        print(text)
+    def _write_marker(self, text: str, print_console: bool = True) -> None:
+        if print_console:
+            print(text)
         if self._txt_file:
             self._txt_file.write(text + "\n")
 
@@ -406,6 +557,40 @@ Examples:
         help="Disable IDF-style auto-color output.",
     )
     parser.add_argument(
+        "--interactive",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable interactive stdin-to-serial input (default: auto TTY).",
+    )
+    parser.add_argument(
+        "--input-eol",
+        choices=["lf", "crlf", "cr"],
+        default="lf",
+        help="End-of-line to append for interactive input.",
+    )
+    parser.add_argument(
+        "--input-encoding",
+        default="utf-8",
+        help="Encoding for interactive input.",
+    )
+    parser.add_argument(
+        "--local-echo",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Echo sent lines locally (default: enabled).",
+    )
+    parser.add_argument(
+        "--input-log",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Log sent lines to the output file (default: enabled).",
+    )
+    parser.add_argument(
+        "--escape-prefix",
+        default="~",
+        help="Prefix for interactive escape commands.",
+    )
+    parser.add_argument(
         "--buffer-lines",
         type=int,
         default=600,
@@ -452,6 +637,14 @@ def main() -> int:
         flush_interval_seconds=args.flush_interval_seconds,
         fsync=args.fsync,
     )
+    input_config = InputConfig(
+        interactive=args.interactive,
+        input_eol=args.input_eol,
+        input_encoding=args.input_encoding,
+        local_echo=args.local_echo,
+        input_log=args.input_log,
+        escape_prefix=args.escape_prefix,
+    )
 
     logger = SerialSessionLogger(
         port=args.port,
@@ -460,6 +653,7 @@ def main() -> int:
         reconnect=reconnect,
         reset=reset,
         buffer_config=buffer_config,
+        input_config=input_config,
         auto_color=not args.disable_auto_color,
         vid=args.vid,
         pid=args.pid,
