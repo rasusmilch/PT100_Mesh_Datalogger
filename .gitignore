@@ -96,3 +96,4 @@ dependencies.yml
 main/console
 *.txt
 host_tools/*.txt
+host_tools/*.log
