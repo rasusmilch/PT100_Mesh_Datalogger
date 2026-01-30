@@ -32,6 +32,16 @@ extern "C"
 {
 #endif
 
+#define RUNTIME_ERROR_RING_SIZE 8
+
+  typedef struct
+  {
+    uint32_t uptime_ms;
+    const char* module;
+    esp_err_t err;
+    const char* phase;
+  } runtime_error_entry_t;
+
   typedef struct
   {
     // time (written by time_sync module)
@@ -197,6 +207,22 @@ extern "C"
     i2c_bus_t i2c_bus;
     StaticSemaphore_t i2c_mutex_buf;
     SemaphoreHandle_t i2c_mutex;
+    const char* fram_log_mutex_holder;
+    TickType_t fram_log_mutex_hold_start_ticks;
+    uint32_t fram_log_mutex_hold_max_ms_observed;
+    uint32_t fram_log_mutex_timeouts;
+    const char* i2c_mutex_holder;
+    TickType_t i2c_mutex_hold_start_ticks;
+    uint32_t i2c_mutex_hold_max_ms_observed;
+    uint32_t i2c_mutex_timeouts;
+    const char* sd_io_mutex_holder;
+    TickType_t sd_io_mutex_hold_start_ticks;
+    uint32_t sd_io_mutex_hold_max_ms_observed;
+    uint32_t sd_io_mutex_timeouts;
+    TickType_t last_lock_dump_ticks;
+    runtime_error_entry_t error_ring[RUNTIME_ERROR_RING_SIZE];
+    uint8_t error_ring_head;
+    uint8_t error_ring_count;
     TickType_t rtc_resync_last_ticks;
     TickType_t last_rtc_force_before_roll_ticks;
     TickType_t last_rtc_resync_warn_ticks;
@@ -232,6 +258,10 @@ extern "C"
     volatile uint32_t sd_manual_drain_passes;
     volatile uint32_t storage_marker;
     volatile uint32_t sd_flush_marker;
+    const char* sd_flush_phase;
+    esp_err_t sd_flush_last_err;
+    uint32_t sd_flush_i2c_errs;
+    uint32_t sd_flush_sd_errs;
     // If the FRAM->SD drain was requested at run start but SD was not mounted,
     // keep trying aggressively once the card becomes available.
     bool sd_start_drain_pending;
