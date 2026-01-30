@@ -59,11 +59,13 @@
 #include "wifi_service.h"
 
 static const char* kTag = "runtime";
+static const char* kMutexHolderNone = "<none>";
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
 static const uint32_t kSdFlushMaxMsPerPass = 50;
 static const uint32_t kSdFlushTimeSliceMs = 50;
 static const uint32_t kSdFlushWarnIntervalMs = 10000;
 static const uint32_t kFramLogLockWarnIntervalMs = 10000;
+static const uint32_t kLockDumpIntervalMs = 10000;
 static const uint32_t kSdFlushFailureBackoffMs = 5000;
 static const uint32_t kSdFlushFailureBackoffMaxMs = 300000;
 static const uint32_t kSdFlushMinIntervalMs = 200;
@@ -218,6 +220,18 @@ RuntimeRecoverI2cBusLocked(runtime_state_t* state, const char* reason);
 static void
 RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context);
 
+static void
+RuntimeDumpLocks(runtime_state_t* state, const char* reason);
+
+static void
+RuntimeRecordError(runtime_state_t* state,
+                   const char* module,
+                   esp_err_t err,
+                   const char* phase);
+
+static bool
+IsRecoverableI2cErr(esp_err_t err);
+
 /**
  * @brief Execute DiscardFramRecordsWithYield.
  * @param state Parameter state.
@@ -315,6 +329,158 @@ GetStackMonitorMinBytes(const char* name)
     return 0;
   }
   return min_bytes;
+}
+
+static const char*
+RuntimeGetCurrentTaskName(void)
+{
+  if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) {
+    return "scheduler-not-started";
+  }
+  const char* name = pcTaskGetName(NULL);
+  return (name != NULL) ? name : "unknown";
+}
+
+static uint32_t
+RuntimeElapsedMs(TickType_t start_ticks, TickType_t now_ticks)
+{
+  if (start_ticks == 0) {
+    return 0;
+  }
+  return (uint32_t)pdTICKS_TO_MS(now_ticks - start_ticks);
+}
+
+static void
+RuntimeUpdateHoldMax(uint32_t hold_ms, uint32_t* max_observed_ms)
+{
+  if (max_observed_ms == NULL) {
+    return;
+  }
+  if (hold_ms > *max_observed_ms) {
+    *max_observed_ms = hold_ms;
+  }
+}
+
+static void
+RuntimeRecordError(runtime_state_t* state,
+                   const char* module,
+                   esp_err_t err,
+                   const char* phase)
+{
+  if (state == NULL) {
+    return;
+  }
+  runtime_error_entry_t* entry =
+    &state->error_ring[state->error_ring_head];
+  entry->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
+  entry->module = (module != NULL) ? module : "unknown";
+  entry->err = err;
+  entry->phase = (phase != NULL) ? phase : kMutexHolderNone;
+
+  state->error_ring_head =
+    (uint8_t)((state->error_ring_head + 1u) % RUNTIME_ERROR_RING_SIZE);
+  if (state->error_ring_count < RUNTIME_ERROR_RING_SIZE) {
+    state->error_ring_count++;
+  }
+}
+
+static void
+RuntimeDumpLocks(runtime_state_t* state, const char* reason)
+{
+  if (state == NULL) {
+    return;
+  }
+  const TickType_t now_ticks = xTaskGetTickCount();
+  const char* fram_holder = (state->fram_log_mutex_holder != NULL)
+                              ? state->fram_log_mutex_holder
+                              : kMutexHolderNone;
+  const char* i2c_holder = (state->i2c_mutex_holder != NULL)
+                             ? state->i2c_mutex_holder
+                             : kMutexHolderNone;
+  const char* sd_holder = (state->sd_io_mutex_holder != NULL)
+                            ? state->sd_io_mutex_holder
+                            : kMutexHolderNone;
+  const uint32_t fram_held_ms =
+    (fram_holder != kMutexHolderNone)
+      ? RuntimeElapsedMs(state->fram_log_mutex_hold_start_ticks, now_ticks)
+      : 0u;
+  const uint32_t i2c_held_ms =
+    (i2c_holder != kMutexHolderNone)
+      ? RuntimeElapsedMs(state->i2c_mutex_hold_start_ticks, now_ticks)
+      : 0u;
+  const uint32_t sd_held_ms =
+    (sd_holder != kMutexHolderNone)
+      ? RuntimeElapsedMs(state->sd_io_mutex_hold_start_ticks, now_ticks)
+      : 0u;
+  const char* phase =
+    (state->sd_flush_phase != NULL) ? state->sd_flush_phase : kMutexHolderNone;
+  const char* reason_label = (reason != NULL) ? reason : "unknown";
+
+  ESP_LOGW(kTag, "Lock dump (%s):", reason_label);
+  ESP_LOGW(kTag,
+           "  fram_log holder=%s held_ms=%" PRIu32
+           " timeouts=%" PRIu32 " max_ms=%" PRIu32,
+           fram_holder,
+           fram_held_ms,
+           state->fram_log_mutex_timeouts,
+           state->fram_log_mutex_hold_max_ms_observed);
+  ESP_LOGW(kTag,
+           "  i2c holder=%s held_ms=%" PRIu32 " timeouts=%" PRIu32
+           " max_ms=%" PRIu32,
+           i2c_holder,
+           i2c_held_ms,
+           state->i2c_mutex_timeouts,
+           state->i2c_mutex_hold_max_ms_observed);
+  ESP_LOGW(kTag,
+           "  sd_io holder=%s held_ms=%" PRIu32 " timeouts=%" PRIu32
+           " max_ms=%" PRIu32,
+           sd_holder,
+           sd_held_ms,
+           state->sd_io_mutex_timeouts,
+           state->sd_io_mutex_hold_max_ms_observed);
+  ESP_LOGW(kTag,
+           "  sd_flush phase=%s last_err=%s (%d) i2c_errs=%" PRIu32
+           " sd_errs=%" PRIu32,
+           phase,
+           esp_err_to_name(state->sd_flush_last_err),
+           (int)state->sd_flush_last_err,
+           state->sd_flush_i2c_errs,
+           state->sd_flush_sd_errs);
+
+  if (state->error_ring_count > 0u) {
+    const uint8_t count = state->error_ring_count;
+    const uint8_t start =
+      (uint8_t)((state->error_ring_head + RUNTIME_ERROR_RING_SIZE - count) %
+                RUNTIME_ERROR_RING_SIZE);
+    for (uint8_t i = 0; i < count; ++i) {
+      const uint8_t idx =
+        (uint8_t)((start + i) % RUNTIME_ERROR_RING_SIZE);
+      const runtime_error_entry_t* entry = &state->error_ring[idx];
+      const char* err_phase =
+        (entry->phase != NULL) ? entry->phase : kMutexHolderNone;
+      ESP_LOGW(kTag,
+               "  err[%u] uptime_ms=%" PRIu32 " module=%s err=%s (%d) phase=%s",
+               (unsigned)i,
+               entry->uptime_ms,
+               (entry->module != NULL) ? entry->module : "unknown",
+               esp_err_to_name(entry->err),
+               (int)entry->err,
+               err_phase);
+    }
+  }
+}
+
+void
+RuntimeDumpLocksManual(const char* reason)
+{
+  RuntimeDumpLocks(&g_state, reason);
+}
+
+static bool
+IsRecoverableI2cErr(esp_err_t err)
+{
+  return err == ESP_ERR_TIMEOUT || err == ESP_FAIL ||
+         err == ESP_ERR_INVALID_STATE || err == ESP_ERR_INVALID_RESPONSE;
 }
 
 static void
@@ -922,11 +1088,36 @@ RuntimeSdFsLock(runtime_state_t* state, TickType_t timeout_ticks)
     const char* phase = (state->stop_requested || !state->logger_running)
                           ? "stop/diag"
                           : "runtime";
-    ESP_LOGE(
-      kTag, "SD I/O mutex timeout during %s; marking SD degraded", phase);
+    state->sd_io_mutex_timeouts++;
+    const TickType_t now_ticks = xTaskGetTickCount();
+    const uint32_t held_ms =
+      RuntimeElapsedMs(state->sd_io_mutex_hold_start_ticks, now_ticks);
+    const char* holder = (state->sd_io_mutex_holder != NULL)
+                           ? state->sd_io_mutex_holder
+                           : kMutexHolderNone;
+    const char* flush_phase = (state->sd_flush_phase != NULL)
+                                ? state->sd_flush_phase
+                                : kMutexHolderNone;
+    ESP_LOGE(kTag,
+             "SD I/O mutex timeout during %s; holder=%s held_ms=%" PRIu32
+             " task=%s sd_phase=%s",
+             phase,
+             holder,
+             held_ms,
+             RuntimeGetCurrentTaskName(),
+             flush_phase);
+    const TickType_t dump_elapsed =
+      now_ticks - state->last_lock_dump_ticks;
+    if (state->last_lock_dump_ticks == 0 ||
+        pdTICKS_TO_MS(dump_elapsed) >= kLockDumpIntervalMs) {
+      state->last_lock_dump_ticks = now_ticks;
+      RuntimeDumpLocks(state, "sd_io_timeout");
+    }
     MarkSdIoLockFailure(state);
     return false;
   }
+  state->sd_io_mutex_holder = RuntimeGetCurrentTaskName();
+  state->sd_io_mutex_hold_start_ticks = xTaskGetTickCount();
   return true;
 }
 
@@ -940,6 +1131,12 @@ RuntimeSdFsUnlock(runtime_state_t* state)
   if (state == NULL || state->sd_io_mutex == NULL) {
     return;
   }
+  const TickType_t now_ticks = xTaskGetTickCount();
+  const uint32_t held_ms =
+    RuntimeElapsedMs(state->sd_io_mutex_hold_start_ticks, now_ticks);
+  RuntimeUpdateHoldMax(held_ms, &state->sd_io_mutex_hold_max_ms_observed);
+  state->sd_io_mutex_holder = kMutexHolderNone;
+  state->sd_io_mutex_hold_start_ticks = 0;
   (void)xSemaphoreGive(state->sd_io_mutex);
 }
 
@@ -1004,17 +1201,34 @@ RuntimeFramLogLock(runtime_state_t* state, TickType_t timeout_ticks)
     return false;
   }
   if (xSemaphoreTake(state->fram_log_mutex, timeout_ticks) != pdTRUE) {
-    const char* holder_name = "unknown";
-    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-      const TaskHandle_t holder =
-        xSemaphoreGetMutexHolder(state->fram_log_mutex);
-      holder_name = (holder != NULL) ? pcTaskGetName(holder) : "none";
-    } else {
-      holder_name = "scheduler-not-started";
+    state->fram_log_mutex_timeouts++;
+    const TickType_t now_ticks = xTaskGetTickCount();
+    const uint32_t held_ms =
+      RuntimeElapsedMs(state->fram_log_mutex_hold_start_ticks, now_ticks);
+    const char* holder_name = (state->fram_log_mutex_holder != NULL)
+                                ? state->fram_log_mutex_holder
+                                : kMutexHolderNone;
+    const char* flush_phase = (state->sd_flush_phase != NULL)
+                                ? state->sd_flush_phase
+                                : kMutexHolderNone;
+    ESP_LOGW(kTag,
+             "FRAM log mutex timeout (holder=%s held_ms=%" PRIu32
+             " task=%s sd_phase=%s)",
+             holder_name,
+             held_ms,
+             RuntimeGetCurrentTaskName(),
+             flush_phase);
+    const TickType_t dump_elapsed =
+      now_ticks - state->last_lock_dump_ticks;
+    if (state->last_lock_dump_ticks == 0 ||
+        pdTICKS_TO_MS(dump_elapsed) >= kLockDumpIntervalMs) {
+      state->last_lock_dump_ticks = now_ticks;
+      RuntimeDumpLocks(state, "fram_log_timeout");
     }
-    ESP_LOGW(kTag, "FRAM log mutex timeout (holder=%s)", holder_name);
     return false;
   }
+  state->fram_log_mutex_holder = RuntimeGetCurrentTaskName();
+  state->fram_log_mutex_hold_start_ticks = xTaskGetTickCount();
   return true;
 }
 
@@ -1024,6 +1238,12 @@ RuntimeFramLogUnlock(runtime_state_t* state)
   if (state == NULL || state->fram_log_mutex == NULL) {
     return;
   }
+  const TickType_t now_ticks = xTaskGetTickCount();
+  const uint32_t held_ms =
+    RuntimeElapsedMs(state->fram_log_mutex_hold_start_ticks, now_ticks);
+  RuntimeUpdateHoldMax(held_ms, &state->fram_log_mutex_hold_max_ms_observed);
+  state->fram_log_mutex_holder = kMutexHolderNone;
+  state->fram_log_mutex_hold_start_ticks = 0;
   (void)xSemaphoreGive(state->fram_log_mutex);
 }
 
@@ -1040,9 +1260,34 @@ RuntimeI2cLock(TickType_t timeout_ticks)
     return false;
   }
   if (xSemaphoreTake(g_state.i2c_mutex, timeout_ticks) != pdTRUE) {
-    ESP_LOGW(kTag, "I2C mutex timeout");
+    g_state.i2c_mutex_timeouts++;
+    const TickType_t now_ticks = xTaskGetTickCount();
+    const uint32_t held_ms =
+      RuntimeElapsedMs(g_state.i2c_mutex_hold_start_ticks, now_ticks);
+    const char* holder = (g_state.i2c_mutex_holder != NULL)
+                           ? g_state.i2c_mutex_holder
+                           : kMutexHolderNone;
+    const char* flush_phase = (g_state.sd_flush_phase != NULL)
+                                ? g_state.sd_flush_phase
+                                : kMutexHolderNone;
+    ESP_LOGW(kTag,
+             "I2C mutex timeout (holder=%s held_ms=%" PRIu32 " task=%s "
+             "sd_phase=%s)",
+             holder,
+             held_ms,
+             RuntimeGetCurrentTaskName(),
+             flush_phase);
+    const TickType_t dump_elapsed =
+      now_ticks - g_state.last_lock_dump_ticks;
+    if (g_state.last_lock_dump_ticks == 0 ||
+        pdTICKS_TO_MS(dump_elapsed) >= kLockDumpIntervalMs) {
+      g_state.last_lock_dump_ticks = now_ticks;
+      RuntimeDumpLocks(&g_state, "i2c_timeout");
+    }
     return false;
   }
+  g_state.i2c_mutex_holder = RuntimeGetCurrentTaskName();
+  g_state.i2c_mutex_hold_start_ticks = xTaskGetTickCount();
   return true;
 }
 
@@ -1055,6 +1300,12 @@ RuntimeI2cUnlock(void)
   if (g_state.i2c_mutex == NULL) {
     return;
   }
+  const TickType_t now_ticks = xTaskGetTickCount();
+  const uint32_t held_ms =
+    RuntimeElapsedMs(g_state.i2c_mutex_hold_start_ticks, now_ticks);
+  RuntimeUpdateHoldMax(held_ms, &g_state.i2c_mutex_hold_max_ms_observed);
+  g_state.i2c_mutex_holder = kMutexHolderNone;
+  g_state.i2c_mutex_hold_start_ticks = 0;
   (void)xSemaphoreGive(g_state.i2c_mutex);
 }
 
@@ -3611,6 +3862,7 @@ BuildBatchForDay(runtime_state_t* state,
   uint32_t records_used = 0;
   uint64_t last_record_id = 0;
   bool batch_includes_time_jump_flag = false;
+  TickType_t last_yield_ticks = xTaskGetTickCount();
 
   const uint32_t buffered = FramLogGetBufferedRecords(&state->fram_log);
   for (uint32_t offset = 0; offset < buffered; ++offset) {
@@ -3622,6 +3874,7 @@ BuildBatchForDay(runtime_state_t* state,
       break;
     }
     log_record_t record;
+    state->sd_flush_phase = "build:peek_offset";
     esp_err_t peek_result =
       FramLogPeekOffset(&state->fram_log, offset, &record);
     if (peek_result == ESP_ERR_NOT_FOUND) {
@@ -3653,9 +3906,18 @@ BuildBatchForDay(runtime_state_t* state,
       RecordFramCorruption(
         state, offset, slot, addr, validate_result, &record, actual_crc);
       TrackFramInvalidResponse(state, "batch");
+      state->sd_flush_last_err = peek_result;
+      state->sd_flush_phase = "build:peek_invalid";
+      RuntimeRecordError(
+        state, "fram", peek_result, state->sd_flush_phase);
       break;
     }
     if (peek_result != ESP_OK) {
+      state->sd_flush_last_err = peek_result;
+      state->sd_flush_i2c_errs++;
+      state->sd_flush_phase = "build:peek_offset_failed";
+      RuntimeRecordError(
+        state, "sd_flush", peek_result, state->sd_flush_phase);
       return peek_result;
     }
     ResetFramInvalidResponseStreak(state);
@@ -3667,6 +3929,7 @@ BuildBatchForDay(runtime_state_t* state,
     }
 
     size_t line_len = 0;
+    state->sd_flush_phase = "build:format_csv";
     if (!CsvFormatRow(&record,
                       state->node_id_string,
                       g_sd_csv_line_buffer,
@@ -3690,8 +3953,15 @@ BuildBatchForDay(runtime_state_t* state,
     if (used >= buffer_size - sizeof(g_sd_csv_line_buffer)) {
       break;
     }
+
+    const TickType_t now_ticks = xTaskGetTickCount();
+    if ((now_ticks - last_yield_ticks) >= pdMS_TO_TICKS(25)) {
+      vTaskDelay(1);
+      last_yield_ticks = xTaskGetTickCount();
+    }
   }
 
+  state->sd_flush_phase = "build:done";
   *records_used_out = records_used;
   *last_record_id_out = last_record_id;
   *bytes_used_out = used;
@@ -3798,7 +4068,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
                                               state->batch_buffer_size,
                                               0,
                                               xTaskGetTickCount(),
-                                              0,
+                                              kSdFlushMaxMsPerPass,
                                               &records_used,
                                               &last_record_id,
                                               &bytes_used,
@@ -4096,7 +4366,11 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   }
 
   RuntimeMarkersSetSdFlush(state, SD_040_FLUSH_WORKER_ENTER);
+  state->sd_flush_phase = "flush:enter";
+  state->sd_flush_last_err = ESP_OK;
   const TickType_t start_ticks = xTaskGetTickCount();
+  bool recover_i2c = false;
+  esp_err_t recover_err = ESP_OK;
   if (state->sd_backoff_until_ticks != 0 &&
       start_ticks < state->sd_backoff_until_ticks) {
     if (more_pending_out != NULL) {
@@ -4147,6 +4421,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     uint32_t buffered_records = 0;
     log_record_t first_record;
     char day_string[16];
+    state->sd_flush_phase = "flush:peek_oldest";
     if (!RuntimeFramLogLockWithWarn(
           state,
           fram_log_timeout_ticks,
@@ -4183,6 +4458,18 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     }
     if (peek_result != ESP_OK) {
       RuntimeFramLogUnlock(state);
+      state->sd_flush_last_err = peek_result;
+      state->sd_flush_i2c_errs++;
+      state->sd_flush_phase = "flush:peek_oldest_failed";
+      RuntimeRecordError(state, "sd_flush", peek_result, state->sd_flush_phase);
+      if (!recover_i2c && IsRecoverableI2cErr(peek_result)) {
+        recover_i2c = true;
+        recover_err = peek_result;
+        ESP_LOGW(kTag,
+                 "Recoverable I2C error during flush peek: %s (%d)",
+                 esp_err_to_name(peek_result),
+                 (int)peek_result);
+      }
       result = peek_result;
       goto flush_done;
     }
@@ -4210,6 +4497,18 @@ SdFlushWorkerTickEx(runtime_state_t* state,
                                               &batch_includes_time_jump_flag);
     RuntimeFramLogUnlock(state);
     if (batch_result != ESP_OK) {
+      state->sd_flush_last_err = batch_result;
+      state->sd_flush_phase = "flush:build_failed";
+      RuntimeRecordError(state, "sd_flush", batch_result, state->sd_flush_phase);
+      if (!recover_i2c && IsRecoverableI2cErr(batch_result)) {
+        state->sd_flush_i2c_errs++;
+        recover_i2c = true;
+        recover_err = batch_result;
+        ESP_LOGW(kTag,
+                 "Recoverable I2C error during batch build: %s (%d)",
+                 esp_err_to_name(batch_result),
+                 (int)batch_result);
+      }
       result = batch_result;
       goto flush_done;
     }
@@ -4221,12 +4520,17 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
                                      ? first_record.timestamp_epoch_sec
                                      : (int64_t)time(NULL);
+    state->sd_flush_phase = "flush:sync";
     esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
     if (sync_result != ESP_OK) {
       RuntimeDiagHeapCheck(state, "SD unmount (flush sync before)", false);
       (void)SdLoggerUnmount(&state->sd_logger);
       RuntimeDiagHeapCheck(state, "SD unmount (flush sync after)", false);
       MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
+      state->sd_flush_last_err = sync_result;
+      state->sd_flush_sd_errs++;
+      state->sd_flush_phase = "flush:sync_failed";
+      RuntimeRecordError(state, "sd_flush", sync_result, state->sd_flush_phase);
       result = sync_result;
       goto flush_done;
     }
@@ -4235,6 +4539,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     sd_csv_append_scratch_t append_scratch = { 0 };
     const sd_csv_append_scratch_t* scratch =
       BuildSdAppendScratch(state, &append_scratch);
+    state->sd_flush_phase = "flush:append";
     esp_err_t write_result = SdLoggerAppendBatchEx(&state->sd_logger,
                                                    state->batch_buffer,
                                                    bytes_used,
@@ -4256,6 +4561,11 @@ SdFlushWorkerTickEx(runtime_state_t* state,
                     write_result,
                     append_stats.diag.errno_value,
                     true);
+      state->sd_flush_last_err = write_result;
+      state->sd_flush_sd_errs++;
+      state->sd_flush_phase = "flush:append_failed";
+      RuntimeRecordError(
+        state, "sd_flush", write_result, state->sd_flush_phase);
       result = write_result;
       goto flush_done;
     }
@@ -4263,6 +4573,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     HandleTimeJumpBackBatchWritten(
       state, batch_includes_time_jump_flag, last_record_id);
 
+    state->sd_flush_phase = "flush:discard";
     esp_err_t discard_result = DiscardFramRecordsWithYield(
       state,
       records_used,
@@ -4282,6 +4593,17 @@ SdFlushWorkerTickEx(runtime_state_t* state,
 flush_done:
   state->sd_flush_in_progress = false;
   RuntimeSdIoUnlock(state);
+  if (recover_i2c && IsRecoverableI2cErr(recover_err)) {
+    state->sd_flush_phase = "i2c:recover";
+    if (RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
+      (void)RuntimeRecoverI2cBusCommon(
+        state, "sd_flush_fram_err", recover_err, true);
+      RuntimeI2cUnlock();
+    } else {
+      ESP_LOGW(kTag, "I2C recovery skipped; lock timeout");
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
   RuntimeMarkersSetSdFlush(state, SD_050_FLUSH_WORKER_EXIT);
   if (result != ESP_OK) {
     return result;
@@ -4308,6 +4630,7 @@ flush_done:
     }
     *more_pending_out = more_pending;
   }
+  state->sd_flush_phase = "flush:done";
   return ESP_OK;
 }
 
@@ -7041,6 +7364,11 @@ InitializeRuntimeStruct(void)
   RuntimeHealthPublisherInit(&g_state);
   HeapMonitorInit(&g_state.heap_monitor);
   g_state.cached_status.mesh_level = -1;
+  g_state.fram_log_mutex_holder = kMutexHolderNone;
+  g_state.i2c_mutex_holder = kMutexHolderNone;
+  g_state.sd_io_mutex_holder = kMutexHolderNone;
+  g_state.sd_flush_phase = "idle";
+  g_state.sd_flush_last_err = ESP_OK;
 
   g_runtime.settings = &g_state.settings;
   g_runtime.fram_i2c = &g_state.fram_i2c;

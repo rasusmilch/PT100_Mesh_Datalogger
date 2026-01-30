@@ -5795,6 +5795,21 @@ CommandMarker(int argc, char** argv)
 }
 
 /**
+ * @brief Execute CommandLocks.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandLocks(int argc, char** argv)
+{
+  (void)argc;
+  (void)argv;
+  RuntimeDumpLocksManual("manual");
+  return 0;
+}
+
+/**
  * @brief Execute RegisterCommands.
  */
 static void
@@ -5858,6 +5873,14 @@ RegisterCommands(void)
     .func = &CommandMarker,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&marker_cmd));
+
+  const esp_console_cmd_t locks_cmd = {
+    .command = "locks",
+    .help = "Dump mutex holders and sd_flush diagnostics",
+    .hint = NULL,
+    .func = &CommandLocks,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&locks_cmd));
 
   const esp_console_cmd_t sd_cmd = {
     .command = "sd",
