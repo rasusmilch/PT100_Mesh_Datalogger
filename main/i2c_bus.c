@@ -4,8 +4,11 @@
 
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "hal/i2c_ll.h"
 
+static const char* kTag = "i2c_bus";
 static const int kI2cTimeoutMs = 100;
 static const int kI2cRecoveryDelayUs = 5;
 
@@ -137,6 +140,60 @@ I2cBusLinesLookIdle(const i2c_bus_t* bus)
   const int sda_level = gpio_get_level(bus->sda_gpio);
   const int scl_level = gpio_get_level(bus->scl_gpio);
   return (sda_level != 0) && (scl_level != 0);
+}
+
+/**
+ * @brief Capture I2C bus GPIO and controller state.
+ * @param bus Parameter bus.
+ * @return Return the function result.
+ */
+i2c_bus_state_t
+I2cBusGetState(const i2c_bus_t* bus)
+{
+  i2c_bus_state_t state = {
+    .scl_level = -1,
+    .sda_level = -1,
+    .controller_busy = false,
+  };
+  if (bus == NULL) {
+    return state;
+  }
+  if (bus->scl_gpio >= 0) {
+    state.scl_level = gpio_get_level(bus->scl_gpio);
+  }
+  if (bus->sda_gpio >= 0) {
+    state.sda_level = gpio_get_level(bus->sda_gpio);
+  }
+  if (bus->initialized) {
+    i2c_dev_t* hw = I2C_LL_GET_HW(bus->port);
+    state.controller_busy = i2c_ll_is_bus_busy(hw);
+  }
+  return state;
+}
+
+/**
+ * @brief Log I2C bus GPIO and controller state.
+ * @param bus Parameter bus.
+ * @param reason Parameter reason.
+ */
+void
+I2cBusLogState(const i2c_bus_t* bus, const char* reason)
+{
+  const i2c_bus_state_t state = I2cBusGetState(bus);
+  const char* label = (reason != NULL) ? reason : "unknown";
+  const int port = (bus != NULL) ? (int)bus->port : -1;
+  const int sda_pin = (bus != NULL) ? bus->sda_gpio : -1;
+  const int scl_pin = (bus != NULL) ? bus->scl_gpio : -1;
+  ESP_LOGW(kTag,
+           "I2C bus state(%s): port=%d sda_pin=%d scl_pin=%d sda_level=%d "
+           "scl_level=%d controller_busy=%u",
+           label,
+           port,
+           sda_pin,
+           scl_pin,
+           state.sda_level,
+           state.scl_level,
+           state.controller_busy ? 1u : 0u);
 }
 
 /**
