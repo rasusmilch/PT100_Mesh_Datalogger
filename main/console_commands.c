@@ -50,6 +50,7 @@
 #include "console_alerts.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "i2c_bus.h"
 #include "linenoise/linenoise.h"
 #include "mem_guard.h"
 #include "runtime_manager.h"
@@ -5806,6 +5807,19 @@ CommandLocks(int argc, char** argv)
   (void)argc;
   (void)argv;
   RuntimeDumpLocksManual("manual");
+  RuntimeDumpI2cOpStateManual("manual");
+  runtime_state_t* state = RuntimeGetState();
+  if (state != NULL) {
+    const i2c_bus_state_t bus_state = I2cBusGetState(&state->i2c_bus);
+    printf("i2c bus: port=%d sda_pin=%d scl_pin=%d sda_level=%d scl_level=%d "
+           "controller_busy=%u\n",
+           (int)state->i2c_bus.port,
+           state->i2c_bus.sda_gpio,
+           state->i2c_bus.scl_gpio,
+           bus_state.sda_level,
+           bus_state.scl_level,
+           bus_state.controller_busy ? 1u : 0u);
+  }
   return 0;
 }
 

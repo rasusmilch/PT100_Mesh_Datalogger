@@ -191,6 +191,12 @@ extern "C" {
   void RuntimeDumpLocksManual(const char* reason);
 
 /**
+ * @brief Dump current I2C operation diagnostics to log output.
+ * @param reason Reason string for the dump.
+ */
+  void RuntimeDumpI2cOpStateManual(const char* reason);
+
+/**
  * @brief Execute RuntimeDiagHeapCheck.
  * @param state Parameter state.
  * @param context Parameter context.

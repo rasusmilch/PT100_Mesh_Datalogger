@@ -22,6 +22,13 @@ extern "C" {
     bool initialized;
   } i2c_bus_t;
 
+  typedef struct
+  {
+    int scl_level;
+    int sda_level;
+    bool controller_busy;
+  } i2c_bus_state_t;
+
 /**
  * @brief Execute I2cBusInit.
  * @param bus Parameter bus.
@@ -58,6 +65,20 @@ extern "C" {
  * @return Return the function result.
  */
   bool I2cBusLinesLookIdle(const i2c_bus_t* bus);
+
+/**
+ * @brief Capture I2C bus GPIO and controller state.
+ * @param bus Parameter bus.
+ * @return Return the function result.
+ */
+  i2c_bus_state_t I2cBusGetState(const i2c_bus_t* bus);
+
+/**
+ * @brief Log I2C bus GPIO and controller state.
+ * @param bus Parameter bus.
+ * @param reason Parameter reason.
+ */
+  void I2cBusLogState(const i2c_bus_t* bus, const char* reason);
 
 /**
  * @brief Execute I2cBusAddDevice.
