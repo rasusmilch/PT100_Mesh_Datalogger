@@ -104,11 +104,15 @@ static const uint32_t kI2cRecoveryTriggerCount = 3;
 static const int64_t kFramRetryIntervalMs = 30000;
 static const uint32_t kFramInvalidHeapLogEvery = 10;
 static const uint32_t kRebootAlertLatchMagic = 0x5254424C;
-static const uint16_t kRebootAlertLatchVersion = 1;
+static const uint16_t kRebootAlertLatchVersion = 2;
 static const uint32_t kRebootAlertWifiWaitMs = 2500;
 static const uint32_t kRebootAlertHttpTimeoutMs = 1500;
 static const uint32_t kRebootAlertResolveDelayMs = 5000;
 static const uint32_t kRebootAlertResolveCheckIntervalMs = 1000;
+static const uint32_t kSafeHoldMaxMs = 120000;
+static const uint32_t kSafeHoldMinRetryMs = 2000;
+static const uint32_t kSafeHoldMaxRetryMs = 60000;
+static const uint32_t kSafeHoldLogIntervalMs = 5000;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
 static runtime_state_t g_state;
@@ -814,7 +818,27 @@ static bool
 RuntimeRebootAlertLatchValid(void)
 {
   return g_reboot_alert_latch.magic == kRebootAlertLatchMagic &&
-         g_reboot_alert_latch.version == kRebootAlertLatchVersion;
+         (g_reboot_alert_latch.version == 1 ||
+          g_reboot_alert_latch.version == kRebootAlertLatchVersion);
+}
+
+static void
+RuntimeRebootAlertLatchUpgradeIfNeeded(void)
+{
+  if (g_reboot_alert_latch.magic != kRebootAlertLatchMagic ||
+      g_reboot_alert_latch.version != 1) {
+    return;
+  }
+  g_reboot_alert_latch.version = kRebootAlertLatchVersion;
+  g_reboot_alert_latch.send_attempt_count = 0;
+  g_reboot_alert_latch.last_attempt_epoch = 0;
+  g_reboot_alert_latch.last_attempt_uptime_ms = 0;
+  g_reboot_alert_latch.last_gate_reason = RUNTIME_REBOOT_ALERT_GATE_UNKNOWN;
+  g_reboot_alert_latch.last_send_result = RUNTIME_REBOOT_ALERT_SEND_NONE;
+  g_reboot_alert_latch.last_http_status = 0;
+  g_reboot_alert_latch.last_ntfy_err = 0;
+  g_reboot_alert_latch.last_retry_after_seconds = 0;
+  g_reboot_alert_latch.sent_successfully = false;
 }
 
 static void
@@ -828,6 +852,15 @@ RuntimeRebootAlertLatchSet(alert_system_code_t code,
   g_reboot_alert_latch.pending_system_code = (uint32_t)code;
   g_reboot_alert_latch.pending_epoch = epoch;
   g_reboot_alert_latch.pending_uptime_ms = uptime_ms;
+  g_reboot_alert_latch.send_attempt_count = 0;
+  g_reboot_alert_latch.last_attempt_epoch = 0;
+  g_reboot_alert_latch.last_attempt_uptime_ms = 0;
+  g_reboot_alert_latch.last_gate_reason = RUNTIME_REBOOT_ALERT_GATE_UNKNOWN;
+  g_reboot_alert_latch.last_send_result = RUNTIME_REBOOT_ALERT_SEND_NONE;
+  g_reboot_alert_latch.last_http_status = 0;
+  g_reboot_alert_latch.last_ntfy_err = 0;
+  g_reboot_alert_latch.last_retry_after_seconds = 0;
+  g_reboot_alert_latch.sent_successfully = false;
 }
 
 static void
@@ -839,6 +872,15 @@ RuntimeRebootAlertLatchClear(void)
   g_reboot_alert_latch.pending_system_code = 0;
   g_reboot_alert_latch.pending_epoch = 0;
   g_reboot_alert_latch.pending_uptime_ms = 0;
+  g_reboot_alert_latch.send_attempt_count = 0;
+  g_reboot_alert_latch.last_attempt_epoch = 0;
+  g_reboot_alert_latch.last_attempt_uptime_ms = 0;
+  g_reboot_alert_latch.last_gate_reason = RUNTIME_REBOOT_ALERT_GATE_UNKNOWN;
+  g_reboot_alert_latch.last_send_result = RUNTIME_REBOOT_ALERT_SEND_NONE;
+  g_reboot_alert_latch.last_http_status = 0;
+  g_reboot_alert_latch.last_ntfy_err = 0;
+  g_reboot_alert_latch.last_retry_after_seconds = 0;
+  g_reboot_alert_latch.sent_successfully = false;
 }
 
 static void
@@ -855,8 +897,11 @@ RuntimeLoadRebootAlertLatch(runtime_state_t* state)
   state->reboot_alert_code = ALERT_SYSTEM_CODE_NONE;
   state->reboot_alert_next_check_ms = 0;
 
-  if (!RuntimeRebootAlertLatchValid() ||
-      !g_reboot_alert_latch.pending_is_active ||
+  if (!RuntimeRebootAlertLatchValid()) {
+    return;
+  }
+  RuntimeRebootAlertLatchUpgradeIfNeeded();
+  if (!g_reboot_alert_latch.pending_is_active ||
       g_reboot_alert_latch.pending_system_code == 0) {
     return;
   }
@@ -866,6 +911,110 @@ RuntimeLoadRebootAlertLatch(runtime_state_t* state)
     (alert_system_code_t)g_reboot_alert_latch.pending_system_code;
   state->reboot_alert_event_epoch = g_reboot_alert_latch.pending_epoch;
   state->reboot_alert_event_uptime_ms = g_reboot_alert_latch.pending_uptime_ms;
+}
+
+static const char*
+RuntimeRebootAlertGateReasonToString(runtime_reboot_alert_gate_reason_t reason)
+{
+  switch (reason) {
+    case RUNTIME_REBOOT_ALERT_GATE_NOT_CONFIGURED:
+      return "not_configured";
+    case RUNTIME_REBOOT_ALERT_GATE_DISABLED_BY_MASK:
+      return "disabled_by_mask";
+    case RUNTIME_REBOOT_ALERT_GATE_NOT_ELIGIBLE_NET_MODE:
+      return "not_eligible_net_mode";
+    case RUNTIME_REBOOT_ALERT_GATE_NOT_ELIGIBLE_ROLE:
+      return "not_eligible_role";
+    case RUNTIME_REBOOT_ALERT_GATE_WIFI_DISCONNECTED:
+      return "wifi_disconnected";
+    case RUNTIME_REBOOT_ALERT_GATE_MESH_CONNECTED_BLOCKING_DIRECT:
+      return "mesh_connected";
+    case RUNTIME_REBOOT_ALERT_GATE_COOLDOWN_ACTIVE:
+      return "cooldown_active";
+    case RUNTIME_REBOOT_ALERT_GATE_QUEUE_FULL:
+      return "queue_full";
+    case RUNTIME_REBOOT_ALERT_GATE_UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+static runtime_reboot_alert_gate_reason_t
+RuntimeRebootAlertGateReason(const runtime_state_t* state, int64_t now_ms)
+{
+  if (state == NULL) {
+    return RUNTIME_REBOOT_ALERT_GATE_UNKNOWN;
+  }
+  if (!AlertManagerIsConfigured(&state->alert_manager)) {
+    return RUNTIME_REBOOT_ALERT_GATE_NOT_CONFIGURED;
+  }
+  const uint32_t enable_mask = state->alert_manager.config.enable_mask;
+  if ((enable_mask & (1u << ALERT_SYSTEM_ERROR)) == 0u) {
+    return RUNTIME_REBOOT_ALERT_GATE_DISABLED_BY_MASK;
+  }
+  if (state->node_role_active != APP_NODE_ROLE_ROOT &&
+      state->node_role_active != APP_NODE_ROLE_SENSOR) {
+    return RUNTIME_REBOOT_ALERT_GATE_NOT_ELIGIBLE_ROLE;
+  }
+  if (state->node_role_active == APP_NODE_ROLE_SENSOR &&
+      state->net_mode_active != APP_NET_MODE_DIRECT_WIFI) {
+    return RUNTIME_REBOOT_ALERT_GATE_NOT_ELIGIBLE_NET_MODE;
+  }
+  if (!WifiManagerIsConnected()) {
+    return RUNTIME_REBOOT_ALERT_GATE_WIFI_DISCONNECTED;
+  }
+  if (state->node_role_active == APP_NODE_ROLE_SENSOR &&
+      MeshTransportIsConnected(&state->mesh)) {
+    return RUNTIME_REBOOT_ALERT_GATE_MESH_CONNECTED_BLOCKING_DIRECT;
+  }
+  if (state->alert_manager.ntfy.cooldown_until_ms > now_ms) {
+    return RUNTIME_REBOOT_ALERT_GATE_COOLDOWN_ACTIVE;
+  }
+  return RUNTIME_REBOOT_ALERT_GATE_UNKNOWN;
+}
+
+static void
+RuntimeRebootAlertLatchRecordGate(runtime_reboot_alert_gate_reason_t reason)
+{
+  if (!RuntimeRebootAlertLatchValid()) {
+    return;
+  }
+  RuntimeRebootAlertLatchUpgradeIfNeeded();
+  if (!g_reboot_alert_latch.pending_is_active) {
+    return;
+  }
+  g_reboot_alert_latch.last_gate_reason = (uint32_t)reason;
+  g_reboot_alert_latch.last_send_result = RUNTIME_REBOOT_ALERT_SEND_SKIPPED;
+}
+
+static void
+RuntimeRebootAlertLatchRecordAttempt(runtime_reboot_alert_send_result_t result,
+                                     runtime_reboot_alert_gate_reason_t reason,
+                                     int64_t attempt_epoch,
+                                     uint32_t attempt_uptime_ms,
+                                     int http_status,
+                                     esp_err_t err,
+                                     int retry_after_seconds)
+{
+  if (!RuntimeRebootAlertLatchValid()) {
+    return;
+  }
+  RuntimeRebootAlertLatchUpgradeIfNeeded();
+  if (!g_reboot_alert_latch.pending_is_active) {
+    return;
+  }
+  g_reboot_alert_latch.send_attempt_count++;
+  g_reboot_alert_latch.last_attempt_epoch = attempt_epoch;
+  g_reboot_alert_latch.last_attempt_uptime_ms = attempt_uptime_ms;
+  g_reboot_alert_latch.last_gate_reason = (uint32_t)reason;
+  g_reboot_alert_latch.last_send_result = (uint32_t)result;
+  g_reboot_alert_latch.last_http_status = (int32_t)http_status;
+  g_reboot_alert_latch.last_ntfy_err = (int32_t)err;
+  g_reboot_alert_latch.last_retry_after_seconds =
+    (int32_t)retry_after_seconds;
+  if (result == RUNTIME_REBOOT_ALERT_SEND_OK) {
+    g_reboot_alert_latch.sent_successfully = true;
+  }
 }
 
 static bool
@@ -913,21 +1062,42 @@ RuntimeEnqueueSystemErrorNote(runtime_state_t* state,
   return AlertNtfyEnqueue(&state->alert_manager.ntfy, &note);
 }
 
-static bool
-RuntimeAttemptPreRebootAlertSend(runtime_state_t* state,
-                                 alert_system_code_t code,
-                                 int64_t event_epoch,
-                                 int64_t event_uptime_ms)
+static alert_ntfy_result_t
+RuntimeAttemptPreRebootAlertSendDetailed(runtime_state_t* state,
+                                         alert_system_code_t code,
+                                         int64_t event_epoch,
+                                         int64_t event_uptime_ms,
+                                         int* retry_after_seconds_out,
+                                         int* status_out,
+                                         esp_err_t* err_out)
 {
+  if (retry_after_seconds_out != NULL) {
+    *retry_after_seconds_out = -1;
+  }
+  if (status_out != NULL) {
+    *status_out = 0;
+  }
+  if (err_out != NULL) {
+    *err_out = ESP_OK;
+  }
   if (state == NULL) {
-    return false;
+    if (err_out != NULL) {
+      *err_out = ESP_ERR_INVALID_ARG;
+    }
+    return ALERT_NTFY_FAILED;
   }
   if (!AlertManagerIsConfigured(&state->alert_manager)) {
-    return false;
+    if (err_out != NULL) {
+      *err_out = ESP_ERR_INVALID_STATE;
+    }
+    return ALERT_NTFY_SKIPPED;
   }
   const uint32_t enable_mask = state->alert_manager.config.enable_mask;
   if ((enable_mask & (1u << ALERT_SYSTEM_ERROR)) == 0u) {
-    return false;
+    if (err_out != NULL) {
+      *err_out = ESP_ERR_INVALID_STATE;
+    }
+    return ALERT_NTFY_SKIPPED;
   }
 
   bool wifi_connected = WifiManagerIsConnected();
@@ -935,7 +1105,10 @@ RuntimeAttemptPreRebootAlertSend(runtime_state_t* state,
     wifi_connected = RuntimeWaitForWifiConnected(kRebootAlertWifiWaitMs);
   }
   if (!wifi_connected) {
-    return false;
+    if (err_out != NULL) {
+      *err_out = ESP_ERR_TIMEOUT;
+    }
+    return ALERT_NTFY_SKIPPED;
   }
 
   alert_notification_t note = { 0 };
@@ -964,15 +1137,117 @@ RuntimeAttemptPreRebootAlertSend(runtime_state_t* state,
                                              &retry_after_seconds,
                                              &status,
                                              &err);
-  if (result == ALERT_NTFY_OK) {
-    return true;
+  if (status_out != NULL) {
+    *status_out = status;
   }
-  ESP_LOGW(kTag,
-           "pre-reboot ntfy failed: err=%s status=%d retry_after=%d",
-           esp_err_to_name(err),
-           status,
-           retry_after_seconds);
-  return false;
+  if (retry_after_seconds_out != NULL) {
+    *retry_after_seconds_out = retry_after_seconds;
+  }
+  if (err_out != NULL) {
+    *err_out = err;
+  }
+  return result;
+}
+
+esp_err_t
+RuntimeManagerRunSafeHoldIfNeeded(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!RuntimeRebootAlertLatchIsPending()) {
+    return ESP_OK;
+  }
+
+  ESP_LOGW(kTag, "SAFE HOLD active: pending reboot alert latched");
+  const int64_t start_ms = esp_timer_get_time() / 1000;
+  uint32_t backoff_ms = kSafeHoldMinRetryMs;
+  uint32_t last_log_ms = 0;
+
+  while (RuntimeRebootAlertLatchIsPending()) {
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if ((uint32_t)(now_ms - start_ms) >= kSafeHoldMaxMs) {
+      ESP_LOGW(kTag, "SAFE HOLD timeout after %u ms", kSafeHoldMaxMs);
+      return ESP_ERR_TIMEOUT;
+    }
+
+    runtime_reboot_alert_gate_reason_t gate_reason =
+      RuntimeRebootAlertGateReason(state, now_ms);
+    if (gate_reason != RUNTIME_REBOOT_ALERT_GATE_UNKNOWN) {
+      RuntimeRebootAlertLatchRecordGate(gate_reason);
+      if (LogRateLimitAllow(&last_log_ms, kSafeHoldLogIntervalMs)) {
+        ESP_LOGI(kTag,
+                 "SAFE HOLD waiting: gate=%s",
+                 RuntimeRebootAlertGateReasonToString(gate_reason));
+      }
+      vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+      backoff_ms = (backoff_ms < kSafeHoldMaxRetryMs)
+                     ? (backoff_ms * 2)
+                     : kSafeHoldMaxRetryMs;
+      continue;
+    }
+
+    int64_t event_epoch = state->reboot_alert_event_epoch;
+    uint32_t event_uptime_ms = state->reboot_alert_event_uptime_ms;
+    if (event_uptime_ms == 0) {
+      event_uptime_ms = (uint32_t)now_ms;
+    }
+    if (event_epoch <= 0 && TimeSyncIsSystemTimeValid()) {
+      event_epoch = (int64_t)time(NULL);
+    }
+
+    int status = 0;
+    int retry_after_seconds = -1;
+    esp_err_t err = ESP_OK;
+    alert_ntfy_result_t result =
+      RuntimeAttemptPreRebootAlertSendDetailed(state,
+                                               state->reboot_alert_code,
+                                               event_epoch,
+                                               event_uptime_ms,
+                                               &retry_after_seconds,
+                                               &status,
+                                               &err);
+    runtime_reboot_alert_send_result_t send_result =
+      (result == ALERT_NTFY_OK)
+        ? RUNTIME_REBOOT_ALERT_SEND_OK
+        : (result == ALERT_NTFY_FAILED ? RUNTIME_REBOOT_ALERT_SEND_FAIL
+                                       : RUNTIME_REBOOT_ALERT_SEND_SKIPPED);
+    const int64_t attempt_epoch =
+      TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+    RuntimeRebootAlertLatchRecordAttempt(send_result,
+                                         gate_reason,
+                                         attempt_epoch,
+                                         (uint32_t)now_ms,
+                                         status,
+                                         err,
+                                         retry_after_seconds);
+
+    if (result == ALERT_NTFY_OK) {
+      state->reboot_alert_pending = false;
+      state->reboot_alert_active_sent = true;
+      state->reboot_alert_active_sent_ms = now_ms;
+      state->reboot_alert_next_check_ms =
+        now_ms + (int64_t)kRebootAlertResolveDelayMs;
+      RuntimeRebootAlertLatchClear();
+      ESP_LOGI(kTag, "SAFE HOLD alert sent");
+      return ESP_OK;
+    }
+
+    if (LogRateLimitAllow(&last_log_ms, kSafeHoldLogIntervalMs)) {
+      ESP_LOGW(kTag,
+               "SAFE HOLD send failed: result=%d err=%s status=%d retry=%d",
+               (int)result,
+               esp_err_to_name(err),
+               status,
+               retry_after_seconds);
+    }
+    vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+    backoff_ms = (backoff_ms < kSafeHoldMaxRetryMs)
+                   ? (backoff_ms * 2)
+                   : kSafeHoldMaxRetryMs;
+  }
+
+  return ESP_OK;
 }
 
 static uint32_t
@@ -3313,6 +3588,7 @@ RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms)
 
   esp_err_t i2c_result = FramI2cInit(&state->fram_i2c,
                                      state->i2c_bus.handle,
+                                     &state->i2c_bus,
                                      (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
                                      CONFIG_APP_FRAM_SIZE_BYTES,
                                      state->i2c_bus.frequency_hz);
@@ -3475,6 +3751,7 @@ RuntimeRecoverI2cBusCommon(runtime_state_t* state,
 
   result = FramI2cInit(&state->fram_i2c,
                        state->i2c_bus.handle,
+                       &state->i2c_bus,
                        (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
                        CONFIG_APP_FRAM_SIZE_BYTES,
                        state->i2c_bus.frequency_hz);
@@ -3518,15 +3795,37 @@ recovery_failed:
   const int64_t event_uptime_ms = esp_timer_get_time() / 1000;
   const int64_t event_epoch =
     TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-  const bool ntfy_sent = RuntimeAttemptPreRebootAlertSend(
-    state, ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY, event_epoch, event_uptime_ms);
+  int status = 0;
+  int retry_after_seconds = -1;
+  esp_err_t ntfy_err = ESP_OK;
+  alert_ntfy_result_t ntfy_result =
+    RuntimeAttemptPreRebootAlertSendDetailed(
+      state,
+      ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY,
+      event_epoch,
+      event_uptime_ms,
+      &retry_after_seconds,
+      &status,
+      &ntfy_err);
   vTaskDelay(pdMS_TO_TICKS(200));
-  if (ntfy_sent) {
+  if (ntfy_result == ALERT_NTFY_OK) {
     RuntimeRebootAlertLatchClear();
   } else {
     RuntimeRebootAlertLatchSet(ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY,
                                event_epoch,
                                (uint32_t)event_uptime_ms);
+    const runtime_reboot_alert_send_result_t send_result =
+      (ntfy_result == ALERT_NTFY_FAILED) ? RUNTIME_REBOOT_ALERT_SEND_FAIL
+                                         : RUNTIME_REBOOT_ALERT_SEND_SKIPPED;
+    const int64_t attempt_epoch =
+      TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+    RuntimeRebootAlertLatchRecordAttempt(send_result,
+                                         RUNTIME_REBOOT_ALERT_GATE_UNKNOWN,
+                                         attempt_epoch,
+                                         (uint32_t)event_uptime_ms,
+                                         status,
+                                         ntfy_err,
+                                         retry_after_seconds);
   }
   esp_restart();
   return false;
@@ -4374,13 +4673,34 @@ RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context)
 {
   const int64_t event_epoch = (int64_t)time(NULL);
   const uint32_t event_uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
-  const bool ntfy_sent = RuntimeAttemptPreRebootAlertSend(
-    state, ALERT_SYSTEM_CODE_ERROR_SD_IO, event_epoch, event_uptime_ms);
-  if (ntfy_sent) {
+  int status = 0;
+  int retry_after_seconds = -1;
+  esp_err_t ntfy_err = ESP_OK;
+  alert_ntfy_result_t ntfy_result =
+    RuntimeAttemptPreRebootAlertSendDetailed(state,
+                                             ALERT_SYSTEM_CODE_ERROR_SD_IO,
+                                             event_epoch,
+                                             event_uptime_ms,
+                                             &retry_after_seconds,
+                                             &status,
+                                             &ntfy_err);
+  if (ntfy_result == ALERT_NTFY_OK) {
     RuntimeRebootAlertLatchClear();
   } else {
     RuntimeRebootAlertLatchSet(
       ALERT_SYSTEM_CODE_ERROR_SD_IO, event_epoch, event_uptime_ms);
+    const runtime_reboot_alert_send_result_t send_result =
+      (ntfy_result == ALERT_NTFY_FAILED) ? RUNTIME_REBOOT_ALERT_SEND_FAIL
+                                         : RUNTIME_REBOOT_ALERT_SEND_SKIPPED;
+    const int64_t attempt_epoch =
+      TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+    RuntimeRebootAlertLatchRecordAttempt(send_result,
+                                         RUNTIME_REBOOT_ALERT_GATE_UNKNOWN,
+                                         attempt_epoch,
+                                         event_uptime_ms,
+                                         status,
+                                         ntfy_err,
+                                         retry_after_seconds);
   }
   ESP_LOGE(kTag,
            "%s: SD I/O escalation detected; rebooting to avoid SPI reset path",
@@ -7182,27 +7502,35 @@ ControlTask(void* context)
     }
 
     const bool alert_eligible = AlertManagerEligible(state);
-    if (state->reboot_alert_pending && alert_eligible &&
-        WifiManagerIsConnected()) {
-      int64_t event_epoch = state->reboot_alert_event_epoch;
-      int64_t event_uptime_ms = state->reboot_alert_event_uptime_ms;
-      if (event_uptime_ms <= 0) {
-        event_uptime_ms = now_ms;
-      }
-      if (event_epoch <= 0 && TimeSyncIsSystemTimeValid()) {
-        event_epoch = (int64_t)time(NULL);
-      }
-      if (RuntimeEnqueueSystemErrorNote(state,
-                                        state->reboot_alert_code,
-                                        false,
-                                        event_epoch,
-                                        event_uptime_ms)) {
-        state->reboot_alert_pending = false;
-        state->reboot_alert_active_sent = true;
-        state->reboot_alert_active_sent_ms = now_ms;
-        state->reboot_alert_next_check_ms =
-          now_ms + (int64_t)kRebootAlertResolveDelayMs;
-        RuntimeRebootAlertLatchClear();
+    if (state->reboot_alert_pending) {
+      runtime_reboot_alert_gate_reason_t gate_reason =
+        RuntimeRebootAlertGateReason(state, now_ms);
+      if (gate_reason == RUNTIME_REBOOT_ALERT_GATE_UNKNOWN) {
+        int64_t event_epoch = state->reboot_alert_event_epoch;
+        int64_t event_uptime_ms = state->reboot_alert_event_uptime_ms;
+        if (event_uptime_ms <= 0) {
+          event_uptime_ms = now_ms;
+        }
+        if (event_epoch <= 0 && TimeSyncIsSystemTimeValid()) {
+          event_epoch = (int64_t)time(NULL);
+        }
+        if (RuntimeEnqueueSystemErrorNote(state,
+                                          state->reboot_alert_code,
+                                          false,
+                                          event_epoch,
+                                          event_uptime_ms)) {
+          state->reboot_alert_pending = false;
+          state->reboot_alert_active_sent = true;
+          state->reboot_alert_active_sent_ms = now_ms;
+          state->reboot_alert_next_check_ms =
+            now_ms + (int64_t)kRebootAlertResolveDelayMs;
+          RuntimeRebootAlertLatchClear();
+        } else {
+          RuntimeRebootAlertLatchRecordGate(
+            RUNTIME_REBOOT_ALERT_GATE_QUEUE_FULL);
+        }
+      } else {
+        RuntimeRebootAlertLatchRecordGate(gate_reason);
       }
     }
     if (state->reboot_alert_active_sent && alert_eligible &&
@@ -7627,12 +7955,43 @@ RuntimeGetState(void)
   return g_state.initialized ? &g_state : NULL;
 }
 
+bool
+RuntimeRebootAlertLatchIsPending(void)
+{
+  if (!RuntimeRebootAlertLatchValid()) {
+    return false;
+  }
+  RuntimeRebootAlertLatchUpgradeIfNeeded();
+  return g_reboot_alert_latch.pending_is_active &&
+         g_reboot_alert_latch.pending_system_code != 0;
+}
+
+void
+RuntimeRebootAlertLatchClearSticky(void)
+{
+  RuntimeRebootAlertLatchClear();
+}
+
+void
+RuntimeRebootAlertLatchCopy(runtime_reboot_alert_latch_t* out)
+{
+  if (out == NULL) {
+    return;
+  }
+  if (!RuntimeRebootAlertLatchValid()) {
+    memset(out, 0, sizeof(*out));
+    return;
+  }
+  RuntimeRebootAlertLatchUpgradeIfNeeded();
+  memcpy(out, &g_reboot_alert_latch, sizeof(*out));
+}
+
 /**
- * @brief Execute RuntimeManagerInit.
+ * @brief Execute RuntimeManagerInitMinimal.
  * @return Return the function result.
  */
 esp_err_t
-RuntimeManagerInit(void)
+RuntimeManagerInitMinimal(void)
 {
   MemGuardInit();
   InitializeRuntimeStruct();
@@ -7730,6 +8089,26 @@ RuntimeManagerInit(void)
     &g_state.alert_manager, g_state.node_id_string, g_state.local_leaf_id);
   (void)AlertManagerLoadConfig(&g_state.alert_manager);
   RuntimeLoadRebootAlertLatch(&g_state);
+
+  g_state.initialized = true;
+  g_state.full_initialized = false;
+  return first_error;
+}
+
+/**
+ * @brief Execute RuntimeManagerInitFull.
+ * @return Return the function result.
+ */
+esp_err_t
+RuntimeManagerInitFull(void)
+{
+  esp_err_t first_error = ESP_OK;
+  if (!g_state.initialized) {
+    esp_err_t minimal_result = RuntimeManagerInitMinimal();
+    if (minimal_result != ESP_OK && first_error == ESP_OK) {
+      first_error = minimal_result;
+    }
+  }
 
   const spi_host_device_t spi_host = GetSpiHost();
   esp_err_t bus_result = InitSpiBus(spi_host);
@@ -7871,9 +8250,24 @@ RuntimeManagerInit(void)
 
   g_state.fram_available = false;
   esp_err_t fram_i2c_result = ESP_ERR_INVALID_STATE;
+  bool i2c_lines_ok = false;
   if (g_state.i2c_bus.initialized) {
+    i2c_lines_ok = I2cBusLinesLookIdle(&g_state.i2c_bus);
+    if (!i2c_lines_ok) {
+      (void)I2cBusRecoverLines(g_state.i2c_bus.sda_gpio,
+                               g_state.i2c_bus.scl_gpio);
+      i2c_lines_ok = I2cBusLinesLookIdle(&g_state.i2c_bus);
+    }
+  }
+  if (!g_state.i2c_bus.initialized) {
+    fram_i2c_result = ESP_ERR_INVALID_STATE;
+  } else if (!i2c_lines_ok) {
+    fram_i2c_result = ESP_ERR_TIMEOUT;
+    ESP_LOGW(kTag, "FRAM init skipped: I2C lines not idle");
+  } else {
     fram_i2c_result = FramI2cInit(&g_state.fram_i2c,
                                   g_state.i2c_bus.handle,
+                                  &g_state.i2c_bus,
                                   (uint8_t)CONFIG_APP_FRAM_I2C_ADDR,
                                   CONFIG_APP_FRAM_SIZE_BYTES,
                                   g_state.i2c_bus.frequency_hz);
@@ -8064,8 +8458,24 @@ RuntimeManagerInit(void)
 
   g_state.system_running = true;
   UpdateCachedBool(&g_state, &g_state.cached_status.system_running, true);
+  g_state.full_initialized = true;
   g_state.initialized = true;
   return first_error;
+}
+
+/**
+ * @brief Execute RuntimeManagerInit.
+ * @return Return the function result.
+ */
+esp_err_t
+RuntimeManagerInit(void)
+{
+  const esp_err_t minimal_result = RuntimeManagerInitMinimal();
+  const esp_err_t full_result = RuntimeManagerInitFull();
+  if (minimal_result != ESP_OK) {
+    return minimal_result;
+  }
+  return full_result;
 }
 
 /**
@@ -8196,7 +8606,7 @@ RuntimeWithTemporarySdMount(runtime_sd_op_fn_t op, void* ctx)
 esp_err_t
 RuntimeStart(void)
 {
-  if (!g_state.initialized) {
+  if (!g_state.initialized || !g_state.full_initialized) {
     g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
     return ESP_ERR_INVALID_STATE;
   }

@@ -144,6 +144,27 @@ extern "C"
     RUNTIME_PHASE_STOPPING,
   } runtime_phase_t;
 
+  typedef enum
+  {
+    RUNTIME_REBOOT_ALERT_GATE_UNKNOWN = 0,
+    RUNTIME_REBOOT_ALERT_GATE_NOT_CONFIGURED = 1,
+    RUNTIME_REBOOT_ALERT_GATE_DISABLED_BY_MASK = 2,
+    RUNTIME_REBOOT_ALERT_GATE_NOT_ELIGIBLE_NET_MODE = 3,
+    RUNTIME_REBOOT_ALERT_GATE_NOT_ELIGIBLE_ROLE = 4,
+    RUNTIME_REBOOT_ALERT_GATE_WIFI_DISCONNECTED = 5,
+    RUNTIME_REBOOT_ALERT_GATE_MESH_CONNECTED_BLOCKING_DIRECT = 6,
+    RUNTIME_REBOOT_ALERT_GATE_COOLDOWN_ACTIVE = 7,
+    RUNTIME_REBOOT_ALERT_GATE_QUEUE_FULL = 8,
+  } runtime_reboot_alert_gate_reason_t;
+
+  typedef enum
+  {
+    RUNTIME_REBOOT_ALERT_SEND_NONE = 0,
+    RUNTIME_REBOOT_ALERT_SEND_OK = 1,
+    RUNTIME_REBOOT_ALERT_SEND_FAIL = 2,
+    RUNTIME_REBOOT_ALERT_SEND_SKIPPED = 3,
+  } runtime_reboot_alert_send_result_t;
+
   typedef struct
   {
     uint32_t magic;
@@ -153,6 +174,15 @@ extern "C"
     bool pending_is_active;
     int64_t pending_epoch;
     uint32_t pending_uptime_ms;
+    uint32_t send_attempt_count;
+    int64_t last_attempt_epoch;
+    uint32_t last_attempt_uptime_ms;
+    uint32_t last_gate_reason;
+    uint32_t last_send_result;
+    int32_t last_http_status;
+    int32_t last_ntfy_err;
+    int32_t last_retry_after_seconds;
+    bool sent_successfully;
   } runtime_reboot_alert_latch_t;
 
   enum
@@ -351,6 +381,7 @@ extern "C"
     StaticTask_t* alert_http_task_tcb;
 
     bool initialized;
+    bool full_initialized;
     bool system_running;
     bool logger_running;
     bool stop_requested;

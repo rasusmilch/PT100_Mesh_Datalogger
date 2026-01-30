@@ -67,6 +67,25 @@ extern "C" {
   esp_err_t RuntimeManagerInit(void);
 
 /**
+ * @brief Execute RuntimeManagerInitMinimal.
+ * @return Return the function result.
+ */
+  esp_err_t RuntimeManagerInitMinimal(void);
+
+/**
+ * @brief Execute RuntimeManagerInitFull.
+ * @return Return the function result.
+ */
+  esp_err_t RuntimeManagerInitFull(void);
+
+/**
+ * @brief Execute RuntimeManagerRunSafeHoldIfNeeded.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+  esp_err_t RuntimeManagerRunSafeHoldIfNeeded(runtime_state_t* state);
+
+/**
  * @brief Execute RuntimeGetRuntime.
  * @return Return the function result.
  */
@@ -89,6 +108,23 @@ extern "C" {
  * @return Return the function result.
  */
   runtime_state_t* RuntimeGetState(void);
+
+/**
+ * @brief Execute RuntimeRebootAlertLatchIsPending.
+ * @return Return the function result.
+ */
+  bool RuntimeRebootAlertLatchIsPending(void);
+
+/**
+ * @brief Execute RuntimeRebootAlertLatchClearSticky.
+ */
+  void RuntimeRebootAlertLatchClearSticky(void);
+
+/**
+ * @brief Execute RuntimeRebootAlertLatchCopy.
+ * @param out Parameter out.
+ */
+  void RuntimeRebootAlertLatchCopy(runtime_reboot_alert_latch_t* out);
 
 /**
  * @brief Attempt to initialize the FRAM error log and flush pending latches.

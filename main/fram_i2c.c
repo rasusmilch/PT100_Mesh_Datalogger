@@ -3,11 +3,31 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "i2c_bus.h"
 
 static const char* kTag = "fram_i2c";
 static const int kI2cTimeoutMs = 100;
 static const size_t kMaxChunk = 96;
 static const uint8_t kReservedIdAddr7bit = 0x7C; // 0xF8/0xF9 in 8-bit form.
+
+static esp_err_t
+FramI2cEnsureIdle(const fram_i2c_t* fram)
+{
+  if (fram == NULL || fram->bus_state == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (!fram->bus_state->initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (!I2cBusLinesLookIdle(fram->bus_state)) {
+    (void)I2cBusRecoverLines(fram->bus_state->sda_gpio,
+                             fram->bus_state->scl_gpio);
+    if (!I2cBusLinesLookIdle(fram->bus_state)) {
+      return ESP_ERR_TIMEOUT;
+    }
+  }
+  return ESP_OK;
+}
 
 /**
  * @brief Execute EncodeAddress.
@@ -56,11 +76,12 @@ BoundsOk(const fram_i2c_t* fram, uint16_t addr, size_t len)
 esp_err_t
 FramI2cInit(fram_i2c_t* fram,
             i2c_master_bus_handle_t bus,
+            const i2c_bus_t* bus_state,
             uint8_t i2c_addr_7bit,
             size_t fram_size_bytes,
             uint32_t scl_speed_hz)
 {
-  if (fram == NULL || bus == NULL) {
+  if (fram == NULL || bus == NULL || bus_state == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
   if (i2c_addr_7bit > 0x7Fu || fram_size_bytes == 0) {
@@ -69,6 +90,7 @@ FramI2cInit(fram_i2c_t* fram,
 
   memset(fram, 0, sizeof(*fram));
   fram->bus = bus;
+  fram->bus_state = bus_state;
   fram->i2c_addr_7bit = i2c_addr_7bit;
   fram->fram_size_bytes = fram_size_bytes;
   if (scl_speed_hz == 0) {
@@ -134,6 +156,10 @@ FramI2cRead(const fram_i2c_t* fram, uint16_t addr, void* out, size_t len)
   if (!BoundsOk(fram, addr, len)) {
     return ESP_ERR_INVALID_SIZE;
   }
+  esp_err_t idle_result = FramI2cEnsureIdle(fram);
+  if (idle_result != ESP_OK) {
+    return idle_result;
+  }
 
   uint8_t* dest = (uint8_t*)out;
   size_t remaining = len;
@@ -178,6 +204,10 @@ FramI2cWrite(const fram_i2c_t* fram,
   if (!BoundsOk(fram, addr, len)) {
     return ESP_ERR_INVALID_SIZE;
   }
+  esp_err_t idle_result = FramI2cEnsureIdle(fram);
+  if (idle_result != ESP_OK) {
+    return idle_result;
+  }
 
   const uint8_t* src = (const uint8_t*)data;
   size_t remaining = len;
@@ -215,6 +245,10 @@ FramI2cReadDeviceId(const fram_i2c_t* fram, fram_device_id_t* out)
   }
   if (!fram->initialized) {
     return ESP_ERR_INVALID_STATE;
+  }
+  esp_err_t idle_result = FramI2cEnsureIdle(fram);
+  if (idle_result != ESP_OK) {
+    return idle_result;
   }
 
   i2c_master_dev_handle_t id_device = NULL;
