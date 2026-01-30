@@ -1,5 +1,20 @@
+#!/usr/bin/env python3
+"""
+host_tools/logger.py
+
+Resilient serial logger/monitor with optional ESP32 reset on connect and optional
+two-way interactive input (stdin -> serial).
+
+Key behaviors:
+- Keeps running across unplug/replug, target reboot, or transient serial errors.
+- Optional reset-on-connect (default) or --no-reset (like ESP-IDF monitor).
+- Colorized output similar to ESP-IDF monitor (optional).
+- Does NOT clear the serial input buffer on open/reopen.
+"""
+
+from __future__ import annotations
+
 import argparse
-import ctypes
 import os
 import queue
 import re
@@ -9,658 +24,645 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Sequence, Tuple
 
 import serial
 from serial.tools import list_ports
 
-LOG_LEVEL_COLORS = {
-    "E": "\x1b[31m",
-    "W": "\x1b[33m",
-    "I": "\x1b[32m",
-    "D": "\x1b[36m",
-    "V": "\x1b[90m",
-}
-ANSI_RESET = "\x1b[0m"
-LOG_PATTERN = re.compile(r"^([EWDIV]) \(\d+\)")
-ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[")
+
+@dataclass(frozen=True)
+class SerialConfig:
+    """Serial port configuration."""
+    port: str
+    baudrate: int
+    bytesize: int = serial.EIGHTBITS
+    parity: str = serial.PARITY_NONE
+    stopbits: float = serial.STOPBITS_ONE
+    read_timeout_sec: float = 0.1
+    write_timeout_sec: float = 2.0
+    xonxoff: bool = False
+    rtscts: bool = False
+    dsrdtr: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
+class OutputConfig:
+    """Output formatting and logging configuration."""
+    output_path: str
+    append: bool
+    host_timestamps: bool
+    decode_encoding: str
+    decode_errors: str
+    flush_lines: int
+    flush_interval_sec: float
+    print_to_stdout: bool
+
+
+@dataclass(frozen=True)
 class ReconnectConfig:
-    enabled: bool
-    initial_seconds: float
-    max_seconds: float
-    backoff: float
+    """Reconnect/backoff configuration."""
+    reconnect: bool
+    reconnect_delay_sec: float
+    port_scan_delay_sec: float
 
 
-@dataclass
+@dataclass(frozen=True)
 class ResetConfig:
+    """Reset configuration."""
     enabled: bool
-    delay_seconds: float
-    method: str
-    sequence: Optional[str]
+    mode: str
+    pulse_sec: float
+    post_delay_sec: float
+    custom_sequence: str
 
 
-@dataclass
-class BufferConfig:
-    buffer_lines: int
-    flush_interval_seconds: float
-    fsync: bool
+@dataclass(frozen=True)
+class ColorConfig:
+    """Color output configuration."""
+    enabled: bool
 
 
-@dataclass
-class InputConfig:
-    interactive: Optional[bool]
+@dataclass(frozen=True)
+class InteractiveConfig:
+    """Two-way communication configuration."""
+    enabled: bool
     input_eol: str
     input_encoding: str
+    input_errors: str
     local_echo: bool
     input_log: bool
-    escape_prefix: str
 
 
-class StdinLineReader(threading.Thread):
-    """Reads stdin lines into a queue for interactive serial input."""
+class Ansi:
+    """Minimal ANSI color helpers."""
+    RESET = "\x1b[0m"
+    BOLD = "\x1b[1m"
+    DIM = "\x1b[2m"
 
-    def __init__(self, stop_event: threading.Event, line_queue: queue.Queue[str]):
-        super().__init__(daemon=True)
-        self._stop_event = stop_event
-        self._line_queue = line_queue
-
-    def run(self) -> None:
-        while not self._stop_event.is_set():
-            line = sys.stdin.readline()
-            if line == "":
-                break
-            cleaned = line.rstrip("\r\n")
-            self._line_queue.put(cleaned)
+    RED = "\x1b[31m"
+    GREEN = "\x1b[32m"
+    YELLOW = "\x1b[33m"
+    MAGENTA = "\x1b[35m"
+    CYAN = "\x1b[36m"
 
 
-class SerialSessionLogger:
+def _maybe_enable_windows_ansi() -> None:
+    """Best-effort enable ANSI colors on Windows consoles."""
+    if os.name != "nt":
+        return
+    try:
+        import colorama  # type: ignore
+
+        colorama.just_fix_windows_console()
+    except Exception:
+        return
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _local_now_iso() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _is_tty(stream) -> bool:
+    try:
+        return stream.isatty()
+    except Exception:
+        return False
+
+
+def _format_host_prefix(include_timestamp: bool) -> str:
+    if not include_timestamp:
+        return ""
+    return f"[{_local_now_iso()}] "
+
+
+def _parse_reset_sequence(sequence: str) -> Sequence[Tuple[str, str]]:
+    """Parse 'R0|D1|W0.5' into a list of (opcode, arg)."""
+    if not sequence.strip():
+        return []
+    steps: list[Tuple[str, str]] = []
+    for raw_part in sequence.split("|"):
+        part = raw_part.strip()
+        if not part:
+            continue
+        opcode = part[0].upper()
+        arg = part[1:].strip()
+        if opcode not in ("R", "D", "U", "W"):
+            raise ValueError(f"Invalid reset opcode '{opcode}' in '{part}'")
+        if opcode in ("R", "D") and arg not in ("0", "1"):
+            raise ValueError(f"Invalid reset arg for '{opcode}': '{arg}' (expected 0 or 1)")
+        if opcode == "U" and not re.fullmatch(r"[01],[01]", arg):
+            raise ValueError(f"Invalid reset arg for 'U': '{arg}' (expected 0,0 / 0,1 / 1,0 / 1,1)")
+        if opcode == "W":
+            float(arg)  # validate
+        steps.append((opcode, arg))
+    return steps
+
+
+def _set_control_lines(ser: serial.Serial, dtr: Optional[bool], rts: Optional[bool]) -> None:
+    """Set DTR/RTS control lines (best-effort)."""
+    if dtr is not None:
+        ser.dtr = dtr
+    if rts is not None:
+        ser.rts = rts
+
+
+def _apply_custom_reset_sequence(ser: serial.Serial, sequence: str, log_fn) -> None:
+    """Apply custom reset sequence like esp-idf-monitor/esptool."""
+    steps = _parse_reset_sequence(sequence)
+    for opcode, arg in steps:
+        if opcode == "D":
+            value = (arg == "1")
+            log_fn(f"reset: DTR={'ASSERT' if value else 'DEASSERT'}")
+            _set_control_lines(ser, dtr=value, rts=None)
+        elif opcode == "R":
+            value = (arg == "1")
+            log_fn(f"reset: RTS={'ASSERT' if value else 'DEASSERT'}")
+            _set_control_lines(ser, dtr=None, rts=value)
+        elif opcode == "U":
+            dtr_str, rts_str = arg.split(",")
+            dtr_val = (dtr_str == "1")
+            rts_val = (rts_str == "1")
+            log_fn(f"reset: DTR={'ASSERT' if dtr_val else 'DEASSERT'} RTS={'ASSERT' if rts_val else 'DEASSERT'}")
+            _set_control_lines(ser, dtr=dtr_val, rts=rts_val)
+        elif opcode == "W":
+            seconds = float(arg)
+            log_fn(f"reset: wait {seconds:.3f}s")
+            time.sleep(seconds)
+
+
+def _esp32_run_reset(ser: serial.Serial, pulse_sec: float, post_delay_sec: float, log_fn) -> None:
+    """
+    Reset ESP32 into normal run mode.
+
+    Critical detail: many ESP32 dev boards include circuitry where asserting BOTH DTR and RTS
+    together won't reset. Also, DTR/RTS are typically active-low on these boards. :contentReference[oaicite:5]{index=5}
+    So we deassert DTR first (GPIO0 high), then pulse RTS (EN).
+    """
+    try:
+        _set_control_lines(ser, dtr=False, rts=False)
+        time.sleep(0.05)
+        log_fn("reset: ESP32 run reset (pulse RTS/EN with DTR deasserted)")
+        _set_control_lines(ser, dtr=False, rts=True)
+        time.sleep(pulse_sec)
+        _set_control_lines(ser, dtr=False, rts=False)
+        time.sleep(post_delay_sec)
+    except Exception as exc:
+        log_fn(f"reset: failed: {exc}")
+
+
+def _esp32_bootloader_reset(ser: serial.Serial, log_fn) -> None:
+    """Reset ESP32 into ROM bootloader: hold GPIO0 low while toggling EN."""
+    try:
+        _set_control_lines(ser, dtr=True, rts=False)
+        time.sleep(0.05)
+        log_fn("reset: ESP32 bootloader reset (GPIO0 low + pulse EN)")
+        _set_control_lines(ser, dtr=True, rts=True)
+        time.sleep(0.10)
+        _set_control_lines(ser, dtr=True, rts=False)
+        time.sleep(0.05)
+        _set_control_lines(ser, dtr=False, rts=False)
+        time.sleep(0.10)
+    except Exception as exc:
+        log_fn(f"reset: failed: {exc}")
+
+
+class SessionLogger:
+    """Runs the reconnecting serial logger/monitor."""
+
     def __init__(
         self,
-        port: str,
-        baud: int,
-        output_base: str,
-        reconnect: ReconnectConfig,
-        reset: ResetConfig,
-        buffer_config: BufferConfig,
-        input_config: InputConfig,
-        auto_color: bool,
-        vid: Optional[int],
-        pid: Optional[int],
-        serial_number: Optional[str],
-    ):
-        self.port = port
-        self.baud = baud
-        self.output_base = output_base
-        self.reconnect = reconnect
-        self.reset = reset
-        self.buffer_config = buffer_config
-        self.input_config = input_config
-        self.auto_color = auto_color
-        self.vid = vid
-        self.pid = pid
-        self.serial_number = serial_number
+        serial_config: SerialConfig,
+        output_config: OutputConfig,
+        reconnect_config: ReconnectConfig,
+        reset_config: ResetConfig,
+        color_config: ColorConfig,
+        interactive_config: InteractiveConfig,
+        port_regex: str,
+        port_vid_pid: str,
+        port_serial_number: str,
+    ) -> None:
+        self._serial_config = serial_config
+        self._output_config = output_config
+        self._reconnect_config = reconnect_config
+        self._reset_config = reset_config
+        self._color_config = color_config
+        self._interactive_config = interactive_config
 
-        self._stop_requested = False
-        self._txt_file = None
-        self._log_buffer = []
+        self._port_regex = re.compile(port_regex) if port_regex else None
+        self._port_vid_pid = port_vid_pid
+        self._port_serial_number = port_serial_number
+
+        self._stop_event = threading.Event()
+        self._input_queue: "queue.Queue[bytes]" = queue.Queue()
+        self._log_file_lock = threading.Lock()
         self._last_flush_time = time.monotonic()
-        self._warned_no_color = False
-        self._color_enabled = auto_color
-        self._connected_once = False
-        self._interactive_enabled = False
-        self._input_queue: Optional[queue.Queue[str]] = None
-        self._input_stop_event: Optional[threading.Event] = None
-        self._input_thread: Optional[StdinLineReader] = None
+        self._lines_since_flush = 0
 
-    def run(self) -> int:
-        self._setup_color()
-        self._setup_signal_handlers()
-        self._setup_input_reader()
-        txt_filename = self._open_output_file()
-        self._write_marker(
-            f"=== LOGGER STARTED {self._timestamp()} output={txt_filename} ==="
-        )
+        self._output_file = self._open_output_file()
+        self._stdin_thread: Optional[threading.Thread] = None
 
-        backoff_seconds = self.reconnect.initial_seconds
+    def stop(self) -> None:
+        self._stop_event.set()
 
-        try:
-            while not self._stop_requested:
-                port = self._resolve_port()
-                if not port:
-                    message = "No serial port found matching criteria"
-                    if not self.reconnect.enabled:
-                        self._write_marker(
-                            f"=== LOGGER STOPPED {self._timestamp()} error={message} ==="
-                        )
-                        self._flush_buffer()
-                        return 1
-                    self._write_marker(
-                        f"=== DISCONNECTED {self._timestamp()} error={message} ==="
-                    )
-                    self._flush_buffer()
-                    time.sleep(backoff_seconds)
-                    backoff_seconds = min(
-                        backoff_seconds * self.reconnect.backoff,
-                        self.reconnect.max_seconds,
-                    )
+    def _open_output_file(self):
+        resolved_path = self._resolve_output_path(self._output_config.output_path)
+        mode = "a" if self._output_config.append else "w"
+        os.makedirs(os.path.dirname(resolved_path) or ".", exist_ok=True)
+        return open(resolved_path, mode, encoding="utf-8", errors="replace", buffering=1)
+
+    @staticmethod
+    def _resolve_output_path(output_arg: str) -> str:
+        # If user gives a directory, create a timestamped file inside it.
+        if output_arg.endswith(os.sep) or (os.path.isdir(output_arg) and not os.path.isfile(output_arg)):
+            os.makedirs(output_arg, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            return os.path.join(output_arg, f"serial_{stamp}.log")
+
+        # If it looks like a "base name" without extension, append timestamp.
+        base, ext = os.path.splitext(output_arg)
+        if ext == "":
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            return f"{output_arg}_{stamp}.log"
+
+        return output_arg
+
+    def _log_meta(self, message: str) -> None:
+        prefix = _format_host_prefix(include_timestamp=True)
+        line = f"{prefix}{message}\n"
+        with self._log_file_lock:
+            self._output_file.write(line)
+        if self._output_config.print_to_stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+    def _format_with_color(self, line: str) -> str:
+        if not self._color_config.enabled:
+            return line
+
+        match = re.match(r"^(\[[0-9:\-\s]+\]\s+)?([EWDIV])\s+\(\d+\)\s+", line)
+        if match:
+            level = match.group(2)
+            color = {
+                "E": Ansi.RED,
+                "W": Ansi.YELLOW,
+                "I": Ansi.GREEN,
+                "D": Ansi.CYAN,
+                "V": Ansi.MAGENTA,
+            }.get(level, Ansi.RESET)
+            return f"{color}{line}{Ansi.RESET}"
+
+        if "rst:" in line and "boot:" in line:
+            return f"{Ansi.BOLD}{line}{Ansi.RESET}"
+
+        return line
+
+    def _write_output_line(self, raw_line: str) -> None:
+        stripped = raw_line.rstrip("\r\n")
+        host_prefix = _format_host_prefix(self._output_config.host_timestamps)
+        file_line = f"{host_prefix}{stripped}\n"
+
+        with self._log_file_lock:
+            self._output_file.write(file_line)
+
+        self._lines_since_flush += 1
+        now = time.monotonic()
+        if (
+            self._lines_since_flush >= self._output_config.flush_lines
+            or (now - self._last_flush_time) >= self._output_config.flush_interval_sec
+        ):
+            self._flush()
+
+        if self._output_config.print_to_stdout:
+            display_line = f"{host_prefix}{stripped}"
+            sys.stdout.write(self._format_with_color(display_line) + "\n")
+            sys.stdout.flush()
+
+    def _flush(self) -> None:
+        with self._log_file_lock:
+            self._output_file.flush()
+        self._lines_since_flush = 0
+        self._last_flush_time = time.monotonic()
+
+    def _start_stdin_thread_if_enabled(self) -> None:
+        if not self._interactive_config.enabled or self._stdin_thread is not None:
+            return
+
+        def reader() -> None:
+            while not self._stop_event.is_set():
+                user_text = sys.stdin.readline()
+                if user_text == "":
+                    return
+                user_text = user_text.rstrip("\r\n")
+                if not user_text:
                     continue
 
-                try:
-                    with serial.Serial(port, self.baud, timeout=0.1) as ser:
-                        self._handle_connected(port, ser)
-                        backoff_seconds = self.reconnect.initial_seconds
-                        self._read_loop(ser)
-                except (serial.SerialException, OSError, UnicodeDecodeError) as exc:
-                    self._write_marker(
-                        f"=== DISCONNECTED {self._timestamp()} error={exc} ==="
+                # Local commands start with "!" (handled by main loop):
+                #   !reset         -> run reset
+                #   !bootloader    -> bootloader reset
+                payload = (user_text + "\n").encode("utf-8", errors="replace") if user_text.startswith("!") else (
+                    (user_text + self._interactive_config.input_eol).encode(
+                        self._interactive_config.input_encoding,
+                        errors=self._interactive_config.input_errors,
                     )
-                    self._flush_buffer()
-                    if not self.reconnect.enabled:
-                        self._write_marker(
-                            f"=== LOGGER STOPPED {self._timestamp()} error={exc} ==="
-                        )
-                        self._flush_buffer()
-                        return 1
-                    time.sleep(backoff_seconds)
-                    backoff_seconds = min(
-                        backoff_seconds * self.reconnect.backoff,
-                        self.reconnect.max_seconds,
-                    )
-                except Exception as exc:
-                    self._write_marker(
-                        f"=== DISCONNECTED {self._timestamp()} error={exc} ==="
-                    )
-                    self._flush_buffer()
-                    self._write_marker(
-                        f"=== LOGGER STOPPED {self._timestamp()} error={exc} ==="
-                    )
-                    self._flush_buffer()
-                    raise
-        finally:
-            self._shutdown_input_reader()
-
-        self._write_marker(f"=== LOGGER STOPPED {self._timestamp()} ===")
-        self._flush_buffer()
-        return 0
-
-    def _setup_input_reader(self) -> None:
-        interactive = self.input_config.interactive
-        if interactive is None:
-            interactive = sys.stdin.isatty() and sys.stdout.isatty()
-        self._interactive_enabled = bool(interactive)
-        if not self._interactive_enabled:
-            return
-        self._input_queue = queue.Queue()
-        self._input_stop_event = threading.Event()
-        self._input_thread = StdinLineReader(self._input_stop_event, self._input_queue)
-        self._input_thread.start()
-
-    def _shutdown_input_reader(self) -> None:
-        if not self._input_stop_event:
-            return
-        self._input_stop_event.set()
-
-    def _setup_signal_handlers(self) -> None:
-        signal.signal(signal.SIGINT, self._handle_stop_signal)
-        signal.signal(signal.SIGTERM, self._handle_stop_signal)
-
-    def _handle_stop_signal(self, sig, frame) -> None:
-        self._stop_requested = True
-
-    def _setup_color(self) -> None:
-        if not self.auto_color:
-            self._color_enabled = False
-            return
-        if os.name != "nt":
-            return
-        try:
-            handle = ctypes.windll.kernel32.GetStdHandle(-11)
-            mode = ctypes.c_uint32()
-            if ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
-                raise OSError("Unable to get console mode")
-            if ctypes.windll.kernel32.SetConsoleMode(
-                handle, mode.value | 0x0004
-            ) == 0:
-                raise OSError("Unable to enable virtual terminal processing")
-        except Exception as exc:
-            self._color_enabled = False
-            if not self._warned_no_color:
-                print(
-                    f"Color disabled: failed to enable Windows ANSI support ({exc})"
                 )
-                self._warned_no_color = True
+                self._input_queue.put(payload)
 
-    def _open_output_file(self) -> str:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        txt_filename = f"{self.output_base}_{timestamp}.txt"
-        self._txt_file = open(txt_filename, "w", encoding="utf-8")
-        print(f"Logging to {txt_filename}")
-        return txt_filename
+                if self._interactive_config.local_echo:
+                    sys.stdout.write(f"{Ansi.DIM}>> {user_text}{Ansi.RESET}\n")
+                    sys.stdout.flush()
+
+                if self._interactive_config.input_log:
+                    self._log_meta(f"stdin: {user_text}")
+
+        self._stdin_thread = threading.Thread(target=reader, name="stdin-reader", daemon=True)
+        self._stdin_thread.start()
 
     def _resolve_port(self) -> Optional[str]:
-        if self.port != "auto":
-            return self.port
-        matches = []
-        for port_info in list_ports.comports():
-            if self.vid is not None and port_info.vid != self.vid:
-                continue
-            if self.pid is not None and port_info.pid != self.pid:
-                continue
-            if self.serial_number is not None and (
-                port_info.serial_number != self.serial_number
-            ):
-                continue
-            matches.append(port_info.device)
-        if not matches:
+        if self._serial_config.port.lower() != "auto":
+            return self._serial_config.port
+
+        ports = list(list_ports.comports())
+        if not ports:
             return None
-        if len(matches) > 1:
-            print(f"Multiple ports matched {matches}, using {matches[0]}")
-        return matches[0]
 
-    def _handle_connected(self, port: str, ser: serial.Serial) -> None:
-        if self._connected_once:
-            self._write_marker(
-                f"=== RECONNECTED {self._timestamp()} port={port} ==="
-            )
-        else:
-            self._write_marker(f"=== CONNECTED {self._timestamp()} port={port} ===")
-            self._connected_once = True
-        if self.reset.enabled:
-            self._reset_target(ser)
-            time.sleep(self.reset.delay_seconds)
+        def matches(port_info) -> bool:
+            device_name = port_info.device or ""
+            description = port_info.description or ""
+            hwid = port_info.hwid or ""
+            serial_number = getattr(port_info, "serial_number", None) or ""
 
-    def _reset_target(self, ser: serial.Serial) -> None:
-        if self.reset.sequence:
-            self._apply_reset_sequence(ser, self.reset.sequence)
-            return
-        if self.reset.method == "rts":
-            ser.rts = True
-            time.sleep(0.1)
-            ser.rts = False
-        elif self.reset.method == "dtr_rts":
-            ser.dtr = False
-            ser.rts = True
-            time.sleep(0.1)
-            ser.rts = False
-            ser.dtr = True
-        else:
-            raise ValueError(f"Unsupported reset method: {self.reset.method}")
+            if self._port_regex:
+                if not (self._port_regex.search(device_name) or self._port_regex.search(description) or self._port_regex.search(hwid)):
+                    return False
 
-    def _apply_reset_sequence(self, ser: serial.Serial, sequence: str) -> None:
-        steps = [step.strip() for step in sequence.split(",") if step.strip()]
-        for step in steps:
-            if step.startswith("wait="):
-                time.sleep(float(step.split("=", 1)[1]))
-                continue
-            if ":" in step:
-                action, wait_value = step.split(":", 1)
-                wait_seconds = float(wait_value)
-            else:
-                action = step
-                wait_seconds = 0.0
-            if "=" not in action:
-                raise ValueError(
-                    "Reset sequence steps must be like rts=1 or dtr=0, optionally with :seconds"
-                )
-            line, value = action.split("=", 1)
-            level = value.strip() in {"1", "true", "True"}
-            line = line.strip().lower()
-            if line == "rts":
-                ser.rts = level
-            elif line == "dtr":
-                ser.dtr = level
-            else:
-                raise ValueError(f"Unknown reset line: {line}")
-            if wait_seconds:
-                time.sleep(wait_seconds)
+            if self._port_serial_number and self._port_serial_number != serial_number:
+                return False
 
-    def _read_loop(self, ser: serial.Serial) -> None:
-        while not self._stop_requested:
-            self._drain_input_queue(ser)
-            line = ser.readline()
-            if not line:
-                continue
-            try:
-                decoded = line.decode().strip()
-            except UnicodeDecodeError:
-                raise
-            if not decoded:
-                continue
-            timestamp = self._timestamp()
-            formatted = f"<{timestamp}> {decoded}"
-            self._write_console_line(decoded, timestamp)
-            self._log_buffer.append(formatted)
-            self._flush_if_needed()
+            if self._port_vid_pid:
+                vid_pid_norm = self._port_vid_pid.lower().replace("0x", "")
+                if ":" not in vid_pid_norm:
+                    return False
+                expected_vid_str, expected_pid_str = vid_pid_norm.split(":", 1)
+                expected_vid = int(expected_vid_str, 16)
+                expected_pid = int(expected_pid_str, 16)
+                if port_info.vid != expected_vid or port_info.pid != expected_pid:
+                    return False
 
-    def _drain_input_queue(self, ser: serial.Serial) -> None:
-        if not self._interactive_enabled or not self._input_queue:
-            return
-        max_per_tick = 50
-        for _ in range(max_per_tick):
-            try:
-                user_line = self._input_queue.get_nowait()
-            except queue.Empty:
-                break
-            self._send_user_line(ser, user_line)
+            return True
 
-    def _send_user_line(self, ser: serial.Serial, user_line: str) -> None:
-        """Send a line from stdin to the serial device or handle escape commands."""
-        if self._handle_escape_command(ser, user_line):
-            return
-        payload = self._encode_user_line(user_line)
-        if payload is None:
-            return
-        ser.write(payload)
-        ser.flush()
-        if self.input_config.local_echo:
-            self._print_local_echo(user_line)
-        if self.input_config.input_log:
-            self._write_marker(self._format_tx_marker(user_line), print_console=False)
+        for port_info in ports:
+            if matches(port_info):
+                return port_info.device
 
-    def _encode_user_line(self, user_line: str) -> Optional[bytes]:
-        """Encode the user line with configured encoding and EOL settings."""
-        eol_bytes = self._eol_bytes()
+        return ports[0].device
+
+    def _open_serial(self, port: str) -> serial.Serial:
+        ser = serial.Serial(
+            port=port,
+            baudrate=self._serial_config.baudrate,
+            bytesize=self._serial_config.bytesize,
+            parity=self._serial_config.parity,
+            stopbits=self._serial_config.stopbits,
+            timeout=self._serial_config.read_timeout_sec,
+            write_timeout=self._serial_config.write_timeout_sec,
+            xonxoff=self._serial_config.xonxoff,
+            rtscts=self._serial_config.rtscts,
+            dsrdtr=self._serial_config.dsrdtr,
+        )
+
+        # Do NOT clear buffers. But DO force control lines to a known state,
+        # otherwise a later "pulse RTS" may do nothing (or be inconsistent).
         try:
-            encoded = user_line.encode(self.input_config.input_encoding)
-        except UnicodeEncodeError as exc:
-            print(f"TX encode error: {exc}")
-            return None
-        return encoded + eol_bytes
+            _set_control_lines(ser, dtr=False, rts=False)
+        except Exception:
+            pass
 
-    def _eol_bytes(self) -> bytes:
-        eol = self.input_config.input_eol
-        if eol == "crlf":
-            return b"\r\n"
-        if eol == "cr":
-            return b"\r"
-        return b"\n"
+        return ser
 
-    def _handle_escape_command(self, ser: serial.Serial, command_line: str) -> bool:
-        """Handle escape-prefixed commands. Returns True if consumed."""
-        prefix = self.input_config.escape_prefix
-        if not command_line.startswith(prefix):
-            return False
-        command = command_line[len(prefix) :].strip()
-        if command in {".", "quit"}:
-            self._stop_requested = True
-            return True
-        if command == "help":
-            self._print_escape_help(prefix)
-            return True
-        if command == "reset":
-            try:
-                self._reset_target(ser)
-                time.sleep(self.reset.delay_seconds)
-            except Exception as exc:
-                print(f"Reset failed: {exc}")
-            return True
-        if command == "reconnect":
-            ser.close()
-            raise serial.SerialException("User requested reconnect")
-        print(f"Unknown escape command: {command_line!r}")
-        return True
-
-    def _print_escape_help(self, prefix: str) -> None:
-        """Print quick help for escape commands."""
-        print("Escape commands:")
-        print(f"  {prefix}. or {prefix}quit    Quit logger")
-        print(f"  {prefix}reset              Reset target now")
-        print(f"  {prefix}reconnect          Force reconnect")
-        print(f"  {prefix}help               Show this help")
-
-    def _format_tx_marker(self, user_line: str) -> str:
-        return f">>> <{self._timestamp()}> {user_line}"
-
-    def _print_local_echo(self, user_line: str) -> None:
-        timestamp = self._timestamp()
-        message = f">>> <{timestamp}> {user_line}"
-        if self._color_enabled:
-            print(f"\x1b[90m{message}{ANSI_RESET}")
-        else:
-            print(message)
-
-    def _write_console_line(self, decoded: str, timestamp: str) -> None:
-        prefix = f"<{timestamp}> "
-        if self._color_enabled and not ANSI_ESCAPE_PATTERN.search(decoded):
-            match = LOG_PATTERN.match(decoded)
-            if match:
-                color = LOG_LEVEL_COLORS.get(match.group(1))
-                if color:
-                    print(f"{prefix}{color}{decoded}{ANSI_RESET}")
-                    return
-        print(f"{prefix}{decoded}")
-
-    def _write_marker(self, text: str, print_console: bool = True) -> None:
-        if print_console:
-            print(text)
-        if self._txt_file:
-            self._txt_file.write(text + "\n")
-
-    def _flush_if_needed(self) -> None:
-        now = time.monotonic()
-        if len(self._log_buffer) >= self.buffer_config.buffer_lines:
-            self._flush_buffer()
-        elif now - self._last_flush_time >= self.buffer_config.flush_interval_seconds:
-            self._flush_buffer()
-
-    def _flush_buffer(self) -> None:
-        if not self._txt_file or not self._log_buffer:
-            self._last_flush_time = time.monotonic()
+    def _perform_reset_if_enabled(self, ser: serial.Serial) -> None:
+        if not self._reset_config.enabled:
             return
-        for line in self._log_buffer:
-            self._txt_file.write(line + "\n")
-        self._log_buffer.clear()
-        self._txt_file.flush()
-        if self.buffer_config.fsync:
-            os.fsync(self._txt_file.fileno())
-        self._last_flush_time = time.monotonic()
 
-    def _timestamp(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        mode = self._reset_config.mode
+        if mode == "esp32":
+            _esp32_run_reset(
+                ser,
+                pulse_sec=self._reset_config.pulse_sec,
+                post_delay_sec=self._reset_config.post_delay_sec,
+                log_fn=self._log_meta,
+            )
+            return
+        if mode == "esp32-bootloader":
+            _esp32_bootloader_reset(ser, log_fn=self._log_meta)
+            return
+        if mode == "custom":
+            _apply_custom_reset_sequence(ser, self._reset_config.custom_sequence, self._log_meta)
+            return
+        if mode == "rts":
+            self._log_meta("reset: pulse RTS")
+            _set_control_lines(ser, dtr=None, rts=True)
+            time.sleep(self._reset_config.pulse_sec)
+            _set_control_lines(ser, dtr=None, rts=False)
+            time.sleep(self._reset_config.post_delay_sec)
+            return
+        if mode == "dtr":
+            self._log_meta("reset: pulse DTR")
+            _set_control_lines(ser, dtr=True, rts=None)
+            time.sleep(self._reset_config.pulse_sec)
+            _set_control_lines(ser, dtr=False, rts=None)
+            time.sleep(self._reset_config.post_delay_sec)
+            return
+
+        self._log_meta(f"reset: unknown mode '{mode}', skipping")
+
+    def _send_pending_input(self, ser: serial.Serial) -> None:
+        while True:
+            try:
+                payload = self._input_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            if payload.startswith(b"!"):
+                command_text = payload.decode("utf-8", errors="replace").strip()
+                if command_text == "!reset":
+                    self._log_meta("local: !reset")
+                    _esp32_run_reset(ser, pulse_sec=self._reset_config.pulse_sec, post_delay_sec=self._reset_config.post_delay_sec, log_fn=self._log_meta)
+                elif command_text == "!bootloader":
+                    self._log_meta("local: !bootloader")
+                    _esp32_bootloader_reset(ser, log_fn=self._log_meta)
+                else:
+                    self._log_meta(f"local: unknown command '{command_text}'")
+                continue
+
+            try:
+                ser.write(payload)
+                ser.flush()
+            except Exception as exc:
+                self._log_meta(f"stdin: send failed: {exc}")
+
+    def run(self) -> int:
+        self._start_stdin_thread_if_enabled()
+        self._log_meta(f"logger: started utc={_utc_now_iso()}")
+
+        while not self._stop_event.is_set():
+            port = self._resolve_port()
+            if not port:
+                self._log_meta("logger: no serial ports found; waiting...")
+                if not self._reconnect_config.reconnect:
+                    return 2
+                time.sleep(self._reconnect_config.port_scan_delay_sec)
+                continue
+
+            self._log_meta(f"logger: opening {port} @ {self._serial_config.baudrate}")
+            try:
+                with self._open_serial(port) as ser:
+                    self._log_meta("logger: connected")
+                    self._perform_reset_if_enabled(ser)
+
+                    while not self._stop_event.is_set():
+                        if self._interactive_config.enabled:
+                            self._send_pending_input(ser)
+
+                        raw = ser.readline()
+                        if not raw:
+                            continue
+
+                        text = raw.decode(self._output_config.decode_encoding, errors=self._output_config.decode_errors)
+                        self._write_output_line(text)
+
+            except (serial.SerialException, OSError) as exc:
+                self._log_meta(f"logger: disconnected: {exc}")
+                if not self._reconnect_config.reconnect:
+                    self._log_meta("logger: reconnect disabled; exiting")
+                    self._flush()
+                    return 1
+                time.sleep(self._reconnect_config.reconnect_delay_sec)
+
+        self._log_meta("logger: stopping")
+        self._flush()
+        return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    description = """Serial logger with reconnect, reset, and IDF-style color support."""
-    epilog = """
-Reconnect behavior:
-  When --reconnect is enabled (default), the logger retries opening the port
-  forever using exponential backoff controlled by:
-    --reconnect-initial-seconds, --reconnect-backoff, --reconnect-max-seconds
-
-Reset behavior:
-  Reset is enabled by default. Use --no-reset to skip toggling RTS/DTR.
-  --reset-method selects a simple reset (rts or dtr_rts). You can provide a
-  custom --reset-sequence for complex boards. Sequence syntax examples:
-    rts=1:0.1,rts=0:0.1
-    dtr=0:0.05,rts=1:0.1,rts=0:0.05,dtr=1:0.05
-    wait=0.2,rts=1:0.1
-
-Color behavior:
-  Auto-coloring is enabled by default. Use --disable-auto-color to disable.
-
-Buffering and durability:
-  Lines are buffered in memory before being written to disk. Use --fsync to
-  force a disk flush on each buffer flush.
-
-Examples:
-  python host_tools/logger.py --port auto --vid 0x10C4 --pid 0xEA60 -o testlog
-  python host_tools/logger.py --port COM3 --no-reset -o testlog
-  python host_tools/logger.py --port /dev/ttyUSB0 --disable-auto-color -o testlog
-  python host_tools/logger.py --port /dev/ttyUSB0 --fsync -o testlog
-"""
     parser = argparse.ArgumentParser(
-        description=description,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=epilog,
+        description="Resilient serial logger/monitor (reconnect + optional reset + optional stdin->serial).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--port", required=True, help="Serial port or 'auto'.")
-    parser.add_argument("--baud", type=int, default=115200, help="Baud rate.")
-    parser.add_argument("--vid", type=lambda x: int(x, 0), help="USB VID (hex or dec).")
-    parser.add_argument("--pid", type=lambda x: int(x, 0), help="USB PID (hex or dec).")
-    parser.add_argument(
-        "--serial-number",
-        dest="serial_number",
-        help="USB serial number for auto port selection.",
-    )
-    parser.add_argument(
-        "--reconnect",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable or disable reconnect attempts (default: enabled).",
-    )
-    parser.add_argument(
-        "--reconnect-initial-seconds",
-        type=float,
-        default=1.0,
-        help="Initial reconnect delay in seconds.",
-    )
-    parser.add_argument(
-        "--reconnect-max-seconds",
-        type=float,
-        default=15.0,
-        help="Maximum reconnect delay in seconds.",
-    )
-    parser.add_argument(
-        "--reconnect-backoff",
-        type=float,
-        default=1.5,
-        help="Reconnect backoff multiplier.",
-    )
-    parser.add_argument(
-        "--no-reset",
-        dest="no_reset",
-        action="store_true",
-        help="Disable reset on connect (default: reset enabled).",
-    )
-    parser.add_argument(
-        "--reset-delay-seconds",
-        type=float,
-        default=0.2,
-        help="Delay after reset before reading.",
-    )
-    parser.add_argument(
-        "--reset-method",
-        choices=["rts", "dtr_rts"],
-        default="rts",
-        help="Reset method when reset is enabled.",
-    )
-    parser.add_argument(
-        "--reset-sequence",
-        help="Custom reset sequence (overrides --reset-method).",
-    )
-    parser.add_argument(
-        "--disable-auto-color",
-        action="store_true",
-        help="Disable IDF-style auto-color output.",
-    )
-    parser.add_argument(
-        "--interactive",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Enable interactive stdin-to-serial input (default: auto TTY).",
-    )
-    parser.add_argument(
-        "--input-eol",
-        choices=["lf", "crlf", "cr"],
-        default="lf",
-        help="End-of-line to append for interactive input.",
-    )
-    parser.add_argument(
-        "--input-encoding",
-        default="utf-8",
-        help="Encoding for interactive input.",
-    )
-    parser.add_argument(
-        "--local-echo",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Echo sent lines locally (default: enabled).",
-    )
-    parser.add_argument(
-        "--input-log",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Log sent lines to the output file (default: enabled).",
-    )
-    parser.add_argument(
-        "--escape-prefix",
-        default="~",
-        help="Prefix for interactive escape commands.",
-    )
-    parser.add_argument(
-        "--buffer-lines",
-        type=int,
-        default=600,
-        help="Number of lines to buffer before flush.",
-    )
-    parser.add_argument(
-        "--flush-interval-seconds",
-        type=float,
-        default=600,
-        help="Maximum time between buffer flushes.",
-    )
-    parser.add_argument(
-        "--fsync",
-        action="store_true",
-        help="Call os.fsync() after flushing buffer.",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        required=True,
-        help="Base name for output files (no extension).",
-    )
+
+    serial_group = parser.add_argument_group("Serial port")
+    serial_group.add_argument("-p", "--port", default="auto", help="COM3, /dev/ttyUSB0, or 'auto' to scan.")
+    serial_group.add_argument("-b", "--baudrate", type=int, default=115200, help="Baud rate.")
+    serial_group.add_argument("--port-regex", default="", help="When --port=auto, prefer ports matching this regex.")
+    serial_group.add_argument("--port-vid-pid", default="", help="When --port=auto, prefer VID:PID (e.g. 10C4:EA60).")
+    serial_group.add_argument("--port-serial-number", default="", help="When --port=auto, prefer this USB-serial serial number.")
+    serial_group.add_argument("--read-timeout-sec", type=float, default=0.1, help="Read timeout; smaller improves interactive responsiveness.")
+
+    output_group = parser.add_argument_group("Output")
+    output_group.add_argument("-o", "--output", default="logs/", help="Output path: directory, filename, or base name.")
+    output_group.add_argument("--append", action="store_true", help="Append instead of overwrite.")
+    output_group.add_argument("--host-timestamps", action="store_true", help="Prefix each line with host local timestamp.")
+    output_group.add_argument("--no-stdout", action="store_true", help="Do not print to stdout.")
+    output_group.add_argument("--encoding", default="utf-8", help="Decode serial bytes using this encoding.")
+    output_group.add_argument("--errors", default="replace", choices=["strict", "replace", "ignore"], help="Decode error behavior.")
+    output_group.add_argument("--flush-lines", type=int, default=200, help="Flush to disk after N lines.")
+    output_group.add_argument("--flush-interval-sec", type=float, default=2.0, help="Flush to disk after N seconds.")
+
+    reconnect_group = parser.add_argument_group("Reconnect")
+    reconnect_group.add_argument("--no-reconnect", action="store_true", help="Exit on first disconnect.")
+    reconnect_group.add_argument("--reconnect-delay-sec", type=float, default=0.5, help="Delay between reconnect attempts.")
+    reconnect_group.add_argument("--port-scan-delay-sec", type=float, default=0.5, help="When --port=auto and none found, scan every N seconds.")
+
+    reset_group = parser.add_argument_group("Reset")
+    reset_group.add_argument("--no-reset", action="store_true", help="Do not reset on connect (like idf.py monitor --no-reset).")
+    reset_group.add_argument("--reset-mode", default="esp32", choices=["esp32", "esp32-bootloader", "rts", "dtr", "custom"], help="Reset method.")
+    reset_group.add_argument("--reset-pulse-sec", type=float, default=0.10, help="Pulse width for reset line(s).")
+    reset_group.add_argument("--reset-post-delay-sec", type=float, default=0.20, help="Delay after reset before reading.")
+    reset_group.add_argument("--reset-sequence", default="", help="Custom sequence for --reset-mode=custom, e.g. 'R0|D1|W0.5'.")
+
+    color_group = parser.add_argument_group("Color")
+    color_group.add_argument("--no-color", action="store_true", help="Disable ANSI color.")
+    color_group.add_argument("--color", action="store_true", help="Force ANSI color even if stdout not a TTY.")
+
+    interactive_group = parser.add_argument_group("Interactive (two-way)")
+    interactive_group.add_argument("--interactive", action="store_true", help="Forward stdin lines to the device.")
+    interactive_group.add_argument("--input-eol", default="\n", help="EOL appended to each stdin line.")
+    interactive_group.add_argument("--input-encoding", default="utf-8", help="Encoding for stdin -> serial.")
+    interactive_group.add_argument("--input-errors", default="replace", choices=["strict", "replace", "ignore"], help="Encoding error behavior.")
+    interactive_group.add_argument("--local-echo", action="store_true", help="Echo stdin locally with a '>>' prefix.")
+    interactive_group.add_argument("--input-log", action="store_true", help="Log stdin lines into the log file as metadata.")
+
     return parser
 
 
-def main() -> int:
-    parser = _build_parser()
-    args = parser.parse_args()
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    _maybe_enable_windows_ansi()
 
-    reconnect = ReconnectConfig(
-        enabled=args.reconnect,
-        initial_seconds=args.reconnect_initial_seconds,
-        max_seconds=args.reconnect_max_seconds,
-        backoff=args.reconnect_backoff,
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    color_enabled = (not args.no_color) and (args.color or _is_tty(sys.stdout))
+
+    serial_config = SerialConfig(
+        port=args.port,
+        baudrate=args.baudrate,
+        read_timeout_sec=args.read_timeout_sec,
     )
-    reset = ResetConfig(
-        enabled=not args.no_reset,
-        delay_seconds=args.reset_delay_seconds,
-        method=args.reset_method,
-        sequence=args.reset_sequence,
+    output_config = OutputConfig(
+        output_path=args.output,
+        append=args.append,
+        host_timestamps=args.host_timestamps,
+        decode_encoding=args.encoding,
+        decode_errors=args.errors,
+        flush_lines=args.flush_lines,
+        flush_interval_sec=args.flush_interval_sec,
+        print_to_stdout=(not args.no_stdout),
     )
-    buffer_config = BufferConfig(
-        buffer_lines=args.buffer_lines,
-        flush_interval_seconds=args.flush_interval_seconds,
-        fsync=args.fsync,
+    reconnect_config = ReconnectConfig(
+        reconnect=(not args.no_reconnect),
+        reconnect_delay_sec=args.reconnect_delay_sec,
+        port_scan_delay_sec=args.port_scan_delay_sec,
     )
-    input_config = InputConfig(
-        interactive=args.interactive,
+    reset_config = ResetConfig(
+        enabled=(not args.no_reset),
+        mode=args.reset_mode,
+        pulse_sec=args.reset_pulse_sec,
+        post_delay_sec=args.reset_post_delay_sec,
+        custom_sequence=args.reset_sequence,
+    )
+    color_config = ColorConfig(enabled=color_enabled)
+    interactive_config = InteractiveConfig(
+        enabled=args.interactive,
         input_eol=args.input_eol,
         input_encoding=args.input_encoding,
+        input_errors=args.input_errors,
         local_echo=args.local_echo,
         input_log=args.input_log,
-        escape_prefix=args.escape_prefix,
     )
 
-    logger = SerialSessionLogger(
-        port=args.port,
-        baud=args.baud,
-        output_base=args.output,
-        reconnect=reconnect,
-        reset=reset,
-        buffer_config=buffer_config,
-        input_config=input_config,
-        auto_color=not args.disable_auto_color,
-        vid=args.vid,
-        pid=args.pid,
-        serial_number=args.serial_number,
+    session_logger = SessionLogger(
+        serial_config=serial_config,
+        output_config=output_config,
+        reconnect_config=reconnect_config,
+        reset_config=reset_config,
+        color_config=color_config,
+        interactive_config=interactive_config,
+        port_regex=args.port_regex,
+        port_vid_pid=args.port_vid_pid,
+        port_serial_number=args.port_serial_number,
     )
-    return logger.run()
+
+    def _handle_signal(_signum, _frame) -> None:
+        session_logger.stop()
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    return session_logger.run()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
