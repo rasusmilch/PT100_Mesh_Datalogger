@@ -59,7 +59,12 @@
 #include "wifi_service.h"
 
 static const char* kTag = "runtime";
-static const char* kMutexHolderNone = "<none>";
+
+// String used to represent "no holder" for mutex/I2C operation state.
+// This must be a compile-time constant so it can be used in static
+// initializers.
+static const char kMutexHolderNone[] = "<none>";
+
 static const uint32_t kSdFlushMaxRecordsPerPass = 100;
 static const uint32_t kSdFlushMaxMsPerPass = 50;
 static const uint32_t kSdFlushTimeSliceMs = 50;
@@ -176,14 +181,6 @@ AlertHttpTask(void* context);
  */
 static BaseType_t
 CreateAlertHttpTaskWithPsrStack(runtime_state_t* state, uint32_t stack_bytes);
-
-/**
- * @brief Determine whether the app SPI bus is shared with non-SD devices.
- * @param state Parameter state.
- * @return Return the function result.
- */
-static bool
-RuntimeIsAppSpiBusShared(const runtime_state_t* state);
 
 static void
 RootRecordRxCallback(const pt100_mesh_addr_t* from,
@@ -413,8 +410,7 @@ RuntimeRecordError(runtime_state_t* state,
   if (state == NULL) {
     return;
   }
-  runtime_error_entry_t* entry =
-    &state->error_ring[state->error_ring_head];
+  runtime_error_entry_t* entry = &state->error_ring[state->error_ring_head];
   entry->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
   entry->module = (module != NULL) ? module : "unknown";
   entry->err = err;
@@ -544,14 +540,13 @@ RuntimeDumpI2cOpState(const runtime_state_t* state, const char* reason)
     holder = (state->i2c_mutex_holder != NULL) ? state->i2c_mutex_holder
                                                : kMutexHolderNone;
   }
-  const char* phase =
-    (state != NULL && state->sd_flush_phase != NULL) ? state->sd_flush_phase
-                                                     : kMutexHolderNone;
+  const char* phase = (state != NULL && state->sd_flush_phase != NULL)
+                        ? state->sd_flush_phase
+                        : kMutexHolderNone;
   const char* reason_label = (reason != NULL) ? reason : "unknown";
-  const uint32_t op_ms =
-    (snapshot.active && snapshot.start_ticks != 0)
-      ? RuntimeElapsedMs(snapshot.start_ticks, now_ticks)
-      : 0u;
+  const uint32_t op_ms = (snapshot.active && snapshot.start_ticks != 0)
+                           ? RuntimeElapsedMs(snapshot.start_ticks, now_ticks)
+                           : 0u;
   ESP_LOGW(kTag,
            "I2C op (%s): lock_holder=%s held_ms=%" PRIu32
            " op=%s addr=0x%08" PRIx32 " len=%zu op_ms=%" PRIu32
@@ -608,8 +603,8 @@ RuntimeDumpLocks(runtime_state_t* state, const char* reason)
 
   ESP_LOGW(kTag, "Lock dump (%s):", reason_label);
   ESP_LOGW(kTag,
-           "  fram_log holder=%s held_ms=%" PRIu32
-           " timeouts=%" PRIu32 " max_ms=%" PRIu32,
+           "  fram_log holder=%s held_ms=%" PRIu32 " timeouts=%" PRIu32
+           " max_ms=%" PRIu32,
            fram_holder,
            fram_held_ms,
            state->fram_log_mutex_timeouts,
@@ -643,8 +638,7 @@ RuntimeDumpLocks(runtime_state_t* state, const char* reason)
       (uint8_t)((state->error_ring_head + RUNTIME_ERROR_RING_SIZE - count) %
                 RUNTIME_ERROR_RING_SIZE);
     for (uint8_t i = 0; i < count; ++i) {
-      const uint8_t idx =
-        (uint8_t)((start + i) % RUNTIME_ERROR_RING_SIZE);
+      const uint8_t idx = (uint8_t)((start + i) % RUNTIME_ERROR_RING_SIZE);
       const runtime_error_entry_t* entry = &state->error_ring[idx];
       const char* err_phase =
         (entry->phase != NULL) ? entry->phase : kMutexHolderNone;
@@ -737,9 +731,8 @@ LogDrainPostflight(const runtime_state_t* state,
   StackMonitorMaybeSample(&g_stack_monitor);
   ESP_LOGI(kTag,
            "Drain post(%s): flushed=%" PRIi32 " remaining=%" PRIi32
-           " duration=%" PRIu32
-           "ms stack_min(ctrl:%" PRIu32 " stor:%" PRIu32 " flush:%" PRIu32
-           " net:%" PRIu32 " http:%" PRIu32 ")",
+           " duration=%" PRIu32 "ms stack_min(ctrl:%" PRIu32 " stor:%" PRIu32
+           " flush:%" PRIu32 " net:%" PRIu32 " http:%" PRIu32 ")",
            (reason != NULL) ? reason : "unknown",
            flushed_records,
            remaining_records,
@@ -1306,8 +1299,7 @@ RuntimeSdFsLock(runtime_state_t* state, TickType_t timeout_ticks)
              held_ms,
              RuntimeGetCurrentTaskName(),
              flush_phase);
-    const TickType_t dump_elapsed =
-      now_ticks - state->last_lock_dump_ticks;
+    const TickType_t dump_elapsed = now_ticks - state->last_lock_dump_ticks;
     if (state->last_lock_dump_ticks == 0 ||
         pdTICKS_TO_MS(dump_elapsed) >= kLockDumpIntervalMs) {
       state->last_lock_dump_ticks = now_ticks;
@@ -1418,8 +1410,7 @@ RuntimeFramLogLock(runtime_state_t* state, TickType_t timeout_ticks)
              held_ms,
              RuntimeGetCurrentTaskName(),
              flush_phase);
-    const TickType_t dump_elapsed =
-      now_ticks - state->last_lock_dump_ticks;
+    const TickType_t dump_elapsed = now_ticks - state->last_lock_dump_ticks;
     if (state->last_lock_dump_ticks == 0 ||
         pdTICKS_TO_MS(dump_elapsed) >= kLockDumpIntervalMs) {
       state->last_lock_dump_ticks = now_ticks;
@@ -1477,8 +1468,7 @@ RuntimeI2cLock(TickType_t timeout_ticks)
              held_ms,
              RuntimeGetCurrentTaskName(),
              flush_phase);
-    const TickType_t dump_elapsed =
-      now_ticks - g_state.last_lock_dump_ticks;
+    const TickType_t dump_elapsed = now_ticks - g_state.last_lock_dump_ticks;
     if (g_state.last_lock_dump_ticks == 0 ||
         pdTICKS_TO_MS(dump_elapsed) >= kLockDumpIntervalMs) {
       g_state.last_lock_dump_ticks = now_ticks;
@@ -2123,8 +2113,8 @@ FormatTemperatureText(char* out,
     const int32_t whole = abs_tenths / 10;
     const int32_t frac = abs_tenths % 10;
     const char* sign = (tenths < 0) ? "-" : "";
-    snprintf(out, out_len, "%s%ld.%01ld%c", sign, (long)whole, (long)frac,
-             unit_char);
+    snprintf(
+      out, out_len, "%s%ld.%01ld%c", sign, (long)whole, (long)frac, unit_char);
     return;
   }
 
@@ -2560,7 +2550,7 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
   if (result == ESP_ERR_TIMEOUT || result == ESP_ERR_INVALID_STATE ||
       result == ESP_ERR_INVALID_RESPONSE) {
     RuntimeRecoverI2cBusLocked(state, "fram io error");
-      result = FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
+    result = FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
   }
   RuntimeI2cOpEnd();
   RuntimeI2cUnlock();
@@ -4113,16 +4103,14 @@ BuildBatchForDay(runtime_state_t* state,
       TrackFramInvalidResponse(state, "batch");
       state->sd_flush_last_err = peek_result;
       state->sd_flush_phase = "build:peek_invalid";
-      RuntimeRecordError(
-        state, "fram", peek_result, state->sd_flush_phase);
+      RuntimeRecordError(state, "fram", peek_result, state->sd_flush_phase);
       break;
     }
     if (peek_result != ESP_OK) {
       state->sd_flush_last_err = peek_result;
       state->sd_flush_i2c_errs++;
       state->sd_flush_phase = "build:peek_offset_failed";
-      RuntimeRecordError(
-        state, "sd_flush", peek_result, state->sd_flush_phase);
+      RuntimeRecordError(state, "sd_flush", peek_result, state->sd_flush_phase);
       return peek_result;
     }
     ResetFramInvalidResponseStreak(state);
@@ -4200,8 +4188,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
   uint32_t total_flushed = 0;
   uint32_t fram_lock_timeout_counter = 0;
   uint32_t fram_lock_last_log_ms = 0;
+  uint32_t buffered = 0;
   while (true) {
-    uint32_t buffered = 0;
     if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
       return ESP_ERR_TIMEOUT;
     }
@@ -4264,7 +4252,6 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     size_t bytes_used = 0;
     bool batch_includes_time_jump_flag = false;
     fram_log_t fram_log_snapshot;
-    uint32_t buffered = 0;
     if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
       RuntimeSdIoUnlock(state);
       return ESP_ERR_TIMEOUT;
@@ -4386,8 +4373,7 @@ static void
 RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context)
 {
   const int64_t event_epoch = (int64_t)time(NULL);
-  const uint32_t event_uptime_ms =
-    (uint32_t)(esp_timer_get_time() / 1000);
+  const uint32_t event_uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
   const bool ntfy_sent = RuntimeAttemptPreRebootAlertSend(
     state, ALERT_SYSTEM_CODE_ERROR_SD_IO, event_epoch, event_uptime_ms);
   if (ntfy_sent) {
@@ -4713,7 +4699,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     if (batch_result != ESP_OK) {
       state->sd_flush_last_err = batch_result;
       state->sd_flush_phase = "flush:build_failed";
-      RuntimeRecordError(state, "sd_flush", batch_result, state->sd_flush_phase);
+      RuntimeRecordError(
+        state, "sd_flush", batch_result, state->sd_flush_phase);
       if (!recover_i2c && IsRecoverableI2cErr(batch_result)) {
         state->sd_flush_i2c_errs++;
         recover_i2c = true;
@@ -5147,9 +5134,8 @@ SensorTask(void* context)
     // wiring/open/short issues without flooding the console.
     const TickType_t now_ticks = xTaskGetTickCount();
     if (result == ESP_OK && sample.fault_present) {
-      const bool changed =
-        !state->rtd_fault_pending_was_raw ||
-        state->rtd_fault_last_status != sample.fault_status;
+      const bool changed = !state->rtd_fault_pending_was_raw ||
+                           state->rtd_fault_last_status != sample.fault_status;
       const bool rate_ok =
         (state->last_sensor_fault_log_ticks == 0) ||
         (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
@@ -6310,8 +6296,8 @@ SdFlushTask(void* context)
             }
             const uint32_t duration_ms =
               (watermark_start_ticks > 0)
-                ? (uint32_t)pdTICKS_TO_MS(
-                    xTaskGetTickCount() - watermark_start_ticks)
+                ? (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount() -
+                                          watermark_start_ticks)
                 : 0u;
             LogDrainPostflight(state,
                                "watermark",
@@ -7449,30 +7435,6 @@ DisplayShareConfigMatchesApp(void)
 }
 #endif // CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
 
-/**
- * @brief Determine whether the app SPI bus is shared with non-SD devices.
- * @param state Parameter state.
- * @return Return the function result.
- */
-static bool
-RuntimeIsAppSpiBusShared(const runtime_state_t* state)
-{
-  if (state == NULL) {
-    return false;
-  }
-  if (state->sensor.is_initialized) {
-    return true;
-  }
-#if CONFIG_APP_MAX7219_ENABLE
-#if CONFIG_APP_MAX7219_SHARE_APP_SPI_BUS
-  if (state->display_initialized && DisplayShareConfigMatchesApp()) {
-    return true;
-  }
-#endif
-#endif
-  return false;
-}
-
 static int
 SpiHostToId(spi_host_device_t host)
 {
@@ -7728,9 +7690,8 @@ RuntimeManagerInit(void)
     if (reserve_result == ESP_OK) {
       ESP_LOGI(kTag, "wifi early reserve ok");
     } else {
-      ESP_LOGW(kTag,
-               "wifi early reserve failed: %s",
-               esp_err_to_name(reserve_result));
+      ESP_LOGW(
+        kTag, "wifi early reserve failed: %s", esp_err_to_name(reserve_result));
     }
     HeapLogPhase("wifi_reserve_after");
   }
