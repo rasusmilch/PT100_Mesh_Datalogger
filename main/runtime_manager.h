@@ -185,6 +185,12 @@ extern "C" {
   void RuntimeSdIoUnlock(runtime_state_t* state);
 
 /**
+ * @brief Dump current lock diagnostics to log output.
+ * @param reason Reason string for the dump.
+ */
+  void RuntimeDumpLocksManual(const char* reason);
+
+/**
  * @brief Execute RuntimeDiagHeapCheck.
  * @param state Parameter state.
  * @param context Parameter context.
