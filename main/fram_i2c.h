@@ -7,6 +7,7 @@
 
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include "i2c_bus.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,6 +24,7 @@ extern "C" {
   {
     i2c_master_bus_handle_t bus;
     i2c_master_dev_handle_t device;
+    const i2c_bus_t* bus_state;
     uint8_t i2c_addr_7bit;
     uint32_t scl_speed_hz;
     size_t fram_size_bytes;
@@ -40,6 +42,7 @@ extern "C" {
  */
   esp_err_t FramI2cInit(fram_i2c_t* fram,
                         i2c_master_bus_handle_t bus,
+                        const i2c_bus_t* bus_state,
                         uint8_t i2c_addr_7bit,
                         size_t fram_size_bytes,
                         uint32_t scl_speed_hz);

@@ -9,8 +9,10 @@
 
 #include "alerts/alert_manager.h"
 #include "esp_console.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "runtime_manager.h"
 
 static void PrintAlertTypes(void);
 static const alert_leaf_config_t* FindLeafOverride(
@@ -24,6 +26,7 @@ static const char* AlertTypeToName(alert_type_t type);
 static void PrintStatus(const alert_manager_t* manager);
 static void PrintLeafList(const alert_manager_t* manager);
 static int CommandAlert(int argc, char** argv);
+static int CommandRebootLatch(int argc, char** argv);
 
 static const char* kTag = "console_alerts";
 static app_runtime_t* g_runtime = NULL;
@@ -32,6 +35,48 @@ static const char* const kAlertTypeNames[] = { "high",   "low",   "missing", "of
                                                "error",  "all" };
 static const size_t kAlertTypeNameCount =
   sizeof(kAlertTypeNames) / sizeof(kAlertTypeNames[0]);
+
+static const char*
+RebootLatchGateReasonToString(runtime_reboot_alert_gate_reason_t reason)
+{
+  switch (reason) {
+    case RUNTIME_REBOOT_ALERT_GATE_NOT_CONFIGURED:
+      return "not_configured";
+    case RUNTIME_REBOOT_ALERT_GATE_DISABLED_BY_MASK:
+      return "disabled_by_mask";
+    case RUNTIME_REBOOT_ALERT_GATE_NOT_ELIGIBLE_NET_MODE:
+      return "not_eligible_net_mode";
+    case RUNTIME_REBOOT_ALERT_GATE_NOT_ELIGIBLE_ROLE:
+      return "not_eligible_role";
+    case RUNTIME_REBOOT_ALERT_GATE_WIFI_DISCONNECTED:
+      return "wifi_disconnected";
+    case RUNTIME_REBOOT_ALERT_GATE_MESH_CONNECTED_BLOCKING_DIRECT:
+      return "mesh_connected";
+    case RUNTIME_REBOOT_ALERT_GATE_COOLDOWN_ACTIVE:
+      return "cooldown_active";
+    case RUNTIME_REBOOT_ALERT_GATE_QUEUE_FULL:
+      return "queue_full";
+    case RUNTIME_REBOOT_ALERT_GATE_UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+static const char*
+RebootLatchSendResultToString(runtime_reboot_alert_send_result_t result)
+{
+  switch (result) {
+    case RUNTIME_REBOOT_ALERT_SEND_OK:
+      return "ok";
+    case RUNTIME_REBOOT_ALERT_SEND_FAIL:
+      return "fail";
+    case RUNTIME_REBOOT_ALERT_SEND_SKIPPED:
+      return "skipped";
+    case RUNTIME_REBOOT_ALERT_SEND_NONE:
+    default:
+      return "none";
+  }
+}
 
 /**
  * @brief Print valid alert type strings to stdout.
@@ -743,6 +788,56 @@ CommandAlert(int argc, char** argv)
   return 1;
 }
 
+static int
+CommandRebootLatch(int argc, char** argv)
+{
+  if (argc < 2) {
+    printf("usage: reboot_latch <status|clear>\n");
+    return 1;
+  }
+  const char* action = argv[1];
+  if (strcmp(action, "status") == 0) {
+    runtime_reboot_alert_latch_t latch = { 0 };
+    RuntimeRebootAlertLatchCopy(&latch);
+    if (latch.magic == 0) {
+      printf("reboot latch invalid\n");
+      return 0;
+    }
+    printf("pending=%s code=%" PRIu32 "\n",
+           latch.pending_is_active ? "true" : "false",
+           latch.pending_system_code);
+    printf("pending_epoch=%" PRIi64 " pending_uptime_ms=%" PRIu32 "\n",
+           latch.pending_epoch,
+           latch.pending_uptime_ms);
+    printf("attempts=%" PRIu32 " sent_success=%s\n",
+           latch.send_attempt_count,
+           latch.sent_successfully ? "true" : "false");
+    printf("last_attempt_epoch=%" PRIi64 " last_attempt_uptime_ms=%" PRIu32
+           "\n",
+           latch.last_attempt_epoch,
+           latch.last_attempt_uptime_ms);
+    printf("last_gate=%s last_send=%s\n",
+           RebootLatchGateReasonToString(
+             (runtime_reboot_alert_gate_reason_t)latch.last_gate_reason),
+           RebootLatchSendResultToString(
+             (runtime_reboot_alert_send_result_t)latch.last_send_result));
+    printf("last_http_status=%" PRIi32 " last_ntfy_err=%s\n",
+           latch.last_http_status,
+           esp_err_to_name((esp_err_t)latch.last_ntfy_err));
+    printf("last_retry_after_seconds=%" PRIi32 "\n",
+           latch.last_retry_after_seconds);
+    return 0;
+  }
+  if (strcmp(action, "clear") == 0) {
+    RuntimeRebootAlertLatchClearSticky();
+    printf("reboot latch cleared\n");
+    return 0;
+  }
+
+  printf("unknown reboot_latch command\n");
+  return 1;
+}
+
 /**
  * @brief Execute ConsoleAlertsRegister.
  * @param runtime Parameter runtime.
@@ -758,5 +853,12 @@ ConsoleAlertsRegister(app_runtime_t* runtime)
     .func = &CommandAlert,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&alert_cmd));
+  const esp_console_cmd_t reboot_latch_cmd = {
+    .command = "reboot_latch",
+    .help = "Reboot alert latch: reboot_latch status | reboot_latch clear",
+    .hint = NULL,
+    .func = &CommandRebootLatch,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&reboot_latch_cmd));
   ESP_LOGD(kTag, "alert commands registered");
 }

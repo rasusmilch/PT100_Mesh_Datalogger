@@ -86,12 +86,14 @@ AppInitTask(void* context)
            (int)reset_reason);
   HeapLogPhase("startup_begin");
 
-  esp_err_t runtime_result = RuntimeManagerInit();
+  esp_err_t runtime_result = RuntimeManagerInitMinimal();
   if (runtime_result != ESP_OK) {
     ESP_LOGE(
-      kTag, "Runtime init reported error: %s", esp_err_to_name(runtime_result));
+      kTag,
+      "Runtime minimal init reported error: %s",
+      esp_err_to_name(runtime_result));
   }
-  HeapLogPhase("runtime_init");
+  HeapLogPhase("runtime_init_minimal");
 
   g_runtime = RuntimeGetRuntime();
   if (g_runtime != NULL) {
@@ -105,6 +107,23 @@ AppInitTask(void* context)
     HeapLogPhase("console_start");
     RunGpioInit();
     HeapLogPhase("run_gpio_init");
+
+    esp_err_t safe_hold_result =
+      RuntimeManagerRunSafeHoldIfNeeded(RuntimeGetState());
+    if (safe_hold_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "SAFE HOLD exited with status: %s",
+               esp_err_to_name(safe_hold_result));
+    }
+    HeapLogPhase("safe_hold");
+
+    esp_err_t full_result = RuntimeManagerInitFull();
+    if (full_result != ESP_OK) {
+      ESP_LOGE(kTag,
+               "Runtime full init reported error: %s",
+               esp_err_to_name(full_result));
+    }
+    HeapLogPhase("runtime_init_full");
   } else {
     ESP_LOGE(kTag, "Runtime unavailable; console not started");
     vTaskDelete(NULL);
