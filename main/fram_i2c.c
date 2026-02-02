@@ -19,10 +19,10 @@ FramI2cEnsureIdle(const fram_i2c_t* fram)
   if (!fram->bus_state->initialized) {
     return ESP_ERR_INVALID_STATE;
   }
-  if (!I2cBusLinesLookIdle(fram->bus_state)) {
+  if (!I2cBusLooksIdle(fram->bus_state)) {
     (void)I2cBusRecoverLines(fram->bus_state->sda_gpio,
                              fram->bus_state->scl_gpio);
-    if (!I2cBusLinesLookIdle(fram->bus_state)) {
+    if (!I2cBusLooksIdle(fram->bus_state)) {
       return ESP_ERR_TIMEOUT;
     }
   }
