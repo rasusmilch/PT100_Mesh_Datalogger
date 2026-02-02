@@ -1,0 +1,1109 @@
+[2026-01-30 22:50:48] logger: started utc=2026-01-31T04:50:48Z
+[2026-01-30 22:50:48] logger: opening /dev/ttyACM0 @ 115200
+[2026-01-30 22:50:48] logger: connected
+732 psram:1955892/1933300 stack_min(ctrl:3532 stor:3188 flush:4716 net:3556 http:7336)
+I (13762747) runtime: Drain post(watESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037ec6c
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x16e4
+load:0x403c8700,len:0xe04
+load:0x403cb700,len:0x31cc
+entry 0x403c8934
+I (24) boot: ESP-IDF v5.5.1-dirty 2nd stage bootloader
+I (24) boot: Multicore bootloader
+I (25) boot: chip revision: v0.2
+I (25) boot: efuse block revision: v1.3
+I (25) qio_mode: Enabling default flash chip QIO
+I (25) boot.esp32s3: Boot SPI Speed : 80MHz
+I (25) boot.esp32s3: SPI Mode       : QIO
+I (26) boot.esp32s3: SPI Flash Size : 8MB
+I (26) boot: Enabling RNG early entropy source...
+I (26) boot: Partition Table:
+I (26) boot: ## Label            Usage          Type ST Offset   Length
+I (27) boot:  0 nvs              WiFi data        01 02 00009000 00010000
+I (27) boot:  1 otadata          OTA data         01 00 00019000 00002000
+I (27) boot:  2 phy_init         RF data          01 01 0001b000 00001000
+I (28) boot:  3 nvs_keys         NVS keys         01 04 0001c000 00001000
+I (28) boot:  4 coredump         Unknown data     01 03 0001d000 00010000
+I (29) boot:  5 ota_0            OTA app          00 10 00030000 003e0000
+I (29) boot:  6 ota_1            OTA app          00 11 00410000 003e0000
+I (29) boot:  7 reserved         Unknown data     01 06 007f0000 00010000
+I (30) boot: End of partition table
+I (30) esp_image: segment 0: paddr=00030020 vaddr=3c190020 size=58690h (362128) map
+I (84) esp_image: segment 1: paddr=000886b8 vaddr=3fcaec00 size=057d4h ( 22484) load
+I (89) esp_image: segment 2: paddr=0008de94 vaddr=40374000 size=02184h (  8580) load
+I (91) esp_image: segment 3: paddr=00090020 vaddr=42000020 size=182498h (1582232) map
+I (326) esp_image: segment 4: paddr=002124c0 vaddr=40376184 size=289dch (166364) load
+I (357) esp_image: segment 5: paddr=0023aea4 vaddr=50000000 size=00048h (    72) load
+I (358) esp_image: segment 6: paddr=0023aef4 vaddr=500000c8 size=00020h (    32) load
+I (374) boot: Loaded app from partition at offset 0x30000
+I (374) boot: Disabling RNG early entropy source...
+I (375) esp_psram: Found 2MB PSRAM device
+I (375) esp_psram: Speed: 80MHz
+I (376) cpu_start: Multicore app
+I (605) esp_psram: SPI SRAM memory test OK
+I (614) cpu_start: Pro cpu start user code
+I (614) cpu_start: cpu freq: 240000000 Hz
+I (614) app_init: Application information:
+I (614) app_init: Project name:     PT100_Mesh_Datalogger
+I (614) app_init: App version:      b4dc0b7
+I (615) app_init: ELF file SHA256:  1b21da826...
+I (615) app_init: ESP-IDF:          v5.5.1-dirty
+I (615) efuse_init: Min chip rev:     v0.0
+I (615) efuse_init: Max chip rev:     v0.99 
+I (615) efuse_init: Chip rev:         v0.2
+I (615) heap_init: Initializing. RAM available for dynamic allocation:
+I (616) heap_init: At 3FCBF7D0 len 00029F40 (167 KiB): RAM
+I (616) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM
+I (616) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM
+I (760) esp_psram: Adding pool of 2048K of PSRAM memory to heap allocator
+I (761) spi_flash: detected chip: boya
+I (761) spi_flash: flash io: qio
+I (762) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (762) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (764) main_task: Started on CPU0
+I (774) esp_psram: Reserving pool of 32K of internal memory for DMA/internal allocations
+I (774) main_task: Calling app_main()
+I (804) heap_phase: phase[nvs_init] internal_free=186199 internal_largest=102388 internal_frag=46%
+I (804) heap_phase: phase[nvs_init] psram_free=2094952 psram_largest=2064372 psram_frag=2%
+W (814) boot_mode: BOOT override: run mode forced
+BOOT override: run mode forced
+I (814) marker: Last markers: storage=STORAGE_010_BEFORE_QUEUE_RECV(10) sd=SD_030_SCHEDULER(130)
+I (814) marker: Last marker meta: uptime_ms=14472430 epoch_sec=1769835047 reset_reason=software(3)
+I (814) app: Reset reason: unknown (11)
+I (814) heap_phase: phase[startup_begin] internal_free=168431 internal_largest=86004 internal_frag=49%
+I (814) heap_phase: phase[startup_begin] psram_free=2094952 psram_largest=2064372 psram_frag=2%
+I (814) settings: settings: loaded from blob cfg0 gen=6
+I (814) settings: Loaded: period=1000ms wm=512 sd_flush_ms=600000 sd_batch=4096 rtc_resync_ms=3600000 deg=1 cal_points=2 tz=CST6CDT,M3.2.0/2,M11.1.0/2 dst=1 role=SENSOR allow_children=0 display_units=F net_mode=WIFI mqtt_en=0 mqtt_uri=mqtt://192.168.1.50 mqtt_pfx=pt100 mqtt_qos=0 mqtt_ret=0 mqtt_bridge=BROKER rtd_f_as_ms=2000 rtd_f_cl_ms=3000 disp_attn_pol=0x000002AA disp_attn_mask=0x0000001F
+I (814) settings: Applied TZ=CST6CDT,M3.2.0/2,M11.1.0/2
+I (824) heap_phase: phase[wifi_reserve_before] internal_free=165679 internal_largest=86004 internal_frag=49%
+I (824) heap_phase: phase[wifi_reserve_before] psram_free=2094952 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_netif_init_before] internal_free=165679 internal_largest=86004 internal_frag=49%
+I (824) heap_phase: phase[wifi_netif_init_before] psram_free=2094952 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_netif_init_after] internal_free=160951 internal_largest=86004 internal_frag=47%
+I (824) heap_phase: phase[wifi_netif_init_after] psram_free=2094684 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_event_loop_before] internal_free=160951 internal_largest=86004 internal_frag=47%
+I (824) heap_phase: phase[wifi_event_loop_before] psram_free=2094684 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_event_loop_after] internal_free=154975 internal_largest=86004 internal_frag=45%
+I (824) heap_phase: phase[wifi_event_loop_after] psram_free=2094684 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_init_before] internal_free=154875 internal_largest=86004 internal_frag=45%
+I (824) heap_phase: phase[wifi_init_before] psram_free=2094684 psram_largest=2064372 psram_frag=2%
+I (824) pp: pp rom version: e7ae62f
+I (824) net80211: net80211 rom version: e7ae62f
+I (824) main_task: Returned from app_main()
+I (834) wifi:wifi driver task: 3fceeb8c, prio:23, stack:6656, core=0
+I (844) wifi:wifi firmware version: 14da9b7
+I (844) wifi:wifi certification version: v7.0
+I (844) wifi:config NVS flash: enabled
+I (844) wifi:config nano formatting: disabled
+I (844) wifi:Init data frame dynamic rx buffer num: 8
+I (854) wifi:Init static rx mgmt buffer num: 5
+I (854) wifi:Init management short buffer num: 16
+I (854) wifi:Init static tx buffer num: 8
+I (854) wifi:Init tx cache buffer num: 8
+I (854) wifi:Init static tx FG buffer num: 2
+I (854) wifi:Init static rx buffer size: 1600
+I (854) wifi:Init static rx buffer num: 6
+I (854) wifi:Init dynamic rx buffer num: 8
+I (854) wifi_init: accept mbox: 6
+I (854) wifi_init: tcpip mbox: 32
+I (854) wifi_init: udp mbox: 6
+I (854) wifi_init: tcp mbox: 6
+I (854) wifi_init: tcp tx win: 5760
+I (854) wifi_init: tcp rx win: 5760
+I (854) wifi_init: tcp mss: 624
+I (854) wifi_init: WiFi/LWIP prefer SPIRAM
+I (854) wifi_init: WiFi IRAM OP enabled
+I (854) wifi_init: WiFi RX IRAM OP enabled
+I (854) heap_phase: phase[wifi_init_after] internal_free=126935 internal_largest=61428 internal_frag=52%
+I (854) heap_phase: phase[wifi_init_after] psram_free=2072900 psram_largest=2064372 psram_frag=1%
+I (854) runtime: wifi early reserve ok
+I (854) heap_phase: phase[wifi_reserve_after] internal_free=125415 internal_largest=59380 internal_frag=53%
+I (864) heap_phase: phase[wifi_reserve_after] psram_free=2072900 psram_largest=2064372 psram_frag=1%
+I (864) heap_phase: phase[runtime_init_minimal] internal_free=125371 internal_largest=59380 internal_frag=53%
+I (864) heap_phase: phase[runtime_init_minimal] psram_free=2053808 psram_largest=2031604 psram_frag=2%
+I (864) heap_phase: phase[net_supervisor_start] internal_free=120659 internal_largest=55284 internal_frag=55%
+I (864) heap_phase: phase[net_supervisor_start] psram_free=2053768 psram_largest=2031604 psram_frag=2%
+I (864) heap_phase: phase[wifi_start_before] internal_free=120511 internal_largest=55284 internal_frag=55%
+I (864) heap_phase: phase[wifi_start_before] psram_free=2053808 psram_largest=2031604 psram_frag=2%
+I (874) phy_init: phy_version 701,f4f1da3a,Mar  3 2025,15:50:10
+I (874) heap_phase: phase[console_start] internal_free=99763 internal_largest=34804 internal_frag=66%
+I (884) heap_phase: phase[console_start] psram_free=2051956 psram_largest=2031604 psram_frag=1%
+I (884) run_gpio: GPIO 7 initial=HIGH
+I (884) run_gpio: Run stop GPIO enabled on 7
+I (884) run_gpio: GPIO 6 initial=HIGH
+I (884) run_gpio: Run start GPIO enabled on 6
+I (884) heap_phase: phase[run_gpio_init] internal_free=97227 internal_largest=32756 internal_frag=67%
+I (884) heap_phase: phase[run_gpio_init] psram_free=2051956 psram_largest=2031604 psram_frag=1%
+I (884) heap_phase: phase[safe_hold] internal_free=97227 internal_largest=32756 internal_frag=67%
+I (894) heap_phase: phase[safe_hold] psram_free=2051956 psram_largest=2031604 psram_frag=1%
+I (894) runtime: APP SPI: host=2 mosi=11 miso=13 sclk=12
+I (894) runtime: DISP SPI: host=3 mosi=17 sclk=18 cs=16 (share=0)
+
+Type 'help' to list commands.
+I (904) time_sync: System time set from RTC: 2026-01-31 04:50:48Z
+pt100> I (914) wifi:mode : sta (98:a3:16:12:57:b0)
+I (914) wifi:enable tsf
+I (914) heap_phase: phase[wifi_start_after] internal_free=87119 internal_largest=31732 internal_frag=64%
+I (914) heap_phase: phase[wifi_start_after] psram_free=2020016 psram_largest=1998836 psram_frag=2%
+I (924) net_sup: Wi-Fi service acquired (mode=1)
+W (924) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2
+I (974) fram_log: FRAM log: cap=656 rec write=72857 read=72810 count=47 seq=72871 id=72871
+W (984) fram_errlog: errlog init: copy0=ok copy1=ok blank=no state=ok
+I (1024) sdspi_transaction: cmd=52, R1 response: command not supported
+I (1064) sdspi_transaction: cmd=5, R1 response: command not supported
+I (1084) sd_logger: SD mounted at /sdcard
+I (1304) max31865: Initialized MAX31865 (Rref_mohm=430000 R0_mohm=100000 wires=4 filter=60Hz mode=TABLE)
+I (1314) heap_phase: phase[runtime_init_full] internal_free=77251 internal_largest=31732 internal_frag=59%
+I (1314) runtime: control stack watermark: 4556 bytes free
+I (1314) heap_phase: phase[runtime_init_full] psram_free=1971332 psram_largest=1966068 psram_frag=1%
+I (1314) heap_phase: phase[pre_run_mode] internal_free=77251 internal_largest=31732 internal_frag=59%
+I (1314) heap_phase: phase[pre_run_mode] psram_free=1971332 psram_largest=1966068 psram_frag=1%
+I (1314) app: app_init stack watermark before EnterRunMode: 12556 bytes
+I (1364) runtime: control stack watermark: 3532 bytes free
+I (1364) runtime: Drain progress: flushed=14 remaining=33
+I (1524) runtime: Drain FRAM->SD: flushed=47 remaining=0 duration=210 ms result=ESP_OK
+W (1524) runtime: start drain: flushed=47 remaining=0 duration=210 ms result=ESP_OK
+I (1524) runtime: Wi-Fi direct handled by net supervisor
+I (1524) runtime: net_tx stack watermark: 5540 bytes free
+I (1524) runtime: Runtime started (node=98:A3:16:12:57:B0 role=SENSOR)
+I (1524) runtime: alert_http stack watermark: 8992 bytes free
+I (1534) app: app_init stack watermark after EnterRunMode: 12556 bytes
+I (1534) heap_phase: phase[post_run_mode] internal_free=61775 internal_largest=31732 internal_frag=49%
+I (1534) heap_phase: phase[post_run_mode] psram_free=1955932 psram_largest=1933300 psram_frag=2%
+I (1534) app: Boot complete (boot_mode=run)
+I (1574) runtime: net_tx stack watermark: 3556 bytes free
+I (1784) runtime: alert_http stack watermark: 7328 bytes free
+I (543274) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3492 flush:6444 net:3556 http:7328)
+I (551994) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (1144284) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (1153014) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (1744254) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (1752974) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (2344224) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (2352894) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (2944294) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (2952944) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8650ms stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (3544344) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (3553024) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3492 flush:4860 net:3556 http:7328)
+I (4144374) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4860 net:3556 http:7328)
+I (4153214) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3364 flush:4860 net:3556 http:7328)
+I (4744454) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4860 net:3556 http:7328)
+I (4753174) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3364 flush:4860 net:3556 http:7328)
+I (5344414) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4860 net:3556 http:7328)
+I (5353144) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3364 flush:4860 net:3556 http:7328)
+I (5944384) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4860 net:3556 http:7328)
+I (5953054) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3364 flush:4860 net:3556 http:7328)
+I (6544444) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (6553124) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (7144524) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (7153174) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8650ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (7744634) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (7753474) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (8344704) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (8353394) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (8944774) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (8953604) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (9544844) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (9553684) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (10145044) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (10153704) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8660ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (10745104) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (10753834) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (11345064) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (11353624) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (11945124) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (11953844) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (12545064) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (12553904) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (13145134) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (13153974) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3364 flush:4716 net:3556 http:7328)
+I (13745224) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (13753894) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (14345284) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (14354004) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (14945244) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (14953964) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (15545194) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (15553874) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (16145264) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (16154124) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (16745354) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (16754214) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (17345404) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (17354254) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (17945614) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (17954204) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8590ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (18544494) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (18553324) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (19144564) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (19153404) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (19744644) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (19753334) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (20344724) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (20353394) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (20944784) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (20953344) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (21544744) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (21553464) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (22144704) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (22153544) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (22744784) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+W (22746874) fram_log: PeekOldest retry attempt=1 slot=113 addr=0x1630 last_reason=bad-crc
+I (22753344) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (23344734) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (23353584) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (23944824) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (23953384) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (24544774) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (24553334) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (25144724) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (25153564) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (25744804) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (25753484) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (26344874) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (26353594) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (26944834) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (26953554) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (27544794) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (27553514) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (28144754) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (28153314) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (28745884) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (28754434) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (29344774) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (29353454) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (29944854) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (29953704) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (30544904) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (30553744) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (31144984) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (31153534) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (31744934) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (31753784) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (32345024) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (32353694) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (32945084) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (32953634) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (33545034) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (33553894) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (34145134) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (34153774) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8640ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (34745174) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (34753714) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8540ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (35345114) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (35353854) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (35945094) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (35953754) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8660ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (36545144) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (36553874) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (37145114) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (37153964) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (37745204) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (37753894) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (38345234) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (38353914) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (38945314) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (38954054) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (39545294) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (39553974) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (40145324) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (40153884) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (40745274) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (40754114) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (41345354) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (41354104) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8750ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (41945294) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (41954134) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (42545384) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (42554074) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (43145464) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (43154144) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (43745534) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (43754104) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8570ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (44345494) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (44354134) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8640ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (44945524) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (44954164) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8640ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (45545564) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (45554234) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (46145634) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (46154204) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8570ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (46745554) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (46754364) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8810ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (47345764) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (47354664) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8900ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (47945804) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (47954654) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (48545904) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (48554594) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (49145934) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (49154774) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (49746014) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (49754754) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (50345994) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (50354644) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8650ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (50945984) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (50954844) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (51546084) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (51554754) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (52146224) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (52155064) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (52746294) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (52755014) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (53346354) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (53355214) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (53946454) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (53955004) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (54546384) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (54555434) runtime: Drain post(watermark): flushed=512 remaining=0 duration=9050ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (55146564) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (55155404) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (55746634) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (55755444) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8810ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (56346844) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (56355504) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8660ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (56946974) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (56955694) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (57545874) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (57554594) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (58147014) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (58155564) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (58747094) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (58755654) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (59345994) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (59354664) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (59946054) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (59954734) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (60546134) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (60554814) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:4716 net:3556 http:7328)
+I (61146164) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (61154854) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (61746244) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (61754914) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (62346324) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (62354984) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8660ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (62946384) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (62954934) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (63546334) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (63555074) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (64146314) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (64154884) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8570ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (64746274) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (64754914) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8640ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (65346264) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (65355114) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (65946354) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (65955154) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8800ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (66546304) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (66555044) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (67146244) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (67155094) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (67746334) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (67755044) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8710ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (68346394) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (68355104) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8710ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (68946454) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79787/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (68955524) runtime: Drain post(watermark): flushed=512 remaining=0 duration=9070ms stack_min(ctrl:3532 stor:3332 flush:4684 net:3556 http:7328)
+I (69546624) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (69555464) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (70146714) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (70155384) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (70746854) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (70755654) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8800ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (71346994) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (71355834) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (71947074) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (71955804) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (72547034) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (72555864) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (73146994) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (73155914) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8920ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (73747044) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (73755894) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (74347124) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (74355834) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8710ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (74947214) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (74955874) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8660ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (75547204) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (75556064) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (76147304) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (76156004) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8700ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (76747454) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (76756184) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (77347494) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (77356224) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (77947474) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (77956014) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8540ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (78547524) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (78556244) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (79147584) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (79156414) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (79746704) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (79755534) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (80346874) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (80355714) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (80946964) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (80955644) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (81547034) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (81555714) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (82147104) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (82155984) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8880ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (82747184) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (82755904) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (83347244) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (83355924) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (83947384) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (83956224) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (84547464) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (84556204) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (85147444) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (85156294) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (85747484) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (85756334) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (86347564) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (86356294) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (86947534) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (86956114) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8580ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (87547684) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (87556274) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8590ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (88147654) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (88156204) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (88747584) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (88756324) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (89347714) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (89356424) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8710ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (89947754) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (89956594) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (90547954) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (90556534) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8580ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (91147984) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (91156674) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (91748054) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (91756784) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (92348014) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (92356944) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8930ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (92948184) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (92956854) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (93548374) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+I (93557054) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3532 stor:3332 flush:3916 net:3556 http:7328)
+W (93601564) runtime: RTC resync stepped system time backward by -2 s (sys=1769928648 rtc=1769928646); will flag next record
+I (93601564) runtime: control stack watermark: 3308 bytes free
+I (93604874) runtime: Time jump marker written and verified on SD
+I (94147374) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (94155924) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (94747324) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (94756044) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (95347284) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (95355974) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (95947364) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (95955914) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (96547304) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (96556154) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (97147404) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (97155934) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8530ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (97748504) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (97757234) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (98347524) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (98356364) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (98947604) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (98956344) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (99547584) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (99556144) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (100147534) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (100156204) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (100747604) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (100756514) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8910ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (101347664) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (101356394) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (101947634) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (101956194) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (102547584) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (102556174) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8590ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (103148684) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (103157404) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (103748724) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (103757294) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8570ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (104347644) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (104356194) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (104948754) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (104957434) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (105547774) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (105556404) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8630ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (106147794) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (106156384) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8590ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (106747774) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (106756604) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (107347844) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (107356444) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8600ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (107947834) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (107956504) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (108547894) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (108556424) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8530ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (109147864) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (109156534) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (109747924) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (109756604) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (110347994) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (110356654) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8660ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (110948044) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (110956904) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (111548144) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (111556814) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (112148214) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (112156964) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8750ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (112748254) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (112757044) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8790ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (113348474) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (113357024) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (113948484) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (113957274) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8790ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (114548654) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (114557494) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (115148844) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (115157564) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (115748794) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (115757604) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8810ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (116348984) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (116357704) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (116948934) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (116957774) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (117549004) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (117557704) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8700ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (118149104) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (118157654) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (118749044) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (118757764) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (119349004) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (119357724) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (119948954) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (119957754) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8800ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (120549264) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (120558004) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (121148144) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (121156994) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (121748234) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (121756974) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (122349334) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (122357924) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8590ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (122948214) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (122957044) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (123548284) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (123557134) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (124148374) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (124156944) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8570ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (124748334) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (124757004) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (125348344) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (125357184) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (125948424) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (125956984) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (126548374) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (126557214) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (127148454) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (127157044) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8590ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (127748394) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (127757234) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (128348474) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (128357034) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (128948424) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (128957284) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (129548524) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (129557204) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (130148594) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (130157234) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8640ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (130748624) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (130757294) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (131348684) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (131357404) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (131948644) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (131957364) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (132548614) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (132557344) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (133148684) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (133157354) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (133748744) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (133757464) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (134348704) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (134357384) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (134948784) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (134957424) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8640ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (135548814) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (135557354) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8540ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (136148754) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (136157424) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (136748834) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (136757554) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (137348794) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (137357394) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8600ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (137948734) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (137957574) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (138548814) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (138557374) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (139148774) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (139157454) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (139748844) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (139757524) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (140348914) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (140357804) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8890ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (140949044) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (140957594) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (141549004) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (141557674) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (142149064) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (142157654) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8590ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (142749014) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (142757744) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (143348984) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (143357534) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (143948934) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (143957664) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (144550074) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (144558764) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (145149064) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (145157874) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8810ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (145749264) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (145757934) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (146349334) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (146358034) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8700ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (146949374) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (146958284) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8910ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (147549554) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (147558104) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (148149564) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (148158404) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (148749634) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (148758374) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (149349614) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (149358284) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (149949674) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (149958394) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (150549634) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (150558194) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (151149694) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (151158534) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (151749764) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (151758604) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (152349844) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (152358424) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8580ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (152949824) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (152958474) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8650ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (153549854) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (153558684) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (154150044) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (154158714) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (154750104) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (154758794) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (155350184) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (155359014) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8830ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (155950154) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (155958824) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (156550214) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (156558884) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (157150234) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (157159074) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (157750214) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (157758904) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (158350244) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (158359084) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (158950324) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (158958894) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8570ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (159550274) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (159559114) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (160150344) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (160159194) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (160750444) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (160759084) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8640ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (161350484) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (161359154) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (161950674) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (161959574) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8900ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (162549764) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (162558434) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (163149834) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (163158504) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (163749904) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (163758564) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8660ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (164349954) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (164358674) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (164949914) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (164958604) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (165550004) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (165558544) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8540ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+W (165601564) runtime: RTC resync stepped system time backward by -2 s (sys=1770000645 rtc=1770000643); will flag next record
+I (165602254) runtime: Time jump marker written and verified on SD
+I (166149964) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (166158624) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8660ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (166750034) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (166758664) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8630ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (167350054) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (167358704) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8650ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (167950074) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (167958934) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (168550134) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (168558974) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (169150224) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (169158804) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8580ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (169750154) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (169758994) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (170350244) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (170358794) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (170950194) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (170959114) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8920ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (171550254) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (171559114) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8860ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (172150434) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (172159274) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (172750514) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (172759214) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8700ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (173350564) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (173359404) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (173950644) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (173959364) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8720ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (174550594) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (174559434) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (175150664) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (175159244) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8580ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (175750634) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (175759374) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8740ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (176350604) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (176359454) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (176950684) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (176959334) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8650ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (177550714) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (177559284) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8570ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (178150674) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (178159344) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (178750724) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (178759564) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (179350794) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (179359474) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (179950864) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (179959714) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (180550954) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (180559514) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (181150904) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (181159464) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8560ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (181750854) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (181759694) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (182350924) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (182359724) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8800ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (182951104) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (182959814) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8710ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (183551144) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (183559984) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3332 flush:3916 net:3556 http:7328)
+I (184151224) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (184160064) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (184751294) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (184760134) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (185351504) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (185360194) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8690ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (185950484) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (185959334) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (186550574) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (186559114) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8540ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (187150514) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (187159364) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8850ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (187750604) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (187759194) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8590ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (188350534) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (188359374) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8840ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (188950614) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (188959314) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8700ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (189550704) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (189559344) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8640ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (190150744) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (190159284) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8540ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (190750684) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (190759234) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (191351804) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (191360484) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8680ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (191950774) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (191959484) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8710ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (192550724) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (192559454) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8730ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (193150854) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (193159524) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8670ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (193750914) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (193759464) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8550ms stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+I (194350854) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79687/31732 psram:1955900/1933300 stack_min(ctrl:3308 stor:3268 flush:3916 net:3556 http:7328)
+E (194359404) i2c.master: I2C hardware NACK detected
+W (194359444) runtime: I2C mutex timeout (holder=sd_flush held_ms=40 task=storage sd_phase=build:peek_offset)
+W (194359444) runtime: Lock dump (i2c_timeout):
+W (194359444) runtime:   fram_log holder=storage held_ms=20 timeouts=0 max_ms=70
+W (194359444) runtime:   i2c holder=sd_flush held_ms=40 timeouts=1 max_ms=10
+W (194359444) runtime:   sd_io holder=sd_flush held_ms=50 timeouts=0 max_ms=330
+W (194359444) runtime:   sd_flush phase=build:peek_offset last_err=ESP_OK (0) i2c_errs=0 sd_errs=0
+W (194359464) runtime: I2C mutex timeout (holder=sd_flush held_ms=60 task=storage sd_phase=build:peek_offset)
+W (194359484) runtime: I2C mutex timeout (holder=sd_flush held_ms=80 task=storage sd_phase=build:peek_offset)
+E (194359484) fram_log: FRAM write verify failed at index=256188 slot=348 addr=0x4240: ESP_ERR_TIMEOUT
+E (194359484) runtime: FRAM append failed: ESP_ERR_TIMEOUT
+W (194359484) runtime: FRAM append failure streak=1 err=ESP_ERR_TIMEOUT
+W (194360504) runtime: I2C mutex timeout (holder=sd_flush held_ms=1100 task=storage sd_phase=build:peek_offset)
+W (194360524) runtime: I2C mutex timeout (holder=sd_flush held_ms=1120 task=storage sd_phase=build:peek_offset)
+W (194360544) runtime: I2C mutex timeout (holder=sd_flush held_ms=1140 task=storage sd_phase=build:peek_offset)
+E (194360544) fram_log: FRAM write verify failed at index=256188 slot=348 addr=0x4240: ESP_ERR_TIMEOUT
+E (194360544) runtime: FRAM append failed: ESP_ERR_TIMEOUT
+W (194360544) runtime: FRAM append failure streak=2 err=ESP_ERR_TIMEOUT
+W (194361434) runtime: I2C lock (i2c_hang_warn): holder=sd_flush held_ms=2030 timeouts=6 max_ms=10 sd_phase=build:peek_offset last_err=ESP_OK (0)
+W (194361434) runtime: I2C op (i2c_hang_warn): lock_holder=sd_flush held_ms=2030 op=fram_read addr=0x00004180 len=48 op_ms=2030 caller=FramI2cReadAdapter sd_phase=build:peek_offset last_err=ESP_OK (0)
+W (194361434) i2c_bus: I2C bus state(i2c_hang_warn): port=0 sda_pin=8 scl_pin=9 sda_level=0 scl_level=1 controller_busy=1
+I (194361434) runtime: control stack watermark: 3244 bytes free
+W (194361564) runtime: I2C mutex timeout (holder=sd_flush held_ms=2160 task=storage sd_phase=build:peek_offset)
+W (194361584) runtime: I2C mutex timeout (holder=sd_flush held_ms=2180 task=storage sd_phase=build:peek_offset)
+W (194361604) runtime: I2C mutex timeout (holder=sd_flush held_ms=2200 task=storage sd_phase=build:peek_offset)
+E (194361604) fram_log: FRAM write verify failed at index=256188 slot=348 addr=0x4240: ESP_ERR_TIMEOUT
+E (194361604) runtime: FRAM append failed: ESP_ERR_TIMEOUT
+W (194361604) runtime: FRAM append failure streak=3 err=ESP_ERR_TIMEOUT
+W (194363604) runtime: I2C mutex timeout (holder=sd_flush held_ms=4200 task=storage sd_phase=build:peek_offset)
+W (194363604) runtime: I2C recovery lock timeout
+W (194363624) runtime: I2C mutex timeout (holder=sd_flush held_ms=4220 task=storage sd_phase=build:peek_offset)
+W (194363644) runtime: I2C mutex timeout (holder=sd_flush held_ms=4240 task=storage sd_phase=build:peek_offset)
+W (194363664) runtime: I2C mutex timeout (holder=sd_flush held_ms=4260 task=storage sd_phase=build:peek_offset)
+E (194363664) fram_log: FRAM write verify failed at index=256188 slot=348 addr=0x4240: ESP_ERR_TIMEOUT
+E (194363664) runtime: FRAM append failed: ESP_ERR_TIMEOUT
+W (194363664) runtime: FRAM append failure streak=1 err=ESP_ERR_TIMEOUT
+W (194363684) runtime: I2C mutex timeout (holder=sd_flush held_ms=4280 task=storage sd_phase=build:peek_offset)
+W (194363704) runtime: I2C mutex timeout (holder=sd_flush held_ms=4300 task=storage sd_phase=build:peek_offset)
+W (194363724) runtime: I2C mutex timeout (holder=sd_flush held_ms=4320 task=storage sd_phase=build:peek_offset)
+E (194363724) fram_log: FRAM write verify failed at index=256188 slot=348 addr=0x4240: ESP_ERR_TIMEOUT
+E (194363724) runtime: FRAM append failed: ESP_ERR_TIMEOUT
+W (194363724) runtime: FRAM append failure streak=2 err=ESP_ERR_TIMEOUT
+E (194364424) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+E (194364424) task_wdt:  - IDLE1 (CPU 1)
+E (194364424) task_wdt: Tasks currently running:
+E (194364424) task_wdt: CPU 0: IDLE0
+E (194364424) task_wdt: CPU 1: sd_flush
+E (194364424) task_wdt: Print CPU 1 backtrace
+
+
+Backtrace: 0x40379E51:0x3FCB1BD0 0x40378BF1:0x3FCB1C20 0x421772D6:0x3FCB98D0 0x421777A4:0x3FCB9950 0x42177F4C:0x3FCB99F0 0x42179165:0x3FCB9A50 0x42026BD5:0x3FCB9B10 0x4203028B:0x3FCB9B60 0x42167EF6:0x3FCB9BA0 0x4202806F:0x3FCB9BD0 0x42032BE3:0x3FCB9C50 0x4203407B:0x3FCB9D40 0x42034545:0x3FCB9EE0 0x420377F4:0x3FCB9F30
+Backtrace: 0x40379E51:0x3FCB1BD0 0x40378BF1:0x3FCB1C20 0x421772D6:0x3FCB98D0 0x421777A4:0x3FCB9950 0x42177F4C:0x3FCB99F0 0x42179165:0x3FCB9A50 0x42026BD5:0x3FCB9B10 0x4203028B:0x3FCB9B60 0x42167EF6:0x3FCB9BA0 0x4202806F:0x3FCB9BD0 0x42032BE3:0x3FCB9C50 0x4203407B:0x3FCB9D40 0x42034545:0x3FCB9EE0 0x420377F4:0x3FCB9F30
+--- 0x40379e51: esp_crosscore_isr at /COMPONENT_ESP_SYSTEM_DIR/crosscore_int.c:74
+--- 0x40378bf1: _xt_lowint1 at /COMPONENT_XTENSA_DIR/xtensa_vectors.S:1240
+--- 0x421772d6: i2c_ll_is_bus_busy at /COMPONENT_HAL_DIR/esp32s3/include/hal/i2c_ll.h:577
+--- (inlined by) s_i2c_send_commands at /COMPONENT_ESP_DRIVER_I2C_DIR/i2c_master.c:543
+--- 0x421777a4: s_i2c_transaction_start at /COMPONENT_ESP_DRIVER_I2C_DIR/i2c_master.c:649
+--- 0x42177f4c: s_i2c_synchronous_transaction at /COMPONENT_ESP_DRIVER_I2C_DIR/i2c_master.c:945
+--- 0x42179165: i2c_master_transmit_receive at /COMPONENT_ESP_DRIVER_I2C_DIR/i2c_master.c:1248
+--- 0x42026bd5: FramI2cRead at /COMPONENT_MAIN_DIR/fram_i2c.c:172
+--- 0x4203028b: FramI2cReadAdapter at /COMPONENT_MAIN_DIR/runtime_manager.c:2824
+--- 0x42167ef6: IoRead at /COMPONENT_MAIN_DIR/fram_log.c:36
+--- 0x4202806f: FramLogPeekOffset at /COMPONENT_MAIN_DIR/fram_log.c:796
+--- 0x42032be3: BuildBatchForDay at /COMPONENT_MAIN_DIR/runtime_manager.c:4373
+--- 0x4203407b: SdFlushWorkerTickEx at /COMPONENT_MAIN_DIR/runtime_manager.c:5006
+--- 0x42034545: SdFlushWorkerTick at /COMPONENT_MAIN_DIR/runtime_manager.c:5176
+--- 0x420377f4: SdFlushTask at /COMPONENT_MAIN_DIR/runtime_manager.c:6586
+
+W (194364744) runtime: I2C mutex timeout (holder=sd_flush held_ms=5340 task=storage sd_phase=build:peek_offset)
+W (194364764) runtime: I2C mutex timeout (holder=sd_flush held_ms=5360 task=storage sd_phase=build:peek_offset)
+W (194364784) runtime: I2C mutex timeout (holder=sd_flush held_ms=5380 task=storage sd_phase=build:peek_offset)
+E (194364784) fram_log: FRAM write verify failed at index=256188 slot=348 addr=0x4240: ESP_ERR_TIMEOUT
+E (194364784) runtime: FRAM append failed: ESP_ERR_TIMEOUT
+W (194364784) runtime: FRAM append failure streak=3 err=ESP_ERR_TIMEOUT
+W (194366784) runtime: I2C mutex timeout (holder=sd_flush held_ms=7380 task=storage sd_phase=build:peek_offset)
+W (194366784) runtime: I2C recovery lock timeout
+W (194366804) runtime: I2C mutex timeout (holder=sd_flush held_ms=7400 task=storage sd_phase=build:peek_offset)
+W (194366824) runtime: I2C mutex timeout (holder=sd_flush held_ms=7420 task=storage sd_phase=build:peek_offset)
+W (194366844) runtime: I2C mutex timeout (holder=sd_flush held_ms=7440 task=storage sd_phase=build:peek_offset)
+E (194366844) fram_log: FRAM write verify failed at index=256188 slot=348 addr=0x4240: ESP_ERR_TIMEOUT
+E (194366844) runtime: FRAM append failed: ESP_ERR_TIMEOUT
+W (194366844) runtime: FRAM append failure streak=1 err=ESP_ERR_TIMEOUT
+W (194366864) runtime: I2C mutex timeout (holder=sd_flush held_ms=7460 task=storage sd_phase=build:peek_offset)
+W (194366884) runtime: I2C mutex timeout (holder=sd_flush held_ms=7480 task=storage sd_phase=build:peek_offset)
+W (194366904) runtime: I2C mutex timeout (holder=sd_flush held_ms=7500 task=storage sd_phase=build:peek_offset)
+E (194366904) fram_log: FRAM write verify failed at index=256188 slot=348 addr=0x4240: ESP_ERR_TIMEOUT
+E (194366904) runtime: FRAM append failed: ESP_ERR_TIMEOUT
+W (194366904) runtime: FRAM append failure streak=2 err=ESP_ERR_TIMEOUT
+E (194367444) runtime: HARD I2C HANG - restarting
+W (194367444) runtime: I2C lock (i2c_hang_restart): holder=sd_flush held_ms=8040 timeouts=26 max_ms=10 sd_phase=build:peek_offset last_err=ESP_OK (0)
+W (194367444) runtime: I2C op (i2c_hang_restart): lock_holder=sd_flush held_ms=8040 op=fram_read addr=0x00004180 len=48 op_ms=8040 caller=FramI2cReadAdapter sd_phase=build:peek_offset last_err=ESP_OK (0)
+W (194367444) i2c_bus: I2C bus state(i2c_hang_restart): port=0 sda_pin=8 scl_pin=9 sda_level=0 scl_level=1 controller_busy=1
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x40385396
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x16e4
+load:0x403c8700,len:0xe04
+load:0x403cb700,len:0x31cc
+entry 0x403c8934
+I (24) boot: ESP-IDF v5.5.1-dirty 2nd stage bootloader
+I (24) boot: Multicore bootloader
+I (24) boot: chip revision: v0.2
+I (24) boot: efuse block revision: v1.3
+I (25) qio_mode: Enabling default flash chip QIO
+I (25) boot.esp32s3: Boot SPI Speed : 80MHz
+I (25) boot.esp32s3: SPI Mode       : QIO
+I (25) boot.esp32s3: SPI Flash Size : 8MB
+I (25) boot: Enabling RNG early entropy source...
+I (26) boot: Partition Table:
+I (26) boot: ## Label            Usage          Type ST Offset   Length
+I (26) boot:  0 nvs              WiFi data        01 02 00009000 00010000
+I (26) boot:  1 otadata          OTA data         01 00 00019000 00002000
+I (27) boot:  2 phy_init         RF data          01 01 0001b000 00001000
+I (27) boot:  3 nvs_keys         NVS keys         01 04 0001c000 00001000
+I (28) boot:  4 coredump         Unknown data     01 03 0001d000 00010000
+I (28) boot:  5 ota_0            OTA app          00 10 00030000 003e0000
+I (28) boot:  6 ota_1            OTA app          00 11 00410000 003e0000
+I (29) boot:  7 reserved         Unknown data     01 06 007f0000 00010000
+I (29) boot: End of partition table
+I (30) esp_image: segment 0: paddr=00030020 vaddr=3c190020 size=58690h (362128) map
+I (84) esp_image: segment 1: paddr=000886b8 vaddr=3fcaec00 size=057d4h ( 22484) load
+I (88) esp_image: segment 2: paddr=0008de94 vaddr=40374000 size=02184h (  8580) load
+I (90) esp_image: segment 3: paddr=00090020 vaddr=42000020 size=182498h (1582232) map
+I (326) esp_image: segment 4: paddr=002124c0 vaddr=40376184 size=289dch (166364) load
+I (358) esp_image: segment 5: paddr=0023aea4 vaddr=50000000 size=00048h (    72) load
+I (358) esp_image: segment 6: paddr=0023aef4 vaddr=500000c8 size=00020h (    32) load
+I (375) boot: Loaded app from partition at offset 0x30000
+I (375) boot: Disabling RNG early entropy source...
+I (376) esp_psram: Found 2MB PSRAM device
+I (376) esp_psram: Speed: 80MHz
+I (376) cpu_start: Multicore app
+I (606) esp_psram: SPI SRAM memory test OK
+I (615) cpu_start: Pro cpu start user code
+I (615) cpu_start: cpu freq: 240000000 Hz
+I (615) app_init: Application information:
+I (615) app_init: Project name:     PT100_Mesh_Datalogger
+I (615) app_init: App version:      b4dc0b7
+I (615) app_init: ELF file SHA256:  1b21da826...
+I (615) app_init: ESP-IDF:          v5.5.1-dirty
+I (615) efuse_init: Min chip rev:     v0.0
+I (616) efuse_init: Max chip rev:     v0.99 
+I (616) efuse_init: Chip rev:         v0.2
+I (616) heap_init: Initializing. RAM available for dynamic allocation:
+I (616) heap_init: At 3FCBF7D0 len 00029F40 (167 KiB): RAM
+I (617) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM
+I (617) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM
+I (760) esp_psram: Adding pool of 2048K of PSRAM memory to heap allocator
+I (761) spi_flash: detected chip: boya
+I (761) spi_flash: flash io: qio
+I (762) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (763) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (764) main_task: Started on CPU0
+I (774) esp_psram: Reserving pool of 32K of internal memory for DMA/internal allocations
+I (774) main_task: Calling app_main()
+I (804) heap_phase: phase[nvs_init] internal_free=186199 internal_largest=102388 internal_frag=46%
+I (804) heap_phase: phase[nvs_init] psram_free=2094952 psram_largest=2064372 psram_frag=2%
+W (814) boot_mode: BOOT override: run mode forced
+BOOT override: run mode forced
+I (814) marker: Last markers: storage=STORAGE_010_BEFORE_QUEUE_RECV(10) sd=SD_040_FLUSH_WORKER_ENTER(140)
+I (814) marker: Last marker meta: uptime_ms=194366640 epoch_sec=1770029409 reset_reason=unknown(11)
+I (814) app: Reset reason: software (3)
+I (814) heap_phase: phase[startup_begin] internal_free=168431 internal_largest=86004 internal_frag=49%
+I (814) heap_phase: phase[startup_begin] psram_free=2094952 psram_largest=2064372 psram_frag=2%
+I (814) settings: settings: loaded from blob cfg0 gen=6
+I (814) settings: Loaded: period=1000ms wm=512 sd_flush_ms=600000 sd_batch=4096 rtc_resync_ms=3600000 deg=1 cal_points=2 tz=CST6CDT,M3.2.0/2,M11.1.0/2 dst=1 role=SENSOR allow_children=0 display_units=F net_mode=WIFI mqtt_en=0 mqtt_uri=mqtt://192.168.1.50 mqtt_pfx=pt100 mqtt_qos=0 mqtt_ret=0 mqtt_bridge=BROKER rtd_f_as_ms=2000 rtd_f_cl_ms=3000 disp_attn_pol=0x000002AA disp_attn_mask=0x0000001F
+I (814) settings: Applied TZ=CST6CDT,M3.2.0/2,M11.1.0/2
+I (824) heap_phase: phase[wifi_reserve_before] internal_free=165679 internal_largest=86004 internal_frag=49%
+I (824) heap_phase: phase[wifi_reserve_before] psram_free=2094952 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_netif_init_before] internal_free=165679 internal_largest=86004 internal_frag=49%
+I (824) heap_phase: phase[wifi_netif_init_before] psram_free=2094952 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_netif_init_after] internal_free=160951 internal_largest=86004 internal_frag=47%
+I (824) heap_phase: phase[wifi_netif_init_after] psram_free=2094684 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_event_loop_before] internal_free=160951 internal_largest=86004 internal_frag=47%
+I (824) heap_phase: phase[wifi_event_loop_before] psram_free=2094684 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_event_loop_after] internal_free=154975 internal_largest=86004 internal_frag=45%
+I (824) heap_phase: phase[wifi_event_loop_after] psram_free=2094684 psram_largest=2064372 psram_frag=2%
+I (824) heap_phase: phase[wifi_init_before] internal_free=154875 internal_largest=86004 internal_frag=45%
+I (824) heap_phase: phase[wifi_init_before] psram_free=2094684 psram_largest=2064372 psram_frag=2%
+I (824) pp: pp rom version: e7ae62f
+I (824) net80211: net80211 rom version: e7ae62f
+I (824) main_task: Returned from app_main()
+I (834) wifi:wifi driver task: 3fceeb8c, prio:23, stack:6656, core=0
+I (844) wifi:wifi firmware version: 14da9b7
+I (844) wifi:wifi certification version: v7.0
+I (844) wifi:config NVS flash: enabled
+I (844) wifi:config nano formatting: disabled
+I (844) wifi:Init data frame dynamic rx buffer num: 8
+I (854) wifi:Init static rx mgmt buffer num: 5
+I (854) wifi:Init management short buffer num: 16
+I (854) wifi:Init static tx buffer num: 8
+I (854) wifi:Init tx cache buffer num: 8
+I (854) wifi:Init static tx FG buffer num: 2
+I (854) wifi:Init static rx buffer size: 1600
+I (854) wifi:Init static rx buffer num: 6
+I (854) wifi:Init dynamic rx buffer num: 8
+I (854) wifi_init: accept mbox: 6
+I (854) wifi_init: tcpip mbox: 32
+I (854) wifi_init: udp mbox: 6
+I (854) wifi_init: tcp mbox: 6
+I (854) wifi_init: tcp tx win: 5760
+I (854) wifi_init: tcp rx win: 5760
+I (854) wifi_init: tcp mss: 624
+I (854) wifi_init: WiFi/LWIP prefer SPIRAM
+I (854) wifi_init: WiFi IRAM OP enabled
+I (854) wifi_init: WiFi RX IRAM OP enabled
+I (854) heap_phase: phase[wifi_init_after] internal_free=126935 internal_largest=61428 internal_frag=52%
+I (854) heap_phase: phase[wifi_init_after] psram_free=2072900 psram_largest=2064372 psram_frag=1%
+I (854) runtime: wifi early reserve ok
+I (854) heap_phase: phase[wifi_reserve_after] internal_free=125415 internal_largest=59380 internal_frag=53%
+I (864) heap_phase: phase[wifi_reserve_after] psram_free=2072900 psram_largest=2064372 psram_frag=1%
+I (864) heap_phase: phase[runtime_init_minimal] internal_free=125371 internal_largest=59380 internal_frag=53%
+I (864) heap_phase: phase[runtime_init_minimal] psram_free=2053808 psram_largest=2031604 psram_frag=2%
+I (864) heap_phase: phase[net_supervisor_start] internal_free=120659 internal_largest=55284 internal_frag=55%
+I (864) heap_phase: phase[net_supervisor_start] psram_free=2053768 psram_largest=2031604 psram_frag=2%
+I (864) heap_phase: phase[wifi_start_before] internal_free=120511 internal_largest=55284 internal_frag=55%
+I (864) heap_phase: phase[wifi_start_before] psram_free=2053808 psram_largest=2031604 psram_frag=2%
+I (874) phy_init: phy_version 701,f4f1da3a,Mar  3 2025,15:50:10
+I (874) heap_phase: phase[console_start] internal_free=99763 internal_largest=34804 internal_frag=66%
+I (884) heap_phase: phase[console_start] psram_free=2051956 psram_largest=2031604 psram_frag=1%
+I (884) run_gpio: GPIO 7 initial=HIGH
+I (884) run_gpio: Run stop GPIO enabled on 7
+I (884) run_gpio: GPIO 6 initial=HIGH
+I (884) run_gpio: Run start GPIO enabled on 6
+I (884) heap_phase: phase[run_gpio_init] internal_free=97227 internal_largest=32756 internal_frag=67%
+I (884) heap_phase: phase[run_gpio_init] psram_free=2051956 psram_largest=2031604 psram_frag=1%
+I (884) heap_phase: phase[safe_hold] internal_free=97227 internal_largest=32756 internal_frag=67%
+I (894) heap_phase: phase[safe_hold] psram_free=2051956 psram_largest=2031604 psram_frag=1%
+I (894) runtime: APP SPI: host=2 mosi=11 miso=13 sclk=12
+I (894) runtime: DISP SPI: host=3 mosi=17 sclk=18 cs=16 (share=0)
+
+Type 'help' to list commands.
+W (894) time_sync: DS3231 not responding at 0x68: ESP_ERR_NOT_FOUND
+W (904) time_sync: DS3231 read failed: ESP_ERR_INVALID_STATE
+pt100> I (914) wifi:mode : sta (98:a3:16:12:57:b0)
+I (914) wifi:enable tsf
+I (914) heap_phase: phase[wifi_start_after] internal_free=87119 internal_largest=31732 internal_frag=64%
+I (914) heap_phase: phase[wifi_start_after] psram_free=2020016 psram_largest=1998836 psram_frag=2%
+I (924) net_sup: Wi-Fi service acquired (mode=1)
+W (924) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2
+I (924) fram_log: FRAM log: cap=656 rec write=256188 read=256177 count=11 seq=256202 id=256202
+W (934) fram_errlog: errlog init: copy0=ok copy1=ok blank=no state=ok
+I (974) sdspi_transaction: cmd=52, R1 response: command not supported
+I (1014) sdspi_transaction: cmd=5, R1 response: command not supported
+I (1034) sd_logger: SD mounted at /sdcard
+I (1204) max31865: Initialized MAX31865 (Rref_mohm=430000 R0_mohm=100000 wires=4 filter=60Hz mode=TABLE)
+I (1214) heap_phase: phase[runtime_init_full] internal_free=77235 internal_largest=31732 internal_frag=59%
+I (1214) runtime: control stack watermark: 4556 bytes free
+I (1214) heap_phase: phase[runtime_init_full] psram_free=1971332 psram_largest=1966068 psram_frag=1%
+I (1214) heap_phase: phase[pre_run_mode] internal_free=77235 internal_largest=31732 internal_frag=59%
+I (1214) heap_phase: phase[pre_run_mode] psram_free=1971332 psram_largest=1966068 psram_frag=1%
+I (1214) app: app_init stack watermark before EnterRunMode: 12556 bytes
+I (1264) runtime: control stack watermark: 3532 bytes free
+I (1264) runtime: Drain progress: flushed=11 remaining=0
+I (1264) runtime: Drain FRAM->SD: flushed=11 remaining=0 duration=50 ms result=ESP_OK
+W (1264) runtime: start drain: flushed=11 remaining=0 duration=50 ms result=ESP_OK
+I (1264) runtime: Wi-Fi direct handled by net supervisor
+I (1264) runtime: net_tx stack watermark: 5540 bytes free
+I (1264) runtime: Runtime started (node=98:A3:16:12:57:B0 role=SENSOR)
+I (1274) app: app_init stack watermark after EnterRunMode: 12556 bytes
+I (1274) heap_phase: phase[post_run_mode] internal_free=61759 internal_largest=31732 internal_frag=49%
+I (1274) heap_phase: phase[post_run_mode] psram_free=1955932 psram_largest=1933300 psram_frag=2%
+I (1274) app: Boot complete (boot_mode=run)
+I (1274) runtime: alert_http stack watermark: 8992 bytes free
+W (1314) runtime: RTC resync failed: ESP_ERR_INVALID_STATE
+I (1314) runtime: control stack watermark: 3420 bytes free
+I (1324) runtime: net_tx stack watermark: 3556 bytes free
+I (1524) runtime: alert_http stack watermark: 7328 bytes free
+I (543014) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79771/31732 psram:1955900/1933300 stack_min(ctrl:3420 stor:3492 flush:6444 net:3556 http:7328)
+I (551664) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8650ms stack_min(ctrl:3420 stor:3492 flush:4860 net:3556 http:7328)
+I (1144184) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79771/31732 psram:1955900/1933300 stack_min(ctrl:3420 stor:3492 flush:4860 net:3556 http:7328)
+I (1152994) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8810ms stack_min(ctrl:3420 stor:3492 flush:4860 net:3556 http:7328)
+I (1744374) runtime: Drain preflight(watermark): fram=512/656 wm=512 (78%) sd=mounted:1 degraded:0 backoff:0ms heap=int:79771/31732 psram:1955900/1933300 stack_min(ctrl:3420 stor:3492 flush:4860 net:3556 http:7328)
+I (1753084) runtime: Drain post(watermark): flushed=512 remaining=0 duration=8710ms stack_min(ctrl:3420 stor:3492 flush:4860 net:3556 http:7328)
+[2026-02-02 05:21:37] logger: stopping
