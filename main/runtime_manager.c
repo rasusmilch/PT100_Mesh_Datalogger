@@ -105,6 +105,8 @@ static const int64_t kFramRetryIntervalMs = 30000;
 static const uint32_t kFramInvalidHeapLogEvery = 10;
 static const uint32_t kRebootAlertLatchMagic = 0x5254424C;
 static const uint16_t kRebootAlertLatchVersion = 2;
+static const uint32_t kRtcErrlogLatchMagic = 0x5245434C;
+static const uint16_t kRtcErrlogLatchVersion = 1;
 static const uint32_t kRebootAlertWifiWaitMs = 2500;
 static const uint32_t kRebootAlertHttpTimeoutMs = 1500;
 static const uint32_t kRebootAlertResolveDelayMs = 5000;
@@ -122,6 +124,7 @@ static RTC_DATA_ATTR runtime_reboot_alert_latch_t g_reboot_alert_latch = {
   .magic = kRebootAlertLatchMagic,
   .version = kRebootAlertLatchVersion,
 };
+static RTC_DATA_ATTR runtime_rtc_errlog_latch_t g_rtc_errlog_latch;
 
 typedef struct
 {
@@ -134,6 +137,7 @@ typedef struct
 } runtime_i2c_op_state_t;
 
 static portMUX_TYPE g_i2c_op_lock = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE g_rtc_errlog_latch_lock = portMUX_INITIALIZER_UNLOCKED;
 static runtime_i2c_op_state_t g_i2c_op_state = {
   .active = false,
   .op_name = kMutexHolderNone,
@@ -149,6 +153,7 @@ enum
   ERROR_I2C_RECOVERY_START = 101,
   ERROR_I2C_RECOVERY_SUCCESS = 102,
   ERROR_I2C_RECOVERY_FAILED = 103,
+  ERROR_I2C_HANG_RESTART = 104,
 };
 
 enum
@@ -291,6 +296,20 @@ LogFramErrorEvent(runtime_state_t* state,
                   bool resolved,
                   int32_t detail0,
                   int32_t detail1);
+
+static void
+RuntimeRtcErrlogLatchInitIfNeeded(void);
+
+static void
+RuntimeRtcErrlogLatchPush(uint16_t code,
+                          bool resolved,
+                          int32_t detail0,
+                          int32_t detail1,
+                          uint32_t epoch_sec,
+                          uint16_t millis);
+
+static void
+RuntimeRtcErrlogLatchFlushToFram(runtime_state_t* state);
 
 static uint32_t
 GetStackMonitorMinBytes(const char* name);
@@ -911,6 +930,109 @@ RuntimeLoadRebootAlertLatch(runtime_state_t* state)
     (alert_system_code_t)g_reboot_alert_latch.pending_system_code;
   state->reboot_alert_event_epoch = g_reboot_alert_latch.pending_epoch;
   state->reboot_alert_event_uptime_ms = g_reboot_alert_latch.pending_uptime_ms;
+}
+
+static void
+RuntimeRtcErrlogLatchInitIfNeeded(void)
+{
+  taskENTER_CRITICAL(&g_rtc_errlog_latch_lock);
+  const bool needs_reset =
+    g_rtc_errlog_latch.magic != kRtcErrlogLatchMagic ||
+    g_rtc_errlog_latch.version != kRtcErrlogLatchVersion ||
+    g_rtc_errlog_latch.count > RUNTIME_RTC_ERRLOG_RING_SIZE ||
+    g_rtc_errlog_latch.head >= RUNTIME_RTC_ERRLOG_RING_SIZE;
+  if (needs_reset) {
+    memset(&g_rtc_errlog_latch, 0, sizeof(g_rtc_errlog_latch));
+    g_rtc_errlog_latch.magic = kRtcErrlogLatchMagic;
+    g_rtc_errlog_latch.version = kRtcErrlogLatchVersion;
+  }
+  taskEXIT_CRITICAL(&g_rtc_errlog_latch_lock);
+}
+
+static void
+RuntimeRtcErrlogLatchPush(uint16_t code,
+                          bool resolved,
+                          int32_t detail0,
+                          int32_t detail1,
+                          uint32_t epoch_sec,
+                          uint16_t millis)
+{
+  RuntimeRtcErrlogLatchInitIfNeeded();
+  taskENTER_CRITICAL(&g_rtc_errlog_latch_lock);
+  uint16_t write_index = 0;
+  if (g_rtc_errlog_latch.count >= RUNTIME_RTC_ERRLOG_RING_SIZE) {
+    write_index = g_rtc_errlog_latch.head;
+    g_rtc_errlog_latch.head =
+      (g_rtc_errlog_latch.head + 1u) % RUNTIME_RTC_ERRLOG_RING_SIZE;
+    g_rtc_errlog_latch.count = RUNTIME_RTC_ERRLOG_RING_SIZE;
+  } else {
+    write_index =
+      (g_rtc_errlog_latch.head + g_rtc_errlog_latch.count) %
+      RUNTIME_RTC_ERRLOG_RING_SIZE;
+    g_rtc_errlog_latch.count++;
+  }
+  runtime_rtc_errlog_entry_t* entry =
+    &g_rtc_errlog_latch.entries[write_index];
+  entry->code = code;
+  entry->resolved = resolved;
+  entry->detail0 = detail0;
+  entry->detail1 = detail1;
+  entry->epoch_sec = epoch_sec;
+  entry->millis = millis;
+  taskEXIT_CRITICAL(&g_rtc_errlog_latch_lock);
+}
+
+static void
+RuntimeRtcErrlogLatchFlushToFram(runtime_state_t* state)
+{
+  if (state == NULL || !state->fram_error_log.initialized) {
+    return;
+  }
+  RuntimeRtcErrlogLatchInitIfNeeded();
+  while (true) {
+    runtime_rtc_errlog_entry_t entry = { 0 };
+    uint16_t head_snapshot = 0;
+    bool has_entry = false;
+    taskENTER_CRITICAL(&g_rtc_errlog_latch_lock);
+    if (g_rtc_errlog_latch.count > 0) {
+      head_snapshot = g_rtc_errlog_latch.head;
+      entry = g_rtc_errlog_latch.entries[head_snapshot];
+      has_entry = true;
+    }
+    taskEXIT_CRITICAL(&g_rtc_errlog_latch_lock);
+    if (!has_entry) {
+      break;
+    }
+    bool logged = false;
+    const esp_err_t result = entry.resolved
+                               ? FramErrorLogAppendResolved(
+                                   &state->fram_error_log,
+                                   entry.code,
+                                   entry.detail0,
+                                   entry.detail1,
+                                   entry.epoch_sec,
+                                   entry.millis,
+                                   &logged)
+                               : FramErrorLogAppendActive(
+                                   &state->fram_error_log,
+                                   entry.code,
+                                   entry.detail0,
+                                   entry.detail1,
+                                   entry.epoch_sec,
+                                   entry.millis,
+                                   &logged);
+    if (result != ESP_OK) {
+      break;
+    }
+    taskENTER_CRITICAL(&g_rtc_errlog_latch_lock);
+    if (g_rtc_errlog_latch.count > 0 &&
+        g_rtc_errlog_latch.head == head_snapshot) {
+      g_rtc_errlog_latch.head =
+        (g_rtc_errlog_latch.head + 1u) % RUNTIME_RTC_ERRLOG_RING_SIZE;
+      g_rtc_errlog_latch.count--;
+    }
+    taskEXIT_CRITICAL(&g_rtc_errlog_latch_lock);
+  }
 }
 
 static const char*
@@ -3498,7 +3620,17 @@ LogFramErrorEvent(runtime_state_t* state,
     return ESP_ERR_INVALID_ARG;
   }
   if (!state->fram_error_log.initialized) {
-    RuntimeErrlogLatchEvent(state, code, resolved);
+    if (code < 64u) {
+      RuntimeErrlogLatchEvent(state, code, resolved);
+      return ESP_OK;
+    }
+    int64_t epoch_seconds = 0;
+    int32_t millis = 0;
+    TimeSyncGetNow(&epoch_seconds, &millis);
+    const uint32_t epoch_u32 = (epoch_seconds > 0) ? (uint32_t)epoch_seconds : 0;
+    const uint16_t millis_u16 = (millis >= 0) ? (uint16_t)millis : 0u;
+    RuntimeRtcErrlogLatchPush(
+      code, resolved, detail0, detail1, epoch_u32, millis_u16);
     return ESP_OK;
   }
   int64_t epoch_seconds = 0;
@@ -3507,22 +3639,28 @@ LogFramErrorEvent(runtime_state_t* state,
   uint32_t epoch_u32 = (epoch_seconds > 0) ? (uint32_t)epoch_seconds : 0u;
   uint16_t millis_u16 = (millis >= 0) ? (uint16_t)millis : 0u;
   bool logged = false;
-  if (resolved) {
-    return FramErrorLogAppendResolved(&state->fram_error_log,
-                                      code,
-                                      detail0,
-                                      detail1,
-                                      epoch_u32,
-                                      millis_u16,
-                                      &logged);
+  const esp_err_t result = resolved
+                             ? FramErrorLogAppendResolved(
+                                 &state->fram_error_log,
+                                 code,
+                                 detail0,
+                                 detail1,
+                                 epoch_u32,
+                                 millis_u16,
+                                 &logged)
+                             : FramErrorLogAppendActive(
+                                 &state->fram_error_log,
+                                 code,
+                                 detail0,
+                                 detail1,
+                                 epoch_u32,
+                                 millis_u16,
+                                 &logged);
+  if (result != ESP_OK) {
+    RuntimeRtcErrlogLatchPush(
+      code, resolved, detail0, detail1, epoch_u32, millis_u16);
   }
-  return FramErrorLogAppendActive(&state->fram_error_log,
-                                  code,
-                                  detail0,
-                                  detail1,
-                                  epoch_u32,
-                                  millis_u16,
-                                  &logged);
+  return result;
 }
 
 esp_err_t
@@ -3564,6 +3702,7 @@ RuntimeMaybeInitFramErrorLog(runtime_state_t* state)
     (void)RuntimeEnqueueSystemErrorNote(
       state, ALERT_SYSTEM_CODE_ERROR_FRAM_ERRLOG, false, now_epoch, now_ms);
   }
+  RuntimeRtcErrlogLatchFlushToFram(state);
   RuntimeFlushPendingErrlog(state);
   return ESP_OK;
 }
@@ -3631,6 +3770,7 @@ RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms)
                "FramErrorLogInit retry failed: %s",
                esp_err_to_name(errlog_result));
     } else {
+      RuntimeRtcErrlogLatchFlushToFram(state);
       RuntimeFlushPendingErrlog(state);
       if (state->fram_error_log.state == FRAM_ERRLOG_STATE_CORRUPT &&
           !state->errlog_corrupt_alerted) {
@@ -7453,6 +7593,54 @@ ControlTask(void* context)
         ESP_LOGE(kTag, "HARD I2C HANG - restarting");
         RuntimeDumpI2cLockState(state, "i2c_hang_restart");
         RuntimeDumpI2cOpState(state, "i2c_hang_restart");
+        const int64_t event_uptime_ms = esp_timer_get_time() / 1000;
+        const int64_t event_epoch =
+          TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+        int status = 0;
+        int retry_after_seconds = -1;
+        esp_err_t ntfy_err = ESP_OK;
+        alert_ntfy_result_t ntfy_result =
+          RuntimeAttemptPreRebootAlertSendDetailed(
+            state,
+            ALERT_SYSTEM_CODE_ERROR_I2C_HANG,
+            event_epoch,
+            event_uptime_ms,
+            &retry_after_seconds,
+            &status,
+            &ntfy_err);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        if (ntfy_result == ALERT_NTFY_OK) {
+          RuntimeRebootAlertLatchClear();
+        } else {
+          RuntimeRebootAlertLatchSet(ALERT_SYSTEM_CODE_ERROR_I2C_HANG,
+                                     event_epoch,
+                                     (uint32_t)event_uptime_ms);
+          const runtime_reboot_alert_send_result_t send_result =
+            (ntfy_result == ALERT_NTFY_FAILED) ? RUNTIME_REBOOT_ALERT_SEND_FAIL
+                                               : RUNTIME_REBOOT_ALERT_SEND_SKIPPED;
+          const int64_t attempt_epoch =
+            TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+          RuntimeRebootAlertLatchRecordAttempt(send_result,
+                                               RUNTIME_REBOOT_ALERT_GATE_UNKNOWN,
+                                               attempt_epoch,
+                                               (uint32_t)event_uptime_ms,
+                                               status,
+                                               ntfy_err,
+                                               retry_after_seconds);
+        }
+        int64_t err_epoch = 0;
+        int32_t err_millis = 0;
+        TimeSyncGetNow(&err_epoch, &err_millis);
+        const uint32_t err_epoch_u32 =
+          (err_epoch > 0) ? (uint32_t)err_epoch : 0u;
+        const uint16_t err_millis_u16 =
+          (err_millis >= 0) ? (uint16_t)err_millis : 0u;
+        RuntimeRtcErrlogLatchPush(ERROR_I2C_HANG_RESTART,
+                                  false,
+                                  (int32_t)i2c_held_ms,
+                                  (int32_t)state->i2c_mutex_timeouts,
+                                  err_epoch_u32,
+                                  err_millis_u16);
         esp_restart();
       }
     }
@@ -7984,6 +8172,17 @@ RuntimeRebootAlertLatchCopy(runtime_reboot_alert_latch_t* out)
   }
   RuntimeRebootAlertLatchUpgradeIfNeeded();
   memcpy(out, &g_reboot_alert_latch, sizeof(*out));
+}
+
+uint16_t
+RuntimeRtcErrlogLatchPendingCount(void)
+{
+  RuntimeRtcErrlogLatchInitIfNeeded();
+  uint16_t count = 0;
+  taskENTER_CRITICAL(&g_rtc_errlog_latch_lock);
+  count = g_rtc_errlog_latch.count;
+  taskEXIT_CRITICAL(&g_rtc_errlog_latch_lock);
+  return count;
 }
 
 /**

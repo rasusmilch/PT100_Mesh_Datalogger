@@ -2437,6 +2437,7 @@ CommandErrlog(int argc, char** argv)
     printf("header copy1: valid=%s reason=%s\n",
            status.copy1.valid ? "yes" : "no",
            FramErrorLogHeaderReasonToString(status.copy1.reason));
+    printf("rtc_pending=%" PRIu16 "\n", RuntimeRtcErrlogLatchPendingCount());
     return 0;
   }
 
