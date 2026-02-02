@@ -33,6 +33,7 @@ extern "C"
 #endif
 
 #define RUNTIME_ERROR_RING_SIZE 8
+#define RUNTIME_RTC_ERRLOG_RING_SIZE 8
 
   typedef struct
   {
@@ -184,6 +185,26 @@ extern "C"
     int32_t last_retry_after_seconds;
     bool sent_successfully;
   } runtime_reboot_alert_latch_t;
+
+  typedef struct
+  {
+    uint16_t code;
+    bool resolved;
+    int32_t detail0;
+    int32_t detail1;
+    uint32_t epoch_sec;
+    uint16_t millis;
+  } runtime_rtc_errlog_entry_t;
+
+  typedef struct
+  {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t head;
+    uint16_t count;
+    uint16_t reserved;
+    runtime_rtc_errlog_entry_t entries[RUNTIME_RTC_ERRLOG_RING_SIZE];
+  } runtime_rtc_errlog_latch_t;
 
   enum
   {

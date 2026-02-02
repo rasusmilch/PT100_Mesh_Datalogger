@@ -127,6 +127,12 @@ extern "C" {
   void RuntimeRebootAlertLatchCopy(runtime_reboot_alert_latch_t* out);
 
 /**
+ * @brief Return the count of RTC-backed errlog entries pending flush.
+ * @return Pending entry count.
+ */
+  uint16_t RuntimeRtcErrlogLatchPendingCount(void);
+
+/**
  * @brief Attempt to initialize the FRAM error log and flush pending latches.
  * @param state Parameter state.
  * @return Return the function result.

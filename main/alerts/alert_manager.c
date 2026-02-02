@@ -1762,6 +1762,9 @@ AlertNotificationDescribe(const alert_manager_t* manager,
         case ALERT_SYSTEM_CODE_ERROR_NTFY_QUEUE:
           error = "ntfy queue full";
           break;
+        case ALERT_SYSTEM_CODE_ERROR_I2C_HANG:
+          error = "i2c hang";
+          break;
         default:
           break;
       }
