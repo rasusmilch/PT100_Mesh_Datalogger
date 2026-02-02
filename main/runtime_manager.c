@@ -2817,7 +2817,7 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
     return ESP_ERR_TIMEOUT;
   }
   RuntimeI2cOpBegin("fram_read", addr, len, "FramI2cReadAdapter");
-  if (state->i2c_bus.initialized && !I2cBusLinesLookIdle(&state->i2c_bus)) {
+  if (state->i2c_bus.initialized && !I2cBusLooksIdle(&state->i2c_bus)) {
     RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy");
   }
   esp_err_t result =
@@ -2854,7 +2854,7 @@ FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
     return ESP_ERR_TIMEOUT;
   }
   RuntimeI2cOpBegin("fram_write", addr, len, "FramI2cWriteAdapter");
-  if (state->i2c_bus.initialized && !I2cBusLinesLookIdle(&state->i2c_bus)) {
+  if (state->i2c_bus.initialized && !I2cBusLooksIdle(&state->i2c_bus)) {
     RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy");
   }
   esp_err_t result =

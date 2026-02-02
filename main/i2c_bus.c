@@ -172,6 +172,22 @@ I2cBusGetState(const i2c_bus_t* bus)
 }
 
 /**
+ * @brief Check if I2C bus lines and controller look idle.
+ * @param bus Parameter bus.
+ * @return Return the function result.
+ */
+bool
+I2cBusLooksIdle(const i2c_bus_t* bus)
+{
+  if (bus == NULL || !bus->initialized) {
+    return false;
+  }
+  const i2c_bus_state_t state = I2cBusGetState(bus);
+  return state.sda_level > 0 && state.scl_level > 0 &&
+         !state.controller_busy;
+}
+
+/**
  * @brief Log I2C bus GPIO and controller state.
  * @param bus Parameter bus.
  * @param reason Parameter reason.

@@ -74,6 +74,13 @@ extern "C" {
   i2c_bus_state_t I2cBusGetState(const i2c_bus_t* bus);
 
 /**
+ * @brief Check if I2C bus lines and controller look idle.
+ * @param bus Parameter bus.
+ * @return Return the function result.
+ */
+  bool I2cBusLooksIdle(const i2c_bus_t* bus);
+
+/**
  * @brief Log I2C bus GPIO and controller state.
  * @param bus Parameter bus.
  * @param reason Parameter reason.
