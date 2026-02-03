@@ -52,6 +52,7 @@ extern "C"
     bool cal_due_check_suspended;
     bool cal_overdue;
     bool cal_time_stable;
+    bool ntp_fail_alert_active;
 
     // mesh (written by mesh task/module)
     bool mesh_connected;

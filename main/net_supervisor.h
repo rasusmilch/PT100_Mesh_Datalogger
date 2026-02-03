@@ -1,6 +1,8 @@
 #ifndef PT100_LOGGER_NET_SUPERVISOR_H_
 #define PT100_LOGGER_NET_SUPERVISOR_H_
 
+#include <stdbool.h>
+
 #include "esp_err.h"
 #include "runtime_manager.h"
 
@@ -19,6 +21,18 @@ extern "C" {
  * @brief Execute NetSupervisorNotifyUpdate.
  */
   void NetSupervisorNotifyUpdate(void);
+
+/**
+ * @brief Get SNTP consecutive failure count.
+ * @return Consecutive failure count.
+ */
+  uint32_t NetSupervisorGetSntpConsecutiveFailures(void);
+
+/**
+ * @brief Get SNTP failure alert state.
+ * @return true if alert is active.
+ */
+  bool NetSupervisorIsSntpFailureAlertActive(void);
 
 #ifdef __cplusplus
 }

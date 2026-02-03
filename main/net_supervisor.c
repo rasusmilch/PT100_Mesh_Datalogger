@@ -27,6 +27,10 @@ typedef enum
 
 static const app_runtime_t* s_runtime = NULL;
 static TaskHandle_t s_task = NULL;
+static uint32_t s_sntp_consecutive_failures = 0;
+static bool s_sntp_failure_alert_active = false;
+
+static esp_err_t TrySntpSyncWithFailover(int timeout_ms);
 
 static app_net_mode_t
 GetDesiredNetMode(void)
@@ -120,6 +124,40 @@ MaybeLogConnectionChange(bool connected, bool* last_connected)
     ESP_LOGW(kTag, "Wi-Fi disconnected");
   }
   *last_connected = connected;
+}
+
+static esp_err_t
+TrySntpSyncWithFailover(int timeout_ms)
+{
+  const uint8_t count = AppNetConfigGetSntpServerCount();
+  if (count == 0) {
+    return ESP_FAIL;
+  }
+
+  const uint8_t attempt_count =
+    (count < APP_NET_SNTP_SERVERS_MAX_COUNT) ? count
+                                             : APP_NET_SNTP_SERVERS_MAX_COUNT;
+  esp_err_t last_result = ESP_FAIL;
+  for (uint8_t idx = 0; idx < attempt_count; ++idx) {
+    const char* server = AppNetConfigGetSntpServerAt(idx);
+    if (server == NULL || server[0] == '\0') {
+      last_result = ESP_FAIL;
+      continue;
+    }
+    const esp_err_t result = TimeSyncStartSntpAndWait(server, timeout_ms);
+    if (result == ESP_OK) {
+      return ESP_OK;
+    }
+    const char* role =
+      (idx == 0) ? "primary" : (idx == 1) ? "secondary" : "tertiary";
+    ESP_LOGI(kTag,
+             "SNTP failed for %s server=%s: %s; trying next",
+             role,
+             server,
+             esp_err_to_name(result));
+    last_result = result;
+  }
+  return last_result;
 }
 
 static void
@@ -335,10 +373,10 @@ NetSupervisorTask(void* context)
 
       if (connected && next_time_sync_ticks != 0 &&
           (int32_t)(now_ticks - next_time_sync_ticks) >= 0) {
-        const char* sntp_server = AppNetConfigGetSntpServer();
-        esp_err_t sntp_result = ESP_ERR_INVALID_STATE;
-        if (sntp_server != NULL && sntp_server[0] != '\0') {
-          sntp_result = TimeSyncStartSntpAndWait(sntp_server, 30 * 1000);
+        const esp_err_t sntp_result = TrySntpSyncWithFailover(30 * 1000);
+        if (sntp_result == ESP_OK) {
+          s_sntp_consecutive_failures = 0;
+          s_sntp_failure_alert_active = false;
         }
         if (sntp_result == ESP_OK && s_runtime != NULL &&
             s_runtime->time_sync != NULL) {
@@ -352,7 +390,22 @@ NetSupervisorTask(void* context)
                      esp_err_to_name(rtc_result));
           }
         } else if (sntp_result != ESP_OK) {
-          ESP_LOGW(kTag, "SNTP sync failed: %s", esp_err_to_name(sntp_result));
+          s_sntp_consecutive_failures++;
+          if (!TimeSyncIsSystemTimeValid()) {
+            ESP_LOGW(kTag, "SNTP unsuccessful (time invalid)");
+          } else {
+            ESP_LOGI(kTag, "SNTP unsuccessful (time already valid)");
+          }
+          const uint32_t threshold = AppNetConfigGetSntpFailThresholdN();
+          if (s_sntp_consecutive_failures >= threshold) {
+            if (!s_sntp_failure_alert_active) {
+              ESP_LOGE(kTag,
+                       "SNTP failed %u consecutive times; "
+                       "raising display/console alert",
+                       (unsigned)s_sntp_consecutive_failures);
+            }
+            s_sntp_failure_alert_active = true;
+          }
         }
 
         const uint32_t time_sync_period_s =
@@ -413,6 +466,8 @@ NetSupervisorStart(const app_runtime_t* runtime)
     return ESP_ERR_INVALID_ARG;
   }
   s_runtime = runtime;
+  s_sntp_consecutive_failures = 0;
+  s_sntp_failure_alert_active = false;
 
   const uint32_t kNetSupervisorStackBytes = 4096;
   const UBaseType_t kNetSupervisorPriority = 2;
@@ -435,4 +490,16 @@ NetSupervisorNotifyUpdate(void)
   if (s_task != NULL) {
     xTaskNotifyGive(s_task);
   }
+}
+
+uint32_t
+NetSupervisorGetSntpConsecutiveFailures(void)
+{
+  return s_sntp_consecutive_failures;
+}
+
+bool
+NetSupervisorIsSntpFailureAlertActive(void)
+{
+  return s_sntp_failure_alert_active;
 }
