@@ -253,6 +253,8 @@ DisplayAttentionItemToName(display_attention_item_t item)
       return "rtd";
     case kDispAttnItemTimeBad:
       return "time";
+    case kDispAttnItemNtpFail:
+      return "ntp";
     case kDispAttnItemMeshDown:
       return "mesh";
     case kDispAttnItemHeap:
@@ -342,6 +344,10 @@ ParseDisplayAttentionName(const char* value, display_attention_item_t* item_out)
   }
   if (strcasecmp(value, "time") == 0) {
     *item_out = kDispAttnItemTimeBad;
+    return true;
+  }
+  if (strcasecmp(value, "ntp") == 0) {
+    *item_out = kDispAttnItemNtpFail;
     return true;
   }
   if (strcasecmp(value, "mesh") == 0) {
@@ -493,7 +499,8 @@ PrintWifiUsage(void)
     "  wifi disconnect\n"
     "  wifi cfg show\n"
     "  wifi cfg defaults\n"
-    "  wifi cfg set sntp <server>\n"
+    "  wifi cfg set sntp <primary[, secondary[, tertiary]]>\n"
+    "  wifi cfg set sntp_fail_n <1..20>\n"
     "  wifi cfg set mesh_chan <1..13>\n"
     "  wifi cfg set mesh_id <XX:XX:XX:XX:XX:XX>\n"
     "  wifi cfg set mesh_ap_pass <password>\n"
@@ -508,7 +515,8 @@ PrintWifiUsage(void)
     "  - Changes are applied by the network supervisor when possible.\n"
     "  - time_sync_s is clamped to 5..3600 seconds.\n"
     "  - wifi ntp sync performs a one-off sync; it does not change NVS\n"
-    "    unless you also use wifi cfg set sntp/time_sync_s.\n");
+    "    unless you also use wifi cfg set sntp/time_sync_s.\n"
+    "  - sntp CSV allows optional spaces after commas; whitespace is stripped.\n");
 }
 
 // In diagnostics/console mode, Wi-Fi may not be initialized yet. Most Wi-Fi
@@ -559,7 +567,11 @@ PrintWifiConfig(void)
   const bool mesh_id_valid = (mesh_id != NULL && mesh_id[0] != '\0');
   const char* ap_password = AppNetConfigGetMeshApPassword();
   const size_t ap_password_len = strlen(ap_password);
-  const char* sntp_server = AppNetConfigGetSntpServer();
+  const char* sntp_server_csv = AppNetConfigGetSntpServersCsv();
+  const uint8_t sntp_server_count = AppNetConfigGetSntpServerCount();
+  const char* sntp_primary = AppNetConfigGetSntpServerAt(0);
+  const char* sntp_secondary = AppNetConfigGetSntpServerAt(1);
+  const char* sntp_tertiary = AppNetConfigGetSntpServerAt(2);
 
   printf("mesh_channel: %u\n", (unsigned)mesh_channel);
   printf("mesh_channel_source: %s\n",
@@ -579,10 +591,20 @@ PrintWifiConfig(void)
   printf("mesh_no_router_source: %s\n",
          AppNetConfigMeshDisableRouterIsOverridden() ? "nvs" : "kconfig");
 
-  printf("sntp_server: %s\n",
-         (sntp_server[0] != '\0') ? sntp_server : "<empty>");
+  printf("sntp_servers_csv: %s\n",
+         (sntp_server_csv[0] != '\0') ? sntp_server_csv : "<empty>");
+  printf("sntp_server_count: %u\n", (unsigned)sntp_server_count);
+  printf("sntp_primary: %s\n",
+         (sntp_primary[0] != '\0') ? sntp_primary : "<empty>");
+  printf("sntp_secondary: %s\n",
+         (sntp_secondary[0] != '\0') ? sntp_secondary : "<empty>");
+  printf("sntp_tertiary: %s\n",
+         (sntp_tertiary[0] != '\0') ? sntp_tertiary : "<empty>");
   printf("sntp_server_source: %s\n",
          AppNetConfigSntpServerIsOverridden() ? "nvs" : "kconfig");
+  printf("sntp_fail_n: %u\n", (unsigned)AppNetConfigGetSntpFailThresholdN());
+  printf("sntp_fail_n_source: %s\n",
+         AppNetConfigSntpFailThresholdIsOverridden() ? "nvs" : "kconfig");
   printf("time_sync_s: %u\n", (unsigned)AppNetConfigGetTimeSyncPeriodSeconds());
   printf("time_sync_s_source: %s\n",
          AppNetConfigTimeSyncPeriodIsOverridden() ? "nvs" : "kconfig");
@@ -608,8 +630,8 @@ PrintDisplayAttentionPolicy(uint32_t policy)
 {
   const display_attention_item_t items[] = {
     kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
-    kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemMeshDown,
-    kDispAttnItemHeap,
+    kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemNtpFail,
+    kDispAttnItemMeshDown, kDispAttnItemHeap,
   };
   printf("display_attention_policy: 0x%08" PRIX32 "\n", policy);
   for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
@@ -4629,6 +4651,12 @@ CommandWifi(int argc, char** argv)
         } else if (strcmp(value, "1") == 0) {
           result = AppNetConfigSetMeshDisableRouter(true);
         }
+      } else if (strcmp(key, "sntp_fail_n") == 0) {
+        char* end = NULL;
+        unsigned long threshold = strtoul(value, &end, 10);
+        if (end != value && *end == '\0' && threshold <= UINT32_MAX) {
+          result = AppNetConfigSetSntpFailThresholdN((uint32_t)threshold);
+        }
       } else if (strcmp(key, "time_sync_s") == 0) {
         char* end = NULL;
         unsigned long seconds = strtoul(value, &end, 10);
@@ -4704,6 +4732,12 @@ CommandWifi(int argc, char** argv)
       } else {
         printf("rtc_last_set_epoch: n/a\n");
       }
+      printf("sntp_consecutive_failures: %u\n",
+             (unsigned)NetSupervisorGetSntpConsecutiveFailures());
+      printf("sntp_fail_threshold_n: %u\n",
+             (unsigned)AppNetConfigGetSntpFailThresholdN());
+      printf("sntp_failure_alert_active: %s\n",
+             NetSupervisorIsSntpFailureAlertActive() ? "yes" : "no");
       return 0;
     }
 

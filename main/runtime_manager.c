@@ -43,6 +43,7 @@
 #include "mem_pool.h"
 #include "mesh_transport.h"
 #include "mqtt_client_wrap.h"
+#include "net_supervisor.h"
 #include "run_gpio.h"
 #include "runtime_health.h"
 #include "runtime_health_publisher.h"
@@ -2391,6 +2392,9 @@ ComputeActiveAttentionMaskFromHealth(const runtime_health_snapshot_t* health)
   if ((mask & kDispAttnTimeBad) != 0u && !health->time_valid) {
     active |= kDispAttnTimeBad;
   }
+  if ((mask & kDispAttnNtpFail) != 0u && health->ntp_fail_alert_active) {
+    active |= kDispAttnNtpFail;
+  }
   if ((mask & kDispAttnMeshDown) != 0u && !health->mesh_connected) {
     active |= kDispAttnMeshDown;
   }
@@ -2421,6 +2425,8 @@ AttentionBitToCode(display_attention_bit_t bit)
       return "PROBE";
     case kDispAttnTimeBad:
       return "TIME ";
+    case kDispAttnNtpFail:
+      return "NTP  ";
     case kDispAttnMeshDown:
       return "MESH ";
     case kDispAttnHeap:
@@ -2751,8 +2757,8 @@ DisplayTask(void* context)
     display_attention_mask_t warn_mask = 0;
     const display_attention_item_t items[] = {
       kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
-      kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemMeshDown,
-      kDispAttnItemHeap,
+      kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemNtpFail,
+      kDispAttnItemMeshDown, kDispAttnItemHeap,
     };
     for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
       const display_attention_item_t item = items[idx];
@@ -5556,6 +5562,9 @@ SensorTask(void* context)
     TimeSyncGetNow(&epoch_sec, &millis);
     const bool time_valid = TimeSyncIsSystemTimeValid();
     UpdateTimeHealthState(state, time_valid);
+    UpdateCachedBool(state,
+                     &state->cached_status.ntp_fail_alert_active,
+                     NetSupervisorIsSntpFailureAlertActive());
     record.timestamp_epoch_sec = time_valid ? epoch_sec : (int64_t)0;
     record.timestamp_millis = time_valid ? millis : 0;
 
@@ -6796,6 +6805,9 @@ ControlTickTimeSync(runtime_state_t* state)
 
   const bool time_valid = TimeSyncIsSystemTimeValid();
   UpdateTimeHealthState(state, time_valid);
+  UpdateCachedBool(state,
+                   &state->cached_status.ntp_fail_alert_active,
+                   NetSupervisorIsSntpFailureAlertActive());
   const bool mesh_connected = MeshTransportIsConnected(&state->mesh);
   UpdateCachedBool(state, &state->cached_status.mesh_connected, mesh_connected);
   UpdateCachedInt32(
@@ -6926,6 +6938,9 @@ DirectWifiTask(void* context)
 
     bool time_valid = TimeSyncIsSystemTimeValid();
     UpdateTimeHealthState(state, time_valid);
+    UpdateCachedBool(state,
+                     &state->cached_status.ntp_fail_alert_active,
+                     NetSupervisorIsSntpFailureAlertActive());
 
     if (connected && s_next_time_sync_ticks != 0 &&
         now_ticks >= s_next_time_sync_ticks) {
@@ -6973,6 +6988,9 @@ DirectWifiTask(void* context)
 
       time_valid = TimeSyncIsSystemTimeValid();
       UpdateTimeHealthState(state, time_valid);
+      UpdateCachedBool(state,
+                       &state->cached_status.ntp_fail_alert_active,
+                       NetSupervisorIsSntpFailureAlertActive());
       last_time_valid = time_valid;
     } else if (time_valid != last_time_valid) {
       last_time_valid = time_valid;
@@ -8445,6 +8463,9 @@ RuntimeManagerInitFull(void)
   if (time_result == ESP_OK) {
     (void)TimeSyncSetSystemFromRtc(&g_state.time_sync);
     UpdateTimeHealthState(&g_state, TimeSyncIsSystemTimeValid());
+    UpdateCachedBool(&g_state,
+                     &g_state.cached_status.ntp_fail_alert_active,
+                     NetSupervisorIsSntpFailureAlertActive());
   }
 
   g_state.fram_available = false;
