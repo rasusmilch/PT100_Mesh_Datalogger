@@ -16,6 +16,7 @@ typedef enum
   kDispAttnItemTimeBad = 4,
   kDispAttnItemMeshDown = 5,
   kDispAttnItemHeap = 6,
+  kDispAttnItemNtpFail = 7,
   kDispAttnItemCount,
 } display_attention_item_t;
 
@@ -36,6 +37,7 @@ typedef enum
   kDispAttnTimeBad = 1u << kDispAttnItemTimeBad,
   kDispAttnMeshDown = 1u << kDispAttnItemMeshDown,
   kDispAttnHeap = 1u << kDispAttnItemHeap,
+  kDispAttnNtpFail = 1u << kDispAttnItemNtpFail,
 } display_attention_bit_t;
 
 typedef uint32_t display_attention_mask_t;

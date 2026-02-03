@@ -50,6 +50,7 @@ RuntimeHealthPublisherTick(runtime_state_t* state)
   snapshot.time_valid = state->cached_status.time_valid;
   snapshot.utc_offset_sec = state->cached_status.utc_offset_sec;
   snapshot.dst_in_effect = state->cached_status.dst_in_effect;
+  snapshot.ntp_fail_alert_active = state->cached_status.ntp_fail_alert_active;
   snapshot.mesh_connected = state->cached_status.mesh_connected;
   snapshot.mesh_level = state->cached_status.mesh_level;
   snapshot.mesh_rssi = state->cached_status.mesh_rssi;

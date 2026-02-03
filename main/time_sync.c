@@ -10,6 +10,9 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "lwip/inet.h"
+#include "lwip/netdb.h"
+
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "i2c_bus.h"
@@ -58,6 +61,7 @@ static esp_err_t Ds3231WriteTimeWithRetries(time_sync_t* time_sync,
 static bool LocalTmFieldsMatch(const struct tm* left, const struct tm* right);
 static void SntpTimeSyncCallback(struct timeval* tv);
 static void SntpResetVerificationState(void);
+static void LogSntpServerResolution(const char* host);
 
 static uint32_t
 TickNow(void)
@@ -654,6 +658,62 @@ SntpResetVerificationState(void)
   s_sntp_time_set_uptime_us = 0;
 }
 
+static void
+LogSntpServerResolution(const char* host)
+{
+  if (host == NULL || host[0] == '\0') {
+    return;
+  }
+
+  struct addrinfo hints = { 0 };
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_DGRAM;
+
+  struct addrinfo* result = NULL;
+  const int err = getaddrinfo(host, NULL, &hints, &result);
+  if (err != 0) {
+    ESP_LOGI(kTag, "SNTP resolve failed: host=%s err=%d", host, err);
+    return;
+  }
+
+  bool logged = false;
+  for (struct addrinfo* ai = result; ai != NULL; ai = ai->ai_next) {
+    const void* addr = NULL;
+    const char* family = "unknown";
+    if (ai->ai_family == AF_INET) {
+      const struct sockaddr_in* sa =
+        (const struct sockaddr_in*)ai->ai_addr;
+      addr = &sa->sin_addr;
+      family = "IPv4";
+    } else if (ai->ai_family == AF_INET6) {
+      const struct sockaddr_in6* sa6 =
+        (const struct sockaddr_in6*)ai->ai_addr;
+      addr = &sa6->sin6_addr;
+      family = "IPv6";
+    }
+    if (addr == NULL) {
+      continue;
+    }
+
+    char ip[INET6_ADDRSTRLEN] = { 0 };
+    if (inet_ntop(ai->ai_family, addr, ip, sizeof(ip)) != NULL) {
+      ESP_LOGI(kTag,
+               "SNTP resolve: host=%s ip=%s family=%s",
+               host,
+               ip,
+               family);
+      logged = true;
+      break;
+    }
+  }
+
+  freeaddrinfo(result);
+
+  if (!logged) {
+    ESP_LOGI(kTag, "SNTP resolve failed: host=%s err=%d", host, -1);
+  }
+}
+
 /**
  * @brief Execute TimeParseLocalIso.
  * @param iso Parameter iso.
@@ -824,6 +884,7 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
   s_last_sntp_attempt_uptime_us = attempt_uptime_us;
   s_last_sntp_result = ESP_ERR_INVALID_STATE;
   SntpResetVerificationState();
+  LogSntpServerResolution(sntp_server);
 
   esp_err_t wait_result = ESP_ERR_TIMEOUT;
   bool verified_set = false;

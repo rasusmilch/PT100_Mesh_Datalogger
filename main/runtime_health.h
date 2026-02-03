@@ -14,6 +14,7 @@ extern "C" {
     bool time_valid;
     int32_t utc_offset_sec;
     bool dst_in_effect;
+    bool ntp_fail_alert_active;
 
     // mesh
     bool mesh_connected;
