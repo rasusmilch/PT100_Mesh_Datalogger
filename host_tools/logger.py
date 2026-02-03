@@ -421,25 +421,37 @@ class SessionLogger:
         return ports[0].device
 
     def _open_serial(self, port: str) -> serial.Serial:
-        ser = serial.Serial(
-            port=port,
-            baudrate=self._serial_config.baudrate,
-            bytesize=self._serial_config.bytesize,
-            parity=self._serial_config.parity,
-            stopbits=self._serial_config.stopbits,
-            timeout=self._serial_config.read_timeout_sec,
-            write_timeout=self._serial_config.write_timeout_sec,
-            xonxoff=self._serial_config.xonxoff,
-            rtscts=self._serial_config.rtscts,
-            dsrdtr=self._serial_config.dsrdtr,
-        )
+        # Open the serial port while minimizing unintended DTR/RTS reset pulses.
+        # Create without opening so we can set cached DTR/RTS state first.
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = self._serial_config.baudrate
+        ser.bytesize = self._serial_config.bytesize
+        ser.parity = self._serial_config.parity
+        ser.stopbits = self._serial_config.stopbits
+        ser.timeout = self._serial_config.read_timeout_sec
+        ser.write_timeout = self._serial_config.write_timeout_sec
+        ser.xonxoff = self._serial_config.xonxoff
+        ser.rtscts = self._serial_config.rtscts
+        ser.dsrdtr = self._serial_config.dsrdtr
 
-        # Do NOT clear buffers. But DO force control lines to a known state,
-        # otherwise a later "pulse RTS" may do nothing (or be inconsistent).
+        # Pre-set control lines BEFORE opening to avoid the common "assert on open"
+        # behavior that can reset ESP32 boards via auto-reset circuitry.
         try:
-            _set_control_lines(ser, dtr=False, rts=False)
+            ser.dtr = False
+            ser.rts = False
         except Exception:
             pass
+
+        ser.open()
+
+        # After open, avoid extra toggling when --no-reset is requested.
+        # If reset is enabled, we still normalize to a known state.
+        if self._reset_config.enabled:
+            try:
+                _set_control_lines(ser, dtr=False, rts=False)
+            except Exception:
+                pass
 
         return ser
 
