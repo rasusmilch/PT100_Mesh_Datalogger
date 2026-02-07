@@ -116,8 +116,10 @@ Ds3231ProbeAndUpdateReady(time_sync_t* time_sync)
   if (!RuntimeI2cLock(kI2cLockTimeoutTicks)) {
     return ESP_ERR_TIMEOUT;
   }
-  const esp_err_t probe_result = i2c_master_probe(
-    time_sync->bus->handle, time_sync->ds3231_addr, 100 /* timeout_ms */);
+  const esp_err_t probe_result =
+    i2c_master_probe(time_sync->bus->handle,
+                     time_sync->ds3231_addr,
+                     I2C_BUS_TRANSACTION_TIMEOUT_MS);
   RuntimeI2cUnlock();
   if (probe_result == ESP_OK) {
     time_sync->is_ds3231_ready = true;

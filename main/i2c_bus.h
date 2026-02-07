@@ -8,6 +8,8 @@
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 
+#define I2C_BUS_TRANSACTION_TIMEOUT_MS 25
+
 #ifdef __cplusplus
 extern "C" {
 #endif

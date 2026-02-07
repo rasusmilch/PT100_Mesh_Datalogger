@@ -6,7 +6,6 @@
 #include "i2c_bus.h"
 
 static const char* kTag = "fram_i2c";
-static const int kI2cTimeoutMs = 100;
 static const size_t kMaxChunk = 96;
 static const uint8_t kReservedIdAddr7bit = 0x7C; // 0xF8/0xF9 in 8-bit form.
 
@@ -170,7 +169,12 @@ FramI2cRead(const fram_i2c_t* fram, uint16_t addr, void* out, size_t len)
     uint8_t address_bytes[2] = { 0 };
     EncodeAddress(offset, address_bytes);
     const esp_err_t result = i2c_master_transmit_receive(
-      fram->device, address_bytes, sizeof(address_bytes), dest, chunk, kI2cTimeoutMs);
+      fram->device,
+      address_bytes,
+      sizeof(address_bytes),
+      dest,
+      chunk,
+      I2C_BUS_TRANSACTION_TIMEOUT_MS);
     if (result != ESP_OK) {
       return result;
     }
@@ -219,8 +223,8 @@ FramI2cWrite(const fram_i2c_t* fram,
     EncodeAddress(offset, buffer);
     memcpy(&buffer[2], src, chunk);
 
-    const esp_err_t result =
-      i2c_master_transmit(fram->device, buffer, 2 + chunk, kI2cTimeoutMs);
+    const esp_err_t result = i2c_master_transmit(
+      fram->device, buffer, 2 + chunk, I2C_BUS_TRANSACTION_TIMEOUT_MS);
     if (result != ESP_OK) {
       return result;
     }
@@ -265,8 +269,12 @@ FramI2cReadDeviceId(const fram_i2c_t* fram, fram_device_id_t* out)
 
   const uint8_t device_addr_word = (uint8_t)(fram->i2c_addr_7bit << 1);
   memset(out, 0, sizeof(*out));
-  result = i2c_master_transmit_receive(
-    id_device, &device_addr_word, 1, out->raw, sizeof(out->raw), kI2cTimeoutMs);
+  result = i2c_master_transmit_receive(id_device,
+                                       &device_addr_word,
+                                       1,
+                                       out->raw,
+                                       sizeof(out->raw),
+                                       I2C_BUS_TRANSACTION_TIMEOUT_MS);
   (void)i2c_master_bus_rm_device(id_device);
   if (result != ESP_OK) {
     return result;

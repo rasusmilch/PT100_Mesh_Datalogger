@@ -92,7 +92,7 @@ static const uint32_t kAlertHttpRetryDelayMs = 1000;
 static const uint32_t kAlertHttpMaxAttempts = 3;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const TickType_t kFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
-static const TickType_t kI2cIoLockTimeoutTicks = pdMS_TO_TICKS(25);
+static const TickType_t kI2cIoLockTimeoutTicks = pdMS_TO_TICKS(150);
 static const TickType_t kI2cRecoveryLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const uint32_t kSensorSpiInvalidStreakThreshold = 3;
 static const uint32_t kSensorSpiReinitAlertThreshold = 2;
@@ -242,9 +242,12 @@ RuntimeRecoverI2cBusCommon(runtime_state_t* state,
  * @brief Execute RuntimeRecoverI2cBusLocked.
  * @param state Parameter state.
  * @param reason Parameter reason.
+ * @param last_error Parameter last_error.
  */
 static void
-RuntimeRecoverI2cBusLocked(runtime_state_t* state, const char* reason);
+RuntimeRecoverI2cBusLocked(runtime_state_t* state,
+                           const char* reason,
+                           esp_err_t last_error);
 
 static void
 RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context);
@@ -2946,13 +2949,13 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
   }
   RuntimeI2cOpBegin("fram_read", addr, len, "FramI2cReadAdapter");
   if (state->i2c_bus.initialized && !I2cBusLooksIdle(&state->i2c_bus)) {
-    RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy");
+    RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
   }
   esp_err_t result =
     FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
   if (result == ESP_ERR_TIMEOUT || result == ESP_ERR_INVALID_STATE ||
       result == ESP_ERR_INVALID_RESPONSE) {
-    RuntimeRecoverI2cBusLocked(state, "fram io error");
+    RuntimeRecoverI2cBusLocked(state, "fram io error", result);
     result = FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
   }
   RuntimeI2cOpEnd();
@@ -2983,13 +2986,13 @@ FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
   }
   RuntimeI2cOpBegin("fram_write", addr, len, "FramI2cWriteAdapter");
   if (state->i2c_bus.initialized && !I2cBusLooksIdle(&state->i2c_bus)) {
-    RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy");
+    RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
   }
   esp_err_t result =
     FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
   if (result == ESP_ERR_TIMEOUT || result == ESP_ERR_INVALID_STATE ||
       result == ESP_ERR_INVALID_RESPONSE) {
-    RuntimeRecoverI2cBusLocked(state, "fram io error");
+    RuntimeRecoverI2cBusLocked(state, "fram io error", result);
     result =
       FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
   }
@@ -3989,11 +3992,14 @@ RuntimeRecoverI2cBus(runtime_state_t* state,
  * @brief Execute RuntimeRecoverI2cBusLocked.
  * @param state Parameter state.
  * @param reason Parameter reason.
+ * @param last_error Parameter last_error.
  */
 static void
-RuntimeRecoverI2cBusLocked(runtime_state_t* state, const char* reason)
+RuntimeRecoverI2cBusLocked(runtime_state_t* state,
+                           const char* reason,
+                           esp_err_t last_error)
 {
-  (void)RuntimeRecoverI2cBusCommon(state, reason, ESP_ERR_INVALID_STATE, true);
+  (void)RuntimeRecoverI2cBusCommon(state, reason, last_error, true);
 }
 
 static void
@@ -4677,6 +4683,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     if (!RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
       return ESP_ERR_TIMEOUT;
     }
+    state->sd_flush_phase = "sync:pre";
     EnsureSdMountedLocked(state);
     if (!state->sd_logger.is_mounted) {
       RuntimeSdIoUnlock(state);
@@ -4691,6 +4698,8 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
       return sync_result;
     }
+    state->sd_flush_phase = "sync:ok";
+    RuntimeSdIoUnlock(state);
 
     uint32_t records_used = 0;
     uint64_t last_record_id = 0;
@@ -4698,7 +4707,6 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     bool batch_includes_time_jump_flag = false;
     fram_log_t fram_log_snapshot;
     if (!RuntimeFramLogLock(state, kFramLogLockTimeoutTicks)) {
-      RuntimeSdIoUnlock(state);
       return ESP_ERR_TIMEOUT;
     }
     buffered = FramLogGetBufferedRecords(&state->fram_log);
@@ -4718,11 +4726,9 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
                                               &bytes_used,
                                               &batch_includes_time_jump_flag);
     if (batch_result != ESP_OK) {
-      RuntimeSdIoUnlock(state);
       return batch_result;
     }
     if (records_used == 0 || bytes_used == 0) {
-      RuntimeSdIoUnlock(state);
       return ESP_ERR_INVALID_STATE;
     }
 
@@ -4731,6 +4737,25 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
     const sd_csv_append_scratch_t* scratch =
       BuildSdAppendScratch(state, &append_scratch);
     esp_err_t write_result = ESP_OK;
+    if (!RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
+      return ESP_ERR_TIMEOUT;
+    }
+    state->sd_flush_phase = "append:sync";
+    EnsureSdMountedLocked(state);
+    if (!state->sd_logger.is_mounted) {
+      RuntimeSdIoUnlock(state);
+      return ESP_ERR_INVALID_STATE;
+    }
+    sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
+    if (sync_result != ESP_OK) {
+      RuntimeDiagHeapCheck(state, "SD unmount (sync fail before)", false);
+      (void)SdLoggerUnmount(&state->sd_logger);
+      RuntimeDiagHeapCheck(state, "SD unmount (sync fail after)", false);
+      RuntimeSdIoUnlock(state);
+      MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
+      return sync_result;
+    }
+    state->sd_flush_phase = "append:begin";
     if (state->sd_force_unmount_on_append) {
       state->sd_force_unmount_on_append = false;
       RuntimeDiagHeapCheck(state, "SD unmount (inject before)", false);
@@ -4770,6 +4795,7 @@ FlushFramToSd(runtime_state_t* state, bool flush_all)
       return write_result;
     }
     ClearSdIoError(state);
+    state->sd_flush_phase = "append:ok";
     HandleTimeJumpBackBatchWritten(
       state, batch_includes_time_jump_flag, last_record_id);
     RuntimeSdIoUnlock(state);

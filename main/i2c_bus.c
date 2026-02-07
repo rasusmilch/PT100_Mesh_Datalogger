@@ -9,7 +9,6 @@
 #include "hal/i2c_ll.h"
 
 static const char* kTag = "i2c_bus";
-static const int kI2cTimeoutMs = 100;
 static const int kI2cRecoveryDelayUs = 5;
 
 /**
@@ -258,8 +257,12 @@ I2cBusReadRegister(i2c_master_dev_handle_t device,
   if (device == NULL || data_out == NULL || length == 0) {
     return ESP_ERR_INVALID_ARG;
   }
-  return i2c_master_transmit_receive(
-    device, &start_register, 1, data_out, length, kI2cTimeoutMs);
+  return i2c_master_transmit_receive(device,
+                                     &start_register,
+                                     1,
+                                     data_out,
+                                     length,
+                                     I2C_BUS_TRANSACTION_TIMEOUT_MS);
 }
 
 /**
@@ -282,7 +285,8 @@ I2cBusWriteRegister(i2c_master_dev_handle_t device,
   uint8_t buffer[1 + length];
   buffer[0] = start_register;
   memcpy(&buffer[1], data, length);
-  return i2c_master_transmit(device, buffer, sizeof(buffer), kI2cTimeoutMs);
+  return i2c_master_transmit(
+    device, buffer, sizeof(buffer), I2C_BUS_TRANSACTION_TIMEOUT_MS);
 }
 
 /**
@@ -313,7 +317,8 @@ I2cBusScan(const i2c_bus_t* bus,
   esp_err_t result = ESP_OK;
   size_t found = 0;
   for (uint16_t addr = start_addr; addr <= end_addr; ++addr) {
-    esp_err_t probe_result = i2c_master_probe(bus->handle, addr, kI2cTimeoutMs);
+    esp_err_t probe_result =
+      i2c_master_probe(bus->handle, addr, I2C_BUS_TRANSACTION_TIMEOUT_MS);
     if (probe_result == ESP_OK) {
       if (found < max_found && found_addrs != NULL) {
         found_addrs[found] = (uint8_t)addr;
