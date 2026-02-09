@@ -7851,8 +7851,9 @@ ControlTask(void* context)
           (next_alert_tick_ms == 0 || now_ms >= next_alert_tick_ms)) {
         const int64_t now_epoch =
           TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-        AlertManagerTick(&state->alert_manager, now_ms, now_epoch);
-        next_alert_tick_ms = now_ms + 1000;
+        const int64_t alert_now_ms = esp_timer_get_time() / 1000;
+        AlertManagerTick(&state->alert_manager, alert_now_ms, now_epoch);
+        next_alert_tick_ms = alert_now_ms + 1000;
       } else if (!alert_eligible) {
         next_alert_tick_ms = 0;
       }

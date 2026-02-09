@@ -99,6 +99,11 @@ static void AlertNotificationDescribe(const alert_manager_t* manager,
                                       const alert_notification_t* note,
                                       char* out,
                                       size_t out_size);
+static uint32_t SaturatingDeltaMs(int64_t now_ms, int64_t then_ms);
+static void LogNonmonotonicDelta(uint64_t leaf_id,
+                                 int64_t now_ms,
+                                 int64_t then_ms,
+                                 uint32_t gap_ms);
 static void AlertManagerBatchInit(alert_batch_t* batch);
 static void AlertManagerBatchAdd(alert_batch_t* batch,
                                  const alert_notification_t* note);
@@ -126,6 +131,7 @@ static const int64_t kNtfyFailureMaxBackoffMs = 300000;
 static const uint32_t kAlertConfigVersion = 2;
 static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
+static int64_t s_last_nonmonotonic_log_ms = 0;
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
 /**
  * @brief Execute PackMacToId.
@@ -156,6 +162,43 @@ ResolveLeafId(const alert_manager_t* manager, uint64_t leaf_id)
     return manager->local_leaf_id;
   }
   return leaf_id;
+}
+
+static uint32_t
+SaturatingDeltaMs(int64_t now_ms, int64_t then_ms)
+{
+  if (then_ms <= 0 || now_ms <= then_ms) {
+    return 0;
+  }
+  const int64_t delta = now_ms - then_ms;
+  if (delta > (int64_t)UINT32_MAX) {
+    return UINT32_MAX;
+  }
+  return (uint32_t)delta;
+}
+
+static void
+LogNonmonotonicDelta(uint64_t leaf_id,
+                     int64_t now_ms,
+                     int64_t then_ms,
+                     uint32_t gap_ms)
+{
+  if (now_ms >= then_ms) {
+    return;
+  }
+  if ((now_ms - s_last_nonmonotonic_log_ms) < 60000) {
+    return;
+  }
+  s_last_nonmonotonic_log_ms = now_ms;
+  char leaf_id_string[32] = "";
+  AlertManagerFormatLeafId(leaf_id, leaf_id_string, sizeof(leaf_id_string));
+  ESP_LOGW(kTag,
+           "non-monotonic leaf time for %s now_ms=%" PRId64
+           " then_ms=%" PRId64 " gap=%" PRIu32 "ms (clamped negative delta)",
+           leaf_id_string,
+           now_ms,
+           then_ms,
+           gap_ms);
 }
 
 /**
@@ -932,7 +975,9 @@ AlertManagerTick(alert_manager_t* manager, int64_t now_ms, int64_t now_epoch)
 
     if ((mask & (1u << ALERT_MISSING_RECORDS)) != 0u &&
         leaf->last_rx_uptime_ms > 0) {
-      const uint32_t gap = (uint32_t)(now_ms - leaf->last_rx_uptime_ms);
+      const uint32_t gap = SaturatingDeltaMs(now_ms, leaf->last_rx_uptime_ms);
+      LogNonmonotonicDelta(
+        leaf->leaf_id, now_ms, leaf->last_rx_uptime_ms, gap);
       const bool missing_active = gap >= manager->config.missing_gap_ms;
       alert_notification_payload_t payload = { 0 };
       FillPayloadBase(&payload, leaf, now_ms, now_epoch);
@@ -948,7 +993,10 @@ AlertManagerTick(alert_manager_t* manager, int64_t now_ms, int64_t now_epoch)
     }
 
     if ((mask & (1u << ALERT_LEAF_OFFLINE)) != 0u && leaf->last_online_ms > 0) {
-      const uint32_t offline_ms = (uint32_t)(now_ms - leaf->last_online_ms);
+      const uint32_t offline_ms =
+        SaturatingDeltaMs(now_ms, leaf->last_online_ms);
+      LogNonmonotonicDelta(
+        leaf->leaf_id, now_ms, leaf->last_online_ms, offline_ms);
       const bool offline_active =
         (!leaf->online && offline_ms >= manager->config.offline_ms);
       alert_notification_payload_t payload = { 0 };
