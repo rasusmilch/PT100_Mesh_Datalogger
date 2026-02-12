@@ -92,6 +92,10 @@ extern "C"
     bool deferred_active;
     bool i2c_quiesce_active;
 
+    bool data_stream_enabled;
+    uint32_t data_stream_backend;
+    int32_t data_stream_init_err;
+
     // sensor
     bool sensor_fault_present;
 
@@ -320,6 +324,7 @@ extern "C"
     uint32_t sd_flush_records_since;
     bool sd_flush_in_progress;
     bool sd_flush_pending;
+    bool sd_flush_quiesce_session_active;
     volatile bool sd_manual_drain_active;
     volatile TickType_t sd_manual_drain_deadline_ticks;
     volatile uint32_t sd_manual_drain_passes;
@@ -380,7 +385,9 @@ extern "C"
     bool i2c_recovery_in_progress;
     deferred_log_t deferred_log;
     bool i2c_quiesce_active;
+    uint32_t i2c_quiesce_refcount;
     uint32_t i2c_quiesce_enter_count;
+    const char* i2c_quiesce_reason;
     uint32_t deferred_drop_last_log_ms;
 
     // Sensor fault logging/debounce state (rate-limited).
@@ -436,6 +443,7 @@ extern "C"
     bool wifi_direct_started;
     bool wifi_direct_time_synced;
     bool data_streaming_enabled;
+    esp_err_t data_stream_init_err;
     bool log_quiet;
     bool diag_heap_check_enabled;
     runtime_phase_t runtime_phase;

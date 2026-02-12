@@ -5,11 +5,21 @@
 
 #include "esp_err.h"
 
+typedef enum
+{
+  DATA_PORT_BACKEND_UART0 = 0,
+  DATA_PORT_BACKEND_USB_SERIAL_JTAG,
+} DataPortBackend;
+
 /**
  * @brief Execute DataPortInit.
  * @return Return the function result.
  */
 esp_err_t DataPortInit(void);
+
+DataPortBackend DataPortGetBackend(void);
+
+const char* DataPortBackendToString(DataPortBackend backend);
 /**
  * @brief Execute DataPortWrite.
  * @param bytes Parameter bytes.

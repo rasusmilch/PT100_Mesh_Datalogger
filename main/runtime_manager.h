@@ -6,6 +6,7 @@
 
 #include "app_settings.h"
 #include "driver/spi_master.h"
+#include "data_port.h"
 #include "esp_err.h"
 #include "fram_error_log.h"
 #include "fram_i2c.h"
@@ -281,6 +282,18 @@ extern "C" {
  * @return Return the function result.
  */
   bool RuntimeIsDataStreamingEnabled(void);
+
+/**
+ * @brief Execute RuntimeGetDataStreamBackend.
+ * @return Return the function result.
+ */
+  DataPortBackend RuntimeGetDataStreamBackend(void);
+
+/**
+ * @brief Execute RuntimeGetDataStreamInitError.
+ * @return Return the function result.
+ */
+  esp_err_t RuntimeGetDataStreamInitError(void);
 
 /**
  * @brief Execute RuntimeIsI2cQuiesceActive.

@@ -76,6 +76,26 @@ RuntimeMarkersResetReasonToString(esp_reset_reason_t reason)
       return "brownout";
     case ESP_RST_SDIO:
       return "sdio";
+#if defined(ESP_RST_USB)
+    case ESP_RST_USB:
+      return "usb";
+#endif
+#if defined(ESP_RST_JTAG)
+    case ESP_RST_JTAG:
+      return "jtag";
+#endif
+#if defined(ESP_RST_EFUSE)
+    case ESP_RST_EFUSE:
+      return "efuse";
+#endif
+#if defined(ESP_RST_PWR_GLITCH)
+    case ESP_RST_PWR_GLITCH:
+      return "pwr_glitch";
+#endif
+#if defined(ESP_RST_CPU_LOCKUP)
+    case ESP_RST_CPU_LOCKUP:
+      return "cpu_lockup";
+#endif
     default:
       return "unknown";
   }
