@@ -104,6 +104,7 @@ static const int64_t kNetTxStallDropMs = 30000;
 static const uint32_t kI2cRecoveryTriggerCount = 3;
 static const int64_t kFramRetryIntervalMs = 30000;
 static const uint32_t kFramInvalidHeapLogEvery = 10;
+static const uint32_t kDeferredDropWarnIntervalMs = 60000;
 static const uint32_t kRebootAlertLatchMagic = 0x5254424C;
 static const uint16_t kRebootAlertLatchVersion = 2;
 static const uint32_t kRtcErrlogLatchMagic = 0x5245434C;
@@ -287,6 +288,30 @@ UpdateFramFillState(runtime_state_t* state);
 
 static void
 UpdateCachedBool(runtime_state_t* state, bool* field, bool value);
+
+static bool
+DeferredLogPush(runtime_state_t* state, const log_record_t* record);
+
+static bool
+DeferredLogPop(runtime_state_t* state, log_record_t* out);
+
+static uint8_t
+DeferredLogCount(runtime_state_t* state);
+
+static uint32_t
+DeferredLogDrops(runtime_state_t* state);
+
+static void
+DeferredLogReset(runtime_state_t* state);
+
+static void
+RuntimeBeginI2cQuiesce(runtime_state_t* state, const char* reason);
+
+static void
+RuntimeEndI2cQuiesce(runtime_state_t* state);
+
+static esp_err_t
+RuntimeDrainDeferredToFram(runtime_state_t* state, const char* context);
 
 static void
 RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms);
@@ -1587,6 +1612,160 @@ UpdateCachedUint32(runtime_state_t* state, uint32_t* field, uint32_t value)
   }
   *field = value;
   RuntimeHealthMarkDirty(state);
+}
+
+static bool
+DeferredLogPush(runtime_state_t* state, const log_record_t* record)
+{
+  if (state == NULL || record == NULL) {
+    return false;
+  }
+  bool pushed = false;
+  taskENTER_CRITICAL(&state->deferred_log.lock);
+  if (state->deferred_log.count < DEFERRED_LOG_CAPACITY) {
+    state->deferred_log.records[state->deferred_log.head] = *record;
+    state->deferred_log.head =
+      (uint8_t)((state->deferred_log.head + 1u) % DEFERRED_LOG_CAPACITY);
+    state->deferred_log.count++;
+    pushed = true;
+  }
+  taskEXIT_CRITICAL(&state->deferred_log.lock);
+  return pushed;
+}
+
+static bool
+DeferredLogPop(runtime_state_t* state, log_record_t* out)
+{
+  if (state == NULL || out == NULL) {
+    return false;
+  }
+  bool popped = false;
+  taskENTER_CRITICAL(&state->deferred_log.lock);
+  if (state->deferred_log.count > 0u) {
+    *out = state->deferred_log.records[state->deferred_log.tail];
+    state->deferred_log.tail =
+      (uint8_t)((state->deferred_log.tail + 1u) % DEFERRED_LOG_CAPACITY);
+    state->deferred_log.count--;
+    popped = true;
+  }
+  taskEXIT_CRITICAL(&state->deferred_log.lock);
+  return popped;
+}
+
+static uint8_t
+DeferredLogCount(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return 0;
+  }
+  uint8_t count = 0;
+  taskENTER_CRITICAL(&state->deferred_log.lock);
+  count = state->deferred_log.count;
+  taskEXIT_CRITICAL(&state->deferred_log.lock);
+  return count;
+}
+
+static uint32_t
+DeferredLogDrops(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return 0;
+  }
+  uint32_t drops = 0;
+  taskENTER_CRITICAL(&state->deferred_log.lock);
+  drops = state->deferred_log.drops;
+  taskEXIT_CRITICAL(&state->deferred_log.lock);
+  return drops;
+}
+
+static void
+DeferredLogReset(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  taskENTER_CRITICAL(&state->deferred_log.lock);
+  state->deferred_log.head = 0;
+  state->deferred_log.tail = 0;
+  state->deferred_log.count = 0;
+  state->deferred_log.drops = 0;
+  taskEXIT_CRITICAL(&state->deferred_log.lock);
+  UpdateCachedUint32(state, &state->cached_status.deferred_count, 0u);
+  UpdateCachedUint32(state, &state->cached_status.deferred_drops, 0u);
+  UpdateCachedBool(state, &state->cached_status.deferred_active, false);
+}
+
+static void
+RuntimeBeginI2cQuiesce(runtime_state_t* state, const char* reason)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->i2c_quiesce_active = true;
+  state->i2c_quiesce_enter_count++;
+  UpdateCachedBool(state, &state->cached_status.i2c_quiesce_active, true);
+  UpdateCachedUint32(
+    state, &state->cached_status.deferred_count, DeferredLogCount(state));
+  UpdateCachedUint32(
+    state, &state->cached_status.deferred_drops, DeferredLogDrops(state));
+  UpdateCachedBool(state,
+                   &state->cached_status.deferred_active,
+                   (DeferredLogCount(state) > 0u));
+  ESP_LOGI(kTag,
+           "I2C quiesce begin (%s) deferred=%u drops=%u",
+           (reason != NULL) ? reason : "unknown",
+           (unsigned)state->cached_status.deferred_count,
+           (unsigned)state->cached_status.deferred_drops);
+}
+
+static void
+RuntimeEndI2cQuiesce(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+  state->i2c_quiesce_active = false;
+  UpdateCachedBool(state, &state->cached_status.i2c_quiesce_active, false);
+  UpdateCachedUint32(
+    state, &state->cached_status.deferred_count, DeferredLogCount(state));
+  UpdateCachedUint32(
+    state, &state->cached_status.deferred_drops, DeferredLogDrops(state));
+  UpdateCachedBool(state,
+                   &state->cached_status.deferred_active,
+                   (DeferredLogCount(state) > 0u));
+}
+
+static esp_err_t
+RuntimeDrainDeferredToFram(runtime_state_t* state, const char* context)
+{
+  if (state == NULL || !state->fram_available) {
+    return ESP_OK;
+  }
+  log_record_t record;
+  while (DeferredLogPop(state, &record)) {
+    if (!RuntimeFramLogLockWithWarn(state,
+                                    kFramLogLockTimeoutTicks,
+                                    &state->fram_log_lock_timeout_count_sdflush,
+                                    &state->last_fram_log_lock_timeout_sdflush_log_ms,
+                                    context)) {
+      (void)DeferredLogPush(state, &record);
+      return ESP_ERR_TIMEOUT;
+    }
+    const esp_err_t id_result = RuntimeAssignRecordIds(state, &record);
+    if (id_result != ESP_OK) {
+      RuntimeFramLogUnlock(state);
+      (void)DeferredLogPush(state, &record);
+      return id_result;
+    }
+    const esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
+    RuntimeFramLogUnlock(state);
+    if (append_result != ESP_OK) {
+      (void)DeferredLogPush(state, &record);
+      return append_result;
+    }
+    state->sd_flush_records_since++;
+  }
+  return ESP_OK;
 }
 
 static bool
@@ -5059,6 +5238,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   state->sd_flush_last_err = ESP_OK;
   const TickType_t start_ticks = xTaskGetTickCount();
   bool recover_i2c = false;
+  bool quiesce_started = false;
   esp_err_t recover_err = ESP_OK;
   if (state->sd_backoff_until_ticks != 0 &&
       start_ticks < state->sd_backoff_until_ticks) {
@@ -5087,6 +5267,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   }
   esp_err_t result = ESP_OK;
   state->sd_flush_in_progress = true;
+  RuntimeBeginI2cQuiesce(state, "sd_flush");
+  quiesce_started = true;
   uint32_t total_records_flushed = 0;
   size_t total_bytes_flushed = 0;
   uint32_t corrupt_skips_this_call = 0;
@@ -5286,6 +5468,23 @@ SdFlushWorkerTickEx(runtime_state_t* state,
 flush_done:
   state->sd_flush_in_progress = false;
   RuntimeSdIoUnlock(state);
+  if (quiesce_started) {
+    const esp_err_t deferred_result =
+      RuntimeDrainDeferredToFram(state, "sd_flush deferred reconcile");
+    if (deferred_result != ESP_OK) {
+      ESP_LOGW(kTag,
+               "Deferred RAM->FRAM reconcile paused: %s",
+               esp_err_to_name(deferred_result));
+    }
+    UpdateCachedUint32(
+      state, &state->cached_status.deferred_count, DeferredLogCount(state));
+    UpdateCachedUint32(
+      state, &state->cached_status.deferred_drops, DeferredLogDrops(state));
+    UpdateCachedBool(state,
+                     &state->cached_status.deferred_active,
+                     (DeferredLogCount(state) > 0u));
+    RuntimeEndI2cQuiesce(state);
+  }
   if (recover_i2c && IsRecoverableI2cErr(recover_err)) {
     state->sd_flush_phase = "i2c:recover";
     if (RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
@@ -6493,6 +6692,51 @@ StorageTask(void* context)
     if (received) {
       RuntimeMarkersSetStorage(state, STORAGE_020_AFTER_QUEUE_RECV);
       log_record_t record = msg.record;
+      if (state->i2c_quiesce_active) {
+        if (!DeferredLogPush(state, &record)) {
+          taskENTER_CRITICAL(&state->deferred_log.lock);
+          state->deferred_log.drops++;
+          taskEXIT_CRITICAL(&state->deferred_log.lock);
+          if (LogRateLimitAllow(&state->deferred_drop_last_log_ms,
+                                kDeferredDropWarnIntervalMs)) {
+            ESP_LOGW(kTag,
+                     "Deferred log full during SD flush; dropping samples (drops=%u)",
+                     (unsigned)DeferredLogDrops(state));
+          }
+        }
+        UpdateCachedUint32(
+          state, &state->cached_status.deferred_count, DeferredLogCount(state));
+        UpdateCachedUint32(
+          state, &state->cached_status.deferred_drops, DeferredLogDrops(state));
+        UpdateCachedBool(state,
+                         &state->cached_status.deferred_active,
+                         (DeferredLogCount(state) > 0u));
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+        const int64_t now_epoch =
+          TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+        log_record_t alert_record = record;
+        alert_record.raw_temp_milli_c = msg.disp_raw_temp_milli_c;
+        alert_record.temp_milli_c = msg.disp_cal_temp_milli_c;
+        RuntimeMarkersSetStorage(state, STORAGE_040_ALERT_MANAGER);
+        AlertManagerOnSample(&state->alert_manager,
+                             state->local_leaf_id,
+                             &alert_record,
+                             now_ms,
+                             now_epoch);
+        RuntimeMarkersSetStorage(state, STORAGE_060_EXPORT_UART_ENQUEUE);
+        EnqueueExportRecord(state, state->node_id_string, &record);
+        if (state->mqtt_enabled_active) {
+          RuntimeMarkersSetStorage(state, STORAGE_070_MQTT_ENQUEUE);
+          if (state->node_role_active == APP_NODE_ROLE_ROOT) {
+            if (BridgeModeUsesBroker(state->mqtt_bridge_mode_active)) {
+              EnqueueBrokerPublish(state, state->local_mac, &record);
+            }
+          } else {
+            EnqueueExportOutbox(state, state->local_mac, &record);
+          }
+        }
+        continue;
+      }
       const bool fram_available = state->fram_available;
       bool fram_lock_ok = false;
       if (fram_available) {
@@ -6863,6 +7107,10 @@ ControlTickRtcResync(runtime_state_t* state)
 
   const uint32_t period_ms = state->settings.rtc_resync_period_ms;
   if (period_ms == 0) {
+    return;
+  }
+
+  if (state->i2c_quiesce_active) {
     return;
   }
 
@@ -8111,6 +8359,7 @@ InitializeRuntimeStruct(void)
   g_state.last_temp_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
   g_state.request_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
   g_state.errlog_latch_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+  g_state.deferred_log.lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
   MqttClientWrapInit(&g_state.mqtt_client);
   RuntimeHealthInit(&g_state.health_cache);
   RuntimeHealthPublisherInit(&g_state);
@@ -8121,6 +8370,7 @@ InitializeRuntimeStruct(void)
   g_state.sd_io_mutex_holder = kMutexHolderNone;
   g_state.sd_flush_phase = "idle";
   g_state.sd_flush_last_err = ESP_OK;
+  g_state.i2c_quiesce_active = false;
 
   g_runtime.settings = &g_state.settings;
   g_runtime.fram_i2c = &g_state.fram_i2c;
@@ -8928,6 +9178,9 @@ RuntimeStart(void)
   g_state.sd_flush_pending = false;
   g_state.sd_start_drain_pending = false;
   g_state.sd_next_flush_allowed_ticks = 0;
+  g_state.i2c_quiesce_active = false;
+  g_state.deferred_drop_last_log_ms = 0;
+  DeferredLogReset(&g_state);
   g_state.sd_last_io_error_active = false;
   g_state.sd_last_io_err = ESP_OK;
   g_state.sd_last_errno = 0;
@@ -8946,6 +9199,7 @@ RuntimeStart(void)
   UpdateCachedBool(&g_state, &g_state.cached_status.sd_io_error_active, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.fram_full, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.fram_overrun_active, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.i2c_quiesce_active, false);
 
   sd_drain_stats_t drain_stats = { 0 };
   (void)DrainFramToSdOnStartBestEffort(&g_state, &drain_stats);
@@ -9402,6 +9656,16 @@ EnterDiagMode(void)
   } else {
     ESP_LOGW(kTag, "Stop: pausing SPI users before drain");
     RuntimePauseSpiUsers(&g_state, 1000u);
+    (void)RuntimeDrainDeferredToFram(&g_state, "stop deferred reconcile");
+    UpdateCachedUint32(&g_state,
+                       &g_state.cached_status.deferred_count,
+                       DeferredLogCount(&g_state));
+    UpdateCachedUint32(&g_state,
+                       &g_state.cached_status.deferred_drops,
+                       DeferredLogDrops(&g_state));
+    UpdateCachedBool(&g_state,
+                     &g_state.cached_status.deferred_active,
+                     (DeferredLogCount(&g_state) > 0u));
     ESP_LOGW(kTag, "Stop: draining FRAM->SD (and unmounting)");
     sd_drain_stats_t drain_stats = { 0 };
     const int32_t stop_drain_max_ms = ResolveStopDrainMaxMs();
@@ -9468,6 +9732,12 @@ bool
 RuntimeIsDataStreamingEnabled(void)
 {
   return g_state.data_streaming_enabled;
+}
+
+bool
+RuntimeIsI2cQuiesceActive(void)
+{
+  return g_state.i2c_quiesce_active;
 }
 
 /**

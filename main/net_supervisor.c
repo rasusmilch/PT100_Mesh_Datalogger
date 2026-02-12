@@ -373,6 +373,10 @@ NetSupervisorTask(void* context)
 
       if (connected && next_time_sync_ticks != 0 &&
           (int32_t)(now_ticks - next_time_sync_ticks) >= 0) {
+        if (RuntimeIsI2cQuiesceActive()) {
+          next_time_sync_ticks = now_ticks + pdMS_TO_TICKS(1000);
+          continue;
+        }
         const esp_err_t sntp_result = TrySntpSyncWithFailover(30 * 1000);
         if (sntp_result == ESP_OK) {
           s_sntp_consecutive_failures = 0;

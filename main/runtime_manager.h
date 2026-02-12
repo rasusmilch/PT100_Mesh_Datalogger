@@ -283,6 +283,12 @@ extern "C" {
   bool RuntimeIsDataStreamingEnabled(void);
 
 /**
+ * @brief Execute RuntimeIsI2cQuiesceActive.
+ * @return Return the function result.
+ */
+  bool RuntimeIsI2cQuiesceActive(void);
+
+/**
  * @brief Execute RuntimeSetLogPolicyRun.
  */
   void RuntimeSetLogPolicyRun(void);
