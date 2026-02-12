@@ -17,6 +17,9 @@ static bool g_initialized = false;
 static const int kRxBufferLen = 256;
 static const int kTxBufferLen = 2048;
 
+static int
+MapConfiguredUartGpio_(int32_t configured_gpio);
+
 #if defined(SOC_USB_SERIAL_JTAG_SUPPORTED) && SOC_USB_SERIAL_JTAG_SUPPORTED && \
   !CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 static const DataPortBackend kBackend = DATA_PORT_BACKEND_USB_SERIAL_JTAG;
@@ -40,6 +43,23 @@ DataPortBackendToString(DataPortBackend backend)
       return "usb_jtag";
     default:
       return "unknown";
+  }
+}
+
+/**
+ * @brief Returns the configured UART0 pins used for the data stream backend.
+ *
+ * @param[out] tx_gpio GPIO number for UART0 TX, or -1 if not configured.
+ * @param[out] rx_gpio GPIO number for UART0 RX, or -1 if not configured.
+ */
+void
+DataPortGetUart0Pins(int32_t* tx_gpio, int32_t* rx_gpio)
+{
+  if (tx_gpio != NULL) {
+    *tx_gpio = CONFIG_APP_DATA_STREAM_UART_TX_GPIO;
+  }
+  if (rx_gpio != NULL) {
+    *rx_gpio = CONFIG_APP_DATA_STREAM_UART_RX_GPIO;
   }
 }
 
@@ -89,9 +109,13 @@ DataPortInit(void)
     return result;
   }
 
+  int32_t configured_tx_gpio = -1;
+  int32_t configured_rx_gpio = -1;
+  DataPortGetUart0Pins(&configured_tx_gpio, &configured_rx_gpio);
+
   result = uart_set_pin(UART_NUM_0,
-                        UART_PIN_NO_CHANGE,
-                        UART_PIN_NO_CHANGE,
+                        MapConfiguredUartGpio_(configured_tx_gpio),
+                        MapConfiguredUartGpio_(configured_rx_gpio),
                         UART_PIN_NO_CHANGE,
                         UART_PIN_NO_CHANGE);
   if (result != ESP_OK) {
@@ -108,6 +132,15 @@ DataPortInit(void)
 
   g_initialized = true;
   return ESP_OK;
+}
+
+static int
+MapConfiguredUartGpio_(int32_t configured_gpio)
+{
+  if (configured_gpio < 0) {
+    return UART_PIN_NO_CHANGE;
+  }
+  return configured_gpio;
 }
 
 /**

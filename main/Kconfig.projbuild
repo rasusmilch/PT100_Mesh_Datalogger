@@ -422,6 +422,22 @@ config APP_MAX_CSV_LINE_BYTES
     Maximum size for formatted CSV rows, including the trailing newline. This
     buffer is allocated once and reused for CSV formatting.
 
+config APP_DATA_STREAM_UART_TX_GPIO
+  int "Data stream UART0 TX GPIO"
+  range -1 48
+  default 43
+  help
+    UART0 TX GPIO used by the data stream backend. Set to -1 to leave the
+    current UART0 TX pin mapping unchanged.
+
+config APP_DATA_STREAM_UART_RX_GPIO
+  int "Data stream UART0 RX GPIO"
+  range -1 48
+  default 44
+  help
+    UART0 RX GPIO used by the data stream backend. Set to -1 to leave the
+    current UART0 RX pin mapping unchanged.
+
 config APP_SD_PERIODIC_FLUSH_MS
   int "Periodic flush interval (ms)"
   range 1000 3600000
