@@ -901,8 +901,16 @@ CommandStatus(int argc, char** argv)
   printf("data_csv_write_fail_count: %u\n", (unsigned)export_write_fail);
   printf("data_stream_enabled: %s\n",
          RuntimeIsDataStreamingEnabled() ? "yes" : "no");
+  DataPortBackend data_stream_backend = RuntimeGetDataStreamBackend();
   printf("data_stream_backend: %s\n",
-         DataPortBackendToString(RuntimeGetDataStreamBackend()));
+         DataPortBackendToString(data_stream_backend));
+  if (data_stream_backend == DATA_PORT_BACKEND_UART0) {
+    int32_t uart0_tx_gpio = -1;
+    int32_t uart0_rx_gpio = -1;
+    DataPortGetUart0Pins(&uart0_tx_gpio, &uart0_rx_gpio);
+    printf("data_stream_uart0_tx_gpio: %ld\n", (long)uart0_tx_gpio);
+    printf("data_stream_uart0_rx_gpio: %ld\n", (long)uart0_rx_gpio);
+  }
   printf("data_stream_init_err: %s\n",
          esp_err_to_name(RuntimeGetDataStreamInitError()));
   const uint32_t export_drop_count =
@@ -3564,8 +3572,16 @@ CommandData(int argc, char** argv)
   if (strcmp(action, "show") == 0) {
     printf("data_streaming: %s\n",
            RuntimeIsDataStreamingEnabled() ? "on" : "off");
+    DataPortBackend data_stream_backend = RuntimeGetDataStreamBackend();
     printf("data_stream_backend: %s\n",
-           DataPortBackendToString(RuntimeGetDataStreamBackend()));
+           DataPortBackendToString(data_stream_backend));
+    if (data_stream_backend == DATA_PORT_BACKEND_UART0) {
+      int32_t uart0_tx_gpio = -1;
+      int32_t uart0_rx_gpio = -1;
+      DataPortGetUart0Pins(&uart0_tx_gpio, &uart0_rx_gpio);
+      printf("data_stream_uart0_tx_gpio: %ld\n", (long)uart0_tx_gpio);
+      printf("data_stream_uart0_rx_gpio: %ld\n", (long)uart0_rx_gpio);
+    }
     printf("data_stream_init_err: %s\n",
            esp_err_to_name(RuntimeGetDataStreamInitError()));
     return 0;
