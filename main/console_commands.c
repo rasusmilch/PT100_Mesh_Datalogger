@@ -899,6 +899,12 @@ CommandStatus(int argc, char** argv)
       : 0u;
   printf("data_csv_drop_count: %u\n", (unsigned)export_dropped);
   printf("data_csv_write_fail_count: %u\n", (unsigned)export_write_fail);
+  printf("data_stream_enabled: %s\n",
+         RuntimeIsDataStreamingEnabled() ? "yes" : "no");
+  printf("data_stream_backend: %s\n",
+         DataPortBackendToString(RuntimeGetDataStreamBackend()));
+  printf("data_stream_init_err: %s\n",
+         esp_err_to_name(RuntimeGetDataStreamInitError()));
   const uint32_t export_drop_count =
     (g_runtime->export_drop_count != NULL) ? *g_runtime->export_drop_count : 0u;
   const uint32_t export_send_fail_count =
@@ -3558,6 +3564,10 @@ CommandData(int argc, char** argv)
   if (strcmp(action, "show") == 0) {
     printf("data_streaming: %s\n",
            RuntimeIsDataStreamingEnabled() ? "on" : "off");
+    printf("data_stream_backend: %s\n",
+           DataPortBackendToString(RuntimeGetDataStreamBackend()));
+    printf("data_stream_init_err: %s\n",
+           esp_err_to_name(RuntimeGetDataStreamInitError()));
     return 0;
   }
 

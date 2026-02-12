@@ -1702,8 +1702,17 @@ RuntimeBeginI2cQuiesce(runtime_state_t* state, const char* reason)
   if (state == NULL) {
     return;
   }
+
+  if (state->i2c_quiesce_refcount > 0u) {
+    state->i2c_quiesce_refcount++;
+    state->i2c_quiesce_reason = (reason != NULL) ? reason : "unknown";
+    return;
+  }
+
   state->i2c_quiesce_active = true;
+  state->i2c_quiesce_refcount = 1u;
   state->i2c_quiesce_enter_count++;
+  state->i2c_quiesce_reason = (reason != NULL) ? reason : "unknown";
   UpdateCachedBool(state, &state->cached_status.i2c_quiesce_active, true);
   UpdateCachedUint32(
     state, &state->cached_status.deferred_count, DeferredLogCount(state));
@@ -1714,7 +1723,7 @@ RuntimeBeginI2cQuiesce(runtime_state_t* state, const char* reason)
                    (DeferredLogCount(state) > 0u));
   ESP_LOGI(kTag,
            "I2C quiesce begin (%s) deferred=%u drops=%u",
-           (reason != NULL) ? reason : "unknown",
+           state->i2c_quiesce_reason,
            (unsigned)state->cached_status.deferred_count,
            (unsigned)state->cached_status.deferred_drops);
 }
@@ -1722,10 +1731,17 @@ RuntimeBeginI2cQuiesce(runtime_state_t* state, const char* reason)
 static void
 RuntimeEndI2cQuiesce(runtime_state_t* state)
 {
-  if (state == NULL) {
+  if (state == NULL || state->i2c_quiesce_refcount == 0u) {
     return;
   }
+
+  state->i2c_quiesce_refcount--;
+  if (state->i2c_quiesce_refcount > 0u) {
+    return;
+  }
+
   state->i2c_quiesce_active = false;
+  state->i2c_quiesce_reason = NULL;
   UpdateCachedBool(state, &state->cached_status.i2c_quiesce_active, false);
   UpdateCachedUint32(
     state, &state->cached_status.deferred_count, DeferredLogCount(state));
@@ -5261,7 +5277,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   state->sd_flush_last_err = ESP_OK;
   const TickType_t start_ticks = xTaskGetTickCount();
   bool recover_i2c = false;
-  bool quiesce_started = false;
+  bool more_pending = false;
   esp_err_t recover_err = ESP_OK;
   if (state->sd_backoff_until_ticks != 0 &&
       start_ticks < state->sd_backoff_until_ticks) {
@@ -5290,8 +5306,10 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   }
   esp_err_t result = ESP_OK;
   state->sd_flush_in_progress = true;
-  RuntimeBeginI2cQuiesce(state, "sd_flush");
-  quiesce_started = true;
+  if (!state->sd_flush_quiesce_session_active) {
+    RuntimeBeginI2cQuiesce(state, "sd_flush");
+    state->sd_flush_quiesce_session_active = true;
+  }
   uint32_t total_records_flushed = 0;
   size_t total_bytes_flushed = 0;
   uint32_t corrupt_skips_this_call = 0;
@@ -5491,23 +5509,6 @@ SdFlushWorkerTickEx(runtime_state_t* state,
 flush_done:
   state->sd_flush_in_progress = false;
   RuntimeSdIoUnlock(state);
-  if (quiesce_started) {
-    const esp_err_t deferred_result =
-      RuntimeDrainDeferredToFram(state, "sd_flush deferred reconcile");
-    if (deferred_result != ESP_OK) {
-      ESP_LOGW(kTag,
-               "Deferred RAM->FRAM reconcile paused: %s",
-               esp_err_to_name(deferred_result));
-    }
-    UpdateCachedUint32(
-      state, &state->cached_status.deferred_count, DeferredLogCount(state));
-    UpdateCachedUint32(
-      state, &state->cached_status.deferred_drops, DeferredLogDrops(state));
-    UpdateCachedBool(state,
-                     &state->cached_status.deferred_active,
-                     (DeferredLogCount(state) > 0u));
-    RuntimeEndI2cQuiesce(state);
-  }
   if (recover_i2c && IsRecoverableI2cErr(recover_err)) {
     state->sd_flush_phase = "i2c:recover";
     if (RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
@@ -5520,30 +5521,51 @@ flush_done:
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   RuntimeMarkersSetSdFlush(state, SD_050_FLUSH_WORKER_EXIT);
+
+  if (RuntimeFramLogLockWithWarn(
+        state,
+        fram_log_timeout_ticks,
+        &state->fram_log_lock_timeout_count_sdflush,
+        &state->last_fram_log_lock_timeout_sdflush_log_ms,
+        "sd_flush pending check")) {
+    more_pending = (FramLogGetBufferedRecords(&state->fram_log) > 0);
+    RuntimeFramLogUnlock(state);
+  } else {
+    more_pending = true;
+  }
+  if (more_pending_out != NULL) {
+    *more_pending_out = more_pending;
+  }
+
+  if (result != ESP_OK || !more_pending) {
+    state->sd_flush_quiesce_session_active = false;
+    RuntimeEndI2cQuiesce(state);
+    if (!state->i2c_quiesce_active) {
+      const esp_err_t deferred_result =
+        RuntimeDrainDeferredToFram(state, "sd_flush deferred reconcile");
+      if (deferred_result != ESP_OK) {
+        ESP_LOGW(kTag,
+                 "Deferred RAM->FRAM reconcile paused: %s",
+                 esp_err_to_name(deferred_result));
+      }
+      UpdateCachedUint32(
+        state, &state->cached_status.deferred_count, DeferredLogCount(state));
+      UpdateCachedUint32(
+        state, &state->cached_status.deferred_drops, DeferredLogDrops(state));
+      UpdateCachedBool(state,
+                       &state->cached_status.deferred_active,
+                       (DeferredLogCount(state) > 0u));
+    }
+  }
+
   if (result != ESP_OK) {
     return result;
   }
-
   if (records_flushed_out != NULL) {
     *records_flushed_out = total_records_flushed;
   }
   if (bytes_flushed_out != NULL) {
     *bytes_flushed_out = total_bytes_flushed;
-  }
-  if (more_pending_out != NULL) {
-    bool more_pending = false;
-    if (RuntimeFramLogLockWithWarn(
-          state,
-          fram_log_timeout_ticks,
-          &state->fram_log_lock_timeout_count_sdflush,
-          &state->last_fram_log_lock_timeout_sdflush_log_ms,
-          "sd_flush pending check")) {
-      more_pending = (FramLogGetBufferedRecords(&state->fram_log) > 0);
-      RuntimeFramLogUnlock(state);
-    } else {
-      more_pending = true;
-    }
-    *more_pending_out = more_pending;
   }
   state->sd_flush_phase = "flush:done";
   return ESP_OK;
@@ -8394,6 +8416,9 @@ InitializeRuntimeStruct(void)
   g_state.sd_flush_phase = "idle";
   g_state.sd_flush_last_err = ESP_OK;
   g_state.i2c_quiesce_active = false;
+  g_state.i2c_quiesce_refcount = 0u;
+  g_state.i2c_quiesce_reason = NULL;
+  g_state.data_stream_init_err = ESP_OK;
 
   g_runtime.settings = &g_state.settings;
   g_runtime.fram_i2c = &g_state.fram_i2c;
@@ -8593,6 +8618,13 @@ RuntimeManagerInitMinimal(void)
   UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.system_running, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.data_stream_enabled, false);
+  UpdateCachedUint32(&g_state,
+                     &g_state.cached_status.data_stream_backend,
+                     (uint32_t)DataPortGetBackend());
+  UpdateCachedInt32(&g_state,
+                    &g_state.cached_status.data_stream_init_err,
+                    (int32_t)g_state.data_stream_init_err);
   g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
   g_state.pending_start = false;
   g_state.pending_stop = false;
@@ -8992,6 +9024,15 @@ RuntimeManagerInit(void)
 {
   const esp_err_t minimal_result = RuntimeManagerInitMinimal();
   const esp_err_t full_result = RuntimeManagerInitFull();
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+  const char* console_backend = "usb_jtag";
+#else
+  const char* console_backend = "uart";
+#endif
+  ESP_LOGI(kTag,
+           "Stream routing: console=%s data=%s",
+           console_backend,
+           DataPortBackendToString(DataPortGetBackend()));
   if (minimal_result != ESP_OK) {
     return minimal_result;
   }
@@ -9199,6 +9240,7 @@ RuntimeStart(void)
   g_state.sd_flush_records_since = 0;
   g_state.sd_flush_in_progress = false;
   g_state.sd_flush_pending = false;
+  g_state.sd_flush_quiesce_session_active = false;
   g_state.sd_start_drain_pending = false;
   g_state.sd_next_flush_allowed_ticks = 0;
   g_state.i2c_quiesce_active = false;
@@ -9223,6 +9265,12 @@ RuntimeStart(void)
   UpdateCachedBool(&g_state, &g_state.cached_status.fram_full, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.fram_overrun_active, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.i2c_quiesce_active, false);
+  UpdateCachedBool(&g_state, &g_state.cached_status.data_stream_enabled, false);
+  UpdateCachedUint32(&g_state,
+                     &g_state.cached_status.data_stream_backend,
+                     (uint32_t)DataPortGetBackend());
+  UpdateCachedInt32(
+    &g_state, &g_state.cached_status.data_stream_init_err, (int32_t)ESP_OK);
 
   sd_drain_stats_t drain_stats = { 0 };
   (void)DrainFramToSdOnStartBestEffort(&g_state, &drain_stats);
@@ -9737,14 +9785,23 @@ RuntimeEnableDataStreaming(bool enabled)
   const bool was_enabled = g_state.data_streaming_enabled;
   if (enabled && !was_enabled) {
     g_state.data_streaming_enabled = true;
-    if (DataPortInit() != ESP_OK) {
+    g_state.data_stream_init_err = DataPortInit();
+    UpdateCachedInt32(&g_state,
+                      &g_state.cached_status.data_stream_init_err,
+                      (int32_t)g_state.data_stream_init_err);
+    if (g_state.data_stream_init_err != ESP_OK) {
       g_state.data_streaming_enabled = false;
+      UpdateCachedBool(
+        &g_state, &g_state.cached_status.data_stream_enabled, false);
       return;
     }
     (void)TryEmitCsvHeader(&g_state);
+    UpdateCachedBool(&g_state, &g_state.cached_status.data_stream_enabled, true);
     return;
   }
   g_state.data_streaming_enabled = enabled;
+  UpdateCachedBool(
+    &g_state, &g_state.cached_status.data_stream_enabled, enabled);
 }
 
 /**
@@ -9755,6 +9812,18 @@ bool
 RuntimeIsDataStreamingEnabled(void)
 {
   return g_state.data_streaming_enabled;
+}
+
+DataPortBackend
+RuntimeGetDataStreamBackend(void)
+{
+  return DataPortGetBackend();
+}
+
+esp_err_t
+RuntimeGetDataStreamInitError(void)
+{
+  return g_state.data_stream_init_err;
 }
 
 bool
