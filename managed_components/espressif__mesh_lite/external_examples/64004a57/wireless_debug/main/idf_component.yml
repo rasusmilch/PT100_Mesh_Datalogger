@@ -1,5 +1,0 @@
-dependencies:
-  espressif/button: 3.*
-  idf: '>=5.0'
-  mesh_lite:
-    version: '*'
