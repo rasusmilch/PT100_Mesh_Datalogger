@@ -136,7 +136,7 @@ dependencies:
     - esp32h4
     version: 0.19.0~2
   espressif/usb_host_cdc_acm:
-    component_hash: 4fc5789ef080e3038d8e09598807000f44d045cff5cc1267d9d4dfe0e4e775fb
+    component_hash: 71f9ae30021b1edb6f42980eb151ab24d0b602b8463861569a151b5254ba1e4b
     dependencies:
     - name: idf
       require: private
@@ -157,15 +157,15 @@ dependencies:
     - esp32p4
     - esp32h4
     - linux
-    version: 2.2.0
+    version: 2.3.0
   idf:
     source:
       type: idf
-    version: 5.5.1
+    version: 5.5.2
 direct_dependencies:
 - espressif/mesh_lite
 - espressif/mqtt
 - idf
-manifest_hash: 31de47e8dcb2e9f78b285f863c794c45f0736dcc5f9ef1df419251e275f1953f
+manifest_hash: bbb0ecf633b18e665663657a24ce0635040d57e73e5b76b1607b30a8c63733bc
 target: esp32s3
 version: 2.0.0
