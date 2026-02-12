@@ -369,6 +369,10 @@ extern "C"
     fram_log_validate_result_t fram_corrupt_last_reason;
     uint32_t fram_append_fail_streak;
     uint32_t fram_crc_fail_streak;
+    uint32_t fram_append_fail_suppressed_count;
+    uint32_t fram_crc_fail_suppressed_count;
+    uint32_t last_fram_append_suppressed_log_ms;
+    uint32_t last_fram_crc_suppressed_log_ms;
     uint32_t fram_log_lock_timeout_count_storage;
     uint32_t fram_log_lock_timeout_count_sdflush;
     uint32_t last_fram_log_lock_timeout_storage_log_ms;
