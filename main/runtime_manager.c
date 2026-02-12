@@ -105,6 +105,7 @@ static const uint32_t kI2cRecoveryTriggerCount = 3;
 static const int64_t kFramRetryIntervalMs = 30000;
 static const uint32_t kFramInvalidHeapLogEvery = 10;
 static const uint32_t kDeferredDropWarnIntervalMs = 60000;
+static const uint32_t kFramSuppressedWarnIntervalMs = 10000;
 static const uint32_t kRebootAlertLatchMagic = 0x5254424C;
 static const uint16_t kRebootAlertLatchVersion = 2;
 static const uint32_t kRtcErrlogLatchMagic = 0x5245434C;
@@ -4187,6 +4188,17 @@ TrackFramInvalidResponse(runtime_state_t* state, const char* context)
   if (state == NULL) {
     return;
   }
+  if (state->i2c_quiesce_active) {
+    state->fram_crc_fail_suppressed_count++;
+    if (LogRateLimitAllow(&state->last_fram_crc_suppressed_log_ms,
+                          kFramSuppressedWarnIntervalMs)) {
+      ESP_LOGW(kTag,
+               "Suppressing FRAM invalid-response escalation during I2C quiesce (%s); count=%" PRIu32,
+               (context != NULL) ? context : "unknown",
+               state->fram_crc_fail_suppressed_count);
+    }
+    return;
+  }
   state->fram_crc_fail_streak++;
   ESP_LOGW(kTag,
            "FRAM invalid response (%s); streak=%" PRIu32,
@@ -4225,6 +4237,17 @@ static void
 TrackFramAppendFailure(runtime_state_t* state, esp_err_t error)
 {
   if (state == NULL) {
+    return;
+  }
+  if (state->i2c_quiesce_active) {
+    state->fram_append_fail_suppressed_count++;
+    if (LogRateLimitAllow(&state->last_fram_append_suppressed_log_ms,
+                          kFramSuppressedWarnIntervalMs)) {
+      ESP_LOGW(kTag,
+               "Suppressing FRAM append failure during I2C quiesce; err=%s count=%" PRIu32,
+               esp_err_to_name(error),
+               state->fram_append_fail_suppressed_count);
+    }
     return;
   }
   state->fram_append_fail_streak++;
