@@ -34,7 +34,7 @@ extern "C"
 
 #define RUNTIME_ERROR_RING_SIZE 8
 #define RUNTIME_RTC_ERRLOG_RING_SIZE 8
-#define DEFERRED_LOG_CAPACITY 16
+#define DEFERRED_LOG_CAPACITY 20
 
   typedef struct
   {

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "app_net_config.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
@@ -13,14 +14,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/ip4_addr.h"
-#include "app_net_config.h"
 #include "mesh_addr.h"
 #include "mesh_transport.h"
 #include "sdkconfig.h"
 #include "wifi_credentials.h"
 #include "wifi_service.h"
-
-static const char* kTag = "diag_mesh";
 
 // Heap integrity checks can trigger asserts when corruption already exists.
 // Keep them opt-in for diagnostics.
@@ -217,8 +215,7 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
   wifi_credentials_t creds;
   WifiCredentialsLoad(&creds);
   config->router_ssid_len = creds.has_ssid ? strlen(creds.ssid) : 0;
-  config->router_password_len =
-    creds.has_ssid ? strlen(creds.password) : 0;
+  config->router_password_len = creds.has_ssid ? strlen(creds.password) : 0;
   config->router_password_valid =
     (config->router_password_len == 0 ||
      (config->router_password_len >= 8 && config->router_password_len <= 63));
@@ -228,8 +225,7 @@ ValidateMeshConfig(bool start_as_root, mesh_diag_config_t* config)
   config->mesh_ap_password_valid =
     (config->mesh_ap_password_len == 0 ||
      (config->mesh_ap_password_len >= 8 && config->mesh_ap_password_len <= 63));
-  config->mesh_ap_password_from_nvs =
-    AppNetConfigMeshApPasswordIsOverridden();
+  config->mesh_ap_password_from_nvs = AppNetConfigMeshApPasswordIsOverridden();
 
   if (!config->mesh_ap_password_valid) {
     return ESP_ERR_INVALID_ARG;

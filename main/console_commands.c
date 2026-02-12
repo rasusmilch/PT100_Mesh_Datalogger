@@ -516,7 +516,8 @@ PrintWifiUsage(void)
     "  - time_sync_s is clamped to 5..3600 seconds.\n"
     "  - wifi ntp sync performs a one-off sync; it does not change NVS\n"
     "    unless you also use wifi cfg set sntp/time_sync_s.\n"
-    "  - sntp CSV allows optional spaces after commas; whitespace is stripped.\n");
+    "  - sntp CSV allows optional spaces after commas; whitespace is "
+    "stripped.\n");
 }
 
 // In diagnostics/console mode, Wi-Fi may not be initialized yet. Most Wi-Fi
@@ -1883,6 +1884,7 @@ PrintSdStatus(const app_runtime_t* runtime)
   const uint32_t sd_fail_count = RuntimeSdFailCount();
   const TickType_t now_ticks = xTaskGetTickCount();
   const uint32_t sd_backoff_until = RuntimeSdBackoffUntilTicks();
+  const runtime_cached_status_t* cached_status = RuntimeGetCachedStatus();
   uint32_t sd_backoff_remaining_ms = 0;
   if (sd_backoff_until != 0 && now_ticks < (TickType_t)sd_backoff_until) {
     sd_backoff_remaining_ms =
@@ -5869,8 +5871,7 @@ CommandDeferLog(int argc, char** argv)
   printf("deferred_count: %u\n", (unsigned)status->deferred_count);
   printf("deferred_drops: %u\n", (unsigned)status->deferred_drops);
   printf("deferred_active: %s\n", status->deferred_active ? "yes" : "no");
-  printf("i2c_quiesce_active: %s\n",
-         status->i2c_quiesce_active ? "yes" : "no");
+  printf("i2c_quiesce_active: %s\n", status->i2c_quiesce_active ? "yes" : "no");
   return 0;
 }
 

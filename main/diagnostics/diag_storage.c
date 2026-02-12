@@ -41,11 +41,8 @@ BuildDailyCsvPath(const sd_logger_t* logger,
 
   char date_string[16];
   strftime(date_string, sizeof(date_string), "%Y-%m-%dZ", &time_info);
-  snprintf(path_out,
-           path_out_size,
-           "%s/%s.csv",
-           logger->mount_point,
-           date_string);
+  snprintf(
+    path_out, path_out_size, "%s/%s.csv", logger->mount_point, date_string);
 }
 
 /**
@@ -63,7 +60,8 @@ BuildDiagRecord(int64_t epoch_seconds)
   record.raw_temp_milli_c = 25000;
   record.temp_milli_c = 25000;
   record.resistance_milli_ohm = 100000;
-  record.flags = (uint16_t)(LOG_RECORD_FLAG_TIME_VALID | LOG_RECORD_FLAG_CAL_VALID);
+  record.flags =
+    (uint16_t)(LOG_RECORD_FLAG_TIME_VALID | LOG_RECORD_FLAG_CAL_VALID);
   return record;
 }
 
@@ -156,11 +154,10 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
                      char* details,
                      size_t details_len)
 {
-  if (runtime == NULL || runtime->sd_logger == NULL || runtime->fram_log == NULL ||
-      runtime->flush_callback == NULL) {
-    snprintf(details,
-             details_len,
-             "runtime missing (sd/fram/flush unavailable)");
+  if (runtime == NULL || runtime->sd_logger == NULL ||
+      runtime->fram_log == NULL || runtime->flush_callback == NULL) {
+    snprintf(
+      details, details_len, "runtime missing (sd/fram/flush unavailable)");
     return false;
   }
 
@@ -168,7 +165,6 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
   fram_log_t* fram = runtime->fram_log;
   const int records = full ? 8 : 3;
   const int64_t base_time = (int64_t)time(NULL);
-  uint64_t last_record_id = 0;
 
   for (int i = 0; i < records; ++i) {
     log_record_t record = BuildDiagRecord(base_time + i);
@@ -180,15 +176,12 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
                esp_err_to_name(append_result));
       return false;
     }
-    last_record_id = record.record_id;
   }
 
   esp_err_t flush_result = runtime->flush_callback(runtime->flush_context);
   if (flush_result != ESP_OK) {
-    snprintf(details,
-             details_len,
-             "flush failed: %s",
-             esp_err_to_name(flush_result));
+    snprintf(
+      details, details_len, "flush failed: %s", esp_err_to_name(flush_result));
     return false;
   }
 
@@ -222,10 +215,8 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
   }
 
   size_t line_len = 0;
-  esp_err_t partial_result = WritePartialCsvLine(logger,
-                                                 &pending_record,
-                                                 runtime->node_id_string,
-                                                 &line_len);
+  esp_err_t partial_result = WritePartialCsvLine(
+    logger, &pending_record, runtime->node_id_string, &line_len);
   if (partial_result != ESP_OK) {
     RuntimeSdIoUnlock(state);
     snprintf(details,
@@ -253,8 +244,8 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
   const uint32_t fram_buffered = FramLogGetBufferedRecords(fram);
 
   const bool tail_ok = (last_sd_after_reopen == last_sd_before);
-  const bool replay_ok =
-    (replay_result == ESP_OK && last_sd_after_flush == pending_record.record_id);
+  const bool replay_ok = (replay_result == ESP_OK &&
+                          last_sd_after_flush == pending_record.record_id);
 
   snprintf(details,
            details_len,
@@ -286,11 +277,10 @@ RunSdPullTest(const app_runtime_t* runtime,
               char* details,
               size_t details_len)
 {
-  if (runtime == NULL || runtime->sd_logger == NULL || runtime->fram_log == NULL ||
-      runtime->flush_callback == NULL) {
-    snprintf(details,
-             details_len,
-             "runtime missing (sd/fram/flush unavailable)");
+  if (runtime == NULL || runtime->sd_logger == NULL ||
+      runtime->fram_log == NULL || runtime->flush_callback == NULL) {
+    snprintf(
+      details, details_len, "runtime missing (sd/fram/flush unavailable)");
     return false;
   }
 
@@ -387,8 +377,8 @@ ReadLastRecordId(const char* path,
     return false;
   }
   SdCsvResumeInfo info = { 0 };
-  esp_err_t result = SdCsvFindLastRecordIdAndRepairTail(
-    file, tail_scan_bytes, NULL, &info);
+  esp_err_t result =
+    SdCsvFindLastRecordIdAndRepairTail(file, tail_scan_bytes, NULL, &info);
   fclose(file);
   RuntimeSdIoUnlock(state);
   if (result != ESP_OK) {
@@ -413,11 +403,10 @@ RunMidnightSplitTest(const app_runtime_t* runtime,
                      char* details,
                      size_t details_len)
 {
-  if (runtime == NULL || runtime->sd_logger == NULL || runtime->fram_log == NULL ||
-      runtime->flush_callback == NULL) {
-    snprintf(details,
-             details_len,
-             "runtime missing (sd/fram/flush unavailable)");
+  if (runtime == NULL || runtime->sd_logger == NULL ||
+      runtime->fram_log == NULL || runtime->flush_callback == NULL) {
+    snprintf(
+      details, details_len, "runtime missing (sd/fram/flush unavailable)");
     return false;
   }
 
@@ -442,10 +431,8 @@ RunMidnightSplitTest(const app_runtime_t* runtime,
 
   esp_err_t flush_result = runtime->flush_callback(runtime->flush_context);
   if (flush_result != ESP_OK) {
-    snprintf(details,
-             details_len,
-             "flush failed: %s",
-             esp_err_to_name(flush_result));
+    snprintf(
+      details, details_len, "flush failed: %s", esp_err_to_name(flush_result));
     return false;
   }
 
@@ -458,14 +445,16 @@ RunMidnightSplitTest(const app_runtime_t* runtime,
   bool found_day2 = false;
   uint64_t last_day1 = 0;
   uint64_t last_day2 = 0;
-  const bool read_day1 =
-    ReadLastRecordId(path_day1, logger->config.tail_scan_bytes, &found_day1, &last_day1);
-  const bool read_day2 =
-    ReadLastRecordId(path_day2, logger->config.tail_scan_bytes, &found_day2, &last_day2);
+  const bool read_day1 = ReadLastRecordId(
+    path_day1, logger->config.tail_scan_bytes, &found_day1, &last_day1);
+  const bool read_day2 = ReadLastRecordId(
+    path_day2, logger->config.tail_scan_bytes, &found_day2, &last_day2);
 
   const bool distinct_files = strcmp(path_day1, path_day2) != 0;
-  const bool day1_ok = read_day1 && found_day1 && last_day1 >= record_day1.record_id;
-  const bool day2_ok = read_day2 && found_day2 && last_day2 >= record_day2.record_id;
+  const bool day1_ok =
+    read_day1 && found_day1 && last_day1 >= record_day1.record_id;
+  const bool day2_ok =
+    read_day2 && found_day2 && last_day2 >= record_day2.record_id;
 
   snprintf(details,
            details_len,
@@ -560,7 +549,8 @@ RunDiagStorageImpl(const app_runtime_t* runtime,
   const int total_steps = 4;
   int step_index = 1;
 
-  if (runtime == NULL || runtime->sd_logger == NULL || runtime->fram_log == NULL) {
+  if (runtime == NULL || runtime->sd_logger == NULL ||
+      runtime->fram_log == NULL) {
     DiagReportStep(&ctx,
                    step_index++,
                    total_steps,
@@ -657,7 +647,9 @@ RunDiagStorageWithMount(app_runtime_t* runtime, void* ctx)
  * @return Return the function result.
  */
 int
-RunDiagStorage(const app_runtime_t* runtime, bool full, diag_verbosity_t verbosity)
+RunDiagStorage(const app_runtime_t* runtime,
+               bool full,
+               diag_verbosity_t verbosity)
 {
   if (!RuntimeIsRunning()) {
     diag_storage_ctx_t ctx = {
