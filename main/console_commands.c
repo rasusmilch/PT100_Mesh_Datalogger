@@ -983,6 +983,14 @@ CommandStatus(int argc, char** argv)
 #endif
   );
   printf("sd_degraded: %s\n", sd_degraded ? "yes" : "no");
+  if (cached_status != NULL) {
+    printf("deferred_count: %u\n", (unsigned)cached_status->deferred_count);
+    printf("deferred_drops: %u\n", (unsigned)cached_status->deferred_drops);
+    printf("deferred_active: %s\n",
+           cached_status->deferred_active ? "yes" : "no");
+    printf("i2c_quiesce_active: %s\n",
+           cached_status->i2c_quiesce_active ? "yes" : "no");
+  }
   printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
   printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
   printf("sd_last_record_id: %" PRIu64 "\n",
@@ -1883,6 +1891,14 @@ PrintSdStatus(const app_runtime_t* runtime)
 
   printf("sd_mounted: %s\n", sd_mounted ? "yes" : "no");
   printf("sd_degraded: %s\n", sd_degraded ? "yes" : "no");
+  if (cached_status != NULL) {
+    printf("deferred_count: %u\n", (unsigned)cached_status->deferred_count);
+    printf("deferred_drops: %u\n", (unsigned)cached_status->deferred_drops);
+    printf("deferred_active: %s\n",
+           cached_status->deferred_active ? "yes" : "no");
+    printf("i2c_quiesce_active: %s\n",
+           cached_status->i2c_quiesce_active ? "yes" : "no");
+  }
   printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
   printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
   runtime_state_t* state = RuntimeGetState();
@@ -5831,6 +5847,34 @@ CommandMarker(int argc, char** argv)
 }
 
 /**
+ * @brief Execute CommandDeferLog.
+ * @param argc Parameter argc.
+ * @param argv Parameter argv.
+ * @return Return the function result.
+ */
+static int
+CommandDeferLog(int argc, char** argv)
+{
+  if (argc < 2 || strcmp(argv[1], "status") != 0) {
+    printf("usage: deferlog status\n");
+    return (argc < 2) ? 2 : 1;
+  }
+
+  const runtime_cached_status_t* status = RuntimeGetCachedStatus();
+  if (status == NULL) {
+    printf("runtime unavailable\n");
+    return 1;
+  }
+
+  printf("deferred_count: %u\n", (unsigned)status->deferred_count);
+  printf("deferred_drops: %u\n", (unsigned)status->deferred_drops);
+  printf("deferred_active: %s\n", status->deferred_active ? "yes" : "no");
+  printf("i2c_quiesce_active: %s\n",
+         status->i2c_quiesce_active ? "yes" : "no");
+  return 0;
+}
+
+/**
  * @brief Execute CommandLocks.
  * @param argc Parameter argc.
  * @param argv Parameter argv.
@@ -5930,6 +5974,14 @@ RegisterCommands(void)
     .func = &CommandLocks,
   };
   ESP_ERROR_CHECK(esp_console_cmd_register(&locks_cmd));
+
+  const esp_console_cmd_t deferlog_cmd = {
+    .command = "deferlog",
+    .help = "Deferred log status: deferlog status",
+    .hint = NULL,
+    .func = &CommandDeferLog,
+  };
+  ESP_ERROR_CHECK(esp_console_cmd_register(&deferlog_cmd));
 
   const esp_console_cmd_t sd_cmd = {
     .command = "sd",

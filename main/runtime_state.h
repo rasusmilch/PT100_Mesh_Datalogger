@@ -34,6 +34,17 @@ extern "C"
 
 #define RUNTIME_ERROR_RING_SIZE 8
 #define RUNTIME_RTC_ERRLOG_RING_SIZE 8
+#define DEFERRED_LOG_CAPACITY 16
+
+  typedef struct
+  {
+    log_record_t records[DEFERRED_LOG_CAPACITY];
+    uint8_t head;
+    uint8_t tail;
+    uint8_t count;
+    uint32_t drops;
+    portMUX_TYPE lock;
+  } deferred_log_t;
 
   typedef struct
   {
@@ -76,6 +87,10 @@ extern "C"
     bool fram_overrun_active;
     bool fram_io_error_active;
     bool i2c_recovery_active;
+    uint32_t deferred_count;
+    uint32_t deferred_drops;
+    bool deferred_active;
+    bool i2c_quiesce_active;
 
     // sensor
     bool sensor_fault_present;
@@ -359,6 +374,10 @@ extern "C"
     uint32_t last_fram_log_lock_timeout_storage_log_ms;
     uint32_t last_fram_log_lock_timeout_sdflush_log_ms;
     bool i2c_recovery_in_progress;
+    deferred_log_t deferred_log;
+    bool i2c_quiesce_active;
+    uint32_t i2c_quiesce_enter_count;
+    uint32_t deferred_drop_last_log_ms;
 
     // Sensor fault logging/debounce state (rate-limited).
     bool last_sensor_fault_present;
