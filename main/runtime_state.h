@@ -78,6 +78,11 @@ extern "C"
     bool sd_io_error_active;
     bool sd_card_present;
     bool sd_safe_to_remove;
+    uint64_t sd_total_bytes;
+    uint64_t sd_free_bytes;
+    bool sd_space_reclaim_active;
+    uint32_t sd_space_reclaim_deleted_total;
+    bool sd_out_of_space_active;
 
     // fram (written by fram_log or storage task when it updates counters)
     uint32_t fram_count;

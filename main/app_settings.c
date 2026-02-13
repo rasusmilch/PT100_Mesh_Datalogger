@@ -1981,6 +1981,8 @@ AppSettingsDefaultDisplayAttentionPolicy(void)
     DisplayAttentionPolicySet(policy, kDispAttnItemMeshDown, DISP_SEV_WARN);
   policy =
     DisplayAttentionPolicySet(policy, kDispAttnItemNtpFail, DISP_SEV_WARN);
+  policy =
+    DisplayAttentionPolicySet(policy, kDispAttnItemSdSpace, DISP_SEV_WARN);
   return policy;
 }
 

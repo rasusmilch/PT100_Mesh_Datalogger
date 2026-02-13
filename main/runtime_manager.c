@@ -290,6 +290,9 @@ UpdateFramFillState(runtime_state_t* state);
 static void
 UpdateCachedBool(runtime_state_t* state, bool* field, bool value);
 
+static void
+UpdateCachedUint64(runtime_state_t* state, uint64_t* field, uint64_t value);
+
 static bool
 DeferredLogPush(runtime_state_t* state, const log_record_t* record);
 
@@ -1645,6 +1648,19 @@ UpdateCachedUint32(runtime_state_t* state, uint32_t* field, uint32_t value)
   RuntimeHealthMarkDirty(state);
 }
 
+static void
+UpdateCachedUint64(runtime_state_t* state, uint64_t* field, uint64_t value)
+{
+  if (state == NULL || field == NULL) {
+    return;
+  }
+  if (*field == value) {
+    return;
+  }
+  *field = value;
+  RuntimeHealthMarkDirty(state);
+}
+
 static bool
 DeferredLogPush(runtime_state_t* state, const log_record_t* record)
 {
@@ -2633,6 +2649,10 @@ ComputeActiveAttentionMaskFromHealth(const runtime_health_snapshot_t* health)
       (health->heap_internal_warn || health->heap_internal_crit)) {
     active |= kDispAttnHeap;
   }
+  if ((mask & kDispAttnSdSpace) != 0u &&
+      (health->sd_space_reclaim_active || health->sd_out_of_space_active)) {
+    active |= kDispAttnSdSpace;
+  }
 
   return active;
 }
@@ -2643,7 +2663,8 @@ ComputeActiveAttentionMaskFromHealth(const runtime_health_snapshot_t* health)
  * @return Return the function result.
  */
 static const char*
-AttentionBitToCode(display_attention_bit_t bit)
+AttentionBitToCode(display_attention_bit_t bit,
+                   const runtime_health_snapshot_t* snapshot)
 {
   switch (bit) {
     case kDispAttnSdOut:
@@ -2662,6 +2683,11 @@ AttentionBitToCode(display_attention_bit_t bit)
       return "MESH ";
     case kDispAttnHeap:
       return "HEAP ";
+    case kDispAttnSdSpace:
+      if (snapshot != NULL && snapshot->sd_out_of_space_active) {
+        return "SDFUL";
+      }
+      return "SDROT";
     default:
       return "ERR  ";
   }
@@ -2980,8 +3006,8 @@ DisplayTask(void* context)
     const uint32_t policy = health.disp_attn_pol;
     const display_attention_mask_t active_all =
       ComputeActiveAttentionMaskFromHealth(&health);
-    display_attention_bit_t error_bits[8];
-    display_attention_bit_t warn_bits[8];
+    display_attention_bit_t error_bits[kDispAttnItemCount];
+    display_attention_bit_t warn_bits[kDispAttnItemCount];
     size_t error_count = 0;
     size_t warn_count = 0;
     display_attention_mask_t error_mask = 0;
@@ -2989,7 +3015,7 @@ DisplayTask(void* context)
     const display_attention_item_t items[] = {
       kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
       kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemNtpFail,
-      kDispAttnItemMeshDown, kDispAttnItemHeap,
+      kDispAttnItemMeshDown, kDispAttnItemHeap,   kDispAttnItemSdSpace,
     };
     for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
       const display_attention_item_t item = items[idx];
@@ -3023,7 +3049,7 @@ DisplayTask(void* context)
       }
 
       if (flash_on) {
-        const char* text = AttentionBitToCode(error_bits[code_index]);
+        const char* text = AttentionBitToCode(error_bits[code_index], &health);
         if (strncmp(last_text, text, sizeof(last_text)) != 0) {
           Max7219DisplaySetText(&state->display, text);
           snprintf(last_text, sizeof(last_text), "%s", text);
@@ -3057,7 +3083,7 @@ DisplayTask(void* context)
         last_warn_tick = now_warn_tick;
       }
 
-      const char* text = AttentionBitToCode(warn_bits[warn_code_index]);
+      const char* text = AttentionBitToCode(warn_bits[warn_code_index], &health);
       if (strncmp(last_text, text, sizeof(last_text)) != 0) {
         Max7219DisplaySetText(&state->display, text);
         snprintf(last_text, sizeof(last_text), "%s", text);
@@ -5496,7 +5522,32 @@ SdFlushWorkerTickEx(runtime_state_t* state,
                                                    flush_mode,
                                                    scratch,
                                                    &append_stats);
+    uint64_t sd_total_bytes = 0;
+    uint64_t sd_free_bytes = 0;
+    if (SdLoggerGetSpaceInfo(&state->sd_logger, &sd_total_bytes, &sd_free_bytes) == ESP_OK) {
+      UpdateCachedUint64(
+        state, &state->cached_status.sd_total_bytes, sd_total_bytes);
+      UpdateCachedUint64(
+        state, &state->cached_status.sd_free_bytes, sd_free_bytes);
+    }
+    UpdateCachedBool(state,
+                     &state->cached_status.sd_space_reclaim_active,
+                     SdLoggerSpaceReclaimActive(&state->sd_logger));
+    UpdateCachedUint32(state,
+                       &state->cached_status.sd_space_reclaim_deleted_total,
+                       SdLoggerSpaceReclaimDeletedTotal(&state->sd_logger));
+
     if (write_result != ESP_OK) {
+      if (append_stats.diag.errno_value == ENOSPC) {
+        UpdateCachedBool(
+          state, &state->cached_status.sd_out_of_space_active, true);
+        state->sd_flush_last_err = write_result;
+        state->sd_flush_phase = "flush:append_enospc";
+        RuntimeRecordError(
+          state, "sd_flush", write_result, state->sd_flush_phase);
+        result = write_result;
+        goto flush_done;
+      }
       RuntimeDiagHeapCheck(state, "SD unmount (flush append before)", false);
       (void)SdLoggerUnmount(&state->sd_logger);
       RuntimeDiagHeapCheck(state, "SD unmount (flush append after)", false);
@@ -5517,6 +5568,7 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       result = write_result;
       goto flush_done;
     }
+    UpdateCachedBool(state, &state->cached_status.sd_out_of_space_active, false);
     ClearSdIoError(state);
     HandleTimeJumpBackBatchWritten(
       state, batch_includes_time_jump_flag, last_record_id);

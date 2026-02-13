@@ -259,6 +259,8 @@ DisplayAttentionItemToName(display_attention_item_t item)
       return "mesh";
     case kDispAttnItemHeap:
       return "heap";
+    case kDispAttnItemSdSpace:
+      return "sdspace";
     default:
       return "unknown";
   }
@@ -356,6 +358,10 @@ ParseDisplayAttentionName(const char* value, display_attention_item_t* item_out)
   }
   if (strcasecmp(value, "heap") == 0) {
     *item_out = kDispAttnItemHeap;
+    return true;
+  }
+  if (strcasecmp(value, "sdspace") == 0) {
+    *item_out = kDispAttnItemSdSpace;
     return true;
   }
   return false;
@@ -632,7 +638,7 @@ PrintDisplayAttentionPolicy(uint32_t policy)
   const display_attention_item_t items[] = {
     kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
     kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemNtpFail,
-    kDispAttnItemMeshDown, kDispAttnItemHeap,
+    kDispAttnItemMeshDown, kDispAttnItemHeap,   kDispAttnItemSdSpace,
   };
   printf("display_attention_policy: 0x%08" PRIX32 "\n", policy);
   for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
@@ -1008,6 +1014,22 @@ CommandStatus(int argc, char** argv)
   }
   printf("sd_fail_count: %u\n", (unsigned)sd_fail_count);
   printf("sd_backoff_remaining_ms: %u\n", (unsigned)sd_backoff_remaining_ms);
+  if (cached_status != NULL) {
+    const uint64_t total = cached_status->sd_total_bytes;
+    const uint64_t free = cached_status->sd_free_bytes;
+    printf("sd_total_bytes: %" PRIu64 " (%" PRIu64 " MiB)\n",
+           total,
+           (total / (1024u * 1024u)));
+    printf("sd_free_bytes: %" PRIu64 " (%" PRIu64 " MiB)\n",
+           free,
+           (free / (1024u * 1024u)));
+    printf("sd_space_reclaim_active: %s\n",
+           cached_status->sd_space_reclaim_active ? "yes" : "no");
+    printf("sd_space_reclaim_deleted_total: %u\n",
+           (unsigned)cached_status->sd_space_reclaim_deleted_total);
+    printf("sd_out_of_space_active: %s\n",
+           cached_status->sd_out_of_space_active ? "yes" : "no");
+  }
   printf("sd_last_record_id: %" PRIu64 "\n",
          SdLoggerLastRecordIdOnSd(g_runtime->sd_logger));
 #if CONFIG_APP_HEAP_MONITOR_ENABLE

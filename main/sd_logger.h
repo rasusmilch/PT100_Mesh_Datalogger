@@ -29,6 +29,8 @@ extern "C"
     bool is_mounted;
     sdmmc_card_t* card;
     char mount_point[16]; // e.g. "/sdcard"
+    bool space_reclaim_active;
+    uint32_t space_reclaim_deleted_total;
 
     FILE* file;
     char current_date[16]; // YYYY-MM-DD
@@ -65,6 +67,9 @@ extern "C"
   {
     size_t bytes_appended;
     size_t write_calls;
+    uint32_t space_reclaim_deleted_files;
+    uint64_t space_free_bytes_before;
+    uint64_t space_free_bytes_after;
     SdCsvAppendDiagnostics diag;
   } sd_csv_append_stats_t;
 
@@ -183,6 +188,31 @@ extern "C"
   {
     return (logger == NULL) ? 0 : logger->last_record_id_on_sd;
   }
+
+/**
+ * @brief Return true if SD log space reclaim (oldest-file rotation) has occurred.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
+  bool SdLoggerSpaceReclaimActive(const sd_logger_t* logger);
+
+/**
+ * @brief Return total number of daily CSV files deleted to reclaim space.
+ * @param logger Parameter logger.
+ * @return Return the function result.
+ */
+  uint32_t SdLoggerSpaceReclaimDeletedTotal(const sd_logger_t* logger);
+
+/**
+ * @brief Query SD card filesystem capacity and currently available free bytes.
+ * @param logger Parameter logger.
+ * @param total_bytes Parameter total_bytes.
+ * @param free_bytes Parameter free_bytes.
+ * @return Return the function result.
+ */
+  esp_err_t SdLoggerGetSpaceInfo(const sd_logger_t* logger,
+                                 uint64_t* total_bytes,
+                                 uint64_t* free_bytes);
 
 #ifdef __cplusplus
 }

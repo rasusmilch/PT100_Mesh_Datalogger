@@ -80,6 +80,10 @@ RuntimeMarkersResetReasonToString(esp_reset_reason_t reason)
     case ESP_RST_USB:
       return "usb";
 #endif
+#if !defined(ESP_RST_USB)
+    case (esp_reset_reason_t)11:
+      return "usb";
+#endif
 #if defined(ESP_RST_JTAG)
     case ESP_RST_JTAG:
       return "jtag";
