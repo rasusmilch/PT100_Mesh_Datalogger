@@ -1,12 +1,11 @@
 #include "sd_logger.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -21,27 +20,31 @@
 
 static const char* kTag = "sd_logger";
 
-static bool IsStrictDailyCsvName(const char* name);
-static esp_err_t SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
-                                             uint64_t* total_bytes,
-                                             uint64_t* free_bytes);
-static bool SdLoggerFindOldestDailyCsvLocked(const sd_logger_t* logger,
-                                              char* oldest_path,
-                                              size_t oldest_path_size);
-static esp_err_t SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
-                                             uint64_t required_free_bytes,
-                                             uint32_t* deleted_files);
+static bool
+IsStrictDailyCsvName(const char* name);
+static esp_err_t
+SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
+                           uint64_t* total_bytes,
+                           uint64_t* free_bytes);
+static bool
+SdLoggerFindOldestDailyCsvLocked(const sd_logger_t* logger,
+                                 char* oldest_path,
+                                 size_t oldest_path_size);
+static esp_err_t
+SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
+                           uint64_t required_free_bytes,
+                           uint32_t* deleted_files);
 
 static uint8_t*
 AllocatePreferPsram(size_t bytes)
 {
-  uint8_t* buffer = (uint8_t*)heap_caps_malloc(
-    bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  uint8_t* buffer =
+    (uint8_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (buffer != NULL) {
     return buffer;
   }
-  return (uint8_t*)heap_caps_malloc(
-    bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  return (uint8_t*)heap_caps_malloc(bytes,
+                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
 /**
@@ -132,8 +135,7 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
     DefaultOr(config ? config->max_freq_khz : 0, default_max_freq_khz);
 
   if (logger->config.file_buffer_bytes > 0) {
-    logger->file_buffer = AllocatePreferPsram(
-      logger->config.file_buffer_bytes);
+    logger->file_buffer = AllocatePreferPsram(logger->config.file_buffer_bytes);
   }
   if (logger->config.tail_scan_bytes > 0) {
     const size_t resume_bytes = logger->config.tail_scan_bytes + 1;
@@ -217,14 +219,15 @@ SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
     return ESP_ERR_INVALID_STATE;
   }
 
-  struct statvfs fs = { 0 };
-  if (statvfs(logger->mount_point, &fs) != 0) {
-    return ESP_FAIL;
+  uint64_t total_tmp_bytes = 0;
+  uint64_t free_tmp_bytes = 0;
+  const esp_err_t result =
+    esp_vfs_fat_info(logger->mount_point, &total_tmp_bytes, &free_tmp_bytes);
+  if (result != ESP_OK) {
+    return result;
   }
-  const uint64_t block_size =
-    (fs.f_frsize != 0u) ? (uint64_t)fs.f_frsize : (uint64_t)fs.f_bsize;
-  *total_bytes = ((uint64_t)fs.f_blocks) * block_size;
-  *free_bytes = ((uint64_t)fs.f_bavail) * block_size;
+  *total_bytes = total_tmp_bytes;
+  *free_bytes = free_tmp_bytes;
   return ESP_OK;
 }
 
@@ -318,7 +321,8 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
     deletes++;
     ESP_LOGW(kTag, "Deleted old log to reclaim space: %s", oldest_path);
 
-    space_result = SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes);
+    space_result =
+      SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes);
     if (space_result != ESP_OK) {
       return space_result;
     }
@@ -371,7 +375,8 @@ SdLoggerMountInternal(sd_logger_t* logger,
   // configurable and/or raise it after a successful probe.
   sd_host.max_freq_khz = logger->config.max_freq_khz;
   if (logger->io_bounce_bytes != NULL && logger->io_bounce_capacity > 0) {
-#if defined(ESP_IDF_VERSION) && (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0))
+#if defined(ESP_IDF_VERSION) &&                                                \
+  (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0))
     if (logger->io_bounce_capacity >= 512) {
       sd_host.dma_aligned_buffer = logger->io_bounce_bytes;
     } else {
@@ -657,11 +662,13 @@ SdLoggerAppendBatchEx(sd_logger_t* logger,
     (uint64_t)batch_length_bytes + kSdMinFreeReserveBytes;
   uint64_t total_bytes = 0;
   uint64_t free_bytes_before = 0;
-  if (SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes_before) == ESP_OK) {
+  if (SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes_before) ==
+      ESP_OK) {
     stats_out->space_free_bytes_before = free_bytes_before;
     if (free_bytes_before < required_free_bytes) {
       uint32_t deleted_files = 0;
-      if (SdLoggerReclaimSpaceLocked(logger, required_free_bytes, &deleted_files) == ESP_OK &&
+      if (SdLoggerReclaimSpaceLocked(
+            logger, required_free_bytes, &deleted_files) == ESP_OK &&
           deleted_files > 0) {
         logger->space_reclaim_active = true;
         logger->space_reclaim_deleted_total += deleted_files;
@@ -691,7 +698,8 @@ write_retry:
     }
     if (!retry_after_reclaim && stats_out->diag.errno_value == ENOSPC) {
       uint32_t deleted_files = 0;
-      if (SdLoggerReclaimSpaceLocked(logger, required_free_bytes, &deleted_files) == ESP_OK &&
+      if (SdLoggerReclaimSpaceLocked(
+            logger, required_free_bytes, &deleted_files) == ESP_OK &&
           deleted_files > 0) {
         logger->space_reclaim_active = true;
         logger->space_reclaim_deleted_total += deleted_files;
@@ -732,7 +740,8 @@ write_retry:
     if (offset != batch_length_bytes) {
       if (!retry_after_reclaim && stats_out->diag.errno_value == ENOSPC) {
         uint32_t deleted_files = 0;
-        if (SdLoggerReclaimSpaceLocked(logger, required_free_bytes, &deleted_files) == ESP_OK &&
+        if (SdLoggerReclaimSpaceLocked(
+              logger, required_free_bytes, &deleted_files) == ESP_OK &&
             deleted_files > 0) {
           logger->space_reclaim_active = true;
           logger->space_reclaim_deleted_total += deleted_files;
@@ -758,7 +767,8 @@ write_retry:
       SetAppendDiagnostics(&stats_out->diag, "append", errno);
       if (!retry_after_reclaim && stats_out->diag.errno_value == ENOSPC) {
         uint32_t deleted_files = 0;
-        if (SdLoggerReclaimSpaceLocked(logger, required_free_bytes, &deleted_files) == ESP_OK &&
+        if (SdLoggerReclaimSpaceLocked(
+              logger, required_free_bytes, &deleted_files) == ESP_OK &&
             deleted_files > 0) {
           logger->space_reclaim_active = true;
           logger->space_reclaim_deleted_total += deleted_files;
@@ -780,7 +790,8 @@ write_retry:
       SetAppendDiagnostics(&stats_out->diag, "fflush", errno);
       if (!retry_after_reclaim && stats_out->diag.errno_value == ENOSPC) {
         uint32_t deleted_files = 0;
-        if (SdLoggerReclaimSpaceLocked(logger, required_free_bytes, &deleted_files) == ESP_OK &&
+        if (SdLoggerReclaimSpaceLocked(
+              logger, required_free_bytes, &deleted_files) == ESP_OK &&
             deleted_files > 0) {
           logger->space_reclaim_active = true;
           logger->space_reclaim_deleted_total += deleted_files;
@@ -799,7 +810,8 @@ write_retry:
   stats_out->bytes_appended = batch_length_bytes;
   stats_out->write_calls = write_calls;
   logger->last_record_id_on_sd = last_record_id;
-  (void)SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &stats_out->space_free_bytes_after);
+  (void)SdLoggerGetSpaceInfoLocked(
+    logger, &total_bytes, &stats_out->space_free_bytes_after);
   return ESP_OK;
 }
 
