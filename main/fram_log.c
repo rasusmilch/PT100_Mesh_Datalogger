@@ -723,6 +723,13 @@ FramLogAppend(fram_log_t* log, const log_record_t* record)
     log->record_count = log->capacity_records;
   }
 
+  if (record->sequence >= log->next_sequence) {
+    log->next_sequence = record->sequence + 1u;
+  }
+  if (record->record_id >= log->next_record_id) {
+    log->next_record_id = record->record_id + 1u;
+  }
+
   return ESP_OK;
 }
 

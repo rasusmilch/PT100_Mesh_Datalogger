@@ -825,7 +825,7 @@ AlertManagerOnSample(alert_manager_t* manager,
   }
   const uint32_t mask = EffectiveEnableMask(manager, leaf_id);
   if ((mask & (1u << ALERT_LEAF_RESTART)) != 0u && leaf->last_seq != 0 &&
-      record->sequence < leaf->last_seq) {
+      record->sequence != 0 && record->sequence < leaf->last_seq) {
     alert_notification_payload_t payload = { 0 };
     FillPayloadBase(&payload, leaf, now_ms, now_epoch);
     payload.last_seq = leaf->last_seq;
@@ -843,7 +843,9 @@ AlertManagerOnSample(alert_manager_t* manager,
   }
   const bool cal_valid =
     (record->flags & LOG_RECORD_FLAG_CAL_VALID) != 0u;
-  leaf->last_seq = record->sequence;
+  if (record->sequence != 0u) {
+    leaf->last_seq = record->sequence;
+  }
   leaf->last_temp_milli_c =
     cal_valid ? record->temp_milli_c : record->raw_temp_milli_c;
   leaf->last_rx_uptime_ms = now_ms;
