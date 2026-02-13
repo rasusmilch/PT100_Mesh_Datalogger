@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mesh_lite.h"
@@ -113,6 +114,7 @@ static size_t AlertManagerDrainNtfyQueue(alert_manager_t* manager,
                                          uint32_t wait_ms);
 static bool AlertManagerBuildBatchMessage(const alert_manager_t* manager,
                                           const alert_batch_t* batch,
+                                          uint32_t msg_seq,
                                           char* title,
                                           size_t title_size,
                                           char* body,
@@ -132,6 +134,7 @@ static const uint32_t kAlertConfigVersion = 2;
 static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
 static int64_t s_last_nonmonotonic_log_ms = 0;
+RTC_DATA_ATTR static uint32_t g_ntfy_msg_seq = 0;
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
 /**
  * @brief Execute PackMacToId.
@@ -1918,6 +1921,7 @@ AlertManagerDrainNtfyQueue(alert_manager_t* manager,
 static bool
 AlertManagerBuildBatchMessage(const alert_manager_t* manager,
                               const alert_batch_t* batch,
+                              uint32_t msg_seq,
                               char* title,
                               size_t title_size,
                               char* body,
@@ -1926,12 +1930,13 @@ AlertManagerBuildBatchMessage(const alert_manager_t* manager,
   if (manager == NULL || batch == NULL || title == NULL || body == NULL) {
     return false;
   }
-  snprintf(title, title_size, "PT100 Alerts (batched)");
+  snprintf(title, title_size, "PT100 Alerts (#%06" PRIu32 ")", msg_seq);
   char window[16];
   FormatBatchWindow(ResolveNtfyMinIntervalMs(manager), window, sizeof(window));
   int written = snprintf(body,
                          body_size,
-                         "Batched %" PRIu32 " alerts over last %s:\n\n",
+                         "Message seq: %" PRIu32 "\nBatched %" PRIu32 " alerts over last %s:\n\n",
+                         msg_seq,
                          batch->total_count,
                          window);
   if (written < 0 || (size_t)written >= body_size) {
@@ -2023,6 +2028,8 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
     return false;
   }
 
+  const uint32_t msg_seq = ++g_ntfy_msg_seq;
+
   AlertManagerBatchInit(&scratch->batch);
   for (size_t i = 0; i < note_count; ++i) {
     AlertManagerBatchAdd(&scratch->batch, &scratch->notes[i]);
@@ -2031,6 +2038,7 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   if (!AlertManagerBuildBatchMessage(
         manager,
         &scratch->batch,
+        msg_seq,
         scratch->title,
         sizeof(scratch->title),
         scratch->body,
@@ -2063,7 +2071,9 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
 
   manager->ntfy.last_attempt_ms = now_ms;
   ESP_LOGI(kTag,
-           "ntfy batch queued: total=%" PRIu32 " unique=%u",
+           "ntfy send seq=%" PRIu32 " status=%d queued total=%" PRIu32 " unique=%u",
+           msg_seq,
+           manager->ntfy.last_http_status,
            scratch->batch.total_count,
            (unsigned)scratch->batch.entry_count);
   return true;
