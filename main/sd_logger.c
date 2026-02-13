@@ -22,6 +22,13 @@ static const char* kTag = "sd_logger";
 
 static bool
 IsStrictDailyCsvName(const char* name);
+static bool
+SdLoggerJoinPath(const char* dir_path,
+                 const char* child_name,
+                 char* out_path,
+                 size_t out_path_size);
+static bool
+SdLoggerCopyString(const char* source, char* dest, size_t dest_size);
 static esp_err_t
 SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
                            uint64_t* total_bytes,
@@ -167,13 +174,100 @@ BuildDailyCsvPath(const sd_logger_t* logger,
                   char* path_out,
                   size_t path_out_size)
 {
+  if (path_out_size > 0) {
+    path_out[0] = '\0';
+  }
+
   time_t time_seconds = (time_t)epoch_seconds;
   struct tm time_info;
   gmtime_r(&time_seconds, &time_info);
 
   strftime(date_out, date_out_size, "%Y-%m-%dZ", &time_info);
 
-  snprintf(path_out, path_out_size, "%s/%s.csv", logger->mount_point, date_out);
+  char daily_name[32] = "";
+  const size_t date_len = strnlen(date_out, date_out_size);
+  static const char kCsvSuffix[] = ".csv";
+  const size_t suffix_len = sizeof(kCsvSuffix) - 1;
+  if (date_len == date_out_size ||
+      date_len + suffix_len + 1 > sizeof(daily_name)) {
+    return;
+  }
+  memcpy(daily_name, date_out, date_len);
+  memcpy(daily_name + date_len, kCsvSuffix, suffix_len);
+  daily_name[date_len + suffix_len] = '\0';
+
+  if (!SdLoggerJoinPath(
+        logger->mount_point, daily_name, path_out, path_out_size) &&
+      path_out_size > 0) {
+    path_out[0] = '\0';
+  }
+}
+
+/**
+ * @brief Join a directory path and child name into a destination buffer.
+ * @param dir_path Base directory path.
+ * @param child_name Child entry name.
+ * @param out_path Destination buffer.
+ * @param out_path_size Destination buffer size.
+ * @return True when the full joined path fits, otherwise false.
+ */
+static bool
+SdLoggerJoinPath(const char* dir_path,
+                 const char* child_name,
+                 char* out_path,
+                 size_t out_path_size)
+{
+  if (dir_path == NULL || child_name == NULL || out_path == NULL ||
+      out_path_size == 0) {
+    return false;
+  }
+
+  const size_t dir_len = strnlen(dir_path, out_path_size);
+  if (dir_len == out_path_size) {
+    return false;
+  }
+  const size_t child_len = strnlen(child_name, out_path_size);
+  if (child_len == out_path_size) {
+    return false;
+  }
+  const bool needs_separator = (dir_len > 0 && dir_path[dir_len - 1] != '/');
+  const size_t total_len =
+    dir_len + (needs_separator ? 1U : 0U) + child_len + 1U;
+  if (total_len > out_path_size) {
+    return false;
+  }
+
+  memcpy(out_path, dir_path, dir_len);
+  size_t write_index = dir_len;
+  if (needs_separator) {
+    out_path[write_index++] = '/';
+  }
+  memcpy(out_path + write_index, child_name, child_len);
+  out_path[write_index + child_len] = '\0';
+  return true;
+}
+
+/**
+ * @brief Copy a C string to a destination buffer when it fully fits.
+ * @param source Source string.
+ * @param dest Destination buffer.
+ * @param dest_size Destination buffer size.
+ * @return True when copied successfully, otherwise false.
+ */
+static bool
+SdLoggerCopyString(const char* source, char* dest, size_t dest_size)
+{
+  if (source == NULL || dest == NULL || dest_size == 0) {
+    return false;
+  }
+
+  const size_t source_len = strnlen(source, dest_size);
+  if (source_len == dest_size) {
+    return false;
+  }
+
+  memcpy(dest, source, source_len + 1);
+  return true;
 }
 
 static bool
@@ -247,11 +341,21 @@ SdLoggerFindOldestDailyCsvLocked(const sd_logger_t* logger,
 
   char current_path[128] = "";
   if (logger->current_date[0] != '\0') {
-    snprintf(current_path,
-             sizeof(current_path),
-             "%s/%s.csv",
-             logger->mount_point,
-             logger->current_date);
+    char current_name[32] = "";
+    const size_t current_date_len =
+      strnlen(logger->current_date, sizeof(logger->current_date));
+    static const char kCsvSuffix[] = ".csv";
+    const size_t suffix_len = sizeof(kCsvSuffix) - 1;
+    if (current_date_len < sizeof(logger->current_date) &&
+        current_date_len + suffix_len + 1 <= sizeof(current_name)) {
+      memcpy(current_name, logger->current_date, current_date_len);
+      memcpy(current_name + current_date_len, kCsvSuffix, suffix_len);
+      current_name[current_date_len + suffix_len] = '\0';
+      (void)SdLoggerJoinPath(logger->mount_point,
+                             current_name,
+                             current_path,
+                             sizeof(current_path));
+    }
   }
 
   bool found = false;
@@ -261,18 +365,26 @@ SdLoggerFindOldestDailyCsvLocked(const sd_logger_t* logger,
     if (!IsStrictDailyCsvName(entry->d_name)) {
       continue;
     }
+
+    const size_t name_len = strnlen(entry->d_name, sizeof(oldest_name));
+    if (name_len >= sizeof(oldest_name)) {
+      continue;
+    }
+
     char candidate_path[128];
-    snprintf(candidate_path,
-             sizeof(candidate_path),
-             "%s/%s",
-             logger->mount_point,
-             entry->d_name);
+    if (!SdLoggerJoinPath(
+          logger->mount_point, entry->d_name, candidate_path, sizeof(candidate_path))) {
+      continue;
+    }
     if (current_path[0] != '\0' && strcmp(candidate_path, current_path) == 0) {
       continue;
     }
     if (!found || strcmp(entry->d_name, oldest_name) < 0) {
-      snprintf(oldest_name, sizeof(oldest_name), "%s", entry->d_name);
-      snprintf(oldest_path, oldest_path_size, "%s", candidate_path);
+      memcpy(oldest_name, entry->d_name, name_len);
+      oldest_name[name_len] = '\0';
+      if (!SdLoggerCopyString(candidate_path, oldest_path, oldest_path_size)) {
+        continue;
+      }
       found = true;
     }
   }
