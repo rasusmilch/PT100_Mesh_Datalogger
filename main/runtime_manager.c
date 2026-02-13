@@ -315,6 +315,9 @@ static esp_err_t
 RuntimeDrainDeferredToFram(runtime_state_t* state, const char* context);
 
 static void
+RuntimeAssignFallbackRecordIds(runtime_state_t* state, log_record_t* record);
+
+static void
 RuntimeFramRetryTick(runtime_state_t* state, int64_t now_ms);
 
 static void
@@ -1562,7 +1565,34 @@ RuntimeAssignRecordIds(runtime_state_t* state, log_record_t* record)
     record->schema_version = LOG_RECORD_SCHEMA_VER;
     return ESP_OK;
   }
-  return FramLogAssignRecordIds(&state->fram_log, record);
+  const esp_err_t result = FramLogAssignRecordIds(&state->fram_log, record);
+  if (result == ESP_OK) {
+    state->fram_fallback_sequence = record->sequence + 1u;
+    state->fram_fallback_record_id = record->record_id + 1u;
+  }
+  return result;
+}
+
+/**
+ * @brief Assign monotonic fallback record IDs without FRAM access.
+ * @param state Runtime state.
+ * @param record Record to update.
+ */
+static void
+RuntimeAssignFallbackRecordIds(runtime_state_t* state, log_record_t* record)
+{
+  if (state == NULL || record == NULL) {
+    return;
+  }
+  if (state->fram_fallback_sequence == 0u) {
+    state->fram_fallback_sequence = 1u;
+  }
+  if (state->fram_fallback_record_id == 0u) {
+    state->fram_fallback_record_id = 1u;
+  }
+  record->sequence = state->fram_fallback_sequence++;
+  record->record_id = state->fram_fallback_record_id++;
+  record->schema_version = LOG_RECORD_SCHEMA_VER;
 }
 
 static int32_t
@@ -1768,11 +1798,13 @@ RuntimeDrainDeferredToFram(runtime_state_t* state, const char* context)
       (void)DeferredLogPush(state, &record);
       return ESP_ERR_TIMEOUT;
     }
-    const esp_err_t id_result = RuntimeAssignRecordIds(state, &record);
-    if (id_result != ESP_OK) {
-      RuntimeFramLogUnlock(state);
-      (void)DeferredLogPush(state, &record);
-      return id_result;
+    if (record.sequence == 0u || record.record_id == 0u) {
+      const esp_err_t id_result = RuntimeAssignRecordIds(state, &record);
+      if (id_result != ESP_OK) {
+        RuntimeFramLogUnlock(state);
+        (void)DeferredLogPush(state, &record);
+        return id_result;
+      }
     }
     const esp_err_t append_result = FramLogAppend(&state->fram_log, &record);
     RuntimeFramLogUnlock(state);
@@ -6738,6 +6770,9 @@ StorageTask(void* context)
       RuntimeMarkersSetStorage(state, STORAGE_020_AFTER_QUEUE_RECV);
       log_record_t record = msg.record;
       if (state->i2c_quiesce_active) {
+        if (record.sequence == 0u || record.record_id == 0u) {
+          RuntimeAssignFallbackRecordIds(state, &record);
+        }
         if (!DeferredLogPush(state, &record)) {
           taskENTER_CRITICAL(&state->deferred_log.lock);
           state->deferred_log.drops++;
