@@ -878,11 +878,12 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
     return ESP_ERR_INVALID_ARG;
   }
 
-  const int64_t system_epoch_before = (int64_t)time(NULL);
-  const int64_t attempt_uptime_us = esp_timer_get_time();
+  const int64_t epoch_before = (int64_t)time(NULL);
+  const int64_t mono_before_us = esp_timer_get_time();
+  const int64_t attempt_uptime_us = mono_before_us;
   strncpy(s_last_sntp_server, sntp_server, sizeof(s_last_sntp_server) - 1);
   s_last_sntp_server[sizeof(s_last_sntp_server) - 1] = '\0';
-  s_last_sntp_attempt_epoch = system_epoch_before;
+  s_last_sntp_attempt_epoch = epoch_before;
   s_last_sntp_attempt_uptime_us = attempt_uptime_us;
   s_last_sntp_result = ESP_ERR_INVALID_STATE;
   SntpResetVerificationState();
@@ -890,7 +891,7 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
 
   esp_err_t wait_result = ESP_ERR_TIMEOUT;
   bool verified_set = false;
-  int64_t system_epoch_after = system_epoch_before;
+  int64_t epoch_after = epoch_before;
 
 #if APP_USE_ESP_NETIF_SNTP
   // esp_netif_sntp_init() may only be called once unless the service is
@@ -932,7 +933,7 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
     if (callback_fired && TimeSyncIsSystemTimeValid() &&
         callback_delta <= kCallbackToleranceSeconds) {
       verified_set = true;
-      system_epoch_after = system_epoch_now;
+      epoch_after = system_epoch_now;
       wait_result = ESP_OK;
       break;
     }
@@ -971,7 +972,7 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
     if (callback_fired && TimeSyncIsSystemTimeValid() &&
         callback_delta <= kCallbackToleranceSeconds) {
       verified_set = true;
-      system_epoch_after = system_epoch_now;
+      epoch_after = system_epoch_now;
       break;
     }
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -986,23 +987,28 @@ TimeSyncStartSntpAndWait(const char* sntp_server, int timeout_ms)
 #endif
 
   if (!verified_set) {
-    system_epoch_after = (int64_t)time(NULL);
+    epoch_after = (int64_t)time(NULL);
   }
   const bool callback_fired = s_sntp_time_set_callback_fired;
   const int64_t callback_epoch = s_sntp_time_set_epoch_utc;
   const int64_t callback_uptime_us = s_sntp_time_set_uptime_us;
-  const int64_t delta_seconds = system_epoch_after - system_epoch_before;
+  const int64_t mono_after_us = esp_timer_get_time();
+  const double elapsed_s = (double)(mono_after_us - mono_before_us) / 1000000.0;
+  const int64_t observed_delta_s = epoch_after - epoch_before;
+  const double apparent_step_s = (double)observed_delta_s - elapsed_s;
 
   ESP_LOGI(kTag,
            "SNTP attempt summary: server=%s verified=%s callback=%s "
-           "before=%" PRId64 " after=%" PRId64 " delta=%" PRId64
-           " cb_epoch=%" PRId64,
+           "before=%" PRId64 " after=%" PRId64 " elapsed_s=%.3f "
+           "observed_delta_s=%" PRId64 " step_s=%.3f cb_epoch=%" PRId64,
            s_last_sntp_server,
            verified_set ? "yes" : "no",
            callback_fired ? "yes" : "no",
-           system_epoch_before,
-           system_epoch_after,
-           delta_seconds,
+           epoch_before,
+           epoch_after,
+           elapsed_s,
+           observed_delta_s,
+           apparent_step_s,
            callback_epoch);
 
   ESP_LOGI(kTag,

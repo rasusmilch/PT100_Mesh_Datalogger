@@ -1246,8 +1246,16 @@ AlertManagerSetNtfyUrl(alert_manager_t* manager, const char* url)
   if (manager == NULL || url == NULL) {
     return false;
   }
-  snprintf(
-    manager->config.ntfy_url, sizeof(manager->config.ntfy_url), "%s", url);
+
+  char normalized_url[sizeof(manager->config.ntfy_url)] = { 0 };
+  if (!AlertNtfySanitizeBaseUrl(url,
+                                normalized_url,
+                                sizeof(normalized_url),
+                                NULL)) {
+    return false;
+  }
+
+  strlcpy(manager->config.ntfy_url, normalized_url, sizeof(manager->config.ntfy_url));
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 

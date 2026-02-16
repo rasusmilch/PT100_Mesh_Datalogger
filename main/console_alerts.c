@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "alerts/alert_manager.h"
+#include "alerts/alert_ntfy.h"
 #include "esp_console.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -369,12 +370,16 @@ PrintStatus(const alert_manager_t* manager)
          low_whole,
          low_frac);
   printf("queue: depth=%" PRIu32 " dropped=%" PRIu32
-         " send_ok=%" PRIu32 " send_fail=%" PRIu32 " last_status=%d\n",
+         " send_ok=%" PRIu32 " send_fail=%" PRIu32
+         " last_http_status=%d last_err=%s last_dns=%d last_ip=%s\n",
          (uint32_t)uxQueueMessagesWaiting(manager->ntfy.queue),
          manager->ntfy.dropped,
          manager->ntfy.send_success,
          manager->ntfy.send_fail,
-         manager->ntfy.last_http_status);
+         manager->ntfy.last_http_status,
+         esp_err_to_name(manager->ntfy.last_err),
+         manager->ntfy.last_dns_result,
+         manager->ntfy.last_resolved_ip[0] ? manager->ntfy.last_resolved_ip : "<none>");
   printf("http_queue: depth=%" PRIu32 " dropped=%" PRIu32 " backoff_ms=%" PRIu32
          " cooldown_until_ms=%" PRId64 "\n",
          manager->ntfy.job_queue != NULL
@@ -700,7 +705,22 @@ CommandAlert(int argc, char** argv)
       const char* value = argv[4];
       bool ok = false;
       if (strcmp(field, "url") == 0) {
-        ok = AlertManagerSetNtfyUrl(manager, value);
+        char normalized_url[128] = { 0 };
+        alert_ntfy_url_sanitize_result_t sanitize_reason =
+          ALERT_NTFY_URL_SANITIZE_OK;
+        if (!AlertNtfySanitizeBaseUrl(value,
+                                      normalized_url,
+                                      sizeof(normalized_url),
+                                      &sanitize_reason)) {
+          printf("invalid ntfy url: reason=%s\n",
+                 AlertNtfyUrlSanitizeResultToString(sanitize_reason));
+          ok = false;
+        } else {
+          ok = AlertManagerSetNtfyUrl(manager, normalized_url);
+          if (!ok) {
+            printf("failed to persist ntfy url\n");
+          }
+        }
       } else if (strcmp(field, "topic") == 0) {
         ok = AlertManagerSetNtfyTopic(manager, value);
       } else if (strcmp(field, "token") == 0) {

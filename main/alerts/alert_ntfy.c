@@ -9,6 +9,11 @@
 #include <strings.h>
 #include <time.h>
 
+#include <arpa/inet.h>
+#include <ctype.h>
+#include <netdb.h>
+#include <sys/socket.h>
+
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -28,6 +33,22 @@ static int
 AlertNtfyParseRetryAfterSeconds(const char* value);
 static esp_err_t
 AlertNtfyHttpEventHandler(esp_http_client_event_t* evt);
+static bool
+ContainsWhitespace(const char* text);
+static bool
+ExtractHostnameFromUrl(const char* url, char* out_host, size_t out_host_size);
+static void
+LogDnsAddresses(const struct addrinfo* result,
+                char* out_first_ip,
+                size_t out_first_ip_size);
+static void
+LogNtfyFailure(alert_ntfy_t* ntfy,
+               const char* base_url,
+               const char* hostname,
+               esp_err_t err,
+               int status,
+               uint32_t timeout_ms,
+               uint32_t attempt);
 static void
 FormatLeafId(uint64_t leaf_id, char* out, size_t out_size);
 static void
@@ -36,6 +57,145 @@ static void
 AppendTimeLine(const alert_notification_payload_t* payload,
                char* body,
                size_t body_size);
+/**
+ * @brief Convert URL sanitize result code to a printable string.
+ * @param reason Sanitizer result code.
+ * @return Static reason string.
+ */
+const char*
+AlertNtfyUrlSanitizeResultToString(alert_ntfy_url_sanitize_result_t reason)
+{
+  switch (reason) {
+    case ALERT_NTFY_URL_SANITIZE_OK:
+      return "ok";
+    case ALERT_NTFY_URL_SANITIZE_EMPTY:
+      return "empty";
+    case ALERT_NTFY_URL_SANITIZE_TOO_LONG:
+      return "too_long";
+    case ALERT_NTFY_URL_SANITIZE_BAD_SCHEME:
+      return "bad_scheme";
+    case ALERT_NTFY_URL_SANITIZE_MALFORMED_SCHEME:
+      return "malformed_scheme";
+    case ALERT_NTFY_URL_SANITIZE_EMBEDDED_WHITESPACE:
+      return "embedded_whitespace";
+    case ALERT_NTFY_URL_SANITIZE_MISSING_HOST:
+      return "missing_host";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * @brief Validate and normalize operator ntfy base URL input.
+ * @param input_url Raw operator input URL.
+ * @param output_url Destination for normalized URL.
+ * @param output_url_size Size of output_url in bytes.
+ * @param out_reason Optional output reason enum.
+ * @return True when sanitized output_url is valid.
+ */
+bool
+AlertNtfySanitizeBaseUrl(const char* input_url,
+                         char* output_url,
+                         size_t output_url_size,
+                         alert_ntfy_url_sanitize_result_t* out_reason)
+{
+  if (out_reason != NULL) {
+    *out_reason = ALERT_NTFY_URL_SANITIZE_OK;
+  }
+  if (output_url == NULL || output_url_size == 0) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_TOO_LONG;
+    }
+    return false;
+  }
+  output_url[0] = '\0';
+
+  if (input_url == NULL) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_EMPTY;
+    }
+    return false;
+  }
+
+  const char* start = input_url;
+  while (*start != '\0' && isspace((unsigned char)*start)) {
+    ++start;
+  }
+  const char* end = input_url + strlen(input_url);
+  while (end > start && isspace((unsigned char)*(end - 1))) {
+    --end;
+  }
+  const size_t trimmed_len = (size_t)(end - start);
+  if (trimmed_len == 0) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_EMPTY;
+    }
+    return false;
+  }
+
+  char candidate[160] = { 0 };
+  if (trimmed_len >= sizeof(candidate)) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_TOO_LONG;
+    }
+    return false;
+  }
+  memcpy(candidate, start, trimmed_len);
+  candidate[trimmed_len] = '\0';
+
+  if (ContainsWhitespace(candidate)) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_EMBEDDED_WHITESPACE;
+    }
+    return false;
+  }
+
+  if (strncmp(candidate, "http:/", 6) == 0 && strncmp(candidate, "http://", 7) != 0) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_MALFORMED_SCHEME;
+    }
+    return false;
+  }
+  if (strncmp(candidate, "https:/", 7) == 0 && strncmp(candidate, "https://", 8) != 0) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_MALFORMED_SCHEME;
+    }
+    return false;
+  }
+
+  const bool has_http = (strncmp(candidate, "http://", 7) == 0);
+  const bool has_https = (strncmp(candidate, "https://", 8) == 0);
+  if (strstr(candidate, "://") != NULL && !has_http && !has_https) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_BAD_SCHEME;
+    }
+    return false;
+  }
+
+  if (!has_http && !has_https) {
+    snprintf(output_url, output_url_size, "https://%s", candidate);
+  } else {
+    strlcpy(output_url, candidate, output_url_size);
+  }
+
+  if (output_url[0] == '\0' || strlen(output_url) >= output_url_size) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_TOO_LONG;
+    }
+    return false;
+  }
+
+  char hostname[96] = { 0 };
+  if (!ExtractHostnameFromUrl(output_url, hostname, sizeof(hostname))) {
+    if (out_reason != NULL) {
+      *out_reason = ALERT_NTFY_URL_SANITIZE_MISSING_HOST;
+    }
+    output_url[0] = '\0';
+    return false;
+  }
+  return true;
+}
+
 static alert_ntfy_result_t
 AlertNtfySendHttp(alert_ntfy_t* ntfy,
                   const alert_ntfy_config_t* cfg,
@@ -48,6 +208,7 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
 
 static const char* kTag = "alert_ntfy";
 static const uint32_t kNtfyJobDropLogRateLimitMs = 60000;
+static const uint32_t kNtfyHttpDefaultTimeoutMs = 15000;
 
 typedef struct
 {
@@ -146,6 +307,145 @@ AlertNtfyHttpEventHandler(esp_http_client_event_t* evt)
   return ESP_OK;
 }
 
+static bool
+ContainsWhitespace(const char* text)
+{
+  if (text == NULL) {
+    return false;
+  }
+  for (size_t index = 0; text[index] != '\0'; ++index) {
+    if (isspace((unsigned char)text[index])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool
+ExtractHostnameFromUrl(const char* url, char* out_host, size_t out_host_size)
+{
+  if (url == NULL || out_host == NULL || out_host_size == 0) {
+    return false;
+  }
+  out_host[0] = '\0';
+
+  const char* scheme_sep = strstr(url, "://");
+  if (scheme_sep == NULL) {
+    return false;
+  }
+  const char* host_start = scheme_sep + 3;
+  if (host_start[0] == '\0') {
+    return false;
+  }
+
+  const char* host_end = host_start;
+  while (host_end[0] != '\0' && host_end[0] != '/') {
+    ++host_end;
+  }
+  size_t host_len = (size_t)(host_end - host_start);
+  if (host_len == 0) {
+    return false;
+  }
+
+  const char* parsed_start = host_start;
+  size_t parsed_len = host_len;
+  if (host_start[0] == '[') {
+    const char* closing_bracket = memchr(host_start, ']', host_len);
+    if (closing_bracket == NULL) {
+      return false;
+    }
+    parsed_start = host_start + 1;
+    parsed_len = (size_t)(closing_bracket - parsed_start);
+    if (parsed_len == 0) {
+      return false;
+    }
+  } else {
+    const char* colon = memchr(host_start, ':', host_len);
+    if (colon != NULL) {
+      parsed_len = (size_t)(colon - host_start);
+    }
+  }
+
+  if (parsed_len == 0 || parsed_len >= out_host_size) {
+    return false;
+  }
+  memcpy(out_host, parsed_start, parsed_len);
+  out_host[parsed_len] = '\0';
+  return true;
+}
+
+static void
+LogDnsAddresses(const struct addrinfo* result,
+                char* out_first_ip,
+                size_t out_first_ip_size)
+{
+  if (out_first_ip != NULL && out_first_ip_size > 0) {
+    out_first_ip[0] = '\0';
+  }
+
+  uint32_t logged_count = 0;
+  for (const struct addrinfo* node = result; node != NULL; node = node->ai_next) {
+    char ip_text[INET6_ADDRSTRLEN] = { 0 };
+    const char* family = NULL;
+    const void* address_ptr = NULL;
+
+    if (node->ai_family == AF_INET) {
+      const struct sockaddr_in* sockaddr_v4 =
+        (const struct sockaddr_in*)node->ai_addr;
+      address_ptr = &sockaddr_v4->sin_addr;
+      family = "IPv4";
+    } else if (node->ai_family == AF_INET6) {
+      const struct sockaddr_in6* sockaddr_v6 =
+        (const struct sockaddr_in6*)node->ai_addr;
+      address_ptr = &sockaddr_v6->sin6_addr;
+      family = "IPv6";
+    } else {
+      continue;
+    }
+
+    if (inet_ntop(node->ai_family, address_ptr, ip_text, sizeof(ip_text)) == NULL) {
+      continue;
+    }
+
+    if (logged_count == 0 && out_first_ip != NULL && out_first_ip_size > 0) {
+      strlcpy(out_first_ip, ip_text, out_first_ip_size);
+    }
+
+    if (logged_count < 3) {
+      ESP_LOGI(kTag, "ntfy dns resolve[%" PRIu32 "] %s %s", logged_count + 1, family, ip_text);
+    }
+    ++logged_count;
+  }
+}
+
+static void
+LogNtfyFailure(alert_ntfy_t* ntfy,
+               const char* base_url,
+               const char* hostname,
+               esp_err_t err,
+               int status,
+               uint32_t timeout_ms,
+               uint32_t attempt)
+{
+  if (ntfy == NULL) {
+    return;
+  }
+  if (!LogRateLimitAllow(&ntfy->last_send_fail_log_ms, 5000)) {
+    return;
+  }
+
+  ESP_LOGW(kTag,
+           "ntfy failure: base=%s host=%s dns=%d err=%s status=%d timeout_ms=%" PRIu32
+           " attempt=%" PRIu32,
+           (base_url != NULL && base_url[0] != '\0') ? base_url : "<unset>",
+           (hostname != NULL && hostname[0] != '\0') ? hostname : "<none>",
+           ntfy->last_dns_result,
+           esp_err_to_name(err),
+           status,
+           timeout_ms,
+           attempt);
+}
+
 /**
  * @brief Execute FormatLeafId.
  * @param leaf_id Parameter leaf_id.
@@ -236,7 +536,6 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
                   int* out_status,
                   esp_err_t* out_err)
 {
-  (void)ntfy;
   if (out_status != NULL) {
     *out_status = 0;
   }
@@ -264,6 +563,44 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
     .retry_after_seconds = -1,
   };
 
+  ntfy->last_dns_result = 0;
+  ntfy->last_resolved_ip[0] = '\0';
+
+  char hostname[96] = { 0 };
+  if (!ExtractHostnameFromUrl(cfg->url, hostname, sizeof(hostname))) {
+    if (out_err != NULL) {
+      *out_err = ESP_ERR_INVALID_ARG;
+    }
+    return ALERT_NTFY_FAILED;
+  }
+
+  const uint32_t timeout_ms =
+    (cfg->http_timeout_ms > 0) ? cfg->http_timeout_ms : kNtfyHttpDefaultTimeoutMs;
+
+  struct addrinfo hints = {
+    .ai_family = AF_UNSPEC,
+    .ai_socktype = SOCK_STREAM,
+  };
+  struct addrinfo* result = NULL;
+  const int dns_result = getaddrinfo(hostname, NULL, &hints, &result);
+  ntfy->last_dns_result = dns_result;
+  ESP_LOGI(kTag, "ntfy dns preflight host=%s result=%d", hostname, dns_result);
+  if (dns_result == 0 && result != NULL) {
+    LogDnsAddresses(result, ntfy->last_resolved_ip, sizeof(ntfy->last_resolved_ip));
+  }
+  if (dns_result != 0) {
+    if (result != NULL) {
+      freeaddrinfo(result);
+    }
+    if (out_err != NULL) {
+      *out_err = ESP_ERR_HTTP_CONNECT;
+    }
+    LogNtfyFailure(ntfy, cfg->url, hostname, ESP_ERR_HTTP_CONNECT, 0, timeout_ms,
+                   ntfy->send_fail + 1);
+    return ALERT_NTFY_FAILED;
+  }
+  freeaddrinfo(result);
+
   char url[256];
   if (cfg->url[strlen(cfg->url) - 1] == '/') {
     snprintf(url, sizeof(url), "%s%s", cfg->url, cfg->topic);
@@ -271,8 +608,6 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
     snprintf(url, sizeof(url), "%s/%s", cfg->url, cfg->topic);
   }
 
-  const uint32_t timeout_ms =
-    (cfg->http_timeout_ms > 0) ? cfg->http_timeout_ms : 5000;
   esp_http_client_config_t config = {
     .url = url,
     .method = HTTP_METHOD_POST,
@@ -323,8 +658,8 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
     return ALERT_NTFY_OK;
   }
 
-  ESP_LOGW(
-    kTag, "ntfy post failed: err=%s status=%d", esp_err_to_name(err), status);
+  LogNtfyFailure(
+    ntfy, cfg->url, hostname, err, status, timeout_ms, ntfy->send_fail + 1);
   return ALERT_NTFY_FAILED;
 }
 
