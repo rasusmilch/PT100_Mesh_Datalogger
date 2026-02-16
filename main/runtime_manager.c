@@ -129,6 +129,16 @@ static RTC_DATA_ATTR runtime_reboot_alert_latch_t g_reboot_alert_latch = {
 };
 static RTC_DATA_ATTR runtime_rtc_errlog_latch_t g_rtc_errlog_latch;
 
+enum
+{
+  SD_FLUSH_TRIGGER_WATERMARK = 1u << 0,
+  SD_FLUSH_TRIGGER_PERIODIC = 1u << 1,
+  SD_FLUSH_TRIGGER_BACKLOG = 1u << 2,
+  SD_FLUSH_TRIGGER_RETRY = 1u << 3,
+  SD_FLUSH_TRIGGER_MORE_PENDING = 1u << 4,
+  SD_FLUSH_TRIGGER_MANUAL = 1u << 5,
+};
+
 typedef struct
 {
   bool active;
@@ -365,6 +375,35 @@ LogDrainPostflight(const runtime_state_t* state,
                    int32_t flushed_records,
                    int32_t remaining_records,
                    uint32_t duration_ms);
+
+/**
+ * @brief Build a printable SD flush trigger list.
+ * @param trigger_flags Bitset of SD flush trigger flags.
+ * @param buffer Destination buffer for the printable trigger list.
+ * @param buffer_len Size of @p buffer in bytes.
+ */
+static void
+SdFlushTriggerFlagsToString(uint32_t trigger_flags,
+                            char* buffer,
+                            size_t buffer_len);
+
+/**
+ * @brief Start an SD flush session if one is not active.
+ * @param state Runtime state.
+ */
+static void
+SdFlushMaybeStartSession(runtime_state_t* state);
+
+/**
+ * @brief Log end-of-session drain metrics.
+ * @param state Runtime state.
+ * @param records_flushed Number of records flushed in the session.
+ * @param duration_ms Session duration in milliseconds.
+ */
+static void
+SdFlushLogSessionEnd(runtime_state_t* state,
+                     uint32_t records_flushed,
+                     uint32_t duration_ms);
 
 static uint32_t
 RuntimeI2cLockHeldMsNoLock(const runtime_state_t* state);
@@ -757,13 +796,15 @@ LogDrainPreflight(const runtime_state_t* state, const char* reason)
   const uint32_t fram_pct =
     (fram_capacity > 0u) ? (fram_count * 100u) / fram_capacity : 0u;
 
+  const char* reason_label = (reason != NULL) ? reason : "unknown";
+
   ESP_LOGI(kTag,
            "Drain preflight(%s): fram=%" PRIu32 "/%" PRIu32 " wm=%" PRIu32
            " (%" PRIu32 "%%) sd=mounted:%u degraded:%u backoff:%" PRIu32
            "ms heap=int:%" PRIu32 "/%" PRIu32 " psram:%" PRIu32 "/%" PRIu32
            " stack_min(ctrl:%" PRIu32 " stor:%" PRIu32 " flush:%" PRIu32
            " net:%" PRIu32 " http:%" PRIu32 ")",
-           (reason != NULL) ? reason : "unknown",
+           reason_label,
            fram_count,
            fram_capacity,
            watermark,
@@ -807,6 +848,120 @@ LogDrainPostflight(const runtime_state_t* state,
            GetStackMonitorMinBytes("sd_flush"),
            GetStackMonitorMinBytes("net_tx"),
            GetStackMonitorMinBytes("alert_http"));
+}
+
+static void
+SdFlushTriggerFlagsToString(uint32_t trigger_flags,
+                            char* buffer,
+                            size_t buffer_len)
+{
+  if (buffer == NULL || buffer_len == 0u) {
+    return;
+  }
+
+  buffer[0] = '\0';
+  const struct
+  {
+    uint32_t flag;
+    const char* label;
+  } entries[] = {
+    { SD_FLUSH_TRIGGER_WATERMARK, "watermark" },
+    { SD_FLUSH_TRIGGER_PERIODIC, "periodic" },
+    { SD_FLUSH_TRIGGER_BACKLOG, "backlog" },
+    { SD_FLUSH_TRIGGER_RETRY, "retry" },
+    { SD_FLUSH_TRIGGER_MORE_PENDING, "more_pending" },
+    { SD_FLUSH_TRIGGER_MANUAL, "manual" },
+  };
+
+  size_t used = 0u;
+  for (size_t i = 0; i < (sizeof(entries) / sizeof(entries[0])); ++i) {
+    if ((trigger_flags & entries[i].flag) == 0u) {
+      continue;
+    }
+    int written = snprintf(buffer + used,
+                           buffer_len - used,
+                           "%s%s",
+                           (used > 0u) ? "+" : "",
+                           entries[i].label);
+    if (written < 0) {
+      buffer[0] = '\0';
+      return;
+    }
+    if ((size_t)written >= (buffer_len - used)) {
+      used = buffer_len - 1u;
+      break;
+    }
+    used += (size_t)written;
+  }
+
+  if (used == 0u) {
+    (void)snprintf(buffer, buffer_len, "unknown");
+  }
+}
+
+static void
+SdFlushMaybeStartSession(runtime_state_t* state)
+{
+  if (state == NULL || state->sd_flush_quiesce_session_active) {
+    return;
+  }
+
+  uint32_t trigger_flags = state->sd_flush_pending_trigger_flags;
+  if (state->sd_start_drain_pending) {
+    trigger_flags |= SD_FLUSH_TRIGGER_BACKLOG;
+  }
+  if (state->sd_manual_drain_active) {
+    trigger_flags |= SD_FLUSH_TRIGGER_MANUAL;
+  }
+  if (trigger_flags == 0u) {
+    trigger_flags = SD_FLUSH_TRIGGER_PERIODIC;
+  }
+
+  state->sd_flush_trigger_flags = trigger_flags;
+  state->sd_flush_pending_trigger_flags = 0u;
+  state->sd_flush_session_records_flushed = 0u;
+  state->sd_flush_session_start_ticks = xTaskGetTickCount();
+  state->sd_flush_session_id++;
+
+  char trigger_string[64];
+  SdFlushTriggerFlagsToString(
+    state->sd_flush_trigger_flags, trigger_string, sizeof(trigger_string));
+  (void)snprintf(state->sd_flush_session_label,
+                 sizeof(state->sd_flush_session_label),
+                 "sd_flush/%s#%" PRIu32,
+                 trigger_string,
+                 state->sd_flush_session_id);
+  LogDrainPreflight(state, state->sd_flush_session_label);
+}
+
+static void
+SdFlushLogSessionEnd(runtime_state_t* state,
+                     uint32_t records_flushed,
+                     uint32_t duration_ms)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  char session_label[RUNTIME_SD_FLUSH_SESSION_LABEL_LEN];
+  const char* label = state->sd_flush_session_label;
+  if (label == NULL || label[0] == '\0') {
+    label = "sd_flush/unknown#0";
+  }
+  (void)snprintf(session_label, sizeof(session_label), "%s", label);
+
+  uint32_t remaining = 0u;
+  (void)ReadFramBufferedRecords(state, &remaining);
+  LogDrainPostflight(state,
+                     session_label,
+                     (int32_t)records_flushed,
+                     (int32_t)remaining,
+                     duration_ms);
+
+  state->sd_flush_trigger_flags = 0u;
+  state->sd_flush_session_records_flushed = 0u;
+  state->sd_flush_session_start_ticks = 0;
+  state->sd_flush_session_label[0] = '\0';
 }
 
 static void
@@ -1773,11 +1928,32 @@ RuntimeBeginI2cQuiesce(runtime_state_t* state, const char* reason)
   UpdateCachedBool(state,
                    &state->cached_status.deferred_active,
                    (DeferredLogCount(state) > 0u));
-  ESP_LOGI(kTag,
-           "I2C quiesce begin (%s) deferred=%u drops=%u",
-           state->i2c_quiesce_reason,
-           (unsigned)state->cached_status.deferred_count,
-           (unsigned)state->cached_status.deferred_drops);
+  if (strncmp(state->i2c_quiesce_reason, "sd_flush", 8) == 0) {
+    char trigger_string[64];
+    SdFlushTriggerFlagsToString(
+      state->sd_flush_trigger_flags, trigger_string, sizeof(trigger_string));
+    ESP_LOGI(kTag,
+             "I2C quiesce begin (%s) sd_session_id=%" PRIu32
+             " trigger=%s flags=0x%08" PRIx32
+             " pending=%u start_drain=%u fram=%" PRIu32 " wm=%" PRIu32
+             " deferred=%u drops=%u",
+             state->i2c_quiesce_reason,
+             state->sd_flush_session_id,
+             trigger_string,
+             state->sd_flush_trigger_flags,
+             state->sd_flush_pending ? 1u : 0u,
+             state->sd_start_drain_pending ? 1u : 0u,
+             state->cached_status.fram_count,
+             state->cached_status.fram_flush_watermark_records,
+             (unsigned)state->cached_status.deferred_count,
+             (unsigned)state->cached_status.deferred_drops);
+  } else {
+    ESP_LOGI(kTag,
+             "I2C quiesce begin (%s) deferred=%u drops=%u",
+             state->i2c_quiesce_reason,
+             (unsigned)state->cached_status.deferred_count,
+             (unsigned)state->cached_status.deferred_drops);
+  }
 }
 
 static void
@@ -5371,7 +5547,11 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   esp_err_t result = ESP_OK;
   state->sd_flush_in_progress = true;
   if (!state->sd_flush_quiesce_session_active) {
-    RuntimeBeginI2cQuiesce(state, "sd_flush");
+    SdFlushMaybeStartSession(state);
+    const char* session_reason =
+      (state->sd_flush_session_label[0] != '\0') ? state->sd_flush_session_label
+                                                  : "sd_flush/unknown#0";
+    RuntimeBeginI2cQuiesce(state, session_reason);
     state->sd_flush_quiesce_session_active = true;
   }
   uint32_t total_records_flushed = 0;
@@ -5627,7 +5807,16 @@ flush_done:
     *more_pending_out = more_pending;
   }
 
+  state->sd_flush_session_records_flushed += total_records_flushed;
+
   if (result != ESP_OK || !more_pending) {
+    const uint32_t duration_ms =
+      (state->sd_flush_session_start_ticks > 0)
+        ? (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount() -
+                                  state->sd_flush_session_start_ticks)
+        : 0u;
+    SdFlushLogSessionEnd(
+      state, state->sd_flush_session_records_flushed, duration_ms);
     state->sd_flush_quiesce_session_active = false;
     RuntimeEndI2cQuiesce(state);
     if (!state->i2c_quiesce_active) {
@@ -7033,9 +7222,6 @@ SdFlushTask(void* context)
   state->sd_next_flush_allowed_ticks = state->last_flush_ticks;
   TickType_t last_sd_detect_poll_ticks = 0;
   bool last_watermark_hit = false;
-  bool watermark_flush_active = false;
-  uint32_t watermark_start_records = 0;
-  TickType_t watermark_start_ticks = 0;
 
   while (!state->stop_requested) {
     const TickType_t now_ticks = xTaskGetTickCount();
@@ -7088,6 +7274,7 @@ SdFlushTask(void* context)
     if (!state->fram_available) {
       state->sd_flush_pending = false;
       state->sd_start_drain_pending = false;
+      state->sd_flush_pending_trigger_flags = 0u;
       if (state->sd_manual_drain_active) {
         state->sd_manual_drain_active = false;
         state->sd_manual_drain_deadline_ticks = 0;
@@ -7107,18 +7294,24 @@ SdFlushTask(void* context)
 
     if (periodic_due && state->fram_available) {
       state->sd_flush_pending = true;
+      state->sd_flush_pending_trigger_flags |= SD_FLUSH_TRIGGER_PERIODIC;
       state->last_flush_ticks = now_ticks;
     }
     if (watermark_hit && state->fram_available) {
-      if (!last_watermark_hit) {
-        watermark_flush_active = true;
-        watermark_start_records = buffered;
-        watermark_start_ticks = now_ticks;
-        LogDrainPreflight(state, "watermark");
-      }
       state->sd_flush_pending = true;
+      state->sd_flush_pending_trigger_flags |= SD_FLUSH_TRIGGER_WATERMARK;
+      if (!last_watermark_hit) {
+        const uint32_t watermark = state->settings.fram_flush_watermark_records;
+        ESP_LOGI(kTag,
+                 "Watermark hit (edge): buffered=%" PRIu32 " wm=%" PRIu32,
+                 buffered,
+                 watermark);
+      }
     }
     last_watermark_hit = watermark_hit;
+    if (state->sd_start_drain_pending) {
+      state->sd_flush_pending_trigger_flags |= SD_FLUSH_TRIGGER_BACKLOG;
+    }
 
     if (!state->sd_logger.is_mounted) {
       RuntimeMarkersSetSdFlush(state, SD_020_MAINTENANCE);
@@ -7157,6 +7350,7 @@ SdFlushTask(void* context)
           }
         }
 
+        state->sd_flush_pending_trigger_flags |= SD_FLUSH_TRIGGER_MANUAL;
         uint32_t flushed = 0;
         bool more_pending = false;
         const esp_err_t flush_result =
@@ -7211,31 +7405,14 @@ SdFlushTask(void* context)
           }
         }
         state->sd_flush_pending = more_pending;
-        if (!more_pending) {
+        if (more_pending) {
+          state->sd_flush_pending_trigger_flags |= SD_FLUSH_TRIGGER_MORE_PENDING;
+        } else {
           state->sd_start_drain_pending = false;
-          if (watermark_flush_active) {
-            uint32_t remaining = 0;
-            (void)ReadFramBufferedRecords(state, &remaining);
-            int32_t flushed_estimate =
-              (int32_t)watermark_start_records - (int32_t)remaining;
-            if (flushed_estimate < 0) {
-              flushed_estimate = 0;
-            }
-            const uint32_t duration_ms =
-              (watermark_start_ticks > 0)
-                ? (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount() -
-                                          watermark_start_ticks)
-                : 0u;
-            LogDrainPostflight(state,
-                               "watermark",
-                               flushed_estimate,
-                               (int32_t)remaining,
-                               duration_ms);
-            watermark_flush_active = false;
-            watermark_start_records = 0;
-            watermark_start_ticks = 0;
-          }
         }
+      } else {
+        state->sd_flush_pending = true;
+        state->sd_flush_pending_trigger_flags |= SD_FLUSH_TRIGGER_RETRY;
       }
       state->sd_next_flush_allowed_ticks =
         xTaskGetTickCount() + pdMS_TO_TICKS(kSdFlushMinIntervalMs);
@@ -9384,6 +9561,12 @@ RuntimeStart(void)
   g_state.sd_flush_in_progress = false;
   g_state.sd_flush_pending = false;
   g_state.sd_flush_quiesce_session_active = false;
+  g_state.sd_flush_pending_trigger_flags = 0u;
+  g_state.sd_flush_trigger_flags = 0u;
+  g_state.sd_flush_session_id = 0u;
+  g_state.sd_flush_session_records_flushed = 0u;
+  g_state.sd_flush_session_start_ticks = 0;
+  g_state.sd_flush_session_label[0] = '\0';
   g_state.sd_start_drain_pending = false;
   g_state.sd_next_flush_allowed_ticks = 0;
   g_state.i2c_quiesce_active = false;
