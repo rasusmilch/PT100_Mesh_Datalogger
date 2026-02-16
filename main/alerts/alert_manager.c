@@ -1991,19 +1991,24 @@ AlertManagerLogNtfyBodyLines(const char* label, const char* text)
     return;
   }
 
-  const char* cursor = text;
-  while (*cursor != '\0') {
-    const char* eol = strchr(cursor, '\n');
-    size_t len = (eol != NULL) ? (size_t)(eol - cursor) : strlen(cursor);
-    if (len > 0 && cursor[len - 1] == '\r') {
-      len--;
+  const size_t raw_len = strnlen(text, ALERT_NTFY_JOB_BODY_LEN);
+  const bool truncated = (raw_len == ALERT_NTFY_JOB_BODY_LEN);
+  char cleaned[ALERT_NTFY_JOB_BODY_LEN + 1];
+  size_t cleaned_len = 0;
+  for (size_t i = 0; i < raw_len && cleaned_len < ALERT_NTFY_JOB_BODY_LEN; ++i) {
+    if (text[i] == '\r') {
+      continue;
     }
-    ESP_LOGI(kTag, "ntfy body %s: %.*s", line_label, (int)len, cursor);
-    if (eol == NULL) {
-      break;
-    }
-    cursor = eol + 1;
+    cleaned[cleaned_len++] = text[i];
   }
+  cleaned[cleaned_len] = '\0';
+
+  ESP_LOGI(kTag,
+           "ntfy body %s BEGIN\n%s\nntfy body %s END%s",
+           line_label,
+           cleaned,
+           line_label,
+           truncated ? " (truncated)" : "");
 }
 
 static void
