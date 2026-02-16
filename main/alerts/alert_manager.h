@@ -78,8 +78,10 @@ extern "C"
     uint64_t leaf_id;
     int32_t last_temp_milli_c;
     uint32_t last_seq;
+    uint64_t last_record_id;
     int64_t last_rx_epoch;
     int64_t last_rx_uptime_ms;
+    int64_t last_restart_log_ms;
     int64_t last_online_ms;
     bool online;
     int64_t high_hold_start_ms;

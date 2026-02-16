@@ -105,6 +105,15 @@ static void LogNonmonotonicDelta(uint64_t leaf_id,
                                  int64_t now_ms,
                                  int64_t then_ms,
                                  uint32_t gap_ms);
+static bool IsLikelySequenceWrap(uint32_t last_seq, uint32_t new_seq);
+static bool ShouldAlertLeafRestart(const alert_leaf_state_t* leaf,
+                                   const log_record_t* record,
+                                   const char** reason_out);
+static void LogLeafRestartDetection(const alert_leaf_state_t* leaf,
+                                    const log_record_t* record,
+                                    int64_t now_ms,
+                                    int64_t now_epoch,
+                                    const char* reason);
 static void AlertManagerBatchInit(alert_batch_t* batch);
 static void AlertManagerBatchAdd(alert_batch_t* batch,
                                  const alert_notification_t* note);
@@ -133,6 +142,11 @@ static const int64_t kNtfyFailureMaxBackoffMs = 300000;
 static const uint32_t kAlertConfigVersion = 2;
 static const char* kAlertNvsNamespace = "alerts";
 static const char* kAlertNvsConfigKey = "config";
+static const uint32_t kRestartSeqLowValueThreshold = 1000;
+static const uint32_t kRestartSeqHighValueThreshold = 100000;
+static const uint64_t kRestartRecordIdDropThreshold = 1000;
+static const int64_t kRestartWarnLogMinIntervalMs = 10000;
+static const uint32_t kSequenceWrapWindow = 1000;
 static int64_t s_last_nonmonotonic_log_ms = 0;
 RTC_DATA_ATTR static uint32_t g_ntfy_msg_seq = 0;
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
@@ -202,6 +216,89 @@ LogNonmonotonicDelta(uint64_t leaf_id,
            now_ms,
            then_ms,
            gap_ms);
+}
+
+static bool
+IsLikelySequenceWrap(uint32_t last_seq, uint32_t new_seq)
+{
+  return last_seq >= (UINT32_MAX - kSequenceWrapWindow) &&
+         new_seq <= kSequenceWrapWindow;
+}
+
+static bool
+ShouldAlertLeafRestart(const alert_leaf_state_t* leaf,
+                       const log_record_t* record,
+                       const char** reason_out)
+{
+  if (reason_out != NULL) {
+    *reason_out = "unknown";
+  }
+  if (leaf == NULL || record == NULL) {
+    return false;
+  }
+  if (leaf->last_seq == 0 || record->sequence == 0) {
+    return false;
+  }
+  if (record->sequence >= leaf->last_seq) {
+    return false;
+  }
+  if (IsLikelySequenceWrap(leaf->last_seq, record->sequence)) {
+    if (reason_out != NULL) {
+      *reason_out = "sequence wrap";
+    }
+    return false;
+  }
+
+  if (record->record_id != 0 && leaf->last_record_id != 0 &&
+      record->record_id < leaf->last_record_id) {
+    const uint64_t drop = leaf->last_record_id - record->record_id;
+    if (drop >= kRestartRecordIdDropThreshold) {
+      if (reason_out != NULL) {
+        *reason_out = "record_id regressed";
+      }
+      return true;
+    }
+  }
+
+  if (record->sequence <= kRestartSeqLowValueThreshold &&
+      leaf->last_seq >= kRestartSeqHighValueThreshold) {
+    if (reason_out != NULL) {
+      *reason_out = "sequence reset to low value";
+    }
+    return true;
+  }
+  return false;
+}
+
+static void
+LogLeafRestartDetection(const alert_leaf_state_t* leaf,
+                        const log_record_t* record,
+                        int64_t now_ms,
+                        int64_t now_epoch,
+                        const char* reason)
+{
+  if (leaf == NULL || record == NULL) {
+    return;
+  }
+  if (now_ms > 0 && leaf->last_restart_log_ms > 0 &&
+      (now_ms - leaf->last_restart_log_ms) < kRestartWarnLogMinIntervalMs) {
+    return;
+  }
+  char leaf_id_string[32] = "";
+  AlertManagerFormatLeafId(leaf->leaf_id, leaf_id_string, sizeof(leaf_id_string));
+  ESP_LOGW(kTag,
+           "leaf sequence regression (%s) for %s last_seq=%" PRIu32
+           " new_seq=%" PRIu32 " last_record_id=%" PRIu64
+           " new_record_id=%" PRIu64 " last_rx_epoch=%" PRId64
+           " now_epoch=%" PRId64,
+           (reason != NULL) ? reason : "unknown",
+           leaf_id_string,
+           leaf->last_seq,
+           record->sequence,
+           leaf->last_record_id,
+           record->record_id,
+           leaf->last_rx_epoch,
+           now_epoch);
 }
 
 /**
@@ -827,8 +924,11 @@ AlertManagerOnSample(alert_manager_t* manager,
     return;
   }
   const uint32_t mask = EffectiveEnableMask(manager, leaf_id);
-  if ((mask & (1u << ALERT_LEAF_RESTART)) != 0u && leaf->last_seq != 0 &&
-      record->sequence != 0 && record->sequence < leaf->last_seq) {
+  const char* restart_reason = NULL;
+  if ((mask & (1u << ALERT_LEAF_RESTART)) != 0u &&
+      ShouldAlertLeafRestart(leaf, record, &restart_reason)) {
+    LogLeafRestartDetection(leaf, record, now_ms, now_epoch, restart_reason);
+    leaf->last_restart_log_ms = now_ms;
     alert_notification_payload_t payload = { 0 };
     FillPayloadBase(&payload, leaf, now_ms, now_epoch);
     payload.last_seq = leaf->last_seq;
@@ -847,7 +947,13 @@ AlertManagerOnSample(alert_manager_t* manager,
   const bool cal_valid =
     (record->flags & LOG_RECORD_FLAG_CAL_VALID) != 0u;
   if (record->sequence != 0u) {
-    leaf->last_seq = record->sequence;
+    if (leaf->last_seq == 0 || record->sequence > leaf->last_seq ||
+        IsLikelySequenceWrap(leaf->last_seq, record->sequence)) {
+      leaf->last_seq = record->sequence;
+    }
+  }
+  if (record->record_id != 0u && record->record_id > leaf->last_record_id) {
+    leaf->last_record_id = record->record_id;
   }
   leaf->last_temp_milli_c =
     cal_valid ? record->temp_milli_c : record->raw_temp_milli_c;
@@ -1766,7 +1872,7 @@ AlertNotificationDescribe(const alert_manager_t* manager,
                note->payload.duration_ms);
       break;
     case ALERT_LEAF_RESTART:
-      snprintf(out + strlen(out), out_size - strlen(out), "restart");
+      snprintf(out + strlen(out), out_size - strlen(out), "sequence reset");
       break;
     case ALERT_ROOT_RESTART:
       snprintf(out + strlen(out), out_size - strlen(out), "root restart");
