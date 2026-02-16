@@ -22,7 +22,7 @@ static const char* kKeyTimeSync = "time_sync_s";
 static const uint8_t kMeshChannelMin = 1;
 static const uint8_t kMeshChannelMax = 13;
 static const uint32_t kTimeSyncMinSeconds = 5;
-static const uint32_t kTimeSyncMaxSeconds = 3600;
+static const uint32_t kTimeSyncMaxSeconds = 86400;
 
 // Compile-time constants (C-friendly). Avoid file-scope VLAs and "+1" scatter.
 // "AA:BB:CC:DD:EE:FF" is 17 chars, plus NUL => 18 bytes.

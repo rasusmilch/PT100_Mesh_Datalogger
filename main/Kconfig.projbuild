@@ -120,7 +120,7 @@ config APP_SNTP_SERVER
 
 config APP_TIME_SYNC_PERIOD_S
   int "Root time broadcast period (seconds)"
-  range 5 3600
+  range 5 86400
   default 30
 
 config APP_MESH_CHANNEL

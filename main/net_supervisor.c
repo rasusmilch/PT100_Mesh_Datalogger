@@ -27,10 +27,11 @@ typedef enum
 
 static const app_runtime_t* s_runtime = NULL;
 static TaskHandle_t s_task = NULL;
-static uint32_t s_sntp_consecutive_failures = 0;
+static uint32_t s_sntp_consecutive_failures_time_invalid = 0;
+static uint32_t s_sntp_consecutive_failures_time_valid = 0;
 static bool s_sntp_failure_alert_active = false;
 
-static esp_err_t TrySntpSyncWithFailover(int timeout_ms);
+static esp_err_t TrySntpSyncWithFailover(int timeout_ms, uint8_t max_servers);
 
 static app_net_mode_t
 GetDesiredNetMode(void)
@@ -127,16 +128,19 @@ MaybeLogConnectionChange(bool connected, bool* last_connected)
 }
 
 static esp_err_t
-TrySntpSyncWithFailover(int timeout_ms)
+TrySntpSyncWithFailover(int timeout_ms, uint8_t max_servers)
 {
   const uint8_t count = AppNetConfigGetSntpServerCount();
   if (count == 0) {
     return ESP_FAIL;
   }
 
-  const uint8_t attempt_count =
+  uint8_t attempt_count =
     (count < APP_NET_SNTP_SERVERS_MAX_COUNT) ? count
                                              : APP_NET_SNTP_SERVERS_MAX_COUNT;
+  if (max_servers > 0 && max_servers < attempt_count) {
+    attempt_count = max_servers;
+  }
   esp_err_t last_result = ESP_FAIL;
   for (uint8_t idx = 0; idx < attempt_count; ++idx) {
     const char* server = AppNetConfigGetSntpServerAt(idx);
@@ -377,9 +381,14 @@ NetSupervisorTask(void* context)
           next_time_sync_ticks = now_ticks + pdMS_TO_TICKS(1000);
           continue;
         }
-        const esp_err_t sntp_result = TrySntpSyncWithFailover(30 * 1000);
+        const bool system_time_valid = TimeSyncIsSystemTimeValid();
+        const int timeout_ms = system_time_valid ? (5 * 1000) : (30 * 1000);
+        const uint8_t max_servers = system_time_valid ? 1 : APP_NET_SNTP_SERVERS_MAX_COUNT;
+        const esp_err_t sntp_result =
+          TrySntpSyncWithFailover(timeout_ms, max_servers);
         if (sntp_result == ESP_OK) {
-          s_sntp_consecutive_failures = 0;
+          s_sntp_consecutive_failures_time_invalid = 0;
+          s_sntp_consecutive_failures_time_valid = 0;
           s_sntp_failure_alert_active = false;
         }
         if (sntp_result == ESP_OK && s_runtime != NULL &&
@@ -394,21 +403,28 @@ NetSupervisorTask(void* context)
                      esp_err_to_name(rtc_result));
           }
         } else if (sntp_result != ESP_OK) {
-          s_sntp_consecutive_failures++;
-          if (!TimeSyncIsSystemTimeValid()) {
+          if (!system_time_valid) {
+            s_sntp_consecutive_failures_time_invalid++;
+            s_sntp_consecutive_failures_time_valid = 0;
             ESP_LOGW(kTag, "SNTP unsuccessful (time invalid)");
-          } else {
-            ESP_LOGI(kTag, "SNTP unsuccessful (time already valid)");
-          }
-          const uint32_t threshold = AppNetConfigGetSntpFailThresholdN();
-          if (s_sntp_consecutive_failures >= threshold) {
-            if (!s_sntp_failure_alert_active) {
-              ESP_LOGE(kTag,
-                       "SNTP failed %u consecutive times; "
-                       "raising display/console alert",
-                       (unsigned)s_sntp_consecutive_failures);
+            const uint32_t threshold = AppNetConfigGetSntpFailThresholdN();
+            if (s_sntp_consecutive_failures_time_invalid >= threshold) {
+              if (!s_sntp_failure_alert_active) {
+                ESP_LOGE(kTag,
+                         "SNTP failed %u consecutive times; "
+                         "raising display/console alert",
+                         (unsigned)s_sntp_consecutive_failures_time_invalid);
+              }
+              s_sntp_failure_alert_active = true;
             }
-            s_sntp_failure_alert_active = true;
+          } else {
+            s_sntp_consecutive_failures_time_valid++;
+            s_sntp_consecutive_failures_time_invalid = 0;
+            if ((s_sntp_consecutive_failures_time_valid % 6U) == 1U) {
+              ESP_LOGI(kTag,
+                       "SNTP unsuccessful (time already valid) count=%u",
+                       (unsigned)s_sntp_consecutive_failures_time_valid);
+            }
           }
         }
 
@@ -426,6 +442,13 @@ NetSupervisorTask(void* context)
             }
             next_time_sync_ticks = now_ticks + period_ticks;
           }
+        } else if (system_time_valid) {
+          TickType_t period_ticks =
+            pdMS_TO_TICKS((uint64_t)time_sync_period_s * 1000ULL);
+          if (period_ticks == 0) {
+            period_ticks = pdMS_TO_TICKS(60 * 1000);
+          }
+          next_time_sync_ticks = now_ticks + period_ticks;
         } else {
           const uint32_t retry_ms = time_sync_retry_ms;
           time_sync_retry_ms = (time_sync_retry_ms < max_time_sync_retry_ms / 2)
@@ -470,7 +493,8 @@ NetSupervisorStart(const app_runtime_t* runtime)
     return ESP_ERR_INVALID_ARG;
   }
   s_runtime = runtime;
-  s_sntp_consecutive_failures = 0;
+  s_sntp_consecutive_failures_time_invalid = 0;
+  s_sntp_consecutive_failures_time_valid = 0;
   s_sntp_failure_alert_active = false;
 
   const uint32_t kNetSupervisorStackBytes = 4096;
@@ -499,7 +523,7 @@ NetSupervisorNotifyUpdate(void)
 uint32_t
 NetSupervisorGetSntpConsecutiveFailures(void)
 {
-  return s_sntp_consecutive_failures;
+  return s_sntp_consecutive_failures_time_invalid;
 }
 
 bool

@@ -2,6 +2,7 @@
 #define PT100_LOGGER_ALERT_NTFY_H_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -28,6 +29,17 @@ extern "C"
     ALERT_NTFY_SKIPPED = 1,
     ALERT_NTFY_FAILED = 2,
   } alert_ntfy_result_t;
+
+  typedef enum
+  {
+    ALERT_NTFY_URL_SANITIZE_OK = 0,
+    ALERT_NTFY_URL_SANITIZE_EMPTY,
+    ALERT_NTFY_URL_SANITIZE_TOO_LONG,
+    ALERT_NTFY_URL_SANITIZE_BAD_SCHEME,
+    ALERT_NTFY_URL_SANITIZE_MALFORMED_SCHEME,
+    ALERT_NTFY_URL_SANITIZE_EMBEDDED_WHITESPACE,
+    ALERT_NTFY_URL_SANITIZE_MISSING_HOST,
+  } alert_ntfy_url_sanitize_result_t;
 
   typedef enum
   {
@@ -96,6 +108,8 @@ extern "C"
     uint32_t send_fail;
     int last_http_status;
     esp_err_t last_err;
+    int last_dns_result;
+    char last_resolved_ip[64];
     uint32_t backoff_ms;
     int64_t cooldown_until_ms;
     uint32_t rate_limited_count;
@@ -181,6 +195,27 @@ extern "C"
                                         int* out_retry_after_seconds,
                                         int* out_status,
                                         esp_err_t* out_err);
+
+  /**
+   * @brief Validate and normalize an ntfy base URL.
+   * @param input_url Raw operator-provided URL or host text.
+   * @param output_url Output buffer for normalized URL text.
+   * @param output_url_size Size of output_url in bytes.
+   * @param out_reason Optional parse/validation reason.
+   * @return True when input was accepted and normalized.
+   */
+  bool AlertNtfySanitizeBaseUrl(const char* input_url,
+                                char* output_url,
+                                size_t output_url_size,
+                                alert_ntfy_url_sanitize_result_t* out_reason);
+
+  /**
+   * @brief Convert an ntfy URL sanitizer reason code to string.
+   * @param reason Sanitizer reason code.
+   * @return Pointer to static reason string.
+   */
+  const char*
+  AlertNtfyUrlSanitizeResultToString(alert_ntfy_url_sanitize_result_t reason);
 
 #ifdef __cplusplus
 }
