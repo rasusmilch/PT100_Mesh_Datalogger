@@ -35,6 +35,7 @@ extern "C"
 #define RUNTIME_ERROR_RING_SIZE 8
 #define RUNTIME_RTC_ERRLOG_RING_SIZE 8
 #define DEFERRED_LOG_CAPACITY 20
+#define RUNTIME_SD_FLUSH_SESSION_LABEL_LEN 96
 
   typedef struct
   {
@@ -330,6 +331,12 @@ extern "C"
     bool sd_flush_in_progress;
     bool sd_flush_pending;
     bool sd_flush_quiesce_session_active;
+    uint32_t sd_flush_pending_trigger_flags;
+    uint32_t sd_flush_trigger_flags;
+    uint32_t sd_flush_session_id;
+    uint32_t sd_flush_session_records_flushed;
+    TickType_t sd_flush_session_start_ticks;
+    char sd_flush_session_label[RUNTIME_SD_FLUSH_SESSION_LABEL_LEN];
     volatile bool sd_manual_drain_active;
     volatile TickType_t sd_manual_drain_deadline_ticks;
     volatile uint32_t sd_manual_drain_passes;
