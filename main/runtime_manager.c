@@ -185,6 +185,12 @@ InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host);
 static void
 AlertHttpTask(void* context);
 
+static void
+RuntimeLogNtfyBodyLines(const char* label, const char* text);
+
+static void
+RuntimeLogNtfyJob(const alert_ntfy_job_t* job, const char* stage);
+
 /**
  * @brief Create the alert_http task with a PSRAM-backed stack.
  * @param state Runtime state (owns the task memory).
@@ -6619,6 +6625,49 @@ CreateAlertHttpTaskWithPsrStack(runtime_state_t* state, uint32_t stack_bytes)
  * @note FreeRTOS task entry for the alert_http task.
  */
 static void
+RuntimeLogNtfyBodyLines(const char* label, const char* text)
+{
+  const char* line_label = (label != NULL) ? label : "unknown";
+  if (text == NULL || text[0] == '\0') {
+    ESP_LOGI(kTag, "runtime: ntfy body %s: <empty>", line_label);
+    return;
+  }
+
+  const char* cursor = text;
+  while (*cursor != '\0') {
+    const char* eol = strchr(cursor, '\n');
+    size_t len = (eol != NULL) ? (size_t)(eol - cursor) : strlen(cursor);
+    if (len > 0 && cursor[len - 1] == '\r') {
+      len--;
+    }
+    ESP_LOGI(kTag,
+             "runtime: ntfy body %s: %.*s",
+             line_label,
+             (int)len,
+             cursor);
+    if (eol == NULL) {
+      break;
+    }
+    cursor = eol + 1;
+  }
+}
+
+static void
+RuntimeLogNtfyJob(const alert_ntfy_job_t* job, const char* stage)
+{
+  if (job == NULL) {
+    return;
+  }
+  const char* stage_name = (stage != NULL) ? stage : "unknown";
+  ESP_LOGI(kTag,
+           "runtime: ntfy job %s title=\"%s\" attempt=%" PRIu32,
+           stage_name,
+           job->title,
+           job->attempt + 1);
+  RuntimeLogNtfyBodyLines(stage_name, job->body);
+}
+
+static void
 AlertHttpTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
@@ -6644,6 +6693,7 @@ AlertHttpTask(void* context)
                       pdMS_TO_TICKS(250)) != pdTRUE) {
       continue;
     }
+    RuntimeLogNtfyJob(&job, "dequeued");
 
     int64_t now_ms = esp_timer_get_time() / 1000;
     int64_t ready_ms = job.next_attempt_ms;
@@ -6678,6 +6728,7 @@ AlertHttpTask(void* context)
     int status = 0;
     int retry_after_seconds = -1;
     esp_err_t err = ESP_OK;
+    RuntimeLogNtfyJob(&job, "attempt");
     alert_ntfy_result_t result = AlertNtfySendText(&state->alert_manager.ntfy,
                                                    &cfg,
                                                    job.title,
@@ -6701,10 +6752,14 @@ AlertHttpTask(void* context)
     }
 
     ESP_LOGI(kTag,
-             "ntfy job %s: status=%d attempt=%" PRIu32,
+             "ntfy job %s: status=%d err=%s (%d) attempt=%" PRIu32
+             " title=\"%s\"",
              result_name,
              status,
-             job.attempt + 1);
+             esp_err_to_name(err),
+             (int)err,
+             job.attempt + 1,
+             job.title);
 
     if (result == ALERT_NTFY_FAILED) {
       if (LogRateLimitAllow(&state->alert_manager.ntfy.last_send_fail_log_ms,

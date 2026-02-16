@@ -100,6 +100,9 @@ static void AlertNotificationDescribe(const alert_manager_t* manager,
                                       const alert_notification_t* note,
                                       char* out,
                                       size_t out_size);
+static void AlertManagerLogNtfyNoteQueued(const alert_manager_t* manager,
+                                          const alert_notification_t* note);
+static void AlertManagerLogNtfyBodyLines(const char* label, const char* text);
 static uint32_t SaturatingDeltaMs(int64_t now_ms, int64_t then_ms);
 static void LogNonmonotonicDelta(uint64_t leaf_id,
                                  int64_t now_ms,
@@ -533,11 +536,15 @@ AlertManagerQueueNotification(alert_manager_t* manager,
   };
 
   if (!AlertNtfyEnqueue(&manager->ntfy, &note)) {
+    char describe[256] = "";
+    AlertNotificationDescribe(manager, &note, describe, sizeof(describe));
+    ESP_LOGW(kTag, "ntfy note enqueue failed: %s", describe);
     if (state != NULL) {
       state->notify_suppressed_count++;
     }
     return false;
   }
+  AlertManagerLogNtfyNoteQueued(manager, &note);
   manager->global_sent_in_window++;
   return true;
 }
@@ -1956,6 +1963,50 @@ AlertNotificationDescribe(const alert_manager_t* manager,
 }
 
 static void
+AlertManagerLogNtfyNoteQueued(const alert_manager_t* manager,
+                              const alert_notification_t* note)
+{
+  if (manager == NULL || note == NULL) {
+    return;
+  }
+  char describe[256] = "";
+  AlertNotificationDescribe(manager, note, describe, sizeof(describe));
+  ESP_LOGI(
+    kTag,
+    "ntfy note queued: %s event_epoch=%" PRId64 " event_uptime_ms=%" PRId64
+    " last_rx_epoch=%" PRId64 " last_rx_uptime_ms=%" PRId64,
+    describe,
+    note->payload.event_epoch,
+    note->payload.event_uptime_ms,
+    note->payload.last_rx_epoch,
+    note->payload.last_rx_uptime_ms);
+}
+
+static void
+AlertManagerLogNtfyBodyLines(const char* label, const char* text)
+{
+  const char* line_label = (label != NULL) ? label : "unknown";
+  if (text == NULL || text[0] == '\0') {
+    ESP_LOGI(kTag, "ntfy body %s: <empty>", line_label);
+    return;
+  }
+
+  const char* cursor = text;
+  while (*cursor != '\0') {
+    const char* eol = strchr(cursor, '\n');
+    size_t len = (eol != NULL) ? (size_t)(eol - cursor) : strlen(cursor);
+    if (len > 0 && cursor[len - 1] == '\r') {
+      len--;
+    }
+    ESP_LOGI(kTag, "ntfy body %s: %.*s", line_label, (int)len, cursor);
+    if (eol == NULL) {
+      break;
+    }
+    cursor = eol + 1;
+  }
+}
+
+static void
 AlertManagerBatchInit(alert_batch_t* batch)
 {
   if (batch == NULL) {
@@ -2185,11 +2236,14 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
 
   manager->ntfy.last_attempt_ms = now_ms;
   ESP_LOGI(kTag,
-           "ntfy send seq=%" PRIu32 " status=%d queued total=%" PRIu32 " unique=%u",
+           "ntfy job queued seq=%" PRIu32 " status=%d title=\"%s\" total=%" PRIu32
+           " unique=%u",
            msg_seq,
            manager->ntfy.last_http_status,
+           scratch->title,
            scratch->batch.total_count,
            (unsigned)scratch->batch.entry_count);
+  AlertManagerLogNtfyBodyLines("queued", scratch->body);
   return true;
 }
 
