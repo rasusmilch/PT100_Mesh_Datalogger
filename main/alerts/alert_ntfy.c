@@ -856,7 +856,7 @@ AlertNtfySend(alert_ntfy_t* ntfy,
     case ALERT_LEAF_RESTART:
       snprintf(body + strlen(body),
                sizeof(body) - strlen(body),
-               "type: leaf_restart\nlast_seq: %" PRIu32 "\n",
+               "type: leaf_sequence_reset\nlast_seq: %" PRIu32 "\n",
                note->payload.last_seq);
       break;
     case ALERT_ROOT_RESTART:
