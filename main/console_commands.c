@@ -6258,7 +6258,8 @@ RegisterCommands(void)
 
   g_cal_args.action = arg_str1(
     NULL, NULL, "<action>", "clear|add|list|show|apply|live|capture|stop");
-  g_cal_args.milli_c = arg_int0(NULL, NULL, "<mC>", "Raw milli-Celsius sample");
+  g_cal_args.raw_c =
+    arg_dbl0(NULL, NULL, "<raw_c>", "Raw Celsius sample (use with 'add')");
   g_cal_args.actual_c =
     arg_dbl0(NULL, NULL, "<C>", "Known actual temperature in Celsius");
   g_cal_args.seconds =
@@ -6269,7 +6270,7 @@ RegisterCommands(void)
     arg_int0(NULL, NULL, "<seconds>", "Min stable duration for capture");
   g_cal_args.timeout_seconds =
     arg_int0(NULL, NULL, "<seconds>", "Capture timeout");
-  g_cal_args.stable_stddev =
+  g_cal_args.stable_stddev_c =
     arg_dbl0(NULL, NULL, "<C>", "Stable stddev threshold in Celsius");
   g_cal_args.end = arg_end(8);
   static const console_registry_entry_t cal_cmd = {
@@ -6282,7 +6283,8 @@ RegisterCommands(void)
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&cal_cmd));
 
   g_mode_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
-  g_mode_args.mode = arg_str0(NULL, NULL, "<day|night|auto>", "Display mode");
+  g_mode_args.mode_value =
+    arg_str0(NULL, NULL, "<day|night|auto>", "Display mode");
   g_mode_args.end = arg_end(2);
   static const console_registry_entry_t mode_cmd = {
     .command = "mode",
@@ -6293,32 +6295,30 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&mode_cmd));
 
-  g_data_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
-  g_data_args.state = arg_int0(NULL, NULL, "<0|1>", "0=off 1=on");
-  g_data_args.end = arg_end(2);
+  g_data_args.action = arg_str1(NULL, NULL, "<action>", "show|on|off");
+  g_data_args.end = arg_end(1);
   static const console_registry_entry_t data_cmd = {
     .command = "data",
     .summary = "Control data streaming mode",
-    .synopsis = "data show | data set 0|1",
+    .synopsis = "data show | data on | data off",
     .func = &CommandData,
     .argtable = &g_data_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&data_cmd));
 
-  g_run_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
-  g_run_args.state = arg_int0(NULL, NULL, "<0|1>", "0=stop 1=run");
-  g_run_args.end = arg_end(2);
+  g_run_args.action = arg_str1(NULL, NULL, "<action>", "status|start|stop");
+  g_run_args.end = arg_end(1);
   static const console_registry_entry_t run_cmd = {
     .command = "run",
     .summary = "Start or stop periodic runtime loop",
-    .synopsis = "run show | run set 0|1",
+    .synopsis = "run status | run start | run stop",
     .func = &CommandRun,
     .argtable = &g_run_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&run_cmd));
 
   g_tz_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
-  g_tz_args.tz = arg_str0(NULL, NULL, "<tz>", "POSIX TZ string");
+  g_tz_args.posix = arg_str0(NULL, NULL, "<tz>", "POSIX TZ string");
   g_tz_args.end = arg_end(2);
   static const console_registry_entry_t tz_cmd = {
     .command = "tz",
@@ -6329,13 +6329,16 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&tz_cmd));
 
-  g_time_args.action = arg_str1(NULL, NULL, "<action>", "show|set|sync");
-  g_time_args.value = arg_str0(NULL, NULL, "<iso8601|epoch>", "Timestamp value");
-  g_time_args.end = arg_end(2);
+  g_time_args.action = arg_str1(NULL, NULL, "<action>", "show|setlocal");
+  g_time_args.local_time =
+    arg_str0(NULL, NULL, "<YYYY-MM-DD HH:MM:SS>", "Local time value");
+  g_time_args.is_dst =
+    arg_int0(NULL, "is_dst", "<0|1>", "Resolve ambiguous local time");
+  g_time_args.end = arg_end(3);
   static const console_registry_entry_t time_cmd = {
     .command = "time",
     .summary = "Show, set, or sync system time",
-    .synopsis = "time show | time set <iso8601|epoch> | time sync",
+    .synopsis = "time show | time setlocal <YYYY-MM-DD HH:MM:SS> [--is_dst 0|1]",
     .func = &CommandTime,
     .argtable = &g_time_args,
   };
@@ -6353,7 +6356,7 @@ RegisterCommands(void)
     .command = "boilpt",
     .summary = "Estimate local boiling point",
     .synopsis = "boilpt",
-    .func = &CommandBoilpt,
+    .func = &CommandBoilPt,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&boilpt_cmd));
 
