@@ -234,6 +234,9 @@ RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
                                 ptlog_header_t* header_out,
                                 uint32_t* signature_out);
 
+static bool
+RuntimeCalibrationApplied(const runtime_state_t* state);
+
 static void
 FormatUtcTimestamp(int64_t epoch_utc, char* out, size_t out_size);
 
@@ -3518,6 +3521,19 @@ FormatUtcTimestamp(int64_t epoch_utc, char* out, size_t out_size)
 }
 
 static bool
+RuntimeCalibrationApplied(const runtime_state_t* state)
+{
+  if (state == NULL) {
+    return false;
+  }
+  const app_settings_t* settings = &state->settings;
+  return (settings->calibration_points_count > 0u) &&
+         settings->calibration.is_valid && !state->cal_overdue &&
+         !state->cal_due_check_suspended;
+}
+
+
+static bool
 RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
                                 int64_t epoch_utc,
                                 ptlog_header_t* header_out,
@@ -3610,6 +3626,14 @@ RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
     snprintf(header_out->cal_due_utc, sizeof(header_out->cal_due_utc), "unknown");
   }
 
+  snprintf(header_out->cal_points_count,
+           sizeof(header_out->cal_points_count),
+           "%u",
+           (unsigned)settings->calibration_points_count);
+  snprintf(header_out->cal_applied,
+           sizeof(header_out->cal_applied),
+           "%u",
+           RuntimeCalibrationApplied(state) ? 1u : 0u);
   snprintf(header_out->cal_method,
            sizeof(header_out->cal_method),
            "%s",
@@ -6275,26 +6299,32 @@ SensorTask(void* context)
     int32_t disp_raw_milli_c = 0;
     int32_t disp_cal_milli_c = 0;
     int32_t disp_selected_milli_c = 0;
+    const bool calibration_applied = RuntimeCalibrationApplied(state);
     if (result == ESP_OK) {
-      const double raw_cal_c = CalibrationModelEvaluateWithPoints(
-        &state->settings.calibration,
-        raw_temp_c,
-        state->settings.calibration_points,
-        state->settings.calibration_points_count);
       record.raw_temp_milli_c = (int32_t)llround(raw_temp_c * 1000.0);
-      record.temp_milli_c = (int32_t)llround(raw_cal_c * 1000.0);
+      record.temp_milli_c = record.raw_temp_milli_c;
       record.resistance_milli_ohm = (int32_t)llround(raw_res_ohm * 1000.0);
 
-      const double disp_cal_c = CalibrationModelEvaluateWithPoints(
-        &state->settings.calibration,
-        disp_raw_temp_c,
-        state->settings.calibration_points,
-        state->settings.calibration_points_count);
       disp_raw_milli_c = (int32_t)llround(disp_raw_temp_c * 1000.0);
-      disp_cal_milli_c = (int32_t)llround(disp_cal_c * 1000.0);
-      disp_selected_milli_c = state->settings.calibration.is_valid
-                                ? disp_cal_milli_c
-                                : disp_raw_milli_c;
+      disp_cal_milli_c = disp_raw_milli_c;
+      disp_selected_milli_c = disp_raw_milli_c;
+
+      if (calibration_applied) {
+        const double raw_cal_c = CalibrationModelEvaluateWithPoints(
+          &state->settings.calibration,
+          raw_temp_c,
+          state->settings.calibration_points,
+          state->settings.calibration_points_count);
+        const double disp_cal_c = CalibrationModelEvaluateWithPoints(
+          &state->settings.calibration,
+          disp_raw_temp_c,
+          state->settings.calibration_points,
+          state->settings.calibration_points_count);
+        record.temp_milli_c = (int32_t)llround(raw_cal_c * 1000.0);
+        disp_cal_milli_c = (int32_t)llround(disp_cal_c * 1000.0);
+        disp_selected_milli_c = disp_cal_milli_c;
+      }
+
       CalWindowPushRawSample(disp_raw_milli_c);
       if (sample.fault_present) {
         record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
@@ -6367,11 +6397,8 @@ SensorTask(void* context)
     if (time_valid) {
       record.flags |= LOG_RECORD_FLAG_TIME_VALID;
     }
-    const bool cal_valid =
-      (state->settings.calibration.is_valid && !state->cal_overdue);
-    if (!state->cal_due_check_suspended && state->cal_overdue) {
-      record.flags &= (uint16_t)~LOG_RECORD_FLAG_CAL_VALID;
-    } else if (cal_valid) {
+    const bool cal_valid = RuntimeCalibrationApplied(state);
+    if (cal_valid) {
       record.flags |= LOG_RECORD_FLAG_CAL_VALID;
     }
     if (state->sd_degraded) {

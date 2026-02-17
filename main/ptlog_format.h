@@ -31,6 +31,8 @@ typedef struct
   char cal_last_utc[32];
   char cal_due_rule[32];
   char cal_due_utc[32];
+  char cal_points_count[16];
+  char cal_applied[8];
   char cal_method[PTLOG_TEXT_FIELD_MAX_LEN];
   char cal_context[PTLOG_CAL_CONTEXT_MAX_LEN];
 } ptlog_header_t;

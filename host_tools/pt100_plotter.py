@@ -222,6 +222,9 @@ class AuditSummary:
     device_serials: List[str]
     segments: List[MetadataSegment]
     calibration_summary: str
+    calibration_status: str
+    calibration_points: str
+    calibration_warning: Optional[str]
     timezone_summary: str
     firmware_summary: str
     serial_source_note: Optional[str]
@@ -659,13 +662,50 @@ def _validate_and_trim_by_minute(
 
 
 
+_CAL_STATUS_CALIBRATED = "CALIBRATED"
+_CAL_STATUS_UNCALIBRATED = "UNCALIBRATED"
+_CAL_STATUS_UNVERIFIED = "UNVERIFIED"
+
+
+def _parse_header_int(header: Dict[str, str], key: str) -> Optional[int]:
+    value = (header.get(key) or "").strip()
+    if not value:
+        return None
+    try:
+        return int(value, 10)
+    except Exception:
+        return None
+
+
+def _calibration_status_from_header(header: Dict[str, str]) -> Tuple[str, Optional[int], Optional[int], bool]:
+    points = _parse_header_int(header, "cal_points_count")
+    applied = _parse_header_int(header, "cal_applied")
+    missing_keys = (points is None) or (applied is None)
+    if missing_keys:
+        return _CAL_STATUS_UNVERIFIED, points, applied, True
+    if applied == 1 and points > 0:
+        return _CAL_STATUS_CALIBRATED, points, applied, False
+    return _CAL_STATUS_UNCALIBRATED, points, applied, False
+
+
+def _any_cal_valid_flags(df: pd.DataFrame) -> bool:
+    if "flags" not in df.columns:
+        return False
+    flags_numeric = pd.to_numeric(df["flags"], errors="coerce").fillna(0).astype("int64")
+    cal_mask = _get_flag_mask("CAL_VALID", 1 << 1)
+    return bool(((flags_numeric & cal_mask) != 0).any())
+
+
 _PTLOG_SIGNATURE_FIELDS = [
+    "device_mac",
     "device_serial",
     "timezone_posix",
     "dst_enabled",
     "cal_last_utc",
     "cal_due_rule",
     "cal_due_utc",
+    "cal_points_count",
+    "cal_applied",
     "cal_method",
     "cal_context",
     "firmware_version",
@@ -794,6 +834,9 @@ def _build_audit_summary(file_paths: List[str], headers_by_file: Dict[str, Dict[
             break
 
     groups: Dict[int, MetadataSegment] = {}
+    statuses: List[str] = []
+    points_values: List[Optional[int]] = []
+    legacy_missing_keys = False
     for path in file_paths:
         header = headers_by_file.get(path, {})
         signature = _metadata_signature(header)
@@ -802,6 +845,10 @@ def _build_audit_summary(file_paths: List[str], headers_by_file: Dict[str, Dict[
             groups[signature] = MetadataSegment(signature=signature, header_dict=dict(header), file_names=[file_name])
         else:
             groups[signature].file_names.append(file_name)
+        status, points, _applied, missing = _calibration_status_from_header(header)
+        statuses.append(status)
+        points_values.append(points)
+        legacy_missing_keys = legacy_missing_keys or missing
 
     if "epoch_utc" in combined.columns:
         epoch_series = pd.to_numeric(combined["epoch_utc"], errors="coerce").dropna()
@@ -823,6 +870,22 @@ def _build_audit_summary(file_paths: List[str], headers_by_file: Dict[str, Dict[
             return default
         return fmt(*value_tuple)
 
+    unique_statuses = set(statuses)
+    if unique_statuses == {_CAL_STATUS_CALIBRATED}:
+        calibration_status = _CAL_STATUS_CALIBRATED
+    elif _CAL_STATUS_UNVERIFIED in unique_statuses:
+        calibration_status = _CAL_STATUS_UNVERIFIED
+    else:
+        calibration_status = _CAL_STATUS_UNCALIBRATED
+
+    known_points = [value for value in points_values if value is not None]
+    if not known_points:
+        calibration_points = "unknown"
+    elif all(value == known_points[0] for value in known_points):
+        calibration_points = str(known_points[0])
+    else:
+        calibration_points = "varies"
+
     calibration_summary = _consistent(
         ["cal_last_utc", "cal_due_utc", "cal_method"],
         lambda last, due, method: f"last {last or 'n/a'} | due {due or 'n/a'} | method {_truncate_text(method or 'n/a')}",
@@ -836,10 +899,20 @@ def _build_audit_summary(file_paths: List[str], headers_by_file: Dict[str, Dict[
         lambda ver, date, t: f"{ver or 'n/a'} {date or ''} {t or ''}".strip(),
     )
 
+    calibration_warning: Optional[str] = None
+    if calibration_status != _CAL_STATUS_CALIBRATED and _any_cal_valid_flags(combined):
+        if legacy_missing_keys:
+            calibration_warning = "CAL_VALID flags present, but calibration evidence missing; treated as Unverified."
+        else:
+            calibration_warning = "CAL_VALID flags present, but header calibration evidence is uncalibrated."
+
     return AuditSummary(
         device_serials=serials,
         segments=sorted(groups.values(), key=lambda seg: seg.file_names[0] if seg.file_names else ""),
         calibration_summary=calibration_summary,
+        calibration_status=calibration_status,
+        calibration_points=calibration_points,
+        calibration_warning=calibration_warning,
         timezone_summary=timezone_summary,
         firmware_summary=firmware_summary,
         serial_source_note=serial_source_note,
@@ -1010,34 +1083,6 @@ def _format_flags_summary(
 
 
 
-def _range_is_fully_calibrated(df: pd.DataFrame) -> bool:
-    """Return True if *all* rows in df are marked CAL_VALID.
-
-    This tool treats calibration as all-or-nothing. If any row in the selected
-    range is missing CAL_VALID, we consider the range uncalibrated.
-    """
-    if "flags" not in df.columns:
-        return False
-
-    flags_series = df["flags"]
-    # If any flags are missing, we can't prove calibration coverage.
-    if flags_series.isna().any():
-        return False
-
-    cal_mask = None
-    for mask, short_name in _LOG_RECORD_FLAG_DEFS:
-        if short_name == "CAL_VALID":
-            cal_mask = int(mask)
-            break
-    if cal_mask is None:
-        cal_mask = 1 << 1
-
-    try:
-        flags_int = flags_series.astype("int64")
-    except Exception:
-        return False
-
-    return bool(((flags_int & cal_mask) != 0).all())
 
 
 def _apply_flag_filters_for_stats(
@@ -1528,7 +1573,10 @@ def _audit_lines_for_report(audit: AuditSummary) -> List[str]:
         else:
             preview = ", ".join(audit.device_serials[:2])
             lines.append(f"Device (MAC): multiple ({len(audit.device_serials)}): {preview}")
-    lines.append(f"Calibration: {audit.calibration_summary}")
+    lines.append(f"Calibration: {audit.calibration_status.title()} (points={audit.calibration_points})")
+    lines.append(f"Cal meta: {audit.calibration_summary}")
+    if audit.calibration_warning:
+        lines.append(f"Cal warning: {audit.calibration_warning}")
     lines.append(f"Timezone: {audit.timezone_summary}")
     lines.append(f"Firmware: {_truncate_text(audit.firmware_summary, max_len=56)}")
     segment_text = f"Segments: {len(audit.segments)}"
@@ -1537,7 +1585,7 @@ def _audit_lines_for_report(audit: AuditSummary) -> List[str]:
     lines.append(segment_text)
     if audit.serial_source_note:
         lines.append(audit.serial_source_note)
-    return lines[:6]
+    return lines[:7]
 
 def _node_ids_from_df(df: pd.DataFrame) -> str:
     if "node_id" not in df.columns:
@@ -1805,8 +1853,8 @@ class PlotterApp:
         self.display_tz_choice = tk.StringVar(value="Local")
         self.scenario_choice = tk.StringVar(value="General")
 
-        self.y_choice = tk.StringVar(value="cal_temp_c")
-        self.series_choices = ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms"]
+        self.y_choice = tk.StringVar(value="raw_temp_c")
+        self.series_choices = ["raw_temp_c", "raw_rtd_ohms"]
         self.temp_f = tk.BooleanVar(value=False)
         self.overlay_raw = tk.BooleanVar(value=False)
         self.smooth = tk.BooleanVar(value=True)
@@ -1868,7 +1916,8 @@ class PlotterApp:
         row += 1
 
         tk.Label(frm, text="Y-axis series:").grid(row=row, column=0, sticky="w", pady=(12, 0))
-        tk.OptionMenu(frm, self.y_choice, *self.series_choices).grid(row=row, column=1, sticky="w", pady=(12, 0))
+        self.y_menu = tk.OptionMenu(frm, self.y_choice, *self.series_choices)
+        self.y_menu.grid(row=row, column=1, sticky="w", pady=(12, 0))
         row += 1
         tk.Checkbutton(frm, text="Display temperature in °F", variable=self.temp_f).grid(row=row, column=1, sticky="w")
         row += 1
@@ -2046,28 +2095,38 @@ class PlotterApp:
             time_source=self.loaded.time_source if self.loaded else "unknown",
         )
 
+    def _dataset_is_calibrated(self) -> bool:
+        return bool(self.loaded and self.loaded.audit_summary.calibration_status == _CAL_STATUS_CALIBRATED)
+
+    def _refresh_series_menu(self) -> None:
+        base_choices = ["raw_temp_c", "raw_rtd_ohms"]
+        choices = list(base_choices)
+        if self._dataset_is_calibrated():
+            choices.insert(0, "cal_temp_c")
+        if self.loaded:
+            choices = [name for name in choices if name in self.loaded.dataframe.columns]
+        if not choices:
+            choices = ["raw_temp_c"]
+        self.series_choices = choices
+
+        menu = self.y_menu["menu"]
+        menu.delete(0, "end")
+        for choice in choices:
+            menu.add_command(label=choice, command=tk._setit(self.y_choice, choice))
+
     def _ensure_valid_y_choice(self) -> None:
-        if not self.loaded:
-            return
-        available = [name for name in self.series_choices if name in self.loaded.dataframe.columns]
+        self._refresh_series_menu()
+        available = list(self.series_choices)
         if not available:
             return
 
-        # Default to calibrated temperature ONLY when the entire loaded range is marked CAL_VALID.
-        range_fully_calibrated = _range_is_fully_calibrated(self.loaded.dataframe)
-
-        if "cal_temp_c" in available and range_fully_calibrated:
-            preferred = "cal_temp_c"
-        elif "raw_temp_c" in available:
+        if "raw_temp_c" in available:
             preferred = "raw_temp_c"
         else:
             preferred = available[0]
 
         current = self.y_choice.get()
-        if current not in available:
-            self.y_choice.set(preferred)
-            return
-        if current == "cal_temp_c" and not range_fully_calibrated and preferred != "cal_temp_c":
+        if current not in available or (current == "cal_temp_c" and not self._dataset_is_calibrated()):
             self.y_choice.set(preferred)
 
     def _load_paths(self, file_paths: List[str]) -> None:
@@ -2335,7 +2394,8 @@ class PlotterApp:
         requested_y_name = self.y_choice.get()
         y_name_effective = requested_y_name
 
-        if requested_y_name == "cal_temp_c" and not _range_is_fully_calibrated(df):
+        dataset_is_calibrated = self._dataset_is_calibrated()
+        if requested_y_name == "cal_temp_c" and not dataset_is_calibrated:
             if "raw_temp_c" in df.columns:
                 y_name_effective = "raw_temp_c"
 
@@ -2391,23 +2451,17 @@ class PlotterApp:
         requested_y_name = self.y_choice.get()
         y_name_effective = requested_y_name
 
-        # Treat calibration as all-or-nothing. If CAL_VALID is not set for every
-        # sample in the selected range, we consider the range uncalibrated.
-        range_fully_calibrated = _range_is_fully_calibrated(df)
+        dataset_is_calibrated = self._dataset_is_calibrated()
 
-        warning_text: Optional[str] = None
-        if requested_y_name in ("raw_temp_c", "cal_temp_c") and not range_fully_calibrated:
-            warning_text = (
-                "NOT CALIBRATED — CAL_VALID flag is not set for all samples in the selected range."
-            )
+        warning_text: Optional[str] = self.loaded.audit_summary.calibration_warning
 
-        # If the user requested calibrated temperature but calibration is not present,
-        # fall back to raw temperature for plotting/reporting.
-        if requested_y_name == "cal_temp_c" and not range_fully_calibrated:
+        # If the user requested calibrated temperature but explicit calibration evidence
+        # is not present, fall back to raw temperature for plotting/reporting.
+        if requested_y_name == "cal_temp_c" and not dataset_is_calibrated:
             if "raw_temp_c" in df.columns:
                 y_name_effective = "raw_temp_c"
                 warning_text = (
-                    "NOT CALIBRATED — CAL_VALID flag is not set for all samples in the selected range. "
+                    "Calibration evidence not present (cal_applied=1 and cal_points_count>0 required). "
                     "Using RAW temperature."
                 )
 
@@ -2514,7 +2568,7 @@ class PlotterApp:
             ["Start", start_label],
             ["End", end_label],
             ["Series", series_label],
-            ["Calibration", "Calibrated" if range_fully_calibrated else "NOT calibrated"],
+            ["Calibration", self.loaded.audit_summary.calibration_status.title()],
             ["min / avg / max / std", f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
         ]
         if flags_summary != "n/a":
