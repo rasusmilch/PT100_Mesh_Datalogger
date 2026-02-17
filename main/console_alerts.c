@@ -9,7 +9,7 @@
 
 #include "alerts/alert_manager.h"
 #include "alerts/alert_ntfy.h"
-#include "esp_console.h"
+#include "console_registry.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -28,6 +28,8 @@ static void PrintStatus(const alert_manager_t* manager);
 static void PrintLeafList(const alert_manager_t* manager);
 static int CommandAlert(int argc, char** argv);
 static int CommandRebootLatch(int argc, char** argv);
+static void PrintAlertHelpBody(void);
+static void PrintRebootLatchHelpBody(void);
 
 static const char* kTag = "console_alerts";
 static app_runtime_t* g_runtime = NULL;
@@ -866,19 +868,50 @@ void
 ConsoleAlertsRegister(app_runtime_t* runtime)
 {
   g_runtime = runtime;
-  const esp_console_cmd_t alert_cmd = {
+  static const console_registry_entry_t alert_cmd = {
     .command = "alert",
-    .help = "Alerting commands: alert status | alert list | alert types | alert enable ...",
-    .hint = NULL,
+    .summary = "Manage alerting rules and status",
+    .synopsis = "alert <status|list|types|enable|leaf|hyst|test|notify>",
+    .description = "Inspect and configure the device alert manager.",
+    .print_body = PrintAlertHelpBody,
     .func = &CommandAlert,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&alert_cmd));
-  const esp_console_cmd_t reboot_latch_cmd = {
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&alert_cmd));
+  static const console_registry_entry_t reboot_latch_cmd = {
     .command = "reboot_latch",
-    .help = "Reboot alert latch: reboot_latch status | reboot_latch clear",
-    .hint = NULL,
+    .summary = "Inspect or clear reboot alert latch",
+    .synopsis = "reboot_latch <status|clear>",
+    .description = "Shows persisted reboot alert delivery state.",
+    .print_body = PrintRebootLatchHelpBody,
     .func = &CommandRebootLatch,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&reboot_latch_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&reboot_latch_cmd));
   ESP_LOGD(kTag, "alert commands registered");
+}
+
+static void
+PrintAlertHelpBody(void)
+{
+  printf("SUBCOMMANDS\n");
+  printf("  status                          Show global alert status\n");
+  printf("  list                            List leaf-level alert state\n");
+  printf("  types                           List supported alert type names\n");
+  printf("  enable <type> <on|off>          Enable/disable an alert type\n");
+  printf("  leaf <id> <type> <on|off>       Override one leaf/type pair\n");
+  printf("  hyst <type> show|set ...        Manage temperature hysteresis\n");
+  printf("  test [type]                     Emit a test alert\n");
+  printf("  notify show|set ...             Configure notification endpoint\n\n");
+  printf("EXAMPLES\n");
+  printf("  alert status\n");
+  printf("  alert enable high on\n");
+  printf("  alert leaf 123 high off\n");
+  printf("  alert hyst high set 1.5\n");
+}
+
+static void
+PrintRebootLatchHelpBody(void)
+{
+  printf("EXAMPLES\n");
+  printf("  reboot_latch status\n");
+  printf("  reboot_latch clear\n");
 }
