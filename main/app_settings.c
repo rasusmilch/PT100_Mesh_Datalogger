@@ -1761,28 +1761,6 @@ AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
 }
 
 /**
- * @brief Execute AppSettingsSaveNodeRole.
- * @param node_role Parameter node_role.
- * @return Return the function result.
- */
-
-/**
- * @brief Persist the unit serial metadata string.
- * @param serial Unit serial string (may be empty to clear).
- * @return Return the function result.
- */
-esp_err_t
-AppSettingsSaveUnitSerial(const char* serial)
-{
-  if (!IsPrintableSettingString(serial, APP_SETTINGS_UNIT_SERIAL_MAX_LEN)) {
-    return ESP_ERR_INVALID_ARG;
-  }
-  app_settings_t settings = g_saved_settings;
-  snprintf(settings.unit_serial, sizeof(settings.unit_serial), "%s", serial);
-  return SaveAllSettings(&settings);
-}
-
-/**
  * @brief Persist the calibration method metadata string.
  * @param method Calibration method string (may be empty to clear).
  * @return Return the function result.
@@ -1793,9 +1771,10 @@ AppSettingsSaveCalibrationMethod(const char* method)
   if (!IsPrintableSettingString(method, APP_SETTINGS_CAL_METHOD_MAX_LEN)) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings = g_saved_settings;
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
   snprintf(settings.cal_method, sizeof(settings.cal_method), "%s", method);
-  return SaveAllSettings(&settings);
+  return PersistSettingsSnapshot(&settings);
 }
 
 esp_err_t
