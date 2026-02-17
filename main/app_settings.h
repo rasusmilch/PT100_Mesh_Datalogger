@@ -11,6 +11,8 @@
 #include "max31865_reader.h"
 
 #define APP_SETTINGS_TZ_POSIX_MAX_LEN 64
+#define APP_SETTINGS_UNIT_SERIAL_MAX_LEN 48
+#define APP_SETTINGS_CAL_METHOD_MAX_LEN 96
 #define APP_SETTINGS_TZ_DEFAULT_POSIX "CST6CDT,M3.2.0/2,M11.1.0/2"
 #define APP_SETTINGS_TZ_DEFAULT_STD "CST6"
 #define APP_SETTINGS_MQTT_BROKER_URI_DEFAULT "mqtt://192.168.1.50"
@@ -96,6 +98,8 @@ extern "C"
     uint32_t rtd_fault_assert_ms;
     uint32_t rtd_fault_clear_ms;
     char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
+    char unit_serial[APP_SETTINGS_UNIT_SERIAL_MAX_LEN];
+    char cal_method[APP_SETTINGS_CAL_METHOD_MAX_LEN];
     bool dst_enabled;
     app_node_role_t node_role;
     bool allow_children;
@@ -233,6 +237,20 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled);
+
+/**
+ * @brief Persist the unit serial metadata string.
+ * @param serial Unit serial string (may be empty to clear).
+ * @return Return the function result.
+ */
+  esp_err_t AppSettingsSaveUnitSerial(const char* serial);
+
+/**
+ * @brief Persist the calibration method metadata string.
+ * @param method Calibration method string (may be empty to clear).
+ * @return Return the function result.
+ */
+  esp_err_t AppSettingsSaveCalibrationMethod(const char* method);
 
   // Persists updated node role.
 /**

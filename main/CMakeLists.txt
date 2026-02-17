@@ -34,6 +34,7 @@ idf_component_register(
     "max31865_reader.c"
     "max7219_display.c"
     "mqtt_client_wrap.c"
+    "ptlog_format.c"
     "pt100_table.c"
     "mesh_transport.c"
     "mem_guard.c"
