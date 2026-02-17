@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-PT100 Mesh Logger CSV Plotter + PDF Report
+PT100 Mesh Logger Log Plotter + PDF Report
 
-- Loads 1+ CSV exports from PT100 nodes.
+- Loads 1+ CSV/PTLOG exports from PT100 nodes.
 - Supports schema_ver 1 and 2.
   - schema_ver 2 adds: record_id (uint64-ish monotonic identifier).
 - Plots selected series vs time.
@@ -29,6 +29,7 @@ import glob
 import math
 import os
 import tempfile
+import zlib
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -204,6 +205,26 @@ class LoadedLog:
     tzinfo: Optional[datetime.tzinfo]
     source_files: List[str]
     dropped_no_time_rows: int
+    file_headers: Dict[str, Dict[str, str]]
+    audit_summary: "AuditSummary"
+
+
+@dataclass
+class MetadataSegment:
+    signature: int
+    header_dict: Dict[str, str]
+    file_names: List[str]
+    time_range_utc: Optional[Tuple[int, int]] = None
+
+
+@dataclass
+class AuditSummary:
+    device_serials: List[str]
+    segments: List[MetadataSegment]
+    calibration_summary: str
+    timezone_summary: str
+    firmware_summary: str
+    serial_source_note: Optional[str]
 
 
 @dataclass
@@ -637,16 +658,208 @@ def _validate_and_trim_by_minute(
     return trimmed, start_label, end_label, summary
 
 
-def _load_csv_files(file_paths: List[str]) -> LoadedLog:
+
+_PTLOG_SIGNATURE_FIELDS = [
+    "device_serial",
+    "timezone_posix",
+    "dst_enabled",
+    "cal_last_utc",
+    "cal_due_rule",
+    "cal_due_utc",
+    "cal_method",
+    "cal_context",
+    "firmware_version",
+    "firmware_build_date",
+    "firmware_build_time",
+]
+
+
+def _parse_ptlog_header(path: str) -> Tuple[Dict[str, str], int]:
+    header: Dict[str, str] = {}
+    header_line_count = 0
+    in_header = False
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#PT100_LOG_V1"):
+                in_header = True
+            if not stripped.startswith("#"):
+                if in_header:
+                    break
+                continue
+            header_line_count += 1
+            payload = stripped[1:].strip()
+            if payload == "END_HEADER":
+                break
+            if not in_header:
+                continue
+            if "=" not in payload:
+                continue
+            key, value = payload.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key:
+                header[key] = value
+    return header, header_line_count
+
+
+def _is_ptlog_file(path: str) -> bool:
+    if path.lower().endswith(".ptlog"):
+        return True
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                return stripped.startswith("#PT100_LOG_V1")
+    except Exception:
+        return False
+    return False
+
+
+def _read_log_file(path: str) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    if _is_ptlog_file(path):
+        header, _line_count = _parse_ptlog_header(path)
+        return pd.read_csv(path, comment="#"), header
+    return pd.read_csv(path), {}
+
+
+def _parse_log_filename_sort_key(path: str) -> Tuple[str, int, int, str]:
+    name = os.path.basename(path)
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})Z(?:-(\d+))?\.(ptlog|csv)$", name, flags=re.IGNORECASE)
+    if match:
+        date_part = match.group(1)
+        rev = int(match.group(2) or "0")
+        ext = match.group(3).lower()
+        ext_priority = 0 if ext == "ptlog" else 1
+        return (date_part, rev, ext_priority, name.lower())
+    return ("9999-99-99", 999999, 999, name.lower())
+
+
+def _dedupe_folder_file_paths(file_paths: List[str]) -> List[str]:
+    has_ptlog = any(path.lower().endswith(".ptlog") for path in file_paths)
+    if not has_ptlog:
+        return sorted(file_paths, key=_parse_log_filename_sort_key)
+
+    ptlog_stems = {Path(path).stem.lower() for path in file_paths if path.lower().endswith(".ptlog")}
+    filtered: List[str] = []
+    for path in file_paths:
+        lower = path.lower()
+        if lower.endswith(".csv") and Path(path).stem.lower() in ptlog_stems:
+            continue
+        filtered.append(path)
+    return sorted(filtered, key=_parse_log_filename_sort_key)
+
+
+def _metadata_signature(header: Dict[str, str]) -> int:
+    payload_fields = []
+    serial_value = header.get("device_mac") or header.get("device_serial") or ""
+    payload_fields.append(serial_value)
+    for field in _PTLOG_SIGNATURE_FIELDS[1:]:
+        payload_fields.append(header.get(field, ""))
+    payload = "\n".join(payload_fields).encode("utf-8")
+    return zlib.crc32(payload) & 0xFFFFFFFF
+
+
+def _device_serial_for_report(header: Dict[str, str]) -> str:
+    serial = (header.get("device_serial") or "").strip()
+    mac = (header.get("device_mac") or "").strip()
+    if mac:
+        return mac
+    if serial:
+        return serial
+    return "n/a"
+
+
+def _truncate_text(value: str, max_len: int = 40) -> str:
+    value = (value or "").strip()
+    if len(value) <= max_len:
+        return value
+    return value[: max_len - 1] + "…"
+
+
+def _build_audit_summary(file_paths: List[str], headers_by_file: Dict[str, Dict[str, str]], combined: pd.DataFrame) -> AuditSummary:
+    serials = sorted({_device_serial_for_report(headers_by_file.get(path, {})) for path in file_paths if _device_serial_for_report(headers_by_file.get(path, {})) != "n/a"})
+
+    serial_source_note: Optional[str] = None
+    for path in file_paths:
+        header = headers_by_file.get(path, {})
+        serial = (header.get("device_serial") or "").strip()
+        mac = (header.get("device_mac") or "").strip()
+        if serial and mac and serial != mac:
+            serial_source_note = "Serial source: MAC (device_serial differs)"
+            break
+
+    groups: Dict[int, MetadataSegment] = {}
+    for path in file_paths:
+        header = headers_by_file.get(path, {})
+        signature = _metadata_signature(header)
+        file_name = os.path.basename(path)
+        if signature not in groups:
+            groups[signature] = MetadataSegment(signature=signature, header_dict=dict(header), file_names=[file_name])
+        else:
+            groups[signature].file_names.append(file_name)
+
+    if "epoch_utc" in combined.columns:
+        epoch_series = pd.to_numeric(combined["epoch_utc"], errors="coerce").dropna()
+        if not epoch_series.empty:
+            min_epoch = int(epoch_series.min())
+            max_epoch = int(epoch_series.max())
+            for segment in groups.values():
+                segment.time_range_utc = (min_epoch, max_epoch)
+
+    def _consistent(fields: List[str], fmt, default: str = "n/a") -> str:
+        values = set()
+        for segment in groups.values():
+            header = segment.header_dict
+            values.add(tuple(header.get(field, "") for field in fields))
+        if len(values) != 1:
+            return f"varies ({len(groups)} segments)"
+        value_tuple = next(iter(values))
+        if all(not v for v in value_tuple):
+            return default
+        return fmt(*value_tuple)
+
+    calibration_summary = _consistent(
+        ["cal_last_utc", "cal_due_utc", "cal_method"],
+        lambda last, due, method: f"last {last or 'n/a'} | due {due or 'n/a'} | method {_truncate_text(method or 'n/a')}",
+    )
+    timezone_summary = _consistent(
+        ["timezone_posix", "dst_enabled"],
+        lambda tz, dst: f"{tz or 'n/a'} (DST={dst or 'n/a'})",
+    )
+    firmware_summary = _consistent(
+        ["firmware_version", "firmware_build_date", "firmware_build_time"],
+        lambda ver, date, t: f"{ver or 'n/a'} {date or ''} {t or ''}".strip(),
+    )
+
+    return AuditSummary(
+        device_serials=serials,
+        segments=sorted(groups.values(), key=lambda seg: seg.file_names[0] if seg.file_names else ""),
+        calibration_summary=calibration_summary,
+        timezone_summary=timezone_summary,
+        firmware_summary=firmware_summary,
+        serial_source_note=serial_source_note,
+    )
+
+
+def _load_log_files(file_paths: List[str]) -> LoadedLog:
     if not file_paths:
         raise ValueError("No files selected.")
 
+    sorted_paths = sorted(file_paths, key=_parse_log_filename_sort_key)
+
     dataframes: List[pd.DataFrame] = []
-    for path in file_paths:
-        df = pd.read_csv(path)
+    headers_by_file: Dict[str, Dict[str, str]] = {}
+    for path in sorted_paths:
+        df, header = _read_log_file(path)
         df = _normalize_schema(df)
         df["__source_file"] = os.path.basename(path)
         dataframes.append(df)
+        headers_by_file[path] = header
 
     combined = pd.concat(dataframes, ignore_index=True)
     local_tz = _get_local_tz()
@@ -664,18 +877,20 @@ def _load_csv_files(file_paths: List[str]) -> LoadedLog:
         )
 
     if time_column == "__x":
-        # record_id fallback: numeric X axis
         combined[time_column] = pd.to_numeric(combined[time_column], errors="coerce")
 
     combined = combined.sort_values(by="__seq_unwrapped", kind="mergesort").reset_index(drop=True)
+    audit_summary = _build_audit_summary(sorted_paths, headers_by_file, combined)
 
     return LoadedLog(
         dataframe=combined,
         time_column=time_column,
         time_source=time_source,
         tzinfo=tzinfo,
-        source_files=file_paths,
+        source_files=sorted_paths,
         dropped_no_time_rows=dropped_no_time_rows,
+        file_headers=headers_by_file,
+        audit_summary=audit_summary,
     )
 
 
@@ -1303,6 +1518,27 @@ def _build_figure(
     return fig, int(len(plot_positions)), total_points
 
 
+
+
+def _audit_lines_for_report(audit: AuditSummary) -> List[str]:
+    lines: List[str] = []
+    if audit.device_serials:
+        if len(audit.device_serials) == 1:
+            lines.append(f"Device (MAC): {audit.device_serials[0]}")
+        else:
+            preview = ", ".join(audit.device_serials[:2])
+            lines.append(f"Device (MAC): multiple ({len(audit.device_serials)}): {preview}")
+    lines.append(f"Calibration: {audit.calibration_summary}")
+    lines.append(f"Timezone: {audit.timezone_summary}")
+    lines.append(f"Firmware: {_truncate_text(audit.firmware_summary, max_len=56)}")
+    segment_text = f"Segments: {len(audit.segments)}"
+    if len(audit.segments) > 1:
+        segment_text += " (metadata changed; revisions present)"
+    lines.append(segment_text)
+    if audit.serial_source_note:
+        lines.append(audit.serial_source_note)
+    return lines[:6]
+
 def _node_ids_from_df(df: pd.DataFrame) -> str:
     if "node_id" not in df.columns:
         return "n/a"
@@ -1319,6 +1555,7 @@ def _export_pdf_report(
     fig_png_path: str,
     source_files: List[str],
     summary_rows: List[List[str]],
+    audit_lines: List[str],
     title: str,
     subtitle: str,
     warning_text: Optional[str] = None,
@@ -1401,6 +1638,17 @@ def _export_pdf_report(
         file_list += f"\n… ({len(source_files)} files total)"
     elements.append(Paragraph(f"<b>Input file(s):</b><br/>{file_list}", styles_body))
 
+    if audit_lines:
+        styles_audit = ParagraphStyle(
+            "AuditStyle",
+            fontName="Helvetica",
+            fontSize=8,
+            leading=10,
+        )
+        audit_html = "<b>Audit:</b><br/>" + "<br/>".join(audit_lines)
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(audit_html, styles_audit))
+
     doc.build(elements)
 
 
@@ -1409,6 +1657,7 @@ def _export_pdf_report_vector(
     fig: plt.Figure,
     source_files: List[str],
     summary_rows: List[List[str]],
+    audit_lines: List[str],
     title: str,
     subtitle: str,
     warning_text: Optional[str] = None,
@@ -1492,6 +1741,27 @@ def _export_pdf_report_vector(
         table.auto_set_font_size(False)
         table.set_fontsize(9)
 
+        audit_text = "\n".join(audit_lines[:6]) if audit_lines else "n/a"
+        ax.text(
+            0.0,
+            0.22,
+            "Audit:",
+            ha="left",
+            va="top",
+            fontsize=10,
+            fontweight="bold",
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.0,
+            0.195,
+            audit_text,
+            ha="left",
+            va="top",
+            fontsize=8.5,
+            transform=ax.transAxes,
+        )
+
         # Input file list at the bottom.
         file_list = "\n".join([os.path.basename(p) for p in source_files[:20]])
         if len(source_files) > 20:
@@ -1499,7 +1769,7 @@ def _export_pdf_report_vector(
 
         ax.text(
             0.0,
-            0.18,
+            0.12,
             "Input file(s):",
             ha="left",
             va="top",
@@ -1509,7 +1779,7 @@ def _export_pdf_report_vector(
         )
         ax.text(
             0.0,
-            0.15,
+            0.09,
             file_list if file_list else "(none)",
             ha="left",
             va="top",
@@ -1525,7 +1795,7 @@ def _export_pdf_report_vector(
 class PlotterApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("PT100 CSV Plotter + PDF Report")
+        self.root.title("PT100 Log Plotter + PDF Report")
 
         self.selected_files: List[str] = []
         self.loaded: Optional[LoadedLog] = None
@@ -1562,14 +1832,14 @@ class PlotterApp:
         frm = tk.Frame(self.root, padx=12, pady=12)
         frm.pack(fill="both", expand=True)
 
-        tk.Label(frm, text="PT100 CSV file(s):").grid(row=0, column=0, sticky="w")
+        tk.Label(frm, text="PT100 log file(s):").grid(row=0, column=0, sticky="w")
         self.file_label = tk.Label(frm, text="(none selected)", anchor="w", justify="left")
         self.file_label.grid(row=0, column=1, sticky="w")
 
-        tk.Button(frm, text="Select CSV Files", command=self.select_files).grid(
+        tk.Button(frm, text="Select Log Files", command=self.select_files).grid(
             row=1, column=0, sticky="w", pady=(6, 0)
         )
-        tk.Button(frm, text="Select Folder (all *.csv)", command=self.select_folder).grid(
+        tk.Button(frm, text="Select Folder (all *.ptlog/*.csv)", command=self.select_folder).grid(
             row=1, column=1, sticky="w", pady=(6, 0)
         )
 
@@ -1805,7 +2075,7 @@ class PlotterApp:
             return
         self.selected_files = list(file_paths)
         try:
-            self.loaded = _load_csv_files(self.selected_files)
+            self.loaded = _load_log_files(self.selected_files)
         except Exception as exc:
             self.loaded = None
             messagebox.showerror("Load Error", str(exc))
@@ -1831,18 +2101,19 @@ class PlotterApp:
 
     def select_files(self) -> None:
         file_paths = filedialog.askopenfilenames(
-            title="Select PT100 CSV file(s)",
-            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+            title="Select PT100 log file(s)",
+            filetypes=[("PTLOG/CSV", "*.ptlog *.csv"), ("PTLOG", "*.ptlog"), ("CSV", "*.csv"), ("All Files", "*.*")],
         )
         self._load_paths(list(file_paths))
 
     def select_folder(self) -> None:
-        folder = filedialog.askdirectory(title="Select folder containing PT100 CSV files")
+        folder = filedialog.askdirectory(title="Select folder containing PT100 log files")
         if not folder:
             return
-        file_paths = sorted(glob.glob(os.path.join(folder, "*.csv")))
+        file_paths = glob.glob(os.path.join(folder, "*.ptlog")) + glob.glob(os.path.join(folder, "*.csv"))
+        file_paths = _dedupe_folder_file_paths(file_paths)
         if not file_paths:
-            messagebox.showerror("Load Error", "No .csv files found in the selected folder.")
+            messagebox.showerror("Load Error", "No .ptlog or .csv files found in the selected folder.")
             return
         self._load_paths(file_paths)
 
@@ -2213,6 +2484,7 @@ class PlotterApp:
         )
 
         series_label = _human_series_label(y_name_effective, temp_unit=temp_unit)
+        audit_lines = _audit_lines_for_report(self.loaded.audit_summary)
 
         overlays = []
         if y_name_effective in ("cal_temp_c", "raw_temp_c"):
@@ -2261,6 +2533,7 @@ class PlotterApp:
                     fig=fig,
                     source_files=self.loaded.source_files,
                     summary_rows=summary_rows,
+                    audit_lines=audit_lines,
                     title=title,
                     subtitle=subtitle,
                     warning_text=warning_text,
@@ -2273,6 +2546,7 @@ class PlotterApp:
                     fig_png_path=fig_png_path,
                     source_files=self.loaded.source_files,
                     summary_rows=summary_rows,
+                    audit_lines=audit_lines,
                     title=title,
                     subtitle=subtitle,
                     warning_text=warning_text,
