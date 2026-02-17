@@ -423,6 +423,9 @@ RuntimeI2cOpEnd(void);
 static void
 RuntimeDumpI2cOpState(const runtime_state_t* state, const char* reason);
 
+static bool
+ReadFramBufferedRecords(runtime_state_t* state, uint32_t* buffered_out);
+
 static void
 RuntimeNotifyTask(TaskHandle_t handle)
 {
@@ -1163,13 +1166,11 @@ RuntimeRtcErrlogLatchPush(uint16_t code,
       (g_rtc_errlog_latch.head + 1u) % RUNTIME_RTC_ERRLOG_RING_SIZE;
     g_rtc_errlog_latch.count = RUNTIME_RTC_ERRLOG_RING_SIZE;
   } else {
-    write_index =
-      (g_rtc_errlog_latch.head + g_rtc_errlog_latch.count) %
-      RUNTIME_RTC_ERRLOG_RING_SIZE;
+    write_index = (g_rtc_errlog_latch.head + g_rtc_errlog_latch.count) %
+                  RUNTIME_RTC_ERRLOG_RING_SIZE;
     g_rtc_errlog_latch.count++;
   }
-  runtime_rtc_errlog_entry_t* entry =
-    &g_rtc_errlog_latch.entries[write_index];
+  runtime_rtc_errlog_entry_t* entry = &g_rtc_errlog_latch.entries[write_index];
   entry->code = code;
   entry->resolved = resolved;
   entry->detail0 = detail0;
@@ -1201,23 +1202,21 @@ RuntimeRtcErrlogLatchFlushToFram(runtime_state_t* state)
       break;
     }
     bool logged = false;
-    const esp_err_t result = entry.resolved
-                               ? FramErrorLogAppendResolved(
-                                   &state->fram_error_log,
-                                   entry.code,
-                                   entry.detail0,
-                                   entry.detail1,
-                                   entry.epoch_sec,
-                                   entry.millis,
-                                   &logged)
-                               : FramErrorLogAppendActive(
-                                   &state->fram_error_log,
-                                   entry.code,
-                                   entry.detail0,
-                                   entry.detail1,
-                                   entry.epoch_sec,
-                                   entry.millis,
-                                   &logged);
+    const esp_err_t result =
+      entry.resolved ? FramErrorLogAppendResolved(&state->fram_error_log,
+                                                  entry.code,
+                                                  entry.detail0,
+                                                  entry.detail1,
+                                                  entry.epoch_sec,
+                                                  entry.millis,
+                                                  &logged)
+                     : FramErrorLogAppendActive(&state->fram_error_log,
+                                                entry.code,
+                                                entry.detail0,
+                                                entry.detail1,
+                                                entry.epoch_sec,
+                                                entry.millis,
+                                                &logged);
     if (result != ESP_OK) {
       break;
     }
@@ -1329,8 +1328,7 @@ RuntimeRebootAlertLatchRecordAttempt(runtime_reboot_alert_send_result_t result,
   g_reboot_alert_latch.last_send_result = (uint32_t)result;
   g_reboot_alert_latch.last_http_status = (int32_t)http_status;
   g_reboot_alert_latch.last_ntfy_err = (int32_t)err;
-  g_reboot_alert_latch.last_retry_after_seconds =
-    (int32_t)retry_after_seconds;
+  g_reboot_alert_latch.last_retry_after_seconds = (int32_t)retry_after_seconds;
   if (result == RUNTIME_REBOOT_ALERT_SEND_OK) {
     g_reboot_alert_latch.sent_successfully = true;
   }
@@ -1500,9 +1498,8 @@ RuntimeManagerRunSafeHoldIfNeeded(runtime_state_t* state)
                  RuntimeRebootAlertGateReasonToString(gate_reason));
       }
       vTaskDelay(pdMS_TO_TICKS(backoff_ms));
-      backoff_ms = (backoff_ms < kSafeHoldMaxRetryMs)
-                     ? (backoff_ms * 2)
-                     : kSafeHoldMaxRetryMs;
+      backoff_ms = (backoff_ms < kSafeHoldMaxRetryMs) ? (backoff_ms * 2)
+                                                      : kSafeHoldMaxRetryMs;
       continue;
     }
 
@@ -1561,9 +1558,8 @@ RuntimeManagerRunSafeHoldIfNeeded(runtime_state_t* state)
                retry_after_seconds);
     }
     vTaskDelay(pdMS_TO_TICKS(backoff_ms));
-    backoff_ms = (backoff_ms < kSafeHoldMaxRetryMs)
-                   ? (backoff_ms * 2)
-                   : kSafeHoldMaxRetryMs;
+    backoff_ms = (backoff_ms < kSafeHoldMaxRetryMs) ? (backoff_ms * 2)
+                                                    : kSafeHoldMaxRetryMs;
   }
 
   return ESP_OK;
@@ -1988,11 +1984,12 @@ RuntimeDrainDeferredToFram(runtime_state_t* state, const char* context)
   }
   log_record_t record;
   while (DeferredLogPop(state, &record)) {
-    if (!RuntimeFramLogLockWithWarn(state,
-                                    kFramLogLockTimeoutTicks,
-                                    &state->fram_log_lock_timeout_count_sdflush,
-                                    &state->last_fram_log_lock_timeout_sdflush_log_ms,
-                                    context)) {
+    if (!RuntimeFramLogLockWithWarn(
+          state,
+          kFramLogLockTimeoutTicks,
+          &state->fram_log_lock_timeout_count_sdflush,
+          &state->last_fram_log_lock_timeout_sdflush_log_ms,
+          context)) {
       (void)DeferredLogPush(state, &record);
       return ESP_ERR_TIMEOUT;
     }
@@ -3197,7 +3194,7 @@ DisplayTask(void* context)
     const display_attention_item_t items[] = {
       kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
       kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemNtpFail,
-      kDispAttnItemMeshDown, kDispAttnItemHeap,   kDispAttnItemSdSpace,
+      kDispAttnItemMeshDown, kDispAttnItemHeap,    kDispAttnItemSdSpace,
     };
     for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
       const display_attention_item_t item = items[idx];
@@ -3265,7 +3262,8 @@ DisplayTask(void* context)
         last_warn_tick = now_warn_tick;
       }
 
-      const char* text = AttentionBitToCode(warn_bits[warn_code_index], &health);
+      const char* text =
+        AttentionBitToCode(warn_bits[warn_code_index], &health);
       if (strncmp(last_text, text, sizeof(last_text)) != 0) {
         Max7219DisplaySetText(&state->display, text);
         snprintf(last_text, sizeof(last_text), "%s", text);
@@ -3385,7 +3383,8 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
   }
   RuntimeI2cOpBegin("fram_read", addr, len, "FramI2cReadAdapter");
   if (state->i2c_bus.initialized && !I2cBusLooksIdle(&state->i2c_bus)) {
-    RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
+    RuntimeRecoverI2cBusLocked(
+      state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
   }
   esp_err_t result =
     FramI2cRead((const fram_i2c_t*)context, (uint16_t)addr, out, len);
@@ -3422,7 +3421,8 @@ FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
   }
   RuntimeI2cOpBegin("fram_write", addr, len, "FramI2cWriteAdapter");
   if (state->i2c_bus.initialized && !I2cBusLooksIdle(&state->i2c_bus)) {
-    RuntimeRecoverI2cBusLocked(state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
+    RuntimeRecoverI2cBusLocked(
+      state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
   }
   esp_err_t result =
     FramI2cWrite((const fram_i2c_t*)context, (uint16_t)addr, data, len);
@@ -4072,7 +4072,8 @@ LogFramErrorEvent(runtime_state_t* state,
     int64_t epoch_seconds = 0;
     int32_t millis = 0;
     TimeSyncGetNow(&epoch_seconds, &millis);
-    const uint32_t epoch_u32 = (epoch_seconds > 0) ? (uint32_t)epoch_seconds : 0;
+    const uint32_t epoch_u32 =
+      (epoch_seconds > 0) ? (uint32_t)epoch_seconds : 0;
     const uint16_t millis_u16 = (millis >= 0) ? (uint16_t)millis : 0u;
     RuntimeRtcErrlogLatchPush(
       code, resolved, detail0, detail1, epoch_u32, millis_u16);
@@ -4084,23 +4085,21 @@ LogFramErrorEvent(runtime_state_t* state,
   uint32_t epoch_u32 = (epoch_seconds > 0) ? (uint32_t)epoch_seconds : 0u;
   uint16_t millis_u16 = (millis >= 0) ? (uint16_t)millis : 0u;
   bool logged = false;
-  const esp_err_t result = resolved
-                             ? FramErrorLogAppendResolved(
-                                 &state->fram_error_log,
-                                 code,
-                                 detail0,
-                                 detail1,
-                                 epoch_u32,
-                                 millis_u16,
-                                 &logged)
-                             : FramErrorLogAppendActive(
-                                 &state->fram_error_log,
-                                 code,
-                                 detail0,
-                                 detail1,
-                                 epoch_u32,
-                                 millis_u16,
-                                 &logged);
+  const esp_err_t result =
+    resolved ? FramErrorLogAppendResolved(&state->fram_error_log,
+                                          code,
+                                          detail0,
+                                          detail1,
+                                          epoch_u32,
+                                          millis_u16,
+                                          &logged)
+             : FramErrorLogAppendActive(&state->fram_error_log,
+                                        code,
+                                        detail0,
+                                        detail1,
+                                        epoch_u32,
+                                        millis_u16,
+                                        &logged);
   if (result != ESP_OK) {
     RuntimeRtcErrlogLatchPush(
       code, resolved, detail0, detail1, epoch_u32, millis_u16);
@@ -4383,15 +4382,14 @@ recovery_failed:
   int status = 0;
   int retry_after_seconds = -1;
   esp_err_t ntfy_err = ESP_OK;
-  alert_ntfy_result_t ntfy_result =
-    RuntimeAttemptPreRebootAlertSendDetailed(
-      state,
-      ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY,
-      event_epoch,
-      event_uptime_ms,
-      &retry_after_seconds,
-      &status,
-      &ntfy_err);
+  alert_ntfy_result_t ntfy_result = RuntimeAttemptPreRebootAlertSendDetailed(
+    state,
+    ALERT_SYSTEM_CODE_ERROR_I2C_RECOVERY,
+    event_epoch,
+    event_uptime_ms,
+    &retry_after_seconds,
+    &status,
+    &ntfy_err);
   vTaskDelay(pdMS_TO_TICKS(200));
   if (ntfy_result == ALERT_NTFY_OK) {
     RuntimeRebootAlertLatchClear();
@@ -4449,7 +4447,8 @@ TrackFramInvalidResponse(runtime_state_t* state, const char* context)
     if (LogRateLimitAllow(&state->last_fram_crc_suppressed_log_ms,
                           kFramSuppressedWarnIntervalMs)) {
       ESP_LOGW(kTag,
-               "Suppressing FRAM invalid-response escalation during I2C quiesce (%s); count=%" PRIu32,
+               "Suppressing FRAM invalid-response escalation during I2C "
+               "quiesce (%s); count=%" PRIu32,
                (context != NULL) ? context : "unknown",
                state->fram_crc_fail_suppressed_count);
     }
@@ -4500,7 +4499,8 @@ TrackFramAppendFailure(runtime_state_t* state, esp_err_t error)
     if (LogRateLimitAllow(&state->last_fram_append_suppressed_log_ms,
                           kFramSuppressedWarnIntervalMs)) {
       ESP_LOGW(kTag,
-               "Suppressing FRAM append failure during I2C quiesce; err=%s count=%" PRIu32,
+               "Suppressing FRAM append failure during I2C quiesce; err=%s "
+               "count=%" PRIu32,
                esp_err_to_name(error),
                state->fram_append_fail_suppressed_count);
     }
@@ -5548,9 +5548,9 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   state->sd_flush_in_progress = true;
   if (!state->sd_flush_quiesce_session_active) {
     SdFlushMaybeStartSession(state);
-    const char* session_reason =
-      (state->sd_flush_session_label[0] != '\0') ? state->sd_flush_session_label
-                                                  : "sd_flush/unknown#0";
+    const char* session_reason = (state->sd_flush_session_label[0] != '\0')
+                                   ? state->sd_flush_session_label
+                                   : "sd_flush/unknown#0";
     RuntimeBeginI2cQuiesce(state, session_reason);
     state->sd_flush_quiesce_session_active = true;
   }
@@ -5710,7 +5710,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
                                                    &append_stats);
     uint64_t sd_total_bytes = 0;
     uint64_t sd_free_bytes = 0;
-    if (SdLoggerGetSpaceInfo(&state->sd_logger, &sd_total_bytes, &sd_free_bytes) == ESP_OK) {
+    if (SdLoggerGetSpaceInfo(
+          &state->sd_logger, &sd_total_bytes, &sd_free_bytes) == ESP_OK) {
       UpdateCachedUint64(
         state, &state->cached_status.sd_total_bytes, sd_total_bytes);
       UpdateCachedUint64(
@@ -5754,7 +5755,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
       result = write_result;
       goto flush_done;
     }
-    UpdateCachedBool(state, &state->cached_status.sd_out_of_space_active, false);
+    UpdateCachedBool(
+      state, &state->cached_status.sd_out_of_space_active, false);
     ClearSdIoError(state);
     HandleTimeJumpBackBatchWritten(
       state, batch_includes_time_jump_flag, last_record_id);
@@ -6826,7 +6828,8 @@ RuntimeLogNtfyBodyLines(const char* label, const char* text)
   const bool truncated = (raw_len == ALERT_NTFY_JOB_BODY_LEN);
   char cleaned[ALERT_NTFY_JOB_BODY_LEN + 1];
   size_t cleaned_len = 0;
-  for (size_t i = 0; i < raw_len && cleaned_len < ALERT_NTFY_JOB_BODY_LEN; ++i) {
+  for (size_t i = 0; i < raw_len && cleaned_len < ALERT_NTFY_JOB_BODY_LEN;
+       ++i) {
     if (text[i] == '\r') {
       continue;
     }
@@ -7076,9 +7079,10 @@ StorageTask(void* context)
           taskEXIT_CRITICAL(&state->deferred_log.lock);
           if (LogRateLimitAllow(&state->deferred_drop_last_log_ms,
                                 kDeferredDropWarnIntervalMs)) {
-            ESP_LOGW(kTag,
-                     "Deferred log full during SD flush; dropping samples (drops=%u)",
-                     (unsigned)DeferredLogDrops(state));
+            ESP_LOGW(
+              kTag,
+              "Deferred log full during SD flush; dropping samples (drops=%u)",
+              (unsigned)DeferredLogDrops(state));
           }
         }
         UpdateCachedUint32(
@@ -7406,7 +7410,8 @@ SdFlushTask(void* context)
         }
         state->sd_flush_pending = more_pending;
         if (more_pending) {
-          state->sd_flush_pending_trigger_flags |= SD_FLUSH_TRIGGER_MORE_PENDING;
+          state->sd_flush_pending_trigger_flags |=
+            SD_FLUSH_TRIGGER_MORE_PENDING;
         } else {
           state->sd_start_drain_pending = false;
         }
@@ -8273,17 +8278,19 @@ ControlTask(void* context)
                                      event_epoch,
                                      (uint32_t)event_uptime_ms);
           const runtime_reboot_alert_send_result_t send_result =
-            (ntfy_result == ALERT_NTFY_FAILED) ? RUNTIME_REBOOT_ALERT_SEND_FAIL
-                                               : RUNTIME_REBOOT_ALERT_SEND_SKIPPED;
+            (ntfy_result == ALERT_NTFY_FAILED)
+              ? RUNTIME_REBOOT_ALERT_SEND_FAIL
+              : RUNTIME_REBOOT_ALERT_SEND_SKIPPED;
           const int64_t attempt_epoch =
             TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
-          RuntimeRebootAlertLatchRecordAttempt(send_result,
-                                               RUNTIME_REBOOT_ALERT_GATE_UNKNOWN,
-                                               attempt_epoch,
-                                               (uint32_t)event_uptime_ms,
-                                               status,
-                                               ntfy_err,
-                                               retry_after_seconds);
+          RuntimeRebootAlertLatchRecordAttempt(
+            send_result,
+            RUNTIME_REBOOT_ALERT_GATE_UNKNOWN,
+            attempt_epoch,
+            (uint32_t)event_uptime_ms,
+            status,
+            ntfy_err,
+            retry_after_seconds);
         }
         int64_t err_epoch = 0;
         int32_t err_millis = 0;
@@ -10122,7 +10129,8 @@ RuntimeEnableDataStreaming(bool enabled)
       return;
     }
     (void)TryEmitCsvHeader(&g_state);
-    UpdateCachedBool(&g_state, &g_state.cached_status.data_stream_enabled, true);
+    UpdateCachedBool(
+      &g_state, &g_state.cached_status.data_stream_enabled, true);
     return;
   }
   g_state.data_streaming_enabled = enabled;
