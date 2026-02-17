@@ -171,6 +171,22 @@ extern "C"
                                 int64_t now_ms);
 
   /**
+   * @brief Reset local-leaf alert baselines at logging session start.
+   * @param manager Parameter manager.
+   * @param now_ms Parameter now_ms.
+   * @param now_epoch Parameter now_epoch.
+   * @details Treat runtime start as a new logging session by resetting only
+   * session-derived local-leaf baselines/state (last receive times,
+   * sequence/record-id restart detectors, temperature hold timers, and per-leaf
+   * alert transition state). This prevents false missing-gap and restart alerts
+   * from spanning a planned stop/start boundary without altering alert
+   * configuration or global rate-limit state.
+   */
+  void AlertManagerOnLoggingSessionStart(alert_manager_t* manager,
+                                         int64_t now_ms,
+                                         int64_t now_epoch);
+
+  /**
    * @brief Execute AlertManagerTick.
    * @param manager Parameter manager.
    * @param now_ms Parameter now_ms.
