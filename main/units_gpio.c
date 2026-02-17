@@ -5,13 +5,9 @@
 
 #include "driver/gpio.h"
 #include "esp_err.h"
-#include "esp_log.h"
+#include "gpio_buttons.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
-static const char* kTag = "units_gpio";
-static const uint32_t kUnitsGpioPollMs = 10;
-static const uint32_t kUnitsGpioDebounceMs = 30;
 static const uint32_t kUnitsGpioRtcMagic = 0x55475031;
 
 typedef struct
@@ -35,7 +31,7 @@ static void UnitsGpioUpdateState(int32_t pin,
                                  app_units_gpio_pull_t pull,
                                  bool c_level_high,
                                  bool pin_valid);
-static void UnitsGpioTask(void* context);
+static void UnitsGpioRegisterButtonLocked(void);
 
 RTC_DATA_ATTR static units_gpio_rtc_store_t g_units_gpio_rtc = {
   .magic = 0,
@@ -45,7 +41,6 @@ RTC_DATA_ATTR static units_gpio_rtc_store_t g_units_gpio_rtc = {
 typedef struct
 {
   app_settings_t* settings;
-  TaskHandle_t task;
   portMUX_TYPE lock;
   bool enabled;
   bool toggle_on_press;
@@ -58,16 +53,11 @@ typedef struct
   bool pressed;
   bool rtc_override_valid;
   app_display_units_t rtc_override_units;
-  bool debounce_last_sample_high;
-  bool debounce_stable_level_high;
-  TickType_t debounce_last_change_tick;
-  bool debounce_last_pressed;
   app_display_units_t effective_units;
 } units_gpio_state_t;
 
 static units_gpio_state_t g_units_gpio = {
   .settings = NULL,
-  .task = NULL,
   .lock = portMUX_INITIALIZER_UNLOCKED,
   .enabled = false,
   .toggle_on_press = false,
@@ -80,10 +70,6 @@ static units_gpio_state_t g_units_gpio = {
   .pressed = false,
   .rtc_override_valid = false,
   .rtc_override_units = APP_DISPLAY_UNITS_F,
-  .debounce_last_sample_high = false,
-  .debounce_stable_level_high = false,
-  .debounce_last_change_tick = 0,
-  .debounce_last_pressed = false,
   .effective_units = APP_DISPLAY_UNITS_F,
 };
 
@@ -175,11 +161,6 @@ UnitsGpioGetEffectiveUnitsLocked(void)
                                g_units_gpio.c_level_high);
 }
 
-/**
- * @brief Check whether a configured pin number refers to a valid GPIO.
- * @param pin GPIO number as a signed integer.
- * @return true if the pin is non-negative and refers to a valid GPIO; otherwise false.
- */
 static bool
 UnitsGpioIsValidPin(int32_t pin)
 {
@@ -189,12 +170,6 @@ UnitsGpioIsValidPin(int32_t pin)
   return GPIO_IS_VALID_GPIO((gpio_num_t)pin);
 }
 
-/**
- * @brief Execute UnitsGpioComputeUnits.
- * @param level_high Parameter level_high.
- * @param c_level_high Parameter c_level_high.
- * @return Return the function result.
- */
 static app_display_units_t
 UnitsGpioComputeUnits(bool level_high, bool c_level_high)
 {
@@ -202,12 +177,6 @@ UnitsGpioComputeUnits(bool level_high, bool c_level_high)
                                       : APP_DISPLAY_UNITS_F;
 }
 
-/**
- * @brief Execute UnitsGpioConfigureInput.
- * @param pin Parameter pin.
- * @param pull Parameter pull.
- * @return Return the function result.
- */
 static bool
 UnitsGpioConfigureInput(int32_t pin, app_units_gpio_pull_t pull)
 {
@@ -223,21 +192,27 @@ UnitsGpioConfigureInput(int32_t pin, app_units_gpio_pull_t pull)
     .intr_type = GPIO_INTR_DISABLE,
   };
 
-  esp_err_t result = gpio_config(&config);
-  if (result != ESP_OK) {
-    ESP_LOGW(kTag, "GPIO %ld config failed: %s", (long)pin, esp_err_to_name(result));
-    return false;
-  }
-  return true;
+  return gpio_config(&config) == ESP_OK;
 }
 
-/**
- * @brief Execute UnitsGpioUpdateState.
- * @param pin Parameter pin.
- * @param pull Parameter pull.
- * @param c_level_high Parameter c_level_high.
- * @param pin_valid Parameter pin_valid.
- */
+static void
+UnitsGpioRegisterButtonLocked(void)
+{
+  const gpio_button_config_t units_button = {
+    .id = GPIO_BUTTON_UNITS_TOGGLE,
+    .gpio = (gpio_num_t)g_units_gpio.pin,
+    .pull_up = (g_units_gpio.pull == APP_UNITS_GPIO_PULL_UP),
+    .pull_down = (g_units_gpio.pull == APP_UNITS_GPIO_PULL_DOWN),
+    .active_high = g_units_gpio.pressed_level_high,
+    .debounce_ms = CONFIG_APP_BUTTONS_DEBOUNCE_MS,
+    .hold_ms = CONFIG_APP_UNITS_TOGGLE_HOLD_MS,
+    .holdoff_ms = CONFIG_APP_BUTTONS_HOLDOFF_MS,
+    .enabled = g_units_gpio.enabled && g_units_gpio.pin_valid
+               && g_units_gpio.toggle_on_press,
+  };
+  (void)GpioButtonsRegister(&units_button);
+}
+
 static void
 UnitsGpioUpdateState(int32_t pin,
                      app_units_gpio_pull_t pull,
@@ -250,127 +225,30 @@ UnitsGpioUpdateState(int32_t pin,
   }
 
   portENTER_CRITICAL(&g_units_gpio.lock);
-  const bool toggle_on_press = UnitsGpioToggleModeEnabled();
-  const bool rtc_override_valid = UnitsGpioIsRtcOverrideValid();
-  const app_display_units_t rtc_override_units = UnitsGpioGetRtcOverrideUnits();
-  const bool pressed_level_high = UnitsGpioPressedLevelHigh(pull, c_level_high);
   g_units_gpio.pin = pin;
   g_units_gpio.pull = pull;
   g_units_gpio.c_level_high = c_level_high;
   g_units_gpio.pin_valid = pin_valid;
-  g_units_gpio.toggle_on_press = toggle_on_press;
-  g_units_gpio.rtc_override_valid = rtc_override_valid;
-  g_units_gpio.rtc_override_units = rtc_override_units;
+  g_units_gpio.toggle_on_press = UnitsGpioToggleModeEnabled();
+  g_units_gpio.rtc_override_valid = UnitsGpioIsRtcOverrideValid();
+  g_units_gpio.rtc_override_units = UnitsGpioGetRtcOverrideUnits();
   g_units_gpio.last_level_high = level_high;
-  g_units_gpio.pressed_level_high = pressed_level_high;
-  g_units_gpio.pressed = pin_valid && (level_high == pressed_level_high);
-  g_units_gpio.debounce_last_sample_high = level_high;
-  g_units_gpio.debounce_stable_level_high = level_high;
-  g_units_gpio.debounce_last_change_tick = xTaskGetTickCount();
-  g_units_gpio.debounce_last_pressed = g_units_gpio.pressed;
+  g_units_gpio.pressed_level_high = UnitsGpioPressedLevelHigh(pull, c_level_high);
+  g_units_gpio.pressed = pin_valid && (level_high == g_units_gpio.pressed_level_high);
+  UnitsGpioRegisterButtonLocked();
   g_units_gpio.effective_units = UnitsGpioGetEffectiveUnitsLocked();
   portEXIT_CRITICAL(&g_units_gpio.lock);
 }
 
-/**
- * @brief Execute UnitsGpioTask.
- * @param context Parameter context.
- * @note FreeRTOS task entry for the UnitsGpio task.
- */
-static void
-UnitsGpioTask(void* context)
-{
-  (void)context;
-
-  while (true) {
-    vTaskDelay(pdMS_TO_TICKS(kUnitsGpioPollMs));
-    if (!g_units_gpio.enabled || !g_units_gpio.pin_valid) {
-      continue;
-    }
-    const TickType_t now = xTaskGetTickCount();
-    const bool level_high = (gpio_get_level((gpio_num_t)g_units_gpio.pin) != 0);
-    bool log_toggle = false;
-    app_display_units_t old_units = APP_DISPLAY_UNITS_F;
-    app_display_units_t new_units = APP_DISPLAY_UNITS_F;
-
-    portENTER_CRITICAL(&g_units_gpio.lock);
-    g_units_gpio.last_level_high = level_high;
-
-    if (!g_units_gpio.toggle_on_press) {
-      g_units_gpio.effective_units =
-        UnitsGpioComputeUnits(level_high, g_units_gpio.c_level_high);
-      portEXIT_CRITICAL(&g_units_gpio.lock);
-      continue;
-    }
-
-    if (level_high != g_units_gpio.debounce_last_sample_high) {
-      g_units_gpio.debounce_last_sample_high = level_high;
-      g_units_gpio.debounce_last_change_tick = now;
-    }
-
-    const TickType_t debounce_ticks = pdMS_TO_TICKS(kUnitsGpioDebounceMs);
-    if (((now - g_units_gpio.debounce_last_change_tick) >= debounce_ticks)
-        && (level_high != g_units_gpio.debounce_stable_level_high)) {
-      g_units_gpio.debounce_stable_level_high = level_high;
-      g_units_gpio.pressed =
-        (g_units_gpio.debounce_stable_level_high == g_units_gpio.pressed_level_high);
-
-      if (g_units_gpio.pressed && !g_units_gpio.debounce_last_pressed) {
-        old_units = g_units_gpio.effective_units;
-        new_units = (old_units == APP_DISPLAY_UNITS_F) ? APP_DISPLAY_UNITS_C
-                                                        : APP_DISPLAY_UNITS_F;
-        UnitsGpioSetRtcOverride(new_units);
-        g_units_gpio.rtc_override_valid = true;
-        g_units_gpio.rtc_override_units = new_units;
-        g_units_gpio.effective_units = new_units;
-        log_toggle = true;
-      }
-
-      g_units_gpio.debounce_last_pressed = g_units_gpio.pressed;
-    }
-
-    g_units_gpio.effective_units = UnitsGpioGetEffectiveUnitsLocked();
-    portEXIT_CRITICAL(&g_units_gpio.lock);
-
-    if (log_toggle) {
-      ESP_LOGI(kTag,
-               "Units toggled: %s -> %s (RTC persisted)",
-               AppSettingsDisplayUnitsToString(old_units),
-               AppSettingsDisplayUnitsToString(new_units));
-    }
-  }
-}
-
-/**
- * @brief Execute UnitsGpioInit.
- * @param settings Parameter settings.
- */
 void
 UnitsGpioInit(app_settings_t* settings)
 {
+  GpioButtonsInit();
   g_units_gpio.settings = settings;
   g_units_gpio.enabled = (CONFIG_APP_UNITS_GPIO_ENABLE != 0);
   UnitsGpioApplySettings(settings);
-
-  if (g_units_gpio.enabled && g_units_gpio.task == NULL) {
-    const uint32_t kUnitsGpioTaskStackBytes = 2048;
-    BaseType_t created = xTaskCreate(&UnitsGpioTask,
-                                     "units_gpio",
-                                     kUnitsGpioTaskStackBytes,
-                                     NULL,
-                                     1,
-                                     &g_units_gpio.task);
-    if (created != pdPASS) {
-      g_units_gpio.task = NULL;
-      ESP_LOGW(kTag, "Units GPIO task create failed");
-    }
-  }
 }
 
-/**
- * @brief Execute UnitsGpioApplySettings.
- * @param settings Parameter settings.
- */
 void
 UnitsGpioApplySettings(const app_settings_t* settings)
 {
@@ -394,17 +272,40 @@ UnitsGpioApplySettings(const app_settings_t* settings)
   UnitsGpioUpdateState(pin, pull, c_level_high, pin_valid);
 }
 
-/**
- * @brief Execute UnitsGpioGetStatus.
- * @param status_out Parameter status_out.
- */
+void
+UnitsGpioHandleButtonPress(void)
+{
+  portENTER_CRITICAL(&g_units_gpio.lock);
+  if (!g_units_gpio.enabled || !g_units_gpio.pin_valid || !g_units_gpio.toggle_on_press) {
+    portEXIT_CRITICAL(&g_units_gpio.lock);
+    return;
+  }
+
+  const app_display_units_t old_units = UnitsGpioGetEffectiveUnitsLocked();
+  const app_display_units_t new_units =
+    (old_units == APP_DISPLAY_UNITS_F) ? APP_DISPLAY_UNITS_C : APP_DISPLAY_UNITS_F;
+  UnitsGpioSetRtcOverride(new_units);
+  g_units_gpio.rtc_override_valid = true;
+  g_units_gpio.rtc_override_units = new_units;
+  g_units_gpio.effective_units = new_units;
+  portEXIT_CRITICAL(&g_units_gpio.lock);
+}
+
 void
 UnitsGpioGetStatus(units_gpio_status_t* status_out)
 {
   if (status_out == NULL) {
     return;
   }
+
   portENTER_CRITICAL(&g_units_gpio.lock);
+  if (g_units_gpio.pin_valid) {
+    g_units_gpio.last_level_high = (gpio_get_level((gpio_num_t)g_units_gpio.pin) != 0);
+    g_units_gpio.pressed =
+      (g_units_gpio.last_level_high == g_units_gpio.pressed_level_high);
+  }
+  g_units_gpio.effective_units = UnitsGpioGetEffectiveUnitsLocked();
+
   *status_out = (units_gpio_status_t){
     .enabled = g_units_gpio.enabled,
     .toggle_on_press = g_units_gpio.toggle_on_press,
@@ -432,25 +333,20 @@ UnitsGpioClearRtcOverride(void)
   portEXIT_CRITICAL(&g_units_gpio.lock);
 }
 
-/**
- * @brief Execute AppDisplayUnitsGetEffective.
- * @return Return the function result.
- */
 app_display_units_t
 AppDisplayUnitsGetEffective(void)
 {
   app_display_units_t units = APP_DISPLAY_UNITS_F;
   portENTER_CRITICAL(&g_units_gpio.lock);
+  if (!g_units_gpio.toggle_on_press && g_units_gpio.pin_valid) {
+    g_units_gpio.last_level_high = (gpio_get_level((gpio_num_t)g_units_gpio.pin) != 0);
+  }
   units = UnitsGpioGetEffectiveUnitsLocked();
+  g_units_gpio.effective_units = units;
   portEXIT_CRITICAL(&g_units_gpio.lock);
   return units;
 }
 
-/**
- * @brief Execute UnitsGpioPullToString.
- * @param pull Parameter pull.
- * @return Return the function result.
- */
 const char*
 UnitsGpioPullToString(app_units_gpio_pull_t pull)
 {
@@ -466,12 +362,6 @@ UnitsGpioPullToString(app_units_gpio_pull_t pull)
   }
 }
 
-/**
- * @brief Execute UnitsGpioParsePull.
- * @param value Parameter value.
- * @param pull_out Parameter pull_out.
- * @return Return the function result.
- */
 bool
 UnitsGpioParsePull(const char* value, app_units_gpio_pull_t* pull_out)
 {
@@ -493,23 +383,12 @@ UnitsGpioParsePull(const char* value, app_units_gpio_pull_t* pull_out)
   return false;
 }
 
-/**
- * @brief Execute UnitsGpioLevelToString.
- * @param level_high Parameter level_high.
- * @return Return the function result.
- */
 const char*
 UnitsGpioLevelToString(bool level_high)
 {
   return level_high ? "high" : "low";
 }
 
-/**
- * @brief Execute UnitsGpioParseLevel.
- * @param value Parameter value.
- * @param level_high_out Parameter level_high_out.
- * @return Return the function result.
- */
 bool
 UnitsGpioParseLevel(const char* value, bool* level_high_out)
 {

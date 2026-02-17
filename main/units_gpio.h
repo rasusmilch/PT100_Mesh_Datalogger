@@ -38,6 +38,12 @@ extern "C" {
  */
   void UnitsGpioApplySettings(const app_settings_t* settings);
 
+
+/**
+ * @brief Execute UnitsGpioHandleButtonPress.
+ */
+  void UnitsGpioHandleButtonPress(void);
+
 /**
  * @brief Execute UnitsGpioGetStatus.
  * @param status_out Parameter status_out.
