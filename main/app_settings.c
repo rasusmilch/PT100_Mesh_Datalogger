@@ -1,6 +1,7 @@
 #include "app_settings.h"
 
 #include <inttypes.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,6 +113,8 @@ typedef struct
   uint32_t rtd_fault_assert_ms;
   uint32_t rtd_fault_clear_ms;
   char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
+  char unit_serial[APP_SETTINGS_UNIT_SERIAL_MAX_LEN];
+  char cal_method[APP_SETTINGS_CAL_METHOD_MAX_LEN];
   uint8_t dst_enabled;
   uint8_t node_role;
   uint8_t allow_children;
@@ -146,6 +149,8 @@ AppSettingsSaveBlob(const app_settings_t* settings);
 
 static esp_err_t
 OpenNvs(nvs_handle_t* handle_out);
+static bool
+IsPrintableSettingString(const char* value, size_t max_len);
 
 /**
  * @brief Execute DefaultNodeRole.
@@ -394,6 +399,8 @@ ApplyDefaults(app_settings_t* settings)
            sizeof(settings->tz_posix),
            "%s",
            APP_SETTINGS_TZ_DEFAULT_POSIX);
+  settings->unit_serial[0] = '\0';
+  settings->cal_method[0] = '\0';
   settings->dst_enabled = true;
   settings->node_role = DefaultNodeRole();
   settings->allow_children =
@@ -670,6 +677,14 @@ SettingsPayloadFromSettings(const app_settings_t* settings,
   payload->rtd_fault_clear_ms = settings->rtd_fault_clear_ms;
   snprintf(
     payload->tz_posix, sizeof(payload->tz_posix), "%s", settings->tz_posix);
+  snprintf(payload->unit_serial,
+           sizeof(payload->unit_serial),
+           "%s",
+           settings->unit_serial);
+  snprintf(payload->cal_method,
+           sizeof(payload->cal_method),
+           "%s",
+           settings->cal_method);
   payload->dst_enabled = settings->dst_enabled ? 1u : 0u;
   payload->node_role = (uint8_t)settings->node_role;
   payload->allow_children = settings->allow_children ? 1u : 0u;
@@ -800,6 +815,28 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
            payload->tz_posix,
            sizeof(settings_out->tz_posix));
     settings_out->tz_posix[sizeof(settings_out->tz_posix) - 1] = '\0';
+  }
+
+  const size_t serial_len =
+    strnlen(payload->unit_serial, sizeof(payload->unit_serial));
+  if (serial_len < sizeof(payload->unit_serial) &&
+      IsPrintableSettingString(payload->unit_serial,
+                               sizeof(payload->unit_serial))) {
+    memcpy(settings_out->unit_serial,
+           payload->unit_serial,
+           sizeof(settings_out->unit_serial));
+    settings_out->unit_serial[sizeof(settings_out->unit_serial) - 1] = '\0';
+  }
+
+  const size_t method_len =
+    strnlen(payload->cal_method, sizeof(payload->cal_method));
+  if (method_len < sizeof(payload->cal_method) &&
+      IsPrintableSettingString(payload->cal_method,
+                               sizeof(payload->cal_method))) {
+    memcpy(settings_out->cal_method,
+           payload->cal_method,
+           sizeof(settings_out->cal_method));
+    settings_out->cal_method[sizeof(settings_out->cal_method) - 1] = '\0';
   }
 
   if (payload->dst_enabled <= 1) {
@@ -1374,6 +1411,31 @@ LogSettingsLoaded(const app_settings_t* settings)
  * @param handle_out Parameter handle_out.
  * @return Return the function result.
  */
+
+/**
+ * @brief Validate a user-provided metadata string for safe persistence.
+ * @param value Candidate string.
+ * @param max_len Maximum buffer length including NUL.
+ * @return True when string is non-NULL, fits, and contains printable ASCII.
+ */
+static bool
+IsPrintableSettingString(const char* value, size_t max_len)
+{
+  if (value == NULL) {
+    return false;
+  }
+  const size_t len = strnlen(value, max_len);
+  if (len >= max_len) {
+    return false;
+  }
+  for (size_t i = 0; i < len; ++i) {
+    if (!isprint((unsigned char)value[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static esp_err_t
 OpenNvs(nvs_handle_t* handle_out)
 {
@@ -1703,6 +1765,39 @@ AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
  * @param node_role Parameter node_role.
  * @return Return the function result.
  */
+
+/**
+ * @brief Persist the unit serial metadata string.
+ * @param serial Unit serial string (may be empty to clear).
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveUnitSerial(const char* serial)
+{
+  if (!IsPrintableSettingString(serial, APP_SETTINGS_UNIT_SERIAL_MAX_LEN)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  app_settings_t settings = g_saved_settings;
+  snprintf(settings.unit_serial, sizeof(settings.unit_serial), "%s", serial);
+  return SaveAllSettings(&settings);
+}
+
+/**
+ * @brief Persist the calibration method metadata string.
+ * @param method Calibration method string (may be empty to clear).
+ * @return Return the function result.
+ */
+esp_err_t
+AppSettingsSaveCalibrationMethod(const char* method)
+{
+  if (!IsPrintableSettingString(method, APP_SETTINGS_CAL_METHOD_MAX_LEN)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  app_settings_t settings = g_saved_settings;
+  snprintf(settings.cal_method, sizeof(settings.cal_method), "%s", method);
+  return SaveAllSettings(&settings);
+}
+
 esp_err_t
 AppSettingsSaveNodeRole(app_node_role_t node_role)
 {
