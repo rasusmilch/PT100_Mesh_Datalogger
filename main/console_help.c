@@ -81,6 +81,72 @@ ConsoleHelpPrintIndex(void)
 }
 
 void
+ConsoleHelpPrintTopicList(const console_help_topic_t* topics)
+{
+  if (topics == NULL) {
+    return;
+  }
+
+  size_t max_topic_width = 0;
+  for (size_t i = 0; topics[i].name != NULL; ++i) {
+    const size_t topic_len = strlen(topics[i].name);
+    if (topic_len > max_topic_width) {
+      max_topic_width = topic_len;
+    }
+  }
+
+  if (max_topic_width == 0) {
+    return;
+  }
+
+  printf("SUBCOMMANDS\n");
+  for (size_t i = 0; topics[i].name != NULL; ++i) {
+    printf("  %-*s  %s\n",
+           (int)max_topic_width,
+           topics[i].name,
+           (topics[i].summary != NULL) ? topics[i].summary : "");
+  }
+  printf("\n");
+}
+
+void
+ConsoleHelpPrintTopicManpage(const char* command, const console_help_topic_t* topic)
+{
+  if (command == NULL || topic == NULL || topic->name == NULL) {
+    return;
+  }
+
+  printf("NAME\n");
+  printf("  %s %s - %s\n\n",
+         command,
+         topic->name,
+         (topic->summary != NULL) ? topic->summary : "");
+
+  printf("SYNOPSIS\n");
+  if (topic->synopsis != NULL && topic->synopsis[0] != '\0') {
+    printf("  %s\n\n", topic->synopsis);
+  } else {
+    printf("  %s %s\n\n", command, topic->name);
+  }
+
+  printf("DESCRIPTION\n");
+  printf("  %s\n\n",
+         (topic->details != NULL && topic->details[0] != '\0')
+           ? topic->details
+           : ((topic->summary != NULL) ? topic->summary : ""));
+
+  if (topic->options != NULL && topic->options[0] != '\0') {
+    printf("PARAMETERS\n");
+    printf("%s\n\n", topic->options);
+  }
+
+  if (topic->examples != NULL && topic->examples[0] != '\0') {
+    printf("EXAMPLES\n");
+    printf("%s\n", topic->examples);
+  }
+}
+
+void
 ConsoleHelpPrintManpage(const char* command)
 {
   const console_registry_entry_t* entry = FindEntry(command);
@@ -143,7 +209,32 @@ ConsoleHelpCommand(int argc, char** argv)
     return 0;
   }
 
-  printf("usage: help [command]\n");
+  if (argc == 3) {
+    const char* command = argv[1];
+    const char* topic = argv[2];
+    const console_registry_entry_t* entry = FindEntry(command);
+    if (entry == NULL) {
+      ConsoleHelpPrintManpage(command);
+      return 1;
+    }
+    if (entry->topic_help == NULL) {
+      printf("No subtopics for %s\n", command);
+      printf("Try: help %s\n", command);
+      return 1;
+    }
+
+    if (entry->topic_help(topic) != 0) {
+      printf("Unknown topic '%s' for %s\n", topic, command);
+      if (entry->print_body != NULL) {
+        entry->print_body();
+      }
+      printf("Try: help %s\n", command);
+      return 1;
+    }
+    return 0;
+  }
+
+  printf("usage: help [command] [topic]\n");
   return 1;
 }
 
