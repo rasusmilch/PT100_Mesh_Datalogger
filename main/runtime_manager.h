@@ -111,6 +111,17 @@ extern "C" {
   runtime_state_t* RuntimeGetState(void);
 
 /**
+ * @brief Build PTLOG header metadata from current runtime state.
+ * @param epoch_utc Header creation timestamp.
+ * @param header_out Destination PTLOG header.
+ * @param signature_out Optional signature output.
+ * @return True on success.
+ */
+  bool RuntimeBuildPtlogHeader(int64_t epoch_utc,
+                               ptlog_header_t* header_out,
+                               uint32_t* signature_out);
+
+/**
  * @brief Execute RuntimeRebootAlertLatchIsPending.
  * @return Return the function result.
  */

@@ -20,14 +20,14 @@ static const char* kNvsNamespace = "pt100_logger";
 static const char* kRecordIdKey = "diag_recid";
 
 /**
- * @brief Execute BuildDailyCsvPath.
+ * @brief Execute BuildDailyPtlogPath.
  * @param logger Parameter logger.
  * @param epoch_seconds Parameter epoch_seconds.
  * @param path_out Parameter path_out.
  * @param path_out_size Parameter path_out_size.
  */
 static void
-BuildDailyCsvPath(const sd_logger_t* logger,
+BuildDailyPtlogPath(const sd_logger_t* logger,
                   int64_t epoch_seconds,
                   char* path_out,
                   size_t path_out_size)
@@ -42,7 +42,7 @@ BuildDailyCsvPath(const sd_logger_t* logger,
   char date_string[16];
   strftime(date_string, sizeof(date_string), "%Y-%m-%dZ", &time_info);
   snprintf(
-    path_out, path_out_size, "%s/%s.csv", logger->mount_point, date_string);
+    path_out, path_out_size, "%s/%s.ptlog", logger->mount_point, date_string);
 }
 
 /**
@@ -203,8 +203,20 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
     return false;
   }
 
+  ptlog_header_t ptlog_header;
+  uint32_t header_signature = 0;
+  if (!RuntimeBuildPtlogHeader(
+        pending_record.timestamp_epoch_sec, &ptlog_header, &header_signature)) {
+    RuntimeSdIoUnlock(state);
+    snprintf(details, details_len, "ptlog header build failed");
+    return false;
+  }
+
   esp_err_t ensure_result =
-    SdLoggerEnsureDailyFile(logger, pending_record.timestamp_epoch_sec);
+    SdLoggerEnsureDailyFileWithHeader(logger,
+                                      pending_record.timestamp_epoch_sec,
+                                      &ptlog_header,
+                                      header_signature);
   if (ensure_result != ESP_OK) {
     RuntimeSdIoUnlock(state);
     snprintf(details,
@@ -228,7 +240,10 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
 
   SdLoggerClose(logger);
   esp_err_t reopen_result =
-    SdLoggerEnsureDailyFile(logger, pending_record.timestamp_epoch_sec);
+    SdLoggerEnsureDailyFileWithHeader(logger,
+                                      pending_record.timestamp_epoch_sec,
+                                      &ptlog_header,
+                                      header_signature);
   RuntimeSdIoUnlock(state);
   if (reopen_result != ESP_OK) {
     snprintf(details,
@@ -438,8 +453,8 @@ RunMidnightSplitTest(const app_runtime_t* runtime,
 
   char path_day1[128];
   char path_day2[128];
-  BuildDailyCsvPath(logger, epoch_day1, path_day1, sizeof(path_day1));
-  BuildDailyCsvPath(logger, epoch_day2, path_day2, sizeof(path_day2));
+  BuildDailyPtlogPath(logger, epoch_day1, path_day1, sizeof(path_day1));
+  BuildDailyPtlogPath(logger, epoch_day2, path_day2, sizeof(path_day2));
 
   bool found_day1 = false;
   bool found_day2 = false;
