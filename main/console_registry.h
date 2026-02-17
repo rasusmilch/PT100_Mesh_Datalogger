@@ -12,6 +12,7 @@ typedef struct console_registry_entry_s
   const char* synopsis;
   const char* description;
   console_help_fn_t print_body;
+  int (*topic_help)(const char* topic);
   int (*func)(int argc, char** argv);
   void** argtable;
 } console_registry_entry_t;
