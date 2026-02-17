@@ -10003,6 +10003,11 @@ RuntimeStart(void)
     return ESP_ERR_NO_MEM;
   }
 
+  const int64_t now_ms = esp_timer_get_time() / 1000;
+  const int64_t now_epoch =
+    TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+  AlertManagerOnLoggingSessionStart(&g_state.alert_manager, now_ms, now_epoch);
+
   ESP_LOGI(kTag,
            "Runtime started (node=%s role=%s)",
            g_state.node_id_string,

@@ -1000,6 +1000,47 @@ AlertManagerOnLeafOnline(alert_manager_t* manager,
 }
 
 /**
+ * @brief Reset local-leaf alert baselines for a new logging session.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ * @param now_epoch Parameter now_epoch.
+ */
+void
+AlertManagerOnLoggingSessionStart(alert_manager_t* manager,
+                                  int64_t now_ms,
+                                  int64_t now_epoch)
+{
+  if (manager == NULL) {
+    return;
+  }
+
+  size_t leaf_index = 0;
+  if (!FindOrAllocateLeafIndex(manager,
+                               ResolveLeafId(manager, manager->local_leaf_id),
+                               &leaf_index)) {
+    return;
+  }
+
+  alert_leaf_state_t* leaf = &manager->leaves[leaf_index];
+  leaf->last_rx_uptime_ms = now_ms;
+  leaf->last_rx_epoch = (now_epoch > 0) ? now_epoch : -1;
+  leaf->last_seq = 0;
+  leaf->last_record_id = 0;
+  leaf->last_restart_log_ms = 0;
+  leaf->high_hold_start_ms = 0;
+  leaf->low_hold_start_ms = 0;
+
+  memset(manager->states[leaf_index], 0, sizeof(manager->states[leaf_index]));
+
+  char leaf_id_string[32] = "";
+  AlertManagerFormatLeafId(
+    leaf->leaf_id, leaf_id_string, sizeof(leaf_id_string));
+  ESP_LOGI(kTag,
+           "logging session start: reset alert baselines (leaf=%s)",
+           leaf_id_string);
+}
+
+/**
  * @brief Execute AlertManagerTick.
  * @param manager Parameter manager.
  * @param now_ms Parameter now_ms.
