@@ -16,6 +16,7 @@
 #include "data_port.h"
 #include "display_attention.h"
 #include "esp_attr.h"
+#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
@@ -44,6 +45,7 @@
 #include "mesh_transport.h"
 #include "mqtt_client_wrap.h"
 #include "net_supervisor.h"
+#include "ptlog_format.h"
 #include "run_gpio.h"
 #include "runtime_health.h"
 #include "runtime_health_publisher.h"
@@ -224,6 +226,15 @@ PackMacToLeafId(const uint8_t mac[6]);
 
 static sd_append_verify_t
 ResolveSdVerifyMode(const runtime_state_t* state);
+
+static bool
+RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
+                                int64_t epoch_utc,
+                                ptlog_header_t* header_out,
+                                uint32_t* signature_out);
+
+static void
+FormatUtcTimestamp(int64_t epoch_utc, char* out, size_t out_size);
 
 static bool
 RuntimeFramLogLock(runtime_state_t* state, TickType_t timeout_ticks);
@@ -3493,6 +3504,136 @@ BuildDateStringFromEpoch(int64_t epoch, char* out, size_t out_size)
   strftime(out, out_size, "%Y-%m-%dZ", &time_info);
 }
 
+static void
+FormatUtcTimestamp(int64_t epoch_utc, char* out, size_t out_size)
+{
+  if (out == NULL || out_size == 0) {
+    return;
+  }
+  time_t time_seconds = (time_t)epoch_utc;
+  struct tm time_info;
+  gmtime_r(&time_seconds, &time_info);
+  strftime(out, out_size, "%Y-%m-%dT%H:%M:%SZ", &time_info);
+}
+
+static bool
+RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
+                                int64_t epoch_utc,
+                                ptlog_header_t* header_out,
+                                uint32_t* signature_out)
+{
+  if (state == NULL || header_out == NULL) {
+    return false;
+  }
+  memset(header_out, 0, sizeof(*header_out));
+
+  const app_settings_t* settings = &state->settings;
+  const esp_app_desc_t* app_desc = esp_app_get_description();
+  const int64_t now_utc = (epoch_utc > 0) ? epoch_utc : (int64_t)time(NULL);
+  FormatUtcTimestamp(now_utc, header_out->created_utc, sizeof(header_out->created_utc));
+
+  snprintf(header_out->device_serial,
+           sizeof(header_out->device_serial),
+           "%s",
+           settings->unit_serial);
+  FormatMacString(state->local_mac, header_out->device_mac, sizeof(header_out->device_mac));
+  snprintf(header_out->device_role,
+           sizeof(header_out->device_role),
+           "%s",
+           AppSettingsRoleToString(state->node_role_active));
+  snprintf(header_out->firmware_project,
+           sizeof(header_out->firmware_project),
+           "%s",
+           app_desc->project_name);
+  snprintf(header_out->firmware_version,
+           sizeof(header_out->firmware_version),
+           "%s",
+           app_desc->version);
+  snprintf(header_out->firmware_build_date,
+           sizeof(header_out->firmware_build_date),
+           "%s",
+           app_desc->date);
+  snprintf(header_out->firmware_build_time,
+           sizeof(header_out->firmware_build_time),
+           "%s",
+           app_desc->time);
+  snprintf(header_out->esp_idf_ver,
+           sizeof(header_out->esp_idf_ver),
+           "%s",
+           esp_get_idf_version());
+  snprintf(header_out->timezone_posix,
+           sizeof(header_out->timezone_posix),
+           "%s",
+           settings->tz_posix);
+  header_out->dst_enabled = settings->dst_enabled;
+
+  const int64_t last_cal_utc = (settings->cal_last_override_utc != 0)
+                                 ? settings->cal_last_override_utc
+                                 : settings->cal_last_utc;
+  if (last_cal_utc > 0) {
+    FormatUtcTimestamp(
+      last_cal_utc, header_out->cal_last_utc, sizeof(header_out->cal_last_utc));
+  } else {
+    snprintf(header_out->cal_last_utc, sizeof(header_out->cal_last_utc), "unknown");
+  }
+
+  const uint16_t due_count = (settings->cal_due_override_count != 0)
+                               ? settings->cal_due_override_count
+                               : settings->cal_due_count;
+  const uint8_t due_unit = (settings->cal_due_override_unit != 0)
+                             ? settings->cal_due_override_unit
+                             : settings->cal_due_unit;
+  const char* due_unit_text = "unknown";
+  if (due_unit == (uint8_t)CAL_DUE_UNIT_DAYS) {
+    due_unit_text = "days";
+  } else if (due_unit == (uint8_t)CAL_DUE_UNIT_MONTHS) {
+    due_unit_text = "months";
+  } else if (due_unit == (uint8_t)CAL_DUE_UNIT_YEARS) {
+    due_unit_text = "years";
+  }
+  snprintf(header_out->cal_due_rule,
+           sizeof(header_out->cal_due_rule),
+           "%u_%s",
+           (unsigned)due_count,
+           due_unit_text);
+
+  const int64_t due_utc =
+    (last_cal_utc > 0 && due_count > 0 && due_unit >= (uint8_t)CAL_DUE_UNIT_DAYS &&
+     due_unit <= (uint8_t)CAL_DUE_UNIT_YEARS)
+      ? CalComputeDueDateUtc(last_cal_utc, due_count, (cal_due_unit_t)due_unit)
+      : 0;
+  if (due_utc > 0) {
+    FormatUtcTimestamp(
+      due_utc, header_out->cal_due_utc, sizeof(header_out->cal_due_utc));
+  } else {
+    snprintf(header_out->cal_due_utc, sizeof(header_out->cal_due_utc), "unknown");
+  }
+
+  snprintf(header_out->cal_method,
+           sizeof(header_out->cal_method),
+           "%s",
+           settings->cal_method);
+  snprintf(header_out->cal_context,
+           sizeof(header_out->cal_context),
+           "net_mode=%d",
+           (int)state->net_mode_active);
+
+  if (signature_out != NULL) {
+    *signature_out = PtlogComputeHeaderSignature(header_out);
+  }
+  return true;
+}
+
+bool
+RuntimeBuildPtlogHeader(int64_t epoch_utc,
+                        ptlog_header_t* header_out,
+                        uint32_t* signature_out)
+{
+  runtime_state_t* state = RuntimeGetState();
+  return RuntimeBuildPtlogHeaderInternal(
+    state, epoch_utc, header_out, signature_out);
+}
+
 /**
  * @brief Execute CsvDataPortWriter.
  * @param bytes Parameter bytes.
@@ -4769,7 +4910,12 @@ RestoreTimeJumpBackPendingFromFram(runtime_state_t* state)
   uint64_t sd_last_record_id_on_boot = 0;
   if (state->sd_logger.is_mounted && TimeSyncIsSystemTimeValid()) {
     const int64_t epoch_now = (int64_t)time(NULL);
-    if (SdLoggerEnsureDailyFile(&state->sd_logger, epoch_now) == ESP_OK) {
+    ptlog_header_t header;
+    uint32_t header_signature = 0;
+    if (RuntimeBuildPtlogHeaderInternal(
+          state, epoch_now, &header, &header_signature) &&
+        SdLoggerEnsureDailyFileWithHeader(
+          &state->sd_logger, epoch_now, &header, header_signature) == ESP_OK) {
       sd_last_record_id_on_boot = SdLoggerLastRecordIdOnSd(&state->sd_logger);
     }
   }
@@ -4904,8 +5050,14 @@ EnsureSdSyncedForEpoch(runtime_state_t* state, int64_t epoch_for_file)
       }
     }
   }
-  esp_err_t sd_result =
-    SdLoggerEnsureDailyFile(&state->sd_logger, target_epoch_for_file);
+  ptlog_header_t header;
+  uint32_t header_signature = 0;
+  if (!RuntimeBuildPtlogHeaderInternal(
+        state, target_epoch_for_file, &header, &header_signature)) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  esp_err_t sd_result = SdLoggerEnsureDailyFileWithHeader(
+    &state->sd_logger, target_epoch_for_file, &header, header_signature);
   if (sd_result != ESP_OK) {
     return sd_result;
   }

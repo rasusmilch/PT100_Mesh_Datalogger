@@ -12,16 +12,17 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "data_csv.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "ptlog_format.h"
 
 static const char* kTag = "sd_logger";
+static const char kPtlogSuffix[] = ".ptlog";
 
 static bool
-IsStrictDailyCsvName(const char* name);
+IsDailyPtlogName(const char* name, char* date_out, size_t date_out_size);
 static bool
 SdLoggerJoinPath(const char* dir_path,
                  const char* child_name,
@@ -34,9 +35,12 @@ SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
                            uint64_t* total_bytes,
                            uint64_t* free_bytes);
 static bool
-SdLoggerFindOldestDailyCsvLocked(const sd_logger_t* logger,
-                                 char* oldest_path,
-                                 size_t oldest_path_size);
+SdLoggerFindOldestDailyPtlogDateLocked(const sd_logger_t* logger,
+                                       char* oldest_date,
+                                       size_t oldest_date_size);
+static uint32_t
+SdLoggerDeleteDailyPtlogDateLocked(const sd_logger_t* logger,
+                                   const char* date_string);
 static esp_err_t
 SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
                            uint64_t required_free_bytes,
@@ -99,21 +103,6 @@ ResetAppendStats(sd_csv_append_stats_t* stats)
 }
 
 /**
- * @brief Execute CsvFileWriter.
- * @param bytes Parameter bytes.
- * @param len Parameter len.
- * @param context Parameter context.
- * @return Return the function result.
- */
-static bool
-CsvFileWriter(const char* bytes, size_t len, void* context)
-{
-  FILE* file = (FILE*)context;
-  return SdCsvAppendBatchWithReadbackVerify(
-           file, (const uint8_t*)bytes, len, NULL) == ESP_OK;
-}
-
-/**
  * @brief Execute SdLoggerInit.
  * @param logger Parameter logger.
  * @param config Parameter config.
@@ -158,7 +147,7 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
 }
 
 /**
- * @brief Execute BuildDailyCsvPath.
+ * @brief Execute BuildDailyPtlogPath.
  * @param logger Parameter logger.
  * @param epoch_seconds Parameter epoch_seconds.
  * @param date_out Parameter date_out.
@@ -167,12 +156,13 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
  * @param path_out_size Parameter path_out_size.
  */
 static void
-BuildDailyCsvPath(const sd_logger_t* logger,
-                  int64_t epoch_seconds,
-                  char* date_out,
-                  size_t date_out_size,
-                  char* path_out,
-                  size_t path_out_size)
+BuildDailyPtlogPath(const sd_logger_t* logger,
+                    int64_t epoch_seconds,
+                    uint32_t revision,
+                    char* date_out,
+                    size_t date_out_size,
+                    char* path_out,
+                    size_t path_out_size)
 {
   if (path_out_size > 0) {
     path_out[0] = '\0';
@@ -184,17 +174,23 @@ BuildDailyCsvPath(const sd_logger_t* logger,
 
   strftime(date_out, date_out_size, "%Y-%m-%dZ", &time_info);
 
-  char daily_name[32] = "";
+  char daily_name[40] = "";
   const size_t date_len = strnlen(date_out, date_out_size);
-  static const char kCsvSuffix[] = ".csv";
-  const size_t suffix_len = sizeof(kCsvSuffix) - 1;
-  if (date_len == date_out_size ||
-      date_len + suffix_len + 1 > sizeof(daily_name)) {
+  if (date_len == date_out_size) {
     return;
   }
-  memcpy(daily_name, date_out, date_len);
-  memcpy(daily_name + date_len, kCsvSuffix, suffix_len);
-  daily_name[date_len + suffix_len] = '\0';
+
+  if (revision == 0) {
+    (void)snprintf(daily_name, sizeof(daily_name), "%s%s", date_out, kPtlogSuffix);
+  } else {
+    (void)snprintf(
+      daily_name, sizeof(daily_name), "%s-%" PRIu32 "%s", date_out, revision, kPtlogSuffix);
+  }
+
+  if (daily_name[0] == '\0' ||
+      strnlen(daily_name, sizeof(daily_name)) >= sizeof(daily_name) - 1) {
+    return;
+  }
 
   if (!SdLoggerJoinPath(
         logger->mount_point, daily_name, path_out, path_out_size) &&
@@ -271,33 +267,58 @@ SdLoggerCopyString(const char* source, char* dest, size_t dest_size)
 }
 
 static bool
-IsStrictDailyCsvName(const char* name)
+IsDailyPtlogName(const char* name, char* date_out, size_t date_out_size)
 {
   if (name == NULL) {
     return false;
   }
+  const size_t suffix_len = sizeof(kPtlogSuffix) - 1;
   const size_t length = strlen(name);
-  if (length != 14 && length != 15) {
+  if (length < 11 + suffix_len) {
     return false;
   }
-  const bool has_z = (length == 15);
-  if ((name[4] != '-') || (name[7] != '-')) {
+  if (strcmp(name + length - suffix_len, kPtlogSuffix) != 0) {
     return false;
   }
-  for (size_t i = 0; i < 10; ++i) {
+
+  const size_t prefix_len = length - suffix_len;
+  if (prefix_len < 11 || prefix_len > 22) {
+    return false;
+  }
+  if (name[4] != '-' || name[7] != '-' || name[10] != 'Z') {
+    return false;
+  }
+  for (size_t i = 0; i < 11; ++i) {
     if (i == 4 || i == 7) {
+      continue;
+    }
+    if (i == 10) {
       continue;
     }
     if (name[i] < '0' || name[i] > '9') {
       return false;
     }
   }
-  if (has_z && name[10] != 'Z') {
-    return false;
+
+  if (prefix_len > 11) {
+    if (name[11] != '-') {
+      return false;
+    }
+    for (size_t i = 12; i < prefix_len; ++i) {
+      if (name[i] < '0' || name[i] > '9') {
+        return false;
+      }
+    }
   }
-  if (strcmp(name + length - 4, ".csv") != 0) {
-    return false;
+
+  if (date_out != NULL && date_out_size > 0) {
+    if (date_out_size < 12) {
+      return false;
+    }
+    memcpy(date_out, name, 11);
+    date_out[11] = '\0';
   }
+
   return true;
 }
 
@@ -326,11 +347,11 @@ SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
 }
 
 static bool
-SdLoggerFindOldestDailyCsvLocked(const sd_logger_t* logger,
-                                 char* oldest_path,
-                                 size_t oldest_path_size)
+SdLoggerFindOldestDailyPtlogDateLocked(const sd_logger_t* logger,
+                                       char* oldest_date,
+                                       size_t oldest_date_size)
 {
-  if (logger == NULL || oldest_path == NULL || oldest_path_size == 0) {
+  if (logger == NULL || oldest_date == NULL || oldest_date_size < 12) {
     return false;
   }
 
@@ -338,51 +359,22 @@ SdLoggerFindOldestDailyCsvLocked(const sd_logger_t* logger,
   if (dir == NULL) {
     return false;
   }
-
-  char current_path[128] = "";
-  if (logger->current_date[0] != '\0') {
-    char current_name[32] = "";
-    const size_t current_date_len =
-      strnlen(logger->current_date, sizeof(logger->current_date));
-    static const char kCsvSuffix[] = ".csv";
-    const size_t suffix_len = sizeof(kCsvSuffix) - 1;
-    if (current_date_len < sizeof(logger->current_date) &&
-        current_date_len + suffix_len + 1 <= sizeof(current_name)) {
-      memcpy(current_name, logger->current_date, current_date_len);
-      memcpy(current_name + current_date_len, kCsvSuffix, suffix_len);
-      current_name[current_date_len + suffix_len] = '\0';
-      (void)SdLoggerJoinPath(logger->mount_point,
-                             current_name,
-                             current_path,
-                             sizeof(current_path));
-    }
-  }
-
   bool found = false;
-  char oldest_name[32] = "";
+  oldest_date[0] = '\0';
   struct dirent* entry = NULL;
   while ((entry = readdir(dir)) != NULL) {
-    if (!IsStrictDailyCsvName(entry->d_name)) {
+    char date_string[16] = "";
+    if (!IsDailyPtlogName(entry->d_name, date_string, sizeof(date_string))) {
       continue;
     }
 
-    const size_t name_len = strnlen(entry->d_name, sizeof(oldest_name));
-    if (name_len >= sizeof(oldest_name)) {
+    if (logger->current_date[0] != '\0' &&
+        strcmp(date_string, logger->current_date) == 0) {
       continue;
     }
 
-    char candidate_path[128];
-    if (!SdLoggerJoinPath(
-          logger->mount_point, entry->d_name, candidate_path, sizeof(candidate_path))) {
-      continue;
-    }
-    if (current_path[0] != '\0' && strcmp(candidate_path, current_path) == 0) {
-      continue;
-    }
-    if (!found || strcmp(entry->d_name, oldest_name) < 0) {
-      memcpy(oldest_name, entry->d_name, name_len);
-      oldest_name[name_len] = '\0';
-      if (!SdLoggerCopyString(candidate_path, oldest_path, oldest_path_size)) {
+    if (!found || strcmp(date_string, oldest_date) < 0) {
+      if (!SdLoggerCopyString(date_string, oldest_date, oldest_date_size)) {
         continue;
       }
       found = true;
@@ -391,6 +383,51 @@ SdLoggerFindOldestDailyCsvLocked(const sd_logger_t* logger,
 
   closedir(dir);
   return found;
+}
+
+static uint32_t
+SdLoggerDeleteDailyPtlogDateLocked(const sd_logger_t* logger,
+                                   const char* date_string)
+{
+  if (logger == NULL || date_string == NULL) {
+    return 0;
+  }
+
+  DIR* dir = opendir(logger->mount_point);
+  if (dir == NULL) {
+    return 0;
+  }
+
+  uint32_t deleted = 0;
+  struct dirent* entry = NULL;
+  while ((entry = readdir(dir)) != NULL) {
+    char candidate_date[16] = "";
+    if (!IsDailyPtlogName(entry->d_name, candidate_date, sizeof(candidate_date))) {
+      continue;
+    }
+    if (strcmp(candidate_date, date_string) != 0) {
+      continue;
+    }
+
+    char candidate_path[128] = "";
+    if (!SdLoggerJoinPath(
+          logger->mount_point, entry->d_name, candidate_path, sizeof(candidate_path))) {
+      continue;
+    }
+    if (unlink(candidate_path) != 0) {
+      ESP_LOGW(kTag,
+               "Failed to delete old log %s: %s (%d)",
+               candidate_path,
+               strerror(errno),
+               errno);
+      continue;
+    }
+    deleted++;
+    ESP_LOGW(kTag, "Deleted old log to reclaim space: %s", candidate_path);
+  }
+
+  closedir(dir);
+  return deleted;
 }
 
 static esp_err_t
@@ -406,6 +443,11 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
   }
 
   static const uint32_t kSdReclaimMaxDeletesPerAttempt = 16;
+  static bool reclaim_scope_logged = false;
+  if (!reclaim_scope_logged) {
+    ESP_LOGI(kTag, "SD reclaim targets ptlog only");
+    reclaim_scope_logged = true;
+  }
   uint64_t total_bytes = 0;
   uint64_t free_bytes = 0;
   esp_err_t space_result =
@@ -417,21 +459,17 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
   uint32_t deletes = 0;
   while (free_bytes < required_free_bytes &&
          deletes < kSdReclaimMaxDeletesPerAttempt) {
-    char oldest_path[128] = "";
-    if (!SdLoggerFindOldestDailyCsvLocked(
-          logger, oldest_path, sizeof(oldest_path))) {
+    char oldest_date[16] = "";
+    if (!SdLoggerFindOldestDailyPtlogDateLocked(
+          logger, oldest_date, sizeof(oldest_date))) {
       break;
     }
-    if (unlink(oldest_path) != 0) {
-      ESP_LOGW(kTag,
-               "Failed to delete old log %s: %s (%d)",
-               oldest_path,
-               strerror(errno),
-               errno);
+    const uint32_t deleted_for_day =
+      SdLoggerDeleteDailyPtlogDateLocked(logger, oldest_date);
+    if (deleted_for_day == 0) {
       break;
     }
-    deletes++;
-    ESP_LOGW(kTag, "Deleted old log to reclaim space: %s", oldest_path);
+    deletes += deleted_for_day;
 
     space_result =
       SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes);
@@ -462,7 +500,10 @@ WriteHeaderIfEmpty(sd_logger_t* logger)
     return ESP_OK;
   }
 
-  const bool wrote_header = CsvWriteHeader(CsvFileWriter, logger->file);
+  if (logger->pending_header == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  const bool wrote_header = PtlogWriteHeader(logger->file, logger->pending_header);
   return wrote_header ? ESP_OK : ESP_FAIL;
 }
 
@@ -646,9 +687,12 @@ ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
  * @return Return the function result.
  */
 esp_err_t
-SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
+SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
+                                  int64_t epoch_utc,
+                                  const ptlog_header_t* header,
+                                  uint32_t header_signature)
 {
-  if (logger == NULL) {
+  if (logger == NULL || header == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
   if (!logger->is_mounted) {
@@ -657,12 +701,13 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
 
   char date_string[16];
   char path[128];
-  BuildDailyCsvPath(
-    logger, epoch_utc, date_string, sizeof(date_string), path, sizeof(path));
+  const bool same_signature = (logger->current_header_signature == header_signature);
+  BuildDailyPtlogPath(
+    logger, epoch_utc, 0, date_string, sizeof(date_string), path, sizeof(path));
 
   if (logger->file != NULL && logger->current_date[0] != '\0') {
     const int date_cmp = strcmp(date_string, logger->current_date);
-    if (date_cmp == 0) {
+    if (date_cmp == 0 && same_signature) {
       return ESP_OK; // already open for today
     }
     if (date_cmp < 0) {
@@ -670,8 +715,43 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
     }
   }
 
+  uint32_t revision = 0;
+  if (logger->current_date[0] != '\0' && strcmp(date_string, logger->current_date) == 0 &&
+      !same_signature) {
+    revision = 1;
+    DIR* dir = opendir(logger->mount_point);
+    if (dir != NULL) {
+      struct dirent* entry = NULL;
+      while ((entry = readdir(dir)) != NULL) {
+        if (!IsDailyPtlogName(entry->d_name, NULL, 0)) {
+          continue;
+        }
+        if (strncmp(entry->d_name, date_string, 11) != 0) {
+          continue;
+        }
+        const char* rev_start = entry->d_name + 11;
+        if (*rev_start != '-') {
+          continue;
+        }
+        char* end_ptr = NULL;
+        const unsigned long parsed = strtoul(rev_start + 1, &end_ptr, 10);
+        if (end_ptr == NULL || strcmp(end_ptr, kPtlogSuffix) != 0) {
+          continue;
+        }
+        if (parsed >= revision) {
+          revision = (uint32_t)parsed + 1;
+        }
+      }
+      closedir(dir);
+    }
+  }
+
+  BuildDailyPtlogPath(
+    logger, epoch_utc, revision, date_string, sizeof(date_string), path, sizeof(path));
+
   SdLoggerClose(logger);
   logger->last_record_id_on_sd = 0;
+  logger->pending_header = header;
 
   logger->file = fopen(path, "a+b");
   if (logger->file == NULL) {
@@ -700,7 +780,19 @@ SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
 
   strncpy(logger->current_date, date_string, sizeof(logger->current_date) - 1);
   logger->current_date[sizeof(logger->current_date) - 1] = '\0';
+  logger->current_header_signature = header_signature;
+  logger->pending_header = NULL;
   return ESP_OK;
+}
+
+esp_err_t
+SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc)
+{
+  (void)epoch_utc;
+  if (logger == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  return ESP_ERR_INVALID_STATE;
 }
 
 /**
@@ -942,6 +1034,8 @@ SdLoggerClose(sd_logger_t* logger)
     logger->file = NULL;
   }
   logger->current_date[0] = '\0';
+  logger->current_header_signature = 0;
+  logger->pending_header = NULL;
 }
 
 /**

@@ -8,6 +8,7 @@
 
 #include "driver/sdspi_host.h"
 #include "esp_err.h"
+#include "ptlog_format.h"
 #include "sd_csv_verify.h"
 #include "sdmmc_cmd.h"
 
@@ -34,6 +35,8 @@ extern "C"
 
     FILE* file;
     char current_date[16]; // YYYY-MM-DD
+    uint32_t current_header_signature;
+    const ptlog_header_t* pending_header;
     uint64_t last_record_id_on_sd;
     uint8_t* file_buffer;
     uint8_t* resume_tail_bytes;
@@ -127,7 +130,7 @@ extern "C"
  */
   esp_err_t SdLoggerFormatDestructive(sd_logger_t* logger);
 
-  // Open/create the UTC daily CSV for the provided epoch. Repairs tail and
+  // Open/create the UTC daily PTLOG for the provided epoch. Repairs tail and
   // updates last_record_id_on_sd.
 /**
  * @brief Execute SdLoggerEnsureDailyFile.
@@ -136,6 +139,19 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t SdLoggerEnsureDailyFile(sd_logger_t* logger, int64_t epoch_utc);
+
+/**
+ * @brief Execute SdLoggerEnsureDailyFileWithHeader.
+ * @param logger Parameter logger.
+ * @param epoch_utc Parameter epoch_utc.
+ * @param header Parameter header.
+ * @param header_signature Parameter header_signature.
+ * @return Return the function result.
+ */
+  esp_err_t SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
+                                              int64_t epoch_utc,
+                                              const ptlog_header_t* header,
+                                              uint32_t header_signature);
 
   esp_err_t SdLoggerAppendBatchEx(
     sd_logger_t* logger,
@@ -197,7 +213,7 @@ extern "C"
   bool SdLoggerSpaceReclaimActive(const sd_logger_t* logger);
 
 /**
- * @brief Return total number of daily CSV files deleted to reclaim space.
+ * @brief Return total number of daily PTLOG files deleted to reclaim space.
  * @param logger Parameter logger.
  * @return Return the function result.
  */
