@@ -12,12 +12,18 @@ extern "C" {
   typedef struct
   {
     bool enabled;
+    bool toggle_on_press;
     int32_t pin;
     app_units_gpio_pull_t pull;
     bool c_level_high;
     bool pin_valid;
     bool last_level_high;
+    bool pressed_level_high;
+    bool pressed;
+    bool rtc_override_valid;
+    app_display_units_t rtc_override_units;
     app_display_units_t effective_units;
+    app_display_units_t saved_units;
   } units_gpio_status_t;
 
 /**
@@ -37,6 +43,11 @@ extern "C" {
  * @param status_out Parameter status_out.
  */
   void UnitsGpioGetStatus(units_gpio_status_t* status_out);
+
+/**
+ * @brief Execute UnitsGpioClearRtcOverride.
+ */
+  void UnitsGpioClearRtcOverride(void);
 
 /**
  * @brief Execute AppDisplayUnitsGetEffective.

@@ -10,7 +10,37 @@
 #include "freertos/task.h"
 
 static const char* kTag = "units_gpio";
-static const uint32_t kUnitsGpioPollMs = 200;
+static const uint32_t kUnitsGpioPollMs = 10;
+static const uint32_t kUnitsGpioDebounceMs = 30;
+static const uint32_t kUnitsGpioRtcMagic = 0x55475031;
+
+typedef struct
+{
+  uint32_t magic;
+  uint32_t units;
+} units_gpio_rtc_store_t;
+
+static bool UnitsGpioIsValidPin(int32_t pin);
+static app_display_units_t UnitsGpioComputeUnits(bool level_high, bool c_level_high);
+static bool UnitsGpioConfigureInput(int32_t pin, app_units_gpio_pull_t pull);
+static bool UnitsGpioToggleModeEnabled(void);
+static bool UnitsGpioPressedLevelHigh(app_units_gpio_pull_t pull, bool c_level_high);
+static bool UnitsGpioIsRtcOverrideValid(void);
+static app_display_units_t UnitsGpioGetRtcOverrideUnits(void);
+static void UnitsGpioSetRtcOverride(app_display_units_t units);
+static void UnitsGpioClearRtcOverrideLocked(void);
+static app_display_units_t UnitsGpioGetSavedUnitsLocked(void);
+static app_display_units_t UnitsGpioGetEffectiveUnitsLocked(void);
+static void UnitsGpioUpdateState(int32_t pin,
+                                 app_units_gpio_pull_t pull,
+                                 bool c_level_high,
+                                 bool pin_valid);
+static void UnitsGpioTask(void* context);
+
+RTC_DATA_ATTR static units_gpio_rtc_store_t g_units_gpio_rtc = {
+  .magic = 0,
+  .units = 0,
+};
 
 typedef struct
 {
@@ -18,11 +48,20 @@ typedef struct
   TaskHandle_t task;
   portMUX_TYPE lock;
   bool enabled;
+  bool toggle_on_press;
   int32_t pin;
   app_units_gpio_pull_t pull;
   bool c_level_high;
   bool pin_valid;
   bool last_level_high;
+  bool pressed_level_high;
+  bool pressed;
+  bool rtc_override_valid;
+  app_display_units_t rtc_override_units;
+  bool debounce_last_sample_high;
+  bool debounce_stable_level_high;
+  TickType_t debounce_last_change_tick;
+  bool debounce_last_pressed;
   app_display_units_t effective_units;
 } units_gpio_state_t;
 
@@ -31,13 +70,110 @@ static units_gpio_state_t g_units_gpio = {
   .task = NULL,
   .lock = portMUX_INITIALIZER_UNLOCKED,
   .enabled = false,
+  .toggle_on_press = false,
   .pin = -1,
   .pull = APP_UNITS_GPIO_PULL_NONE,
   .c_level_high = false,
   .pin_valid = false,
   .last_level_high = false,
+  .pressed_level_high = false,
+  .pressed = false,
+  .rtc_override_valid = false,
+  .rtc_override_units = APP_DISPLAY_UNITS_F,
+  .debounce_last_sample_high = false,
+  .debounce_stable_level_high = false,
+  .debounce_last_change_tick = 0,
+  .debounce_last_pressed = false,
   .effective_units = APP_DISPLAY_UNITS_F,
 };
+
+static bool
+UnitsGpioToggleModeEnabled(void)
+{
+#if CONFIG_APP_UNITS_GPIO_TOGGLE_ON_PRESS
+  return true;
+#else
+  return false;
+#endif
+}
+
+static bool
+UnitsGpioPressedLevelHigh(app_units_gpio_pull_t pull, bool c_level_high)
+{
+  if (pull == APP_UNITS_GPIO_PULL_UP) {
+    return false;
+  }
+  if (pull == APP_UNITS_GPIO_PULL_DOWN) {
+    return true;
+  }
+  return c_level_high;
+}
+
+static bool
+UnitsGpioIsRtcOverrideValid(void)
+{
+  if (g_units_gpio_rtc.magic != kUnitsGpioRtcMagic) {
+    return false;
+  }
+  return (g_units_gpio_rtc.units == (uint32_t)APP_DISPLAY_UNITS_C)
+         || (g_units_gpio_rtc.units == (uint32_t)APP_DISPLAY_UNITS_F);
+}
+
+static app_display_units_t
+UnitsGpioGetRtcOverrideUnits(void)
+{
+  if (UnitsGpioIsRtcOverrideValid()) {
+    return (app_display_units_t)g_units_gpio_rtc.units;
+  }
+  return APP_DISPLAY_UNITS_F;
+}
+
+static void
+UnitsGpioSetRtcOverride(app_display_units_t units)
+{
+  g_units_gpio_rtc.magic = kUnitsGpioRtcMagic;
+  g_units_gpio_rtc.units = (uint32_t)units;
+}
+
+static void
+UnitsGpioClearRtcOverrideLocked(void)
+{
+  g_units_gpio_rtc.magic = 0;
+  g_units_gpio_rtc.units = 0;
+  g_units_gpio.rtc_override_valid = false;
+  g_units_gpio.rtc_override_units = APP_DISPLAY_UNITS_F;
+}
+
+static app_display_units_t
+UnitsGpioGetSavedUnitsLocked(void)
+{
+  return (g_units_gpio.settings != NULL) ? g_units_gpio.settings->display_units
+                                         : APP_DISPLAY_UNITS_F;
+}
+
+static app_display_units_t
+UnitsGpioGetEffectiveUnitsLocked(void)
+{
+  const app_display_units_t saved_units = UnitsGpioGetSavedUnitsLocked();
+
+  if (!g_units_gpio.enabled) {
+    return saved_units;
+  }
+
+  if (g_units_gpio.toggle_on_press) {
+    if (g_units_gpio.rtc_override_valid) {
+      return g_units_gpio.rtc_override_units;
+    }
+    return saved_units;
+  }
+
+  if (!g_units_gpio.pin_valid) {
+    return saved_units;
+  }
+
+  return UnitsGpioComputeUnits(g_units_gpio.last_level_high,
+                               g_units_gpio.c_level_high);
+}
 
 /**
  * @brief Check whether a configured pin number refers to a valid GPIO.
@@ -114,17 +250,25 @@ UnitsGpioUpdateState(int32_t pin,
   }
 
   portENTER_CRITICAL(&g_units_gpio.lock);
+  const bool toggle_on_press = UnitsGpioToggleModeEnabled();
+  const bool rtc_override_valid = UnitsGpioIsRtcOverrideValid();
+  const app_display_units_t rtc_override_units = UnitsGpioGetRtcOverrideUnits();
+  const bool pressed_level_high = UnitsGpioPressedLevelHigh(pull, c_level_high);
   g_units_gpio.pin = pin;
   g_units_gpio.pull = pull;
   g_units_gpio.c_level_high = c_level_high;
   g_units_gpio.pin_valid = pin_valid;
+  g_units_gpio.toggle_on_press = toggle_on_press;
+  g_units_gpio.rtc_override_valid = rtc_override_valid;
+  g_units_gpio.rtc_override_units = rtc_override_units;
   g_units_gpio.last_level_high = level_high;
-  g_units_gpio.effective_units = pin_valid
-                                   ? UnitsGpioComputeUnits(level_high,
-                                                           c_level_high)
-                                   : (g_units_gpio.settings != NULL
-                                        ? g_units_gpio.settings->display_units
-                                        : APP_DISPLAY_UNITS_F);
+  g_units_gpio.pressed_level_high = pressed_level_high;
+  g_units_gpio.pressed = pin_valid && (level_high == pressed_level_high);
+  g_units_gpio.debounce_last_sample_high = level_high;
+  g_units_gpio.debounce_stable_level_high = level_high;
+  g_units_gpio.debounce_last_change_tick = xTaskGetTickCount();
+  g_units_gpio.debounce_last_pressed = g_units_gpio.pressed;
+  g_units_gpio.effective_units = UnitsGpioGetEffectiveUnitsLocked();
   portEXIT_CRITICAL(&g_units_gpio.lock);
 }
 
@@ -143,13 +287,57 @@ UnitsGpioTask(void* context)
     if (!g_units_gpio.enabled || !g_units_gpio.pin_valid) {
       continue;
     }
-    const bool level_high =
-      (gpio_get_level((gpio_num_t)g_units_gpio.pin) != 0);
+    const TickType_t now = xTaskGetTickCount();
+    const bool level_high = (gpio_get_level((gpio_num_t)g_units_gpio.pin) != 0);
+    bool log_toggle = false;
+    app_display_units_t old_units = APP_DISPLAY_UNITS_F;
+    app_display_units_t new_units = APP_DISPLAY_UNITS_F;
+
     portENTER_CRITICAL(&g_units_gpio.lock);
     g_units_gpio.last_level_high = level_high;
-    g_units_gpio.effective_units =
-      UnitsGpioComputeUnits(level_high, g_units_gpio.c_level_high);
+
+    if (!g_units_gpio.toggle_on_press) {
+      g_units_gpio.effective_units =
+        UnitsGpioComputeUnits(level_high, g_units_gpio.c_level_high);
+      portEXIT_CRITICAL(&g_units_gpio.lock);
+      continue;
+    }
+
+    if (level_high != g_units_gpio.debounce_last_sample_high) {
+      g_units_gpio.debounce_last_sample_high = level_high;
+      g_units_gpio.debounce_last_change_tick = now;
+    }
+
+    const TickType_t debounce_ticks = pdMS_TO_TICKS(kUnitsGpioDebounceMs);
+    if (((now - g_units_gpio.debounce_last_change_tick) >= debounce_ticks)
+        && (level_high != g_units_gpio.debounce_stable_level_high)) {
+      g_units_gpio.debounce_stable_level_high = level_high;
+      g_units_gpio.pressed =
+        (g_units_gpio.debounce_stable_level_high == g_units_gpio.pressed_level_high);
+
+      if (g_units_gpio.pressed && !g_units_gpio.debounce_last_pressed) {
+        old_units = g_units_gpio.effective_units;
+        new_units = (old_units == APP_DISPLAY_UNITS_F) ? APP_DISPLAY_UNITS_C
+                                                        : APP_DISPLAY_UNITS_F;
+        UnitsGpioSetRtcOverride(new_units);
+        g_units_gpio.rtc_override_valid = true;
+        g_units_gpio.rtc_override_units = new_units;
+        g_units_gpio.effective_units = new_units;
+        log_toggle = true;
+      }
+
+      g_units_gpio.debounce_last_pressed = g_units_gpio.pressed;
+    }
+
+    g_units_gpio.effective_units = UnitsGpioGetEffectiveUnitsLocked();
     portEXIT_CRITICAL(&g_units_gpio.lock);
+
+    if (log_toggle) {
+      ESP_LOGI(kTag,
+               "Units toggled: %s -> %s (RTC persisted)",
+               AppSettingsDisplayUnitsToString(old_units),
+               AppSettingsDisplayUnitsToString(new_units));
+    }
   }
 }
 
@@ -219,13 +407,28 @@ UnitsGpioGetStatus(units_gpio_status_t* status_out)
   portENTER_CRITICAL(&g_units_gpio.lock);
   *status_out = (units_gpio_status_t){
     .enabled = g_units_gpio.enabled,
+    .toggle_on_press = g_units_gpio.toggle_on_press,
     .pin = g_units_gpio.pin,
     .pull = g_units_gpio.pull,
     .c_level_high = g_units_gpio.c_level_high,
     .pin_valid = g_units_gpio.pin_valid,
     .last_level_high = g_units_gpio.last_level_high,
+    .pressed_level_high = g_units_gpio.pressed_level_high,
+    .pressed = g_units_gpio.pressed,
+    .rtc_override_valid = g_units_gpio.rtc_override_valid,
+    .rtc_override_units = g_units_gpio.rtc_override_units,
     .effective_units = g_units_gpio.effective_units,
+    .saved_units = UnitsGpioGetSavedUnitsLocked(),
   };
+  portEXIT_CRITICAL(&g_units_gpio.lock);
+}
+
+void
+UnitsGpioClearRtcOverride(void)
+{
+  portENTER_CRITICAL(&g_units_gpio.lock);
+  UnitsGpioClearRtcOverrideLocked();
+  g_units_gpio.effective_units = UnitsGpioGetEffectiveUnitsLocked();
   portEXIT_CRITICAL(&g_units_gpio.lock);
 }
 
@@ -236,17 +439,9 @@ UnitsGpioGetStatus(units_gpio_status_t* status_out)
 app_display_units_t
 AppDisplayUnitsGetEffective(void)
 {
-  if (g_units_gpio.settings == NULL) {
-    return APP_DISPLAY_UNITS_F;
-  }
-
-  if (!g_units_gpio.enabled || !g_units_gpio.pin_valid) {
-    return g_units_gpio.settings->display_units;
-  }
-
-  app_display_units_t units;
+  app_display_units_t units = APP_DISPLAY_UNITS_F;
   portENTER_CRITICAL(&g_units_gpio.lock);
-  units = g_units_gpio.effective_units;
+  units = UnitsGpioGetEffectiveUnitsLocked();
   portEXIT_CRITICAL(&g_units_gpio.lock);
   return units;
 }

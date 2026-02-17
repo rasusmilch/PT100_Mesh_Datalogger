@@ -640,6 +640,14 @@ config APP_UNITS_GPIO_ENABLE
     When enabled, a GPIO input can override the display units at runtime
     without reboot. The pin level selects Celsius or Fahrenheit.
 
+config APP_UNITS_GPIO_TOGGLE_ON_PRESS
+  bool "Units GPIO toggles on button press"
+  default y
+  help
+    When enabled, each debounced press toggles display units and stores the
+    selection in RTC memory for warm-reset persistence. Disable to use legacy
+    level-select behavior.
+
 config APP_UNITS_GPIO_DEFAULT_PIN
   int "Default units GPIO pin (-1 disables override)"
   range -1 48
