@@ -1087,7 +1087,12 @@ CommandStatus(int argc, char** argv)
   } else {
     printf("wifi_ip: n/a\n");
   }
-  printf("cal_points: %u\n",
+  const bool calibration_applied =
+    (g_runtime->settings->calibration_points_count > 0u) &&
+    g_runtime->settings->calibration.is_valid && !g_runtime->cal_overdue &&
+    !g_runtime->cal_due_check_suspended;
+  printf("calibration_applied: %s (points=%u)\n",
+         calibration_applied ? "yes" : "no",
          (unsigned)g_runtime->settings->calibration_points_count);
   return 0;
 }
