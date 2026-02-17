@@ -103,6 +103,12 @@ static bool
 ParseOptionDouble_(int argc, char** argv, const char* name, double* value_out);
 static bool
 ParseTempC_(const char* text, double* value_out);
+static bool
+JoinArgsWithSpaces(int argc,
+                   char** argv,
+                   int start_index,
+                   char* out,
+                   size_t out_size);
 
 /**
  * @brief Print the compact calibration schedule and due status block.
@@ -2865,6 +2871,37 @@ ParseTempC_(const char* text, double* value_out)
   return false;
 }
 
+static bool
+JoinArgsWithSpaces(int argc,
+                   char** argv,
+                   int start_index,
+                   char* out,
+                   size_t out_size)
+{
+  if (argv == NULL || out == NULL || out_size == 0 || start_index < 0 ||
+      start_index >= argc) {
+    return false;
+  }
+
+  out[0] = '\0';
+  size_t used = 0;
+  for (int i = start_index; i < argc; ++i) {
+    const size_t arg_len = strlen(argv[i]);
+    const size_t sep_len = (i > start_index) ? 1u : 0u;
+    if (used + sep_len + arg_len >= out_size) {
+      out[0] = '\0';
+      return false;
+    }
+    if (sep_len == 1u) {
+      out[used++] = ' ';
+    }
+    memcpy(&out[used], argv[i], arg_len);
+    used += arg_len;
+    out[used] = '\0';
+  }
+  return true;
+}
+
 static void
 CalConsoleOpTask(void* task_arg)
 {
@@ -3041,7 +3078,7 @@ CommandCal(int argc, char** argv)
       if (argc < 4) {
         printf("usage: cal set date <YYYY-MM-DD> | cal set due <count> "
                "<days|months|years> | cal set due_override <count> "
-               "<days|months|years>\n");
+               "<days|months|years> | cal set method <string...>\n");
         return 1;
       }
       const char* target = argv[2];
@@ -3062,6 +3099,26 @@ CommandCal(int argc, char** argv)
           return 1;
         }
         printf("calibration override date set to %s\n", argv[3]);
+        return 0;
+      }
+      if (strcmp(target, "method") == 0) {
+        if (argc < 4) {
+          printf("usage: cal set method <string...>\n");
+          return 1;
+        }
+        char method_buffer[APP_SETTINGS_CAL_METHOD_MAX_LEN] = { 0 };
+        if (!JoinArgsWithSpaces(
+              argc, argv, 3, method_buffer, sizeof(method_buffer))) {
+          printf("method too long (max %u chars)\n",
+                 (unsigned)(APP_SETTINGS_CAL_METHOD_MAX_LEN - 1));
+          return 1;
+        }
+        esp_err_t result = AppSettingsSaveCalibrationMethod(method_buffer);
+        if (result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(result));
+          return 1;
+        }
+        printf("calibration method set to: %s\n", method_buffer);
         return 0;
       }
       if (strcmp(target, "due") == 0 || strcmp(target, "due_override") == 0) {
@@ -3101,7 +3158,7 @@ CommandCal(int argc, char** argv)
       }
       printf("usage: cal set date <YYYY-MM-DD> | cal set due <count> "
              "<days|months|years> | cal set due_override <count> "
-             "<days|months|years>\n");
+             "<days|months|years> | cal set method <string...>\n");
       return 1;
     }
     if (strcmp(action, "clear") == 0 && argc >= 3) {
@@ -3114,9 +3171,17 @@ CommandCal(int argc, char** argv)
       } else if (strcmp(target, "due_override") == 0) {
         settings->cal_due_override_count = 0;
         settings->cal_due_override_unit = 0;
+      } else if (strcmp(target, "method") == 0) {
+        esp_err_t result = AppSettingsSaveCalibrationMethod("");
+        if (result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(result));
+          return 1;
+        }
+        printf("calibration method cleared\n");
+        return 0;
       } else {
-        printf(
-          "usage: cal clear date | cal clear due | cal clear due_override\n");
+        printf("usage: cal clear date | cal clear due | cal clear due_override | "
+               "cal clear method\n");
         return 1;
       }
       esp_err_t result = AppSettingsSaveCalibrationSchedule(settings);
@@ -3501,7 +3566,8 @@ CommandCal(int argc, char** argv)
   printf("unknown action. usage: cal status | cal set date <YYYY-MM-DD> | "
          "cal clear date | cal set due <count> <days|months|years> | "
          "cal clear due | cal set due_override <count> <days|months|years> | "
-         "cal clear due_override | cal clear | cal add <raw_c> <actual_c> | "
+         "cal clear due_override | cal set method <string...> | "
+         "cal clear method | cal clear | cal add <raw_c> <actual_c> | "
          "cal list | cal show | cal apply | cal live [seconds] "
          "[--every_ms 1000] | cal capture <actual_temp_c> "
          "[--stable_stddev_c 0.05] [--min_seconds 5] "
@@ -5392,6 +5458,8 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
   printf("  Last UTC (override): %s\n", override_last);
   printf("  Due every (base):    %s\n", base_due);
   printf("  Due every (override): %s\n", override_due);
+  printf("  Method:             %s\n",
+         (settings->cal_method[0] != '\0') ? settings->cal_method : "<unset>");
   printf("  Effective last UTC:  %s\n", effective_last);
   printf("  Effective due:       %s\n", effective_due);
   printf("  Due date:            %s\n", due_date_buffer);
@@ -6120,7 +6188,8 @@ RegisterCommands(void)
       "Calibration: cal status | cal set date <YYYY-MM-DD> | cal clear date |\n"
       "             cal set due <count> <days|months|years> | cal clear due |\n"
       "             cal set due_override <count> <days|months|years> |\n"
-      "             cal clear due_override |\n"
+      "             cal clear due_override | cal set method <string...> |\n"
+      "             cal clear method |\n"
       "             cal clear | cal add <raw_c> <actual_c> | cal list | cal "
       "show |\n"
       "             cal apply [--mode linear|piecewise|polyN] "

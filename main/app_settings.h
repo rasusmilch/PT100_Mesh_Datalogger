@@ -98,7 +98,7 @@ extern "C"
     uint32_t rtd_fault_assert_ms;
     uint32_t rtd_fault_clear_ms;
     char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
-    char unit_serial[APP_SETTINGS_UNIT_SERIAL_MAX_LEN];
+    char unit_serial[APP_SETTINGS_UNIT_SERIAL_MAX_LEN];  // Deprecated: do not use for audit identity; MAC is used as device id.
     char cal_method[APP_SETTINGS_CAL_METHOD_MAX_LEN];
     bool dst_enabled;
     app_node_role_t node_role;
@@ -237,13 +237,6 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled);
-
-/**
- * @brief Persist the unit serial metadata string.
- * @param serial Unit serial string (may be empty to clear).
- * @return Return the function result.
- */
-  esp_err_t AppSettingsSaveUnitSerial(const char* serial);
 
 /**
  * @brief Persist the calibration method metadata string.
