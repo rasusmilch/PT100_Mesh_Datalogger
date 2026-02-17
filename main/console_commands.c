@@ -48,6 +48,8 @@
 #endif
 
 #include "console_alerts.h"
+#include "console_help.h"
+#include "console_registry.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "i2c_bus.h"
@@ -6032,364 +6034,404 @@ CommandLocks(int argc, char** argv)
   return 0;
 }
 
+static void
+PrintMqttHelpBody(void)
+{
+  printf("SUBCOMMANDS\n");
+  printf("  show                              Show MQTT configuration\n");
+  printf("  enable on|off                     Enable/disable MQTT publishing\n");
+  printf("  broker set <uri>                  Set broker URI\n");
+  printf("  prefix set <prefix>               Set topic prefix\n");
+  printf("  qos set 0|1                       Set QoS level\n");
+  printf("  retain set on|off                 Configure retain flag\n");
+  printf("  bridge set off|serial|broker|both Configure bridge mode\n\n");
+  printf("EXAMPLES\n");
+  printf("  mqtt show\n");
+  printf("  mqtt enable on\n");
+  printf("  mqtt broker set mqtt://192.168.1.10\n");
+}
+
+static void
+PrintWifiHelpBody(void)
+{
+  printf("SUBCOMMANDS\n");
+  printf("  show                              Show saved station credentials\n");
+  printf("  set <ssid> [password]             Store station credentials\n");
+  printf("  clear                             Remove saved credentials\n");
+  printf("  scan [--max N]                    Scan for APs\n");
+  printf("  status                            Show Wi-Fi link status\n");
+  printf("  connect [--timeout_ms T]          Connect using saved credentials\n");
+  printf("  disconnect                        Disconnect from AP\n");
+  printf("  ntp status|sync ...               Inspect or trigger time sync\n\n");
+  printf("EXAMPLES\n");
+  printf("  wifi scan --max 10\n");
+  printf("  wifi set MySsid supersecret\n");
+  printf("  wifi connect --timeout_ms 20000\n");
+  printf("  wifi ntp sync pool.ntp.org\n");
+}
+
+static void
+PrintSdHelpBody(void)
+{
+  printf("SUBCOMMANDS\n");
+  printf("  status | mount | unmount | format | view | verify\n\n");
+  printf("EXAMPLES\n");
+  printf("  sd status\n");
+  printf("  sd verify\n");
+}
+
+static void
+PrintFramHelpBody(void)
+{
+  printf("SUBCOMMANDS\n");
+  printf("  status | show | clear\n\n");
+  printf("EXAMPLES\n");
+  printf("  fram status\n");
+  printf("  fram clear\n");
+}
+
+static void
+PrintErrlogHelpBody(void)
+{
+  printf("EXAMPLES\n");
+  printf("  errlog show --last 20\n");
+  printf("  errlog stats\n");
+  printf("  errlog clear\n");
+}
+
+static void
+PrintDiagHelpBody(void)
+{
+  printf("EXAMPLES\n");
+  printf("  diag help\n");
+  printf("  diag sd check\n");
+  printf("  diag wifi connect\n");
+}
+
+static void
+PrintHelpCommandBody(void)
+{
+  printf("EXAMPLES\n");
+  printf("  help\n");
+  printf("  help wifi\n");
+}
+
 /**
  * @brief Execute RegisterCommands.
  */
 static void
 RegisterCommands(void)
 {
-  const esp_console_cmd_t status_cmd = {
+  static const console_registry_entry_t help_cmd = {
+    .command = "help",
+    .summary = "Show command list or detailed help",
+    .synopsis = "help [command]",
+    .description = "Show top-level command index or manpage-style command help.",
+    .print_body = PrintHelpCommandBody,
+    .func = &ConsoleHelpCommand,
+  };
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&help_cmd));
+
+  static const console_registry_entry_t status_cmd = {
     .command = "status",
-    .help = "Show current settings and runtime state",
-    .hint = NULL,
+    .summary = "Show current settings and runtime state",
+    .synopsis = "status",
     .func = &CommandStatus,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&status_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&status_cmd));
 
-  const esp_console_cmd_t stack_cmd = {
+  static const console_registry_entry_t stack_cmd = {
     .command = "stack",
-    .help = "Stack usage: stack [show] [--headroom BYTES]",
-    .hint = NULL,
+    .summary = "Show stack usage and headroom",
+    .synopsis = "stack [show] [--headroom BYTES]",
     .func = &CommandStack,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&stack_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&stack_cmd));
 
-  const esp_console_cmd_t disp_cmd = {
+  static const console_registry_entry_t disp_cmd = {
     .command = "disp",
-    .help = "Display settings: disp show | disp units C|F | disp attn "
-            "show|set|defaults|ack",
-    .hint = NULL,
+    .summary = "Configure display units and attention mode",
+    .synopsis = "disp show | disp units C|F | disp attn ...",
     .func = &CommandDisplay,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&disp_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&disp_cmd));
 
-  const esp_console_cmd_t units_cmd = {
+  static const console_registry_entry_t units_cmd = {
     .command = "units",
-    .help = "Units settings: units set C|F | units gpio show | units gpio set "
-            "pin <n> | units gpio set pull <up|down|none> | units gpio set "
-            "c_level <high|low>",
-    .hint = NULL,
+    .summary = "Configure units and unit-toggle GPIO",
+    .synopsis = "units set C|F | units gpio ...",
     .func = &CommandUnits,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&units_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&units_cmd));
 
-  const esp_console_cmd_t raw_cmd = {
+  static const console_registry_entry_t raw_cmd = {
     .command = "raw",
-    .help = "Print one raw reading and calibrated value",
-    .hint = NULL,
+    .summary = "Print one raw reading and calibrated value",
+    .synopsis = "raw",
     .func = &CommandRaw,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&raw_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&raw_cmd));
 
-  const esp_console_cmd_t flush_cmd = {
+  static const console_registry_entry_t flush_cmd = {
     .command = "flush",
-    .help = "Force flush FRAM -> SD (best-effort) [--async] [--timeout <ms>]",
-    .hint = NULL,
+    .summary = "Force FRAM to SD flush",
+    .synopsis = "flush [--async] [--timeout <ms>]",
     .func = &CommandFlush,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&flush_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&flush_cmd));
 
-  const esp_console_cmd_t marker_cmd = {
+  static const console_registry_entry_t marker_cmd = {
     .command = "marker",
-    .help = "Marker commands: marker show | marker clear",
-    .hint = NULL,
+    .summary = "Inspect or clear startup marker",
+    .synopsis = "marker show | marker clear",
     .func = &CommandMarker,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&marker_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&marker_cmd));
 
-  const esp_console_cmd_t locks_cmd = {
+  static const console_registry_entry_t locks_cmd = {
     .command = "locks",
-    .help = "Dump mutex holders and sd_flush diagnostics",
-    .hint = NULL,
+    .summary = "Dump mutex and I2C lock diagnostics",
+    .synopsis = "locks",
     .func = &CommandLocks,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&locks_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&locks_cmd));
 
-  const esp_console_cmd_t deferlog_cmd = {
+  static const console_registry_entry_t deferlog_cmd = {
     .command = "deferlog",
-    .help = "Deferred log status: deferlog status",
-    .hint = NULL,
+    .summary = "Show deferred logging status",
+    .synopsis = "deferlog status",
     .func = &CommandDeferLog,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&deferlog_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&deferlog_cmd));
 
-  const esp_console_cmd_t sd_cmd = {
+  static const console_registry_entry_t sd_cmd = {
     .command = "sd",
-    .help =
-      "SD commands: sd status | sd mount | sd unmount | sd format | sd view | "
-      "sd verify",
-    .hint = NULL,
+    .summary = "Manage SD card and log files",
+    .synopsis = "sd <status|mount|unmount|format|view|verify>",
+    .print_body = PrintSdHelpBody,
     .func = &CommandSd,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&sd_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&sd_cmd));
 
-  const esp_console_cmd_t fram_cmd = {
+  static const console_registry_entry_t fram_cmd = {
     .command = "fram",
-    .help = "FRAM log commands: fram status | fram show | fram clear",
-    .hint = NULL,
+    .summary = "Inspect and manage FRAM log buffer",
+    .synopsis = "fram <status|show|clear>",
+    .print_body = PrintFramHelpBody,
     .func = &CommandFram,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&fram_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&fram_cmd));
 
-  const esp_console_cmd_t errlog_cmd = {
+  static const console_registry_entry_t errlog_cmd = {
     .command = "errlog",
-    .help =
-      "Error log commands: errlog show [--last N] | errlog stats | errlog "
-      "status | errlog clear",
-    .hint = NULL,
+    .summary = "Inspect and clear FRAM error log",
+    .synopsis = "errlog show [--last N] | errlog stats | errlog status | errlog clear",
+    .print_body = PrintErrlogHelpBody,
     .func = &CommandErrlog,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&errlog_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&errlog_cmd));
 
-  const esp_console_cmd_t log_cmd = {
+  static const console_registry_entry_t log_cmd = {
     .command = "log",
-    .help = "Logging config: log interval <ms> | log watermark <records> | log "
-            "flush_period <ms> | log batch <bytes> | log show",
-    .hint = NULL,
+    .summary = "Tune runtime logging parameters",
+    .synopsis = "log interval <ms> | log watermark <records> | log flush_period <ms> | log batch <bytes> | log show",
     .func = &CommandLog,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&log_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&log_cmd));
 
-  const esp_console_cmd_t mqtt_cmd = {
+  static const console_registry_entry_t mqtt_cmd = {
     .command = "mqtt",
-    .help =
-      "MQTT settings: mqtt show | mqtt enable on|off | mqtt broker set "
-      "<uri> | mqtt prefix set <prefix> | mqtt qos set 0|1 | mqtt "
-      "retain set on|off | mqtt bridge set off|serial|broker|both\n"
-      "Note: broker bridge requires mqtt enabled; serial bridge does not.",
-    .hint = NULL,
+    .summary = "Configure MQTT publish and bridge behavior",
+    .synopsis = "mqtt <show|enable|broker|prefix|qos|retain|bridge> ...",
+    .print_body = PrintMqttHelpBody,
     .func = &CommandMqtt,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&mqtt_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&mqtt_cmd));
 
-  const esp_console_cmd_t rtd_cmd = {
+  static const console_registry_entry_t rtd_cmd = {
     .command = "rtd",
-    .help = "RTD settings: rtd show | rtd ema show | rtd ema on|off | rtd ema "
-            "alpha <0.0..1.0>",
-    .hint = NULL,
+    .summary = "Configure RTD filtering and display",
+    .synopsis = "rtd show | rtd ema show | rtd ema on|off | rtd ema alpha <0.0..1.0>",
     .func = &CommandRtd,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&rtd_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&rtd_cmd));
 
   g_cal_args.action = arg_str1(
     NULL, NULL, "<action>", "clear|add|list|show|apply|live|capture|stop");
-  g_cal_args.raw_c =
-    arg_dbl0(NULL, NULL, "<raw_c>", "Raw temperature (C) from 'raw'");
+  g_cal_args.milli_c = arg_int0(NULL, NULL, "<mC>", "Raw milli-Celsius sample");
   g_cal_args.actual_c =
-    arg_dbl0(NULL, NULL, "<actual_c>", "Actual temperature (C)");
-  g_cal_args.every_ms =
-    arg_int0(NULL, "every_ms", "<every_ms>", "Live interval (ms)");
+    arg_dbl0(NULL, NULL, "<C>", "Known actual temperature in Celsius");
   g_cal_args.seconds =
-    arg_int0(NULL, "seconds", "<seconds>", "Live duration (s)");
-  g_cal_args.stable_stddev_c = arg_dbl0(NULL,
-                                        "stable_stddev_c",
-                                        "<stable_stddev_c>",
-                                        "Capture stable stddev threshold (C)");
+    arg_int0(NULL, NULL, "<seconds>", "Duration for live mode (optional)");
+  g_cal_args.every_ms =
+    arg_int0(NULL, NULL, "<ms>", "Print interval for live mode");
   g_cal_args.min_seconds =
-    arg_int0(NULL, "min_seconds", "<min_seconds>", "Capture min stable time");
+    arg_int0(NULL, NULL, "<seconds>", "Min stable duration for capture");
   g_cal_args.timeout_seconds =
-    arg_int0(NULL, "timeout_seconds", "<timeout_seconds>", "Capture timeout");
-  g_cal_args.mode =
-    arg_str0(NULL, "mode", "<mode>", "Fit mode (linear|piecewise|polyN)");
-  g_cal_args.allow_wide_slope =
-    arg_lit0(NULL, "allow_wide_slope", "Allow slope outside expected bounds");
-  g_cal_args.end = arg_end(10);
-
-  const esp_console_cmd_t cal_cmd = {
+    arg_int0(NULL, NULL, "<seconds>", "Capture timeout");
+  g_cal_args.stable_stddev =
+    arg_dbl0(NULL, NULL, "<C>", "Stable stddev threshold in Celsius");
+  g_cal_args.end = arg_end(8);
+  static const console_registry_entry_t cal_cmd = {
     .command = "cal",
-    .help =
-      "Calibration: cal status | cal set date <YYYY-MM-DD> | cal clear date |\n"
-      "             cal set due <count> <days|months|years> | cal clear due |\n"
-      "             cal set due_override <count> <days|months|years> |\n"
-      "             cal clear due_override | cal set method <string...> |\n"
-      "             cal clear method |\n"
-      "             cal clear | cal add <raw_c> <actual_c> | cal list | cal "
-      "show |\n"
-      "             cal apply [--mode linear|piecewise|polyN] "
-      "[--allow_wide_slope] |\n"
-      "             cal live [seconds] [--every_ms 1000] | cal capture "
-      "<actual_temp_c>\n"
-      "             [--stable_stddev_c 0.05] [--min_seconds 5] "
-      "[--timeout_seconds 120] | cal stop\n"
-      "Workflow:\n"
-      "        - cal clear\n"
-      "        - let node settle at reference temp\n"
-      "        - cal live --every_ms 1000\n"
-      "        - cal capture 0.00C --stable_stddev_c 0.05 --min_seconds 10\n"
-      "        - move to another reference\n"
-      "        - cal capture 100.00 ...\n"
-      "        - cal apply\n"
-      "        - cal show.\n\n"
-      "Notes: *may want to use boilpt command*; live runs until stopped when\n"
-      "seconds is omitted; capture uses windowed average after stability;\n"
-      "live/capture show raw vs average; apply uses least-squares and reports\n"
-      "residuals; calibration invalidates when\n"
-      "conversion mode, wire count, filter Hz, Rref, R0, or PT100 table\n"
-      "changes.\n\n",
-    .hint = NULL,
+    .summary = "Manage calibration points and live capture",
+    .synopsis = "cal <show|list|add|clear|apply|live|capture|stop> ...",
     .func = &CommandCal,
     .argtable = &g_cal_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&cal_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&cal_cmd));
 
-  g_mode_args.action = arg_str1(NULL, NULL, "<action>", "show|run|diag|set");
-  g_mode_args.mode_value = arg_str0(NULL, NULL, "diag|run", "Target mode");
+  g_mode_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_mode_args.mode = arg_str0(NULL, NULL, "<day|night|auto>", "Display mode");
   g_mode_args.end = arg_end(2);
-  const esp_console_cmd_t mode_cmd = {
+  static const console_registry_entry_t mode_cmd = {
     .command = "mode",
-    .help = "mode show | mode run | mode diag | mode set diag|run",
-    .hint = NULL,
+    .summary = "Show or set display mode",
+    .synopsis = "mode show | mode set day|night|auto",
     .func = &CommandMode,
     .argtable = &g_mode_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&mode_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&mode_cmd));
 
-  g_data_args.action = arg_str1(NULL, NULL, "<action>", "show|on|off");
-  g_data_args.end = arg_end(1);
-  const esp_console_cmd_t data_cmd = {
+  g_data_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_data_args.state = arg_int0(NULL, NULL, "<0|1>", "0=off 1=on");
+  g_data_args.end = arg_end(2);
+  static const console_registry_entry_t data_cmd = {
     .command = "data",
-    .help = "data show | data on | data off",
-    .hint = NULL,
+    .summary = "Control data streaming mode",
+    .synopsis = "data show | data set 0|1",
     .func = &CommandData,
     .argtable = &g_data_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&data_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&data_cmd));
 
-  g_run_args.action = arg_str1(NULL, NULL, "<action>", "status|start|stop");
-  g_run_args.end = arg_end(1);
-  const esp_console_cmd_t run_cmd = {
+  g_run_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_run_args.state = arg_int0(NULL, NULL, "<0|1>", "0=stop 1=run");
+  g_run_args.end = arg_end(2);
+  static const console_registry_entry_t run_cmd = {
     .command = "run",
-    .help = "run status | run start | run stop",
-    .hint = NULL,
+    .summary = "Start or stop periodic runtime loop",
+    .synopsis = "run show | run set 0|1",
     .func = &CommandRun,
     .argtable = &g_run_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&run_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&run_cmd));
 
   g_tz_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
-  g_tz_args.posix = arg_str0(NULL, NULL, "<posix>", "POSIX TZ string");
+  g_tz_args.tz = arg_str0(NULL, NULL, "<tz>", "POSIX TZ string");
   g_tz_args.end = arg_end(2);
-  const esp_console_cmd_t tz_cmd = {
+  static const console_registry_entry_t tz_cmd = {
     .command = "tz",
-    .help = "tz show | tz set \"<posix>\"",
-    .hint = NULL,
+    .summary = "Show or set timezone",
+    .synopsis = "tz show | tz set <posix_tz>",
     .func = &CommandTz,
     .argtable = &g_tz_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&tz_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&tz_cmd));
 
-  g_time_args.action = arg_str1(NULL, NULL, "<action>", "setlocal|show");
-  g_time_args.local_time = arg_str0(NULL, NULL, "<local_time>", "LOCAL time");
-  g_time_args.is_dst = arg_int0(NULL, "is_dst", "<0|1>", "DST disambiguation");
-  g_time_args.end = arg_end(3);
-  const esp_console_cmd_t time_cmd = {
+  g_time_args.action = arg_str1(NULL, NULL, "<action>", "show|set|sync");
+  g_time_args.value = arg_str0(NULL, NULL, "<iso8601|epoch>", "Timestamp value");
+  g_time_args.end = arg_end(2);
+  static const console_registry_entry_t time_cmd = {
     .command = "time",
-    .help =
-      "time show\n"
-      "time setlocal \"YYYY-MM-DD HH:MM:SS\" [--is_dst 0|1]\n"
-      "  input is LOCAL wall time; converted to UTC epoch + RTC stored as UTC\n"
-      "  local formatting uses current TZ rules (POSIX TZ string via "
-      "settings)\n"
-      "  use --is_dst to disambiguate fall-back hour",
-    .hint = NULL,
+    .summary = "Show, set, or sync system time",
+    .synopsis = "time show | time set <iso8601|epoch> | time sync",
     .func = &CommandTime,
     .argtable = &g_time_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&time_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&time_cmd));
 
-  const esp_console_cmd_t rtc_cmd = {
+  static const console_registry_entry_t rtc_cmd = {
     .command = "rtc",
-    .help = "rtc status | rtc set period_ms <0..86400000>",
-    .hint = NULL,
+    .summary = "Inspect and control external RTC",
+    .synopsis = "rtc <show|sync|set|temp|status>",
     .func = &CommandRtc,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&rtc_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&rtc_cmd));
 
-  const esp_console_cmd_t boilpt_cmd = {
+  static const console_registry_entry_t boilpt_cmd = {
     .command = "boilpt",
-    .help =
-      "Compute boiling point of water from pressure: boilpt <inHg> [elev_ft]",
-    .hint = NULL,
-    .func = &CommandBoilPt,
+    .summary = "Estimate local boiling point",
+    .synopsis = "boilpt",
+    .func = &CommandBoilpt,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&boilpt_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&boilpt_cmd));
 
   g_dst_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_dst_args.enabled = arg_int0(NULL, NULL, "<0|1>", "DST enabled");
   g_dst_args.end = arg_end(2);
-  const esp_console_cmd_t dst_cmd = {
+  static const console_registry_entry_t dst_cmd = {
     .command = "dst",
-    .help = "dst show | dst set 0|1",
-    .hint = NULL,
+    .summary = "Show or set daylight saving behavior",
+    .synopsis = "dst show | dst set 0|1",
     .func = &CommandDst,
     .argtable = &g_dst_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&dst_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&dst_cmd));
 
   g_role_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_role_args.role = arg_str0(NULL, NULL, "<root|sensor|relay>", "Node role");
   g_role_args.end = arg_end(2);
-  const esp_console_cmd_t role_cmd = {
+  static const console_registry_entry_t role_cmd = {
     .command = "role",
-    .help = "role show | role set root|sensor|relay",
-    .hint = NULL,
+    .summary = "Show or set node role",
+    .synopsis = "role show | role set root|sensor|relay",
     .func = &CommandRole,
     .argtable = &g_role_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&role_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&role_cmd));
 
   g_net_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_net_args.mode =
     arg_str0(NULL, NULL, "<mesh|wifi|none>", "Network mode (mesh|wifi|none)");
   g_net_args.end = arg_end(2);
-  const esp_console_cmd_t net_cmd = {
+  static const console_registry_entry_t net_cmd = {
     .command = "net",
-    .help = "net show | net set mesh|wifi|none",
-    .hint = NULL,
+    .summary = "Show or set network mode",
+    .synopsis = "net show | net set mesh|wifi|none",
     .func = &CommandNet,
     .argtable = &g_net_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&net_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&net_cmd));
 
-  const esp_console_cmd_t wifi_cmd = {
+  static const console_registry_entry_t wifi_cmd = {
     .command = "wifi",
-    .help = "wifi help | wifi show | wifi set <ssid> [password] | wifi clear | "
-            "wifi scan [--max N] | wifi status | wifi connect [--timeout_ms T] "
-            "| wifi disconnect | wifi ntp status | wifi ntp sync ...",
-    .hint = NULL,
+    .summary = "Manage Wi-Fi credentials and connectivity",
+    .synopsis = "wifi <show|set|clear|scan|status|connect|disconnect|ntp> ...",
+    .print_body = PrintWifiHelpBody,
     .func = &CommandWifi,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&wifi_cmd));
 
   g_children_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_children_args.enabled =
     arg_int0(NULL, NULL, "<0|1>", "Allow downstream children");
   g_children_args.end = arg_end(2);
-  const esp_console_cmd_t children_cmd = {
+  static const console_registry_entry_t children_cmd = {
     .command = "children",
-    .help = "children show | children set 0|1",
-    .hint = NULL,
+    .summary = "Control whether downstream children are allowed",
+    .synopsis = "children show | children set 0|1",
     .func = &CommandChildren,
     .argtable = &g_children_args,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&children_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&children_cmd));
 
-  const esp_console_cmd_t diag_cmd = {
+  static const console_registry_entry_t diag_cmd = {
     .command = "diag",
-    .help = "Diagnostics entry point",
-    .hint = NULL,
+    .summary = "Run hardware and service diagnostics",
+    .synopsis = "diag <help|sd|wifi|mesh|rtc|rtd|fram|storage> ...",
+    .print_body = PrintDiagHelpBody,
     .func = &CommandDiagnostics,
-    .argtable = NULL,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&diag_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&diag_cmd));
 
-  const esp_console_cmd_t reboot_cmd = {
+  static const console_registry_entry_t reboot_cmd = {
     .command = "reboot",
-    .help = "Soft reboot the device",
-    .hint = NULL,
+    .summary = "Soft reboot the device",
+    .synopsis = "reboot",
     .func = &CommandReboot,
   };
-  ESP_ERROR_CHECK(esp_console_cmd_register(&reboot_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&reboot_cmd));
 
   ConsoleAlertsRegister(g_runtime);
 }
@@ -6500,8 +6542,7 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   console_config.max_cmdline_args = 8;
   ESP_ERROR_CHECK(esp_console_init(&console_config));
 
-  // Register built-in help so users can discover available commands.
-  ESP_ERROR_CHECK(esp_console_register_help_command());
+  ConsoleHelpInit();
 
   linenoiseSetDumbMode(1);
   linenoiseHistorySetMaxLen(50);

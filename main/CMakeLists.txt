@@ -9,6 +9,8 @@ idf_component_register(
     "calibration.c"
     "console_commands.c"
     "console_alerts.c"
+    "console_help.c"
+    "console_registry.c"
     "diagnostics/diag_common.c"
     "diagnostics/diag_fram.c"
     "diagnostics/diag_mesh.c"
