@@ -348,20 +348,35 @@ config APP_RUN_START_GPIO_NUM
   default -1
   depends on APP_RUN_START_GPIO_ENABLE
 
-config APP_RUN_GPIO_DEBOUNCE_MS
-  int "Run GPIO debounce time (ms)"
-  range 1 1000
-  default 50
+config APP_BUTTONS_POLL_MS
+  int "Button poll interval (ms)"
+  range 1 100
+  default 10
 
-config APP_RUN_GPIO_HOLD_MS
-  int "Run GPIO hold low time (ms)"
-  range 1 5000
+config APP_BUTTONS_DEBOUNCE_MS
+  int "Button debounce time (ms)"
+  range 1 1000
+  default 30
+
+config APP_BUTTONS_HOLDOFF_MS
+  int "Button holdoff after press event (ms)"
+  range 0 5000
+  default 250
+
+config APP_BUTTONS_TASK_STACK_BYTES
+  int "Unified button task stack size (bytes)"
+  range 1024 4096
+  default 2048
+
+config APP_RUN_START_HOLD_MS
+  int "Run start button hold time (ms)"
+  range 0 5000
   default 100
 
-config APP_RUN_GPIO_HOLDOFF_MS
-  int "Run GPIO holdoff after request (ms)"
-  range 1 5000
-  default 250
+config APP_RUN_STOP_HOLD_MS
+  int "Run stop button hold time (ms)"
+  range 0 5000
+  default 100
 
 config APP_FRAM_SIZE_BYTES
   int "FRAM size in bytes"
@@ -667,6 +682,11 @@ config APP_UNITS_GPIO_DEFAULT_LEVEL_FOR_C
   default n
   help
     When enabled, a HIGH pin level means Celsius; otherwise LOW selects Celsius.
+
+config APP_UNITS_TOGGLE_HOLD_MS
+  int "Units toggle button hold time (ms)"
+  range 0 5000
+  default 0
 
 endmenu
 

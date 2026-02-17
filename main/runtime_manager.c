@@ -27,6 +27,7 @@
 #include "esp_timer.h"
 #include "fram_error_log.h"
 #include "fram_i2c.h"
+#include "gpio_buttons.h"
 #include "fram_layout.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
@@ -8458,6 +8459,23 @@ ControlTask(void* context)
                                   err_epoch_u32,
                                   err_millis_u16);
         esp_restart();
+      }
+    }
+
+    gpio_button_event_t button_event = { 0 };
+    while (GpioButtonsReceive(&button_event, 0)) {
+      if (button_event.event_type != GPIO_BUTTON_EVENT_PRESS) {
+        continue;
+      }
+      if (button_event.id == GPIO_BUTTON_RUN_START) {
+        request_start = true;
+        ESP_LOGI(kTag, "button run start (uptime=%" PRIu32 " ms)", button_event.uptime_ms);
+      } else if (button_event.id == GPIO_BUTTON_RUN_STOP) {
+        request_stop = true;
+        ESP_LOGI(kTag, "button run stop (uptime=%" PRIu32 " ms)", button_event.uptime_ms);
+      } else if (button_event.id == GPIO_BUTTON_UNITS_TOGGLE) {
+        UnitsGpioHandleButtonPress();
+        ESP_LOGI(kTag, "button units toggle (uptime=%" PRIu32 " ms)", button_event.uptime_ms);
       }
     }
 

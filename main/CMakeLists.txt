@@ -26,6 +26,7 @@ idf_component_register(
     "fram_log.c"
     "fram_spi.c"
     "freertos_hooks.c"
+    "gpio_buttons.c"
     "heap_event_log.c"
     "heap_monitor.c"
     "heap_phase_log.c"
