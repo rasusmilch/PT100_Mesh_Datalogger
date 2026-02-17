@@ -48,11 +48,11 @@ PtlogWriteHeader(FILE* file, const ptlog_header_t* header)
   }
 
 #define PTLOG_WRITE_KV(key, value)                                             \
-  do {                                                                          \
-    (void)snprintf(line, sizeof(line), "# %s=%s\\n", (key), (value));         \
-    if (!WriteLine(file, line)) {                                               \
-      return false;                                                             \
-    }                                                                           \
+  do {                                                                         \
+    (void)snprintf(line, sizeof(line), "# %s=%s\n", (key), (value));           \
+    if (!WriteLine(file, line)) {                                              \
+      return false;                                                            \
+    }                                                                          \
   } while (0)
 
   PTLOG_WRITE_KV("created_utc", header->created_utc);
