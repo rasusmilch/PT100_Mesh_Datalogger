@@ -18,6 +18,7 @@ static const console_registry_entry_t* FindEntry(const char* command);
 static size_t CollectPrefixMatches(const char* prefix,
                                    const console_registry_entry_t** matches,
                                    size_t max_matches);
+static bool ArgtableLooksValid(void** argtable, size_t max_entries);
 
 void
 ConsoleHelpInit(void)
@@ -115,9 +116,13 @@ ConsoleHelpPrintManpage(const char* command)
 
   if (entry->argtable != NULL) {
     printf("OPTIONS\n");
-    arg_print_syntax(stdout, entry->argtable, "\n");
-    arg_print_glossary(stdout, entry->argtable, "  %-20s %s\n");
-    printf("\n");
+    if (!ArgtableLooksValid(entry->argtable, 32)) {
+      printf("  (options unavailable: invalid argtable)\n\n");
+    } else {
+      arg_print_syntax(stdout, entry->argtable, "\n");
+      arg_print_glossary(stdout, entry->argtable, "  %-20s %s\n");
+      printf("\n");
+    }
   }
 
   if (entry->print_body != NULL) {
@@ -187,4 +192,27 @@ CollectPrefixMatches(const char* prefix,
   }
 
   return count;
+}
+
+static bool
+ArgtableLooksValid(void** argtable, size_t max_entries)
+{
+  if (argtable == NULL || max_entries == 0) {
+    return false;
+  }
+
+  // Argtable expects a dense array of pointers terminated by an ARG_TERMINATOR
+  // entry (typically arg_end). NULL entries before the terminator will crash
+  // arg_print_glossary/arg_print_syntax.
+  for (size_t i = 0; i < max_entries; ++i) {
+    if (argtable[i] == NULL) {
+      return false;
+    }
+    const struct arg_hdr* header = (const struct arg_hdr*)argtable[i];
+    if ((header->flag & ARG_TERMINATOR) != 0) {
+      return true;
+    }
+  }
+
+  return false;
 }

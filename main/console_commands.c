@@ -6262,23 +6262,30 @@ RegisterCommands(void)
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw Celsius sample (use with 'add')");
   g_cal_args.actual_c =
     arg_dbl0(NULL, NULL, "<C>", "Known actual temperature in Celsius");
-  g_cal_args.seconds =
-    arg_int0(NULL, NULL, "<seconds>", "Duration for live mode (optional)");
   g_cal_args.every_ms =
-    arg_int0(NULL, NULL, "<ms>", "Print interval for live mode");
-  g_cal_args.min_seconds =
-    arg_int0(NULL, NULL, "<seconds>", "Min stable duration for capture");
-  g_cal_args.timeout_seconds =
-    arg_int0(NULL, NULL, "<seconds>", "Capture timeout");
+    arg_int0(NULL, "every_ms", "<ms>", "Print interval for live mode");
+  g_cal_args.seconds =
+    arg_int0(NULL, "seconds", "<seconds>", "Duration for live mode");
   g_cal_args.stable_stddev_c =
-    arg_dbl0(NULL, NULL, "<C>", "Stable stddev threshold in Celsius");
-  g_cal_args.end = arg_end(8);
+    arg_dbl0(NULL,
+             "stable_stddev_c",
+             "<C>",
+             "Stable stddev threshold in Celsius (capture)");
+  g_cal_args.min_seconds =
+    arg_int0(NULL, "min_seconds", "<seconds>", "Min stable duration (capture)");
+  g_cal_args.timeout_seconds =
+    arg_int0(NULL, "timeout_seconds", "<seconds>", "Capture timeout");
+  g_cal_args.mode = arg_str0(
+    NULL, "mode", "<linear|piecewise|polyN>", "Fit mode (apply)");
+  g_cal_args.allow_wide_slope =
+    arg_lit0(NULL, "allow_wide_slope", "Allow wider slope constraints (apply)");
+  g_cal_args.end = arg_end(16);
   static const console_registry_entry_t cal_cmd = {
     .command = "cal",
     .summary = "Manage calibration points and live capture",
     .synopsis = "cal <show|list|add|clear|apply|live|capture|stop> ...",
     .func = &CommandCal,
-    .argtable = &g_cal_args,
+    .argtable = (void**)&g_cal_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&cal_cmd));
 
@@ -6291,7 +6298,7 @@ RegisterCommands(void)
     .summary = "Show or set display mode",
     .synopsis = "mode show | mode set day|night|auto",
     .func = &CommandMode,
-    .argtable = &g_mode_args,
+    .argtable = (void**)&g_mode_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&mode_cmd));
 
@@ -6302,7 +6309,7 @@ RegisterCommands(void)
     .summary = "Control data streaming mode",
     .synopsis = "data show | data on | data off",
     .func = &CommandData,
-    .argtable = &g_data_args,
+    .argtable = (void**)&g_data_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&data_cmd));
 
@@ -6313,7 +6320,7 @@ RegisterCommands(void)
     .summary = "Start or stop periodic runtime loop",
     .synopsis = "run status | run start | run stop",
     .func = &CommandRun,
-    .argtable = &g_run_args,
+    .argtable = (void**)&g_run_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&run_cmd));
 
@@ -6325,7 +6332,7 @@ RegisterCommands(void)
     .summary = "Show or set timezone",
     .synopsis = "tz show | tz set <posix_tz>",
     .func = &CommandTz,
-    .argtable = &g_tz_args,
+    .argtable = (void**)&g_tz_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&tz_cmd));
 
@@ -6340,7 +6347,7 @@ RegisterCommands(void)
     .summary = "Show, set, or sync system time",
     .synopsis = "time show | time setlocal <YYYY-MM-DD HH:MM:SS> [--is_dst 0|1]",
     .func = &CommandTime,
-    .argtable = &g_time_args,
+    .argtable = (void**)&g_time_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&time_cmd));
 
@@ -6368,7 +6375,7 @@ RegisterCommands(void)
     .summary = "Show or set daylight saving behavior",
     .synopsis = "dst show | dst set 0|1",
     .func = &CommandDst,
-    .argtable = &g_dst_args,
+    .argtable = (void**)&g_dst_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&dst_cmd));
 
@@ -6380,7 +6387,7 @@ RegisterCommands(void)
     .summary = "Show or set node role",
     .synopsis = "role show | role set root|sensor|relay",
     .func = &CommandRole,
-    .argtable = &g_role_args,
+    .argtable = (void**)&g_role_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&role_cmd));
 
@@ -6393,7 +6400,7 @@ RegisterCommands(void)
     .summary = "Show or set network mode",
     .synopsis = "net show | net set mesh|wifi|none",
     .func = &CommandNet,
-    .argtable = &g_net_args,
+    .argtable = (void**)&g_net_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&net_cmd));
 
@@ -6415,7 +6422,7 @@ RegisterCommands(void)
     .summary = "Control whether downstream children are allowed",
     .synopsis = "children show | children set 0|1",
     .func = &CommandChildren,
-    .argtable = &g_children_args,
+    .argtable = (void**)&g_children_args,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&children_cmd));
 
