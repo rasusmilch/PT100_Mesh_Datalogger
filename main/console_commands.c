@@ -1334,6 +1334,8 @@ CommandDisplay(int argc, char** argv)
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
     }
+    UnitsGpioClearRtcOverride();
+    UnitsGpioApplySettings(g_runtime->settings);
     printf("display_units set to %s\n", AppSettingsDisplayUnitsToString(units));
     return 0;
   }
@@ -1452,6 +1454,8 @@ CommandUnits(int argc, char** argv)
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
     }
+    UnitsGpioClearRtcOverride();
+    UnitsGpioApplySettings(g_runtime->settings);
     printf("display_units set to %s\n", AppSettingsDisplayUnitsToString(units));
     return 0;
   }
@@ -1466,6 +1470,7 @@ CommandUnits(int argc, char** argv)
       units_gpio_status_t status = { 0 };
       UnitsGpioGetStatus(&status);
       printf("units_gpio_enabled: %s\n", status.enabled ? "yes" : "no");
+      printf("units_gpio_mode: %s\n", status.toggle_on_press ? "toggle" : "level");
       printf("units_gpio_pin: %ld%s\n",
              (long)status.pin,
              status.pin_valid ? "" : " (invalid)");
@@ -1475,11 +1480,19 @@ CommandUnits(int argc, char** argv)
       printf("units_gpio_level: %s\n",
              status.pin_valid ? UnitsGpioLevelToString(status.last_level_high)
                               : "n/a");
-      printf("units_gpio_effective: %s\n",
+      printf("units_gpio_pressed_level: %s\n",
+             status.pin_valid ? UnitsGpioLevelToString(status.pressed_level_high)
+                              : "n/a");
+      printf("units_gpio_pressed: %s\n",
+             status.pin_valid ? (status.pressed ? "yes" : "no") : "n/a");
+      printf("units_rtc_override: %s\n",
+             status.rtc_override_valid
+               ? AppSettingsDisplayUnitsToString(status.rtc_override_units)
+               : "none");
+      printf("units_effective: %s\n",
              AppSettingsDisplayUnitsToString(status.effective_units));
-      printf(
-        "units_saved: %s\n",
-        AppSettingsDisplayUnitsToString(g_runtime->settings->display_units));
+      printf("units_saved: %s\n",
+             AppSettingsDisplayUnitsToString(status.saved_units));
       return 0;
     }
     if (strcmp(gpio_action, "set") == 0) {
