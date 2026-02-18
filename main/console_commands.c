@@ -133,6 +133,19 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
                                const runtime_state_t* state);
 
 /**
+ * @brief Evaluate whether calibration is currently applied/valid for
+ * reporting.
+ * @param settings Current settings.
+ * @param state Current runtime state (may be NULL).
+ * @param reason_out Optional output reason string.
+ * @return true when calibration is applied.
+ */
+static bool
+ConsoleCalibrationIsApplied(const app_settings_t* settings,
+                            const runtime_state_t* state,
+                            const char** reason_out);
+
+/**
  * @brief Parse a UTC date string in YYYY-MM-DD format into an epoch seconds
  * value.
  * @param value Input string.
@@ -3506,6 +3519,15 @@ CommandCal(int argc, char** argv)
            CalibrationModeToString(settings->calibration.mode));
     printf("cal_points: %u (raw_avg_C uses window average)\n",
            (unsigned)settings->calibration_points_count);
+    const char* applied_reason = NULL;
+    const bool applied = ConsoleCalibrationIsApplied(
+      settings, RuntimeGetState(), &applied_reason);
+    printf("cal_model_valid: %s\n",
+           settings->calibration.is_valid ? "yes" : "no");
+    printf("cal_applied: %s\n", applied ? "yes" : "no");
+    if (!applied) {
+      printf("cal_applied_reason: %s\n", applied_reason);
+    }
     for (size_t index = 0; index < settings->calibration_points_count;
          ++index) {
       const calibration_point_t* point = &settings->calibration_points[index];
@@ -5392,6 +5414,61 @@ ResolveCalibrationSchedule(const app_settings_t* settings,
   }
 }
 
+/**
+ * @brief Evaluate whether calibration is currently applied/valid for
+ * reporting.
+ * @param settings Current settings.
+ * @param state Current runtime state (may be NULL).
+ * @param reason_out Optional output reason string.
+ * @return true when calibration is applied.
+ */
+static bool
+ConsoleCalibrationIsApplied(const app_settings_t* settings,
+                            const runtime_state_t* state,
+                            const char** reason_out)
+{
+  if (reason_out != NULL) {
+    *reason_out = "ok";
+  }
+  if (settings == NULL) {
+    if (reason_out != NULL) {
+      *reason_out = "settings unavailable";
+    }
+    return false;
+  }
+  if (state == NULL) {
+    if (reason_out != NULL) {
+      *reason_out = "runtime state unavailable";
+    }
+    return false;
+  }
+  if (settings->calibration_points_count == 0) {
+    if (reason_out != NULL) {
+      *reason_out = "no calibration points";
+    }
+    return false;
+  }
+  if (!settings->calibration.is_valid) {
+    if (reason_out != NULL) {
+      *reason_out = "calibration model not valid";
+    }
+    return false;
+  }
+  if (state->cal_due_check_suspended) {
+    if (reason_out != NULL) {
+      *reason_out = "due check suspended";
+    }
+    return false;
+  }
+  if (state->cal_overdue) {
+    if (reason_out != NULL) {
+      *reason_out = "calibration overdue";
+    }
+    return false;
+  }
+  return true;
+}
+
 static void
 PrintCalibrationStatusBlock(const app_settings_t* settings,
                             const runtime_state_t* state)
@@ -5419,9 +5496,19 @@ PrintCalibrationStatusBlock(const app_settings_t* settings,
   const bool check_suspended =
     (state != NULL) ? state->cal_due_check_suspended : !time_valid;
   const bool overdue = (state != NULL) ? state->cal_overdue : false;
+  const char* applied_reason = NULL;
+  const bool applied =
+    ConsoleCalibrationIsApplied(settings, state, &applied_reason);
 
   printf("Calibration:\n");
   printf("  Last UTC:  %s\n", last_buffer);
+  printf("  Points: %u\n", (unsigned)settings->calibration_points_count);
+  printf("  Model valid: %s\n",
+         settings->calibration.is_valid ? "yes" : "no");
+  printf("  Applied: %s\n", applied ? "yes" : "no");
+  if (!applied) {
+    printf("  Applied reason: %s\n", applied_reason);
+  }
   if (!time_valid) {
     printf("  Due check suspended (time invalid)\n");
     return;
@@ -5477,6 +5564,9 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
   const bool check_suspended =
     (state != NULL) ? state->cal_due_check_suspended : !time_valid;
   const bool overdue = (state != NULL) ? state->cal_overdue : false;
+  const char* applied_reason = NULL;
+  const bool applied =
+    ConsoleCalibrationIsApplied(settings, state, &applied_reason);
 
   printf("Calibration:\n");
   printf("  Last UTC (base):     %s\n", base_last);
@@ -5488,6 +5578,14 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
   printf("  Effective last UTC:  %s\n", effective_last);
   printf("  Effective due:       %s\n", effective_due);
   printf("  Due date:            %s\n", due_date_buffer);
+  printf("  Points:              %u\n",
+         (unsigned)settings->calibration_points_count);
+  printf("  Model valid:         %s\n",
+         settings->calibration.is_valid ? "yes" : "no");
+  printf("  Applied:             %s\n", applied ? "yes" : "no");
+  if (!applied) {
+    printf("  Applied reason:      %s\n", applied_reason);
+  }
   printf("  Overdue:             %s\n", overdue ? "yes" : "no");
   printf("  Time valid:          %s\n", time_valid ? "yes" : "no");
   printf("  Time stable:         %s\n", time_stable ? "yes" : "no");
