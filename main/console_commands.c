@@ -167,6 +167,8 @@ static bool
 ParseMetarAltimeterInHg(const char* token, float* altimeter_inHg_out);
 static float
 SaturationTempCFromStationInHg(float station_inHg);
+static void
+PrintSatPtUsage(void);
 /**
  * @brief Print system time in UTC and local time using current TZ/DST settings.
  * @param runtime Runtime context.
@@ -4176,15 +4178,7 @@ CommandRtc(int argc, char** argv)
   return 1;
 }
 
-// --- Boiling point calculator (from MeshTemps-LeafNode.ino) ------------------
-//
-// Usage:
-//   boilpt <inHg> [elev_ft]
-//
-// If elev_ft is provided, <inHg> is treated as sea-level pressure / altimeter
-// setting and is converted to station pressure via a simple ISA troposphere
-// approximation. If elev_ft is omitted, <inHg> is treated as station pressure.
-//
+// --- Water saturation point calculator ----------------------------------------
 /**
  * @brief Execute StationPressureFromSlpInHg.
  * @param slp_inHg Parameter slp_inHg.
@@ -4269,157 +4263,103 @@ ParseMetarAltimeterInHg(const char* token, float* altimeter_inHg_out)
 }
 
 /**
- * @brief Compute and print the boiling point of water from barometric pressure.
- *
- * This console command accepts pressure in inches of mercury (inHg). With one
- * argument, the value is treated as station pressure directly. With a second
- * optional argument (elevation in feet), the first value is treated as
- * sea-level pressure (altimeter/METAR) and converted to station pressure before
- * computing the boiling point.
- *
- * Usage:
- *   boilpt <inHg> [elev_ft]
- *
- * Examples:
- *   boilpt 29.81 1300   (sea-level/altimeter pressure + elevation -> station
- * pressure) boilpt 28.90        (station pressure directly)
- *
- * @param argc Number of command-line arguments, including the command name in
- * argv[0].
- * @param argv Argument vector. argv[1] is required (pressure in inHg). argv[2]
- * is optional (elevation in feet) and enables sea-level to station pressure
- * conversion.
- * @return 0 on success; non-zero on argument/parse/validation errors.
+ * @brief Print satpt command usage lines.
  */
-static int
-CommandBoilPt(int argc, char** argv)
+static void
+PrintSatPtUsage(void)
 {
-  if (argc < 2) {
-    printf("usage: boilpt <inHg> [elev_ft]\n");
-    printf(
-      "  Example (altimeter [METAR A####] + elevation): boilpt 29.81 1300\n");
-    printf("  Example (station pressure):       boilpt 28.90\n");
-    return 1;
-  }
-
-  // Parse required pressure argument in inches of mercury.
-  char* endptr = NULL;
-  const float in_hg = strtof(argv[1], &endptr);
-  if (endptr == argv[1] || isnan(in_hg) || in_hg <= 0.0f) {
-    printf("ERR invalid inHg\n");
-    return 1;
-  }
-
-  if (argc >= 3) {
-    // Optional elevation provided: treat argv[1] as sea-level/altimeter
-    // pressure and convert it to station pressure at the given elevation.
-    endptr = NULL;
-    const float elev_ft = strtof(argv[2], &endptr);
-    if (endptr == argv[2] || isnan(elev_ft)) {
-      printf("ERR invalid elev_ft\n");
-      return 1;
-    }
-
-    const float station_in_hg = StationPressureFromSlpInHg(in_hg, elev_ft);
-    const float boil_c = SaturationTempCFromStationInHg(station_in_hg);
-    if (isnan(boil_c)) {
-      printf("ERR invalid inputs\n");
-      return 1;
-    }
-    const float boil_f = boil_c * 9.0f / 5.0f + 32.0f;
-
-    printf("Boiling point at station %.3f inHg (AS=%.3f, elev=%.0f ft): "
-           "%.3f C (%.3f F)\n",
-           (double)station_in_hg,
-           (double)in_hg,
-           (double)elev_ft,
-           (double)boil_c,
-           (double)boil_f);
-    return 0;
-  }
-
-  // Single argument: treat argv[1] as station pressure directly (no elevation
-  // conversion).
-  const float boil_c = SaturationTempCFromStationInHg(in_hg);
-  if (isnan(boil_c)) {
-    printf("ERR invalid pressure\n");
-    return 1;
-  }
-  const float boil_f = boil_c * 9.0f / 5.0f + 32.0f;
-  printf("Boiling point at %.3f inHg (station): %.3f C (%.3f F)\n",
-         (double)in_hg,
-         (double)boil_c,
-         (double)boil_f);
-  return 0;
+  printf("usage: satpt <station_inHg>\n");
+  printf("   or: satpt <A_inHg|A####> <elev_ft>\n");
+  printf("  Example: satpt 28.90\n");
+  printf("  Example: satpt 29.22 1315\n");
+  printf("  Example: satpt A2922 1315\n");
 }
 
 /**
- * @brief Compute and print water steam-point temperature from METAR altimeter
- * setting and local elevation.
- *
- * Usage:
- *   steampt <A_inHg|A####> <elev_ft>
+ * @brief Compute and print water saturation temperature at local pressure.
  *
  * @param argc Number of command-line arguments.
  * @param argv Argument vector.
  * @return 0 on success; non-zero on argument/parse/validation errors.
  */
 static int
-CommandSteamPt(int argc, char** argv)
+CommandSatPt(int argc, char** argv)
 {
-  if (argc != 3) {
-    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
-    printf("  Example: steampt 29.22 1315\n");
-    printf("  Example: steampt A2922 1315\n");
+  if (argc != 2 && argc != 3) {
+    PrintSatPtUsage();
     printf("ERR invalid args\n");
     return 1;
   }
 
+  char* endptr = NULL;
+  if (argc == 2) {
+    if ((argv[1][0] == 'A' || argv[1][0] == 'a') && strlen(argv[1]) == 5U) {
+      printf("ERR A#### requires elev_ft\n");
+      PrintSatPtUsage();
+      return 1;
+    }
+
+    const float station_in_hg = strtof(argv[1], &endptr);
+    if (endptr == argv[1] || *endptr != '\0' || isnan(station_in_hg) ||
+        station_in_hg <= 0.0f) {
+      printf("ERR invalid station_inHg\n");
+      PrintSatPtUsage();
+      return 1;
+    }
+
+    const float tsat_c = SaturationTempCFromStationInHg(station_in_hg);
+    if (isnan(tsat_c)) {
+      printf("ERR invalid saturation-point result\n");
+      PrintSatPtUsage();
+      return 1;
+    }
+    const float tsat_f = tsat_c * 9.0f / 5.0f + 32.0f;
+    printf("Saturation point at %.3f inHg (station): %.3f C (%.3f F)\n",
+           (double)station_in_hg,
+           (double)tsat_c,
+           (double)tsat_f);
+    return 0;
+  }
+
   float altimeter_in_hg = NAN;
-  if (!ParseMetarAltimeterInHg(argv[1], &altimeter_in_hg)) {
-    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
-    printf("ERR invalid altimeter\n");
+  if (!ParseMetarAltimeterInHg(argv[1], &altimeter_in_hg) ||
+      isnan(altimeter_in_hg) || altimeter_in_hg <= 0.0f) {
+    printf("ERR invalid altimeter_inHg\n");
+    PrintSatPtUsage();
     return 1;
   }
 
-  char* endptr = NULL;
+  endptr = NULL;
   const float elev_ft = strtof(argv[2], &endptr);
   if (endptr == argv[2] || *endptr != '\0' || isnan(elev_ft)) {
-    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
     printf("ERR invalid elev_ft\n");
+    PrintSatPtUsage();
     return 1;
   }
 
-  const float height_m = elev_ft * 0.3048f;
-  const float base = 1.0f - 2.25577e-5f * height_m;
-  if (altimeter_in_hg <= 0.0f || base <= 0.0f) {
-    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
-    printf("ERR invalid inputs\n");
-    return 1;
-  }
-
-  const float station_in_hg = altimeter_in_hg * powf(base, 5.25588f);
+  const float station_in_hg = StationPressureFromSlpInHg(altimeter_in_hg, elev_ft);
   if (isnan(station_in_hg)) {
-    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
     printf("ERR invalid station pressure\n");
+    PrintSatPtUsage();
     return 1;
   }
 
-  const float steam_c = SaturationTempCFromStationInHg(station_in_hg);
-  if (isnan(steam_c)) {
-    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
-    printf("ERR invalid inputs\n");
+  const float tsat_c = SaturationTempCFromStationInHg(station_in_hg);
+  if (isnan(tsat_c)) {
+    printf("ERR invalid saturation-point result\n");
+    PrintSatPtUsage();
     return 1;
   }
-  const float steam_f = steam_c * 9.0f / 5.0f + 32.0f;
+  const float tsat_f = tsat_c * 9.0f / 5.0f + 32.0f;
 
-  printf("Steam point at station %.3f inHg (METAR AS=%.3f inHg, elev=%.0f ft): "
+  printf("Saturation point at station %.3f inHg (METAR AS=%.3f inHg, elev=%.0f "
+         "ft): "
          "%.3f C (%.3f F)\n",
          (double)station_in_hg,
          (double)altimeter_in_hg,
          (double)elev_ft,
-         (double)steam_c,
-         (double)steam_f);
+         (double)tsat_c,
+         (double)tsat_f);
   return 0;
 }
 
@@ -6727,31 +6667,41 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&rtc_cmd));
 
-  static const console_registry_entry_t boilpt_cmd = {
-    .command = "boilpt",
-    .summary = "Estimate local boiling point",
-    .synopsis = "boilpt",
-    .func = &CommandBoilPt,
-  };
-  ESP_ERROR_CHECK(ConsoleRegistryRegister(&boilpt_cmd));
-
-  static const console_registry_entry_t steampt_cmd = {
-    .command = "steampt",
-    .summary = "Estimate steam point from METAR altimeter and elevation",
-    .synopsis = "steampt <A_inHg|A####> <elev_ft>",
+  static const console_registry_entry_t satpt_cmd = {
+    .command = "satpt",
+    .summary =
+      "Water saturation temperature at local pressure (boiling/steam point)",
+    .synopsis = "satpt <station_inHg> | satpt <A_inHg|A####> <elev_ft>",
     .description =
-      "Estimate steam-point temperature from METAR altimeter setting and "
-      "local elevation.\n"
-      "Place probe in the steam space, not in liquid water.\n"
-      "Use a loose/vented cover so steam surrounds the probe.\n"
-      "Do not seal the beaker; overpressure changes saturation temperature.\n"
-      "Provide METAR altimeter setting (A#### or inHg) and local elevation "
-      "in feet.\n"
-      "This is an estimate (Antoine + ISA approximation). For traceable "
-      "work, use a calibrated barometer and a proper steam-point apparatus.",
-    .func = &CommandSteamPt,
+      "Calculate water saturation temperature at local pressure "
+      "(boiling/steam point).\n"
+      "Pressure input forms:\n"
+      "  1) satpt <station_inHg>\n"
+      "     Station pressure directly from a local barometer.\n"
+      "  2) satpt <A_inHg|A####> <elev_ft>\n"
+      "     METAR altimeter setting (A#### or inHg) + elevation in feet; "
+      "converted to station pressure via ISA approximation.\n"
+      "Steam-space method (preferred):\n"
+      "  - Place probe in steam space above boiling water, not in liquid.\n"
+      "  - Use a loose/vented cover (foil/lid with a hole) so steam surrounds "
+      "the probe.\n"
+      "  - Do not seal the beaker; overpressure raises saturation temperature "
+      "and invalidates the calculation.\n"
+      "  - Maintain a steady rolling boil long enough to equilibrate.\n"
+      "Well-mixed boiling-liquid method (acceptable):\n"
+      "  - Keep liquid well mixed (magnetic stirrer or circulation) to avoid "
+      "gradients.\n"
+      "  - Keep the sensing element near the surface for agreement with "
+      "station-pressure saturation temperature.\n"
+      "  - Warning: deeper probe submergence increases local pressure "
+      "(hydrostatic head) and can raise measured boiling temperature above "
+      "station-pressure value.\n"
+      "Traceability disclaimer: estimate only (Antoine + ISA approximation). "
+      "For traceable calibration, use a calibrated barometer at the bath and "
+      "a proper fixed-point/steam-point apparatus.",
+    .func = &CommandSatPt,
   };
-  ESP_ERROR_CHECK(ConsoleRegistryRegister(&steampt_cmd));
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&satpt_cmd));
 
   g_dst_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_dst_args.enabled = arg_int0(NULL, NULL, "<0|1>", "DST enabled");
