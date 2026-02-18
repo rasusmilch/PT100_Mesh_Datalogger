@@ -163,6 +163,10 @@ ParseUtcDateString(const char* value, int64_t* epoch_out);
  */
 static bool
 ParseCalDueUnit(const char* value, uint8_t* unit_out);
+static bool
+ParseMetarAltimeterInHg(const char* token, float* altimeter_inHg_out);
+static float
+SaturationTempCFromStationInHg(float station_inHg);
 /**
  * @brief Print system time in UTC and local time using current TZ/DST settings.
  * @param runtime Runtime context.
@@ -4209,7 +4213,7 @@ StationPressureFromSlpInHg(float slp_inHg, float elev_ft)
  * @return Return the function result.
  */
 static float
-BoilingPointCFromStationInHg(float station_inHg)
+SaturationTempCFromStationInHg(float station_inHg)
 {
   if (station_inHg <= 0.0f) {
     return NAN;
@@ -4229,6 +4233,39 @@ BoilingPointCFromStationInHg(float station_inHg)
     return NAN;
   }
   return B / denom - C;
+}
+
+/**
+ * @brief Parse METAR altimeter token as inches of mercury.
+ * @param token Input token, either A#### or decimal inHg.
+ * @param altimeter_inHg_out Parsed value output.
+ * @return true on success.
+ */
+static bool
+ParseMetarAltimeterInHg(const char* token, float* altimeter_inHg_out)
+{
+  if (token == NULL || altimeter_inHg_out == NULL || token[0] == '\0') {
+    return false;
+  }
+
+  if ((token[0] == 'A' || token[0] == 'a') && strlen(token) == 5U) {
+    for (size_t i = 1; i < 5; ++i) {
+      if (!isdigit((unsigned char)token[i])) {
+        return false;
+      }
+    }
+    *altimeter_inHg_out = (float)strtol(token + 1, NULL, 10) / 100.0f;
+    return *altimeter_inHg_out > 0.0f;
+  }
+
+  char* endptr = NULL;
+  const float parsed_inHg = strtof(token, &endptr);
+  if (endptr == token || *endptr != '\0' || isnan(parsed_inHg) ||
+      parsed_inHg <= 0.0f) {
+    return false;
+  }
+  *altimeter_inHg_out = parsed_inHg;
+  return true;
 }
 
 /**
@@ -4284,7 +4321,7 @@ CommandBoilPt(int argc, char** argv)
     }
 
     const float station_in_hg = StationPressureFromSlpInHg(in_hg, elev_ft);
-    const float boil_c = BoilingPointCFromStationInHg(station_in_hg);
+    const float boil_c = SaturationTempCFromStationInHg(station_in_hg);
     if (isnan(boil_c)) {
       printf("ERR invalid inputs\n");
       return 1;
@@ -4303,7 +4340,7 @@ CommandBoilPt(int argc, char** argv)
 
   // Single argument: treat argv[1] as station pressure directly (no elevation
   // conversion).
-  const float boil_c = BoilingPointCFromStationInHg(in_hg);
+  const float boil_c = SaturationTempCFromStationInHg(in_hg);
   if (isnan(boil_c)) {
     printf("ERR invalid pressure\n");
     return 1;
@@ -4313,6 +4350,76 @@ CommandBoilPt(int argc, char** argv)
          (double)in_hg,
          (double)boil_c,
          (double)boil_f);
+  return 0;
+}
+
+/**
+ * @brief Compute and print water steam-point temperature from METAR altimeter
+ * setting and local elevation.
+ *
+ * Usage:
+ *   steampt <A_inHg|A####> <elev_ft>
+ *
+ * @param argc Number of command-line arguments.
+ * @param argv Argument vector.
+ * @return 0 on success; non-zero on argument/parse/validation errors.
+ */
+static int
+CommandSteamPt(int argc, char** argv)
+{
+  if (argc != 3) {
+    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
+    printf("  Example: steampt 29.22 1315\n");
+    printf("  Example: steampt A2922 1315\n");
+    printf("ERR invalid args\n");
+    return 1;
+  }
+
+  float altimeter_in_hg = NAN;
+  if (!ParseMetarAltimeterInHg(argv[1], &altimeter_in_hg)) {
+    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
+    printf("ERR invalid altimeter\n");
+    return 1;
+  }
+
+  char* endptr = NULL;
+  const float elev_ft = strtof(argv[2], &endptr);
+  if (endptr == argv[2] || *endptr != '\0' || isnan(elev_ft)) {
+    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
+    printf("ERR invalid elev_ft\n");
+    return 1;
+  }
+
+  const float height_m = elev_ft * 0.3048f;
+  const float base = 1.0f - 2.25577e-5f * height_m;
+  if (altimeter_in_hg <= 0.0f || base <= 0.0f) {
+    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
+    printf("ERR invalid inputs\n");
+    return 1;
+  }
+
+  const float station_in_hg = altimeter_in_hg * powf(base, 5.25588f);
+  if (isnan(station_in_hg)) {
+    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
+    printf("ERR invalid station pressure\n");
+    return 1;
+  }
+
+  const float steam_c = SaturationTempCFromStationInHg(station_in_hg);
+  if (isnan(steam_c)) {
+    printf("usage: steampt <A_inHg|A####> <elev_ft>\n");
+    printf("ERR invalid inputs\n");
+    return 1;
+  }
+  const float steam_f = steam_c * 9.0f / 5.0f + 32.0f;
+
+  printf("Steam point at station %.3f inHg (METAR AS=%.3f inHg, elev=%.0f ft): "
+         "%.3f C (%.3f F)\n",
+         (double)station_in_hg,
+         (double)altimeter_in_hg,
+         (double)elev_ft,
+         (double)steam_c,
+         (double)steam_f);
   return 0;
 }
 
@@ -6627,6 +6734,24 @@ RegisterCommands(void)
     .func = &CommandBoilPt,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&boilpt_cmd));
+
+  static const console_registry_entry_t steampt_cmd = {
+    .command = "steampt",
+    .summary = "Estimate steam point from METAR altimeter and elevation",
+    .synopsis = "steampt <A_inHg|A####> <elev_ft>",
+    .description =
+      "Estimate steam-point temperature from METAR altimeter setting and "
+      "local elevation.\n"
+      "Place probe in the steam space, not in liquid water.\n"
+      "Use a loose/vented cover so steam surrounds the probe.\n"
+      "Do not seal the beaker; overpressure changes saturation temperature.\n"
+      "Provide METAR altimeter setting (A#### or inHg) and local elevation "
+      "in feet.\n"
+      "This is an estimate (Antoine + ISA approximation). For traceable "
+      "work, use a calibrated barometer and a proper steam-point apparatus.",
+    .func = &CommandSteamPt,
+  };
+  ESP_ERROR_CHECK(ConsoleRegistryRegister(&steampt_cmd));
 
   g_dst_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
   g_dst_args.enabled = arg_int0(NULL, NULL, "<0|1>", "DST enabled");
