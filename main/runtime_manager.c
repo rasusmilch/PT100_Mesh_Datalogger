@@ -3638,10 +3638,12 @@ RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
            sizeof(header_out->cal_applied),
            "%u",
            RuntimeCalibrationApplied(state) ? 1u : 0u);
+  const char* cal_method =
+    (settings->cal_method[0] != '\0') ? settings->cal_method : "<unset>";
   snprintf(header_out->cal_method,
            sizeof(header_out->cal_method),
            "%s",
-           settings->cal_method);
+           cal_method);
   snprintf(header_out->cal_context,
            sizeof(header_out->cal_context),
            "net_mode=%d",

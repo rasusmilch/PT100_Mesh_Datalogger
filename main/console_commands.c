@@ -5556,6 +5556,9 @@ PrintCalibrationStatusBlock(const app_settings_t* settings,
   if (!applied) {
     printf("  Applied reason: %s\n", applied_reason);
   }
+  if (applied && settings->cal_method[0] == '\0') {
+    printf("  Note: Method is unset. Set it with: cal set method \"ice + satpt steam\"\n");
+  }
   if (!time_valid) {
     printf("  Due check suspended (time invalid)\n");
     return;
@@ -5632,6 +5635,9 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
   printf("  Applied:             %s\n", applied ? "yes" : "no");
   if (!applied) {
     printf("  Applied reason:      %s\n", applied_reason);
+  }
+  if (applied && settings->cal_method[0] == '\0') {
+    printf("  Note: Method is unset. Set it with: cal set method \"ice + satpt steam\"\n");
   }
   printf("  Overdue:             %s\n", overdue ? "yes" : "no");
   printf("  Time valid:          %s\n", time_valid ? "yes" : "no");

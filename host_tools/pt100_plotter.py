@@ -888,7 +888,7 @@ def _build_audit_summary(file_paths: List[str], headers_by_file: Dict[str, Dict[
 
     calibration_summary = _consistent(
         ["cal_last_utc", "cal_due_utc", "cal_method"],
-        lambda last, due, method: f"last {last or 'n/a'} | due {due or 'n/a'} | method {_truncate_text(method or 'n/a')}",
+        lambda last, due, method: f"last {last or 'n/a'} | due {due or 'n/a'} | method {_truncate_text(method or '<unset>')}",
     )
     timezone_summary = _consistent(
         ["timezone_posix", "dst_enabled"],
@@ -1565,27 +1565,20 @@ def _build_figure(
 
 
 
-def _audit_lines_for_report(audit: AuditSummary) -> List[str]:
-    lines: List[str] = []
-    if audit.device_serials:
-        if len(audit.device_serials) == 1:
-            lines.append(f"Device (MAC): {audit.device_serials[0]}")
-        else:
-            preview = ", ".join(audit.device_serials[:2])
-            lines.append(f"Device (MAC): multiple ({len(audit.device_serials)}): {preview}")
-    lines.append(f"Calibration: {audit.calibration_status.title()} (points={audit.calibration_points})")
-    lines.append(f"Cal meta: {audit.calibration_summary}")
-    if audit.calibration_warning:
-        lines.append(f"Cal warning: {audit.calibration_warning}")
-    lines.append(f"Timezone: {audit.timezone_summary}")
-    lines.append(f"Firmware: {_truncate_text(audit.firmware_summary, max_len=56)}")
-    segment_text = f"Segments: {len(audit.segments)}"
+def _audit_rows_for_report(audit: AuditSummary) -> List[List[str]]:
+    rows: List[List[str]] = [["Cal meta", audit.calibration_summary]]
+    rows.append(["Firmware", _truncate_text(audit.firmware_summary, max_len=56)])
+
+    segment_text = str(len(audit.segments))
     if len(audit.segments) > 1:
         segment_text += " (metadata changed; revisions present)"
-    lines.append(segment_text)
+    rows.append(["Segments", segment_text])
+
+    if audit.calibration_warning:
+        rows.append(["Cal warning", audit.calibration_warning])
     if audit.serial_source_note:
-        lines.append(audit.serial_source_note)
-    return lines[:7]
+        rows.append(["Serial note", audit.serial_source_note])
+    return rows
 
 def _node_ids_from_df(df: pd.DataFrame) -> str:
     if "node_id" not in df.columns:
@@ -1603,7 +1596,6 @@ def _export_pdf_report(
     fig_png_path: str,
     source_files: List[str],
     summary_rows: List[List[str]],
-    audit_lines: List[str],
     title: str,
     subtitle: str,
     warning_text: Optional[str] = None,
@@ -1686,17 +1678,6 @@ def _export_pdf_report(
         file_list += f"\n… ({len(source_files)} files total)"
     elements.append(Paragraph(f"<b>Input file(s):</b><br/>{file_list}", styles_body))
 
-    if audit_lines:
-        styles_audit = ParagraphStyle(
-            "AuditStyle",
-            fontName="Helvetica",
-            fontSize=8,
-            leading=10,
-        )
-        audit_html = "<b>Audit:</b><br/>" + "<br/>".join(audit_lines)
-        elements.append(Spacer(1, 6))
-        elements.append(Paragraph(audit_html, styles_audit))
-
     doc.build(elements)
 
 
@@ -1705,7 +1686,6 @@ def _export_pdf_report_vector(
     fig: plt.Figure,
     source_files: List[str],
     summary_rows: List[List[str]],
-    audit_lines: List[str],
     title: str,
     subtitle: str,
     warning_text: Optional[str] = None,
@@ -1788,27 +1768,6 @@ def _export_pdf_report_vector(
         )
         table.auto_set_font_size(False)
         table.set_fontsize(9)
-
-        audit_text = "\n".join(audit_lines[:6]) if audit_lines else "n/a"
-        ax.text(
-            0.0,
-            0.22,
-            "Audit:",
-            ha="left",
-            va="top",
-            fontsize=10,
-            fontweight="bold",
-            transform=ax.transAxes,
-        )
-        ax.text(
-            0.0,
-            0.195,
-            audit_text,
-            ha="left",
-            va="top",
-            fontsize=8.5,
-            transform=ax.transAxes,
-        )
 
         # Input file list at the bottom.
         file_list = "\n".join([os.path.basename(p) for p in source_files[:20]])
@@ -2538,7 +2497,7 @@ class PlotterApp:
         )
 
         series_label = _human_series_label(y_name_effective, temp_unit=temp_unit)
-        audit_lines = _audit_lines_for_report(self.loaded.audit_summary)
+        audit_rows = _audit_rows_for_report(self.loaded.audit_summary)
 
         overlays = []
         if y_name_effective in ("cal_temp_c", "raw_temp_c"):
@@ -2575,6 +2534,7 @@ class PlotterApp:
             summary_rows.append(["Flag issues", flags_summary])
         if stats_notes:
             summary_rows.append(["Stats filtering", "; ".join(stats_notes)])
+        summary_rows.extend(audit_rows)
 
         # Intentionally omit any "Overlays" row from the PDF summary. The report
         # should stay focused on time span, series, calibration, statistics, and
@@ -2587,7 +2547,6 @@ class PlotterApp:
                     fig=fig,
                     source_files=self.loaded.source_files,
                     summary_rows=summary_rows,
-                    audit_lines=audit_lines,
                     title=title,
                     subtitle=subtitle,
                     warning_text=warning_text,
@@ -2600,7 +2559,6 @@ class PlotterApp:
                     fig_png_path=fig_png_path,
                     source_files=self.loaded.source_files,
                     summary_rows=summary_rows,
-                    audit_lines=audit_lines,
                     title=title,
                     subtitle=subtitle,
                     warning_text=warning_text,
