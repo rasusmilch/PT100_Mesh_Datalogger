@@ -648,7 +648,7 @@ PrintDisplayAttentionPolicy(uint32_t policy)
   const display_attention_item_t items[] = {
     kDispAttnItemSdOut,    kDispAttnItemSdIo,    kDispAttnItemFramOvr,
     kDispAttnItemRtdFault, kDispAttnItemTimeBad, kDispAttnItemNtpFail,
-    kDispAttnItemMeshDown, kDispAttnItemHeap,   kDispAttnItemSdSpace,
+    kDispAttnItemMeshDown, kDispAttnItemHeap,    kDispAttnItemSdSpace,
   };
   printf("display_attention_policy: 0x%08" PRIX32 "\n", policy);
   for (size_t idx = 0; idx < sizeof(items) / sizeof(items[0]); ++idx) {
@@ -1089,8 +1089,8 @@ CommandStatus(int argc, char** argv)
   }
   const bool calibration_applied =
     (g_runtime->settings->calibration_points_count > 0u) &&
-    g_runtime->settings->calibration.is_valid && !g_runtime->cal_overdue &&
-    !g_runtime->cal_due_check_suspended;
+    g_runtime->settings->calibration.is_valid && !(*g_runtime->cal_overdue) &&
+    !(*g_runtime->cal_due_check_suspended);
   printf("calibration_applied: %s (points=%u)\n",
          calibration_applied ? "yes" : "no",
          (unsigned)g_runtime->settings->calibration_points_count);
@@ -1479,7 +1479,8 @@ CommandUnits(int argc, char** argv)
       units_gpio_status_t status = { 0 };
       UnitsGpioGetStatus(&status);
       printf("units_gpio_enabled: %s\n", status.enabled ? "yes" : "no");
-      printf("units_gpio_mode: %s\n", status.toggle_on_press ? "toggle" : "level");
+      printf("units_gpio_mode: %s\n",
+             status.toggle_on_press ? "toggle" : "level");
       printf("units_gpio_pin: %ld%s\n",
              (long)status.pin,
              status.pin_valid ? "" : " (invalid)");
@@ -1490,8 +1491,9 @@ CommandUnits(int argc, char** argv)
              status.pin_valid ? UnitsGpioLevelToString(status.last_level_high)
                               : "n/a");
       printf("units_gpio_pressed_level: %s\n",
-             status.pin_valid ? UnitsGpioLevelToString(status.pressed_level_high)
-                              : "n/a");
+             status.pin_valid
+               ? UnitsGpioLevelToString(status.pressed_level_high)
+               : "n/a");
       printf("units_gpio_pressed: %s\n",
              status.pin_valid ? (status.pressed ? "yes" : "no") : "n/a");
       printf("units_rtc_override: %s\n",
@@ -3202,8 +3204,9 @@ CommandCal(int argc, char** argv)
         printf("calibration method cleared\n");
         return 0;
       } else {
-        printf("usage: cal clear date | cal clear due | cal clear due_override | "
-               "cal clear method\n");
+        printf(
+          "usage: cal clear date | cal clear due | cal clear due_override | "
+          "cal clear method\n");
         return 1;
       }
       esp_err_t result = AppSettingsSaveCalibrationSchedule(settings);
@@ -6046,7 +6049,8 @@ PrintMqttHelpBody(void)
 {
   printf("SUBCOMMANDS\n");
   printf("  show                              Show MQTT configuration\n");
-  printf("  enable on|off                     Enable/disable MQTT publishing\n");
+  printf(
+    "  enable on|off                     Enable/disable MQTT publishing\n");
   printf("  broker set <uri>                  Set broker URI\n");
   printf("  prefix set <prefix>               Set topic prefix\n");
   printf("  qos set 0|1                       Set QoS level\n");
@@ -6062,14 +6066,17 @@ static void
 PrintWifiHelpBody(void)
 {
   printf("SUBCOMMANDS\n");
-  printf("  show                              Show saved station credentials\n");
+  printf(
+    "  show                              Show saved station credentials\n");
   printf("  set <ssid> [password]             Store station credentials\n");
   printf("  clear                             Remove saved credentials\n");
   printf("  scan [--max N]                    Scan for APs\n");
   printf("  status                            Show Wi-Fi link status\n");
-  printf("  connect [--timeout_ms T]          Connect using saved credentials\n");
+  printf(
+    "  connect [--timeout_ms T]          Connect using saved credentials\n");
   printf("  disconnect                        Disconnect from AP\n");
-  printf("  ntp status|sync ...               Inspect or trigger time sync\n\n");
+  printf(
+    "  ntp status|sync ...               Inspect or trigger time sync\n\n");
   printf("EXAMPLES\n");
   printf("  wifi scan --max 10\n");
   printf("  wifi set MySsid supersecret\n");
@@ -6120,7 +6127,9 @@ static const console_help_topic_t kCalTopics[] = {
     .name = "add",
     .summary = "Add a manual calibration point (raw vs actual Celsius)",
     .synopsis = "cal add <raw_c> <C>",
-    .details = "Adds one calibration point to the in-memory list and saves the points to NVS. Use this when you already know both the raw reading and the reference temperature.",
+    .details = "Adds one calibration point to the in-memory list and saves the "
+               "points to NVS. Use this when you already know both the raw "
+               "reading and the reference temperature.",
     .options = "  <raw_c>    Raw sensor temperature in Celsius.\n"
                "  <C>        Reference (actual) temperature in Celsius.",
     .examples = "  cal add 24.81 25.00\n"
@@ -6129,10 +6138,16 @@ static const console_help_topic_t kCalTopics[] = {
   {
     .name = "apply",
     .summary = "Fit and persist a calibration model from saved points",
-    .synopsis = "cal apply [--mode linear|piecewise|polyN] [--allow_wide_slope]",
-    .details = "Builds a model from saved points, writes it to NVS, and updates calibration metadata (including last calibration time when system time is valid). This changes runtime calibration immediately and persists across reboot.",
-    .options = "  --mode <linear|piecewise|polyN>  Fit mode (polyN supports N up to firmware limit).\n"
-               "  --allow_wide_slope              Relax slope constraints for fitting.",
+    .synopsis =
+      "cal apply [--mode linear|piecewise|polyN] [--allow_wide_slope]",
+    .details = "Builds a model from saved points, writes it to NVS, and "
+               "updates calibration metadata (including last calibration time "
+               "when system time is valid). This changes runtime calibration "
+               "immediately and persists across reboot.",
+    .options =
+      "  --mode <linear|piecewise|polyN>  Fit mode (polyN supports N up to "
+      "firmware limit).\n"
+      "  --allow_wide_slope              Relax slope constraints for fitting.",
     .examples = "  cal apply\n"
                 "  cal apply --mode piecewise\n"
                 "  cal apply --mode poly2 --allow_wide_slope",
@@ -6140,12 +6155,19 @@ static const console_help_topic_t kCalTopics[] = {
   {
     .name = "capture",
     .summary = "Capture a stable point from live sensor data and save it",
-    .synopsis = "cal capture <actual_temp_c> [--stable_stddev_c 0.05] [--min_seconds 5] [--timeout_seconds 120]",
-    .details = "Starts a background capture operation. When the raw window stays within the stability threshold for the minimum duration, the firmware automatically appends and saves a calibration point (if room remains).",
-    .options = "  <actual_temp_c>             Reference temperature in Celsius (C suffix allowed).\n"
-               "  --stable_stddev_c <C>       Stability threshold for raw window stddev.\n"
-               "  --min_seconds <seconds>     Required stable duration before saving.\n"
-               "  --timeout_seconds <seconds> Max capture time before abort.",
+    .synopsis = "cal capture <actual_temp_c> [--stable_stddev_c 0.05] "
+                "[--min_seconds 5] [--timeout_seconds 120]",
+    .details =
+      "Starts a background capture operation. When the raw window stays within "
+      "the stability threshold for the minimum duration, the firmware "
+      "automatically appends and saves a calibration point (if room remains).",
+    .options =
+      "  <actual_temp_c>             Reference temperature in Celsius (C "
+      "suffix allowed).\n"
+      "  --stable_stddev_c <C>       Stability threshold for raw window "
+      "stddev.\n"
+      "  --min_seconds <seconds>     Required stable duration before saving.\n"
+      "  --timeout_seconds <seconds> Max capture time before abort.",
     .examples = "  cal capture 100.0\n"
                 "  cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8",
   },
@@ -6153,12 +6175,16 @@ static const console_help_topic_t kCalTopics[] = {
     .name = "clear",
     .summary = "Clear calibration model/points or schedule metadata",
     .synopsis = "cal clear | cal clear <date|due|due_override|method>",
-    .details = "Without a target, resets the active calibration model to identity (y=x), removes all stored calibration points, and saves both changes. With a target, clears only that schedule/method field.",
-    .options = "  (none)          Reset model and erase all calibration points.\n"
-               "  date            Clear calibration override date.\n"
-               "  due             Clear baseline due interval.\n"
-               "  due_override    Clear due override interval.\n"
-               "  method          Clear saved calibration method text.",
+    .details =
+      "Without a target, resets the active calibration model to identity "
+      "(y=x), removes all stored calibration points, and saves both changes. "
+      "With a target, clears only that schedule/method field.",
+    .options =
+      "  (none)          Reset model and erase all calibration points.\n"
+      "  date            Clear calibration override date.\n"
+      "  due             Clear baseline due interval.\n"
+      "  due_override    Clear due override interval.\n"
+      "  method          Clear saved calibration method text.",
     .examples = "  cal clear\n"
                 "  cal clear due_override",
   },
@@ -6166,7 +6192,8 @@ static const console_help_topic_t kCalTopics[] = {
     .name = "list",
     .summary = "List all currently saved calibration points",
     .synopsis = "cal list",
-    .details = "Prints each saved point index with raw average, actual temperature, standard deviation, and sample count.",
+    .details = "Prints each saved point index with raw average, actual "
+               "temperature, standard deviation, and sample count.",
     .options = NULL,
     .examples = "  cal list",
   },
@@ -6174,10 +6201,14 @@ static const console_help_topic_t kCalTopics[] = {
     .name = "live",
     .summary = "Stream live calibration-window statistics",
     .synopsis = "cal live [seconds] [--every_ms 1000] [--seconds N]",
-    .details = "Starts a background live print loop of window stats. The run can be bounded by seconds (positional or --seconds) and can be canceled with 'cal stop'.",
-    .options = "  [seconds]          Optional positional duration in seconds.\n"
-               "  --every_ms <ms>    Print period in milliseconds (default 1000).\n"
-               "  --seconds <N>      Optional named duration (do not combine with positional).",
+    .details = "Starts a background live print loop of window stats. The run "
+               "can be bounded by seconds (positional or --seconds) and can be "
+               "canceled with 'cal stop'.",
+    .options =
+      "  [seconds]          Optional positional duration in seconds.\n"
+      "  --every_ms <ms>    Print period in milliseconds (default 1000).\n"
+      "  --seconds <N>      Optional named duration (do not combine with "
+      "positional).",
     .examples = "  cal live\n"
                 "  cal live 30 --every_ms 500\n"
                 "  cal live --seconds 20",
@@ -6186,7 +6217,8 @@ static const console_help_topic_t kCalTopics[] = {
     .name = "show",
     .summary = "Show current window statistics and calibration points",
     .synopsis = "cal show",
-    .details = "Prints rolling raw window metrics, calibration mode, point count, and each point residual summary.",
+    .details = "Prints rolling raw window metrics, calibration mode, point "
+               "count, and each point residual summary.",
     .options = NULL,
     .examples = "  cal show",
   },
@@ -6194,7 +6226,9 @@ static const console_help_topic_t kCalTopics[] = {
     .name = "stop",
     .summary = "Request cancellation of an active live/capture operation",
     .synopsis = "cal stop",
-    .details = "If a calibration background operation is running, requests cancellation and returns immediately. If none is active, reports that state.",
+    .details =
+      "If a calibration background operation is running, requests cancellation "
+      "and returns immediately. If none is active, reports that state.",
     .options = NULL,
     .examples = "  cal stop",
   },
@@ -6248,7 +6282,8 @@ RegisterCommands(void)
     .command = "help",
     .summary = "Show command list or detailed help",
     .synopsis = "help [command] [topic]",
-    .description = "Show top-level command index, command help, or command subtopic help.",
+    .description =
+      "Show top-level command index, command help, or command subtopic help.",
     .print_body = PrintHelpCommandBody,
     .func = &ConsoleHelpCommand,
   };
@@ -6347,7 +6382,8 @@ RegisterCommands(void)
   static const console_registry_entry_t errlog_cmd = {
     .command = "errlog",
     .summary = "Inspect and clear FRAM error log",
-    .synopsis = "errlog show [--last N] | errlog stats | errlog status | errlog clear",
+    .synopsis =
+      "errlog show [--last N] | errlog stats | errlog status | errlog clear",
     .print_body = PrintErrlogHelpBody,
     .func = &CommandErrlog,
   };
@@ -6356,7 +6392,8 @@ RegisterCommands(void)
   static const console_registry_entry_t log_cmd = {
     .command = "log",
     .summary = "Tune runtime logging parameters",
-    .synopsis = "log interval <ms> | log watermark <records> | log flush_period <ms> | log batch <bytes> | log show",
+    .synopsis = "log interval <ms> | log watermark <records> | log "
+                "flush_period <ms> | log batch <bytes> | log show",
     .func = &CommandLog,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&log_cmd));
@@ -6373,7 +6410,8 @@ RegisterCommands(void)
   static const console_registry_entry_t rtd_cmd = {
     .command = "rtd",
     .summary = "Configure RTD filtering and display",
-    .synopsis = "rtd show | rtd ema show | rtd ema on|off | rtd ema alpha <0.0..1.0>",
+    .synopsis =
+      "rtd show | rtd ema show | rtd ema on|off | rtd ema alpha <0.0..1.0>",
     .func = &CommandRtd,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&rtd_cmd));
@@ -6397,8 +6435,8 @@ RegisterCommands(void)
     arg_int0(NULL, "min_seconds", "<seconds>", "Min stable duration (capture)");
   g_cal_args.timeout_seconds =
     arg_int0(NULL, "timeout_seconds", "<seconds>", "Capture timeout");
-  g_cal_args.mode = arg_str0(
-    NULL, "mode", "<linear|piecewise|polyN>", "Fit mode (apply)");
+  g_cal_args.mode =
+    arg_str0(NULL, "mode", "<linear|piecewise|polyN>", "Fit mode (apply)");
   g_cal_args.allow_wide_slope =
     arg_lit0(NULL, "allow_wide_slope", "Allow wider slope constraints (apply)");
   g_cal_args.end = arg_end(16);
@@ -6469,7 +6507,8 @@ RegisterCommands(void)
   static const console_registry_entry_t time_cmd = {
     .command = "time",
     .summary = "Show, set, or sync system time",
-    .synopsis = "time show | time setlocal <YYYY-MM-DD HH:MM:SS> [--is_dst 0|1]",
+    .synopsis =
+      "time show | time setlocal <YYYY-MM-DD HH:MM:SS> [--is_dst 0|1]",
     .func = &CommandTime,
     .argtable = (void**)&g_time_args,
   };

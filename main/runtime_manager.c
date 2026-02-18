@@ -15,8 +15,8 @@
 #include "data_csv.h"
 #include "data_port.h"
 #include "display_attention.h"
-#include "esp_attr.h"
 #include "esp_app_desc.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
@@ -27,13 +27,13 @@
 #include "esp_timer.h"
 #include "fram_error_log.h"
 #include "fram_i2c.h"
-#include "gpio_buttons.h"
 #include "fram_layout.h"
 #include "fram_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "gpio_buttons.h"
 #include "heap_event_log.h"
 #include "heap_monitor.h"
 #include "heap_phase_log.h"
@@ -3532,7 +3532,6 @@ RuntimeCalibrationApplied(const runtime_state_t* state)
          !state->cal_due_check_suspended;
 }
 
-
 static bool
 RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
                                 int64_t epoch_utc,
@@ -3547,13 +3546,15 @@ RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
   const app_settings_t* settings = &state->settings;
   const esp_app_desc_t* app_desc = esp_app_get_description();
   const int64_t now_utc = (epoch_utc > 0) ? epoch_utc : (int64_t)time(NULL);
-  FormatUtcTimestamp(now_utc, header_out->created_utc, sizeof(header_out->created_utc));
+  FormatUtcTimestamp(
+    now_utc, header_out->created_utc, sizeof(header_out->created_utc));
 
   snprintf(header_out->device_serial,
            sizeof(header_out->device_serial),
            "%s",
            settings->unit_serial);
-  FormatMacString(state->local_mac, header_out->device_mac, sizeof(header_out->device_mac));
+  FormatMacString(
+    state->local_mac, header_out->device_mac, sizeof(header_out->device_mac));
   snprintf(header_out->device_role,
            sizeof(header_out->device_role),
            "%s",
@@ -3591,7 +3592,8 @@ RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
     FormatUtcTimestamp(
       last_cal_utc, header_out->cal_last_utc, sizeof(header_out->cal_last_utc));
   } else {
-    snprintf(header_out->cal_last_utc, sizeof(header_out->cal_last_utc), "unknown");
+    snprintf(
+      header_out->cal_last_utc, sizeof(header_out->cal_last_utc), "unknown");
   }
 
   const uint16_t due_count = (settings->cal_due_override_count != 0)
@@ -3615,7 +3617,8 @@ RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
            due_unit_text);
 
   const int64_t due_utc =
-    (last_cal_utc > 0 && due_count > 0 && due_unit >= (uint8_t)CAL_DUE_UNIT_DAYS &&
+    (last_cal_utc > 0 && due_count > 0 &&
+     due_unit >= (uint8_t)CAL_DUE_UNIT_DAYS &&
      due_unit <= (uint8_t)CAL_DUE_UNIT_YEARS)
       ? CalComputeDueDateUtc(last_cal_utc, due_count, (cal_due_unit_t)due_unit)
       : 0;
@@ -3623,7 +3626,8 @@ RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
     FormatUtcTimestamp(
       due_utc, header_out->cal_due_utc, sizeof(header_out->cal_due_utc));
   } else {
-    snprintf(header_out->cal_due_utc, sizeof(header_out->cal_due_utc), "unknown");
+    snprintf(
+      header_out->cal_due_utc, sizeof(header_out->cal_due_utc), "unknown");
   }
 
   snprintf(header_out->cal_points_count,
@@ -8496,13 +8500,19 @@ ControlTask(void* context)
       }
       if (button_event.id == GPIO_BUTTON_RUN_START) {
         request_start = true;
-        ESP_LOGI(kTag, "button run start (uptime=%" PRIu32 " ms)", button_event.uptime_ms);
+        ESP_LOGI(kTag,
+                 "button run start (uptime=%" PRIu32 " ms)",
+                 button_event.uptime_ms);
       } else if (button_event.id == GPIO_BUTTON_RUN_STOP) {
         request_stop = true;
-        ESP_LOGI(kTag, "button run stop (uptime=%" PRIu32 " ms)", button_event.uptime_ms);
+        ESP_LOGI(kTag,
+                 "button run stop (uptime=%" PRIu32 " ms)",
+                 button_event.uptime_ms);
       } else if (button_event.id == GPIO_BUTTON_UNITS_TOGGLE) {
         UnitsGpioHandleButtonPress();
-        ESP_LOGI(kTag, "button units toggle (uptime=%" PRIu32 " ms)", button_event.uptime_ms);
+        ESP_LOGI(kTag,
+                 "button units toggle (uptime=%" PRIu32 " ms)",
+                 button_event.uptime_ms);
       }
     }
 
@@ -8953,6 +8963,9 @@ InitializeRuntimeStruct(void)
   g_runtime.sensor = &g_state.sensor;
   g_runtime.mesh = &g_state.mesh;
   g_runtime.time_sync = &g_state.time_sync;
+  g_runtime.cal_due_check_suspended = &g_state.cal_due_check_suspended;
+  g_runtime.cal_overdue = &g_state.cal_overdue;
+  g_runtime.cal_time_stable = &g_state.cal_time_stable;
   g_runtime.i2c_bus = &g_state.i2c_bus;
   g_runtime.node_id_string = g_state.node_id_string;
   g_runtime.alert_manager = &g_state.alert_manager;
