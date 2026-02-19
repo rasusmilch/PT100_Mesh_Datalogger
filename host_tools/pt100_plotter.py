@@ -89,6 +89,8 @@ _FALLBACK_FLAG_DEFS: List[Tuple[int, str]] = [
     (1 << 7, "TIME_JUMP_BACK"),
 ]
 
+_DEFAULT_ROLLING_MEAN_DIVISOR = 40
+
 
 def _load_flag_definitions_from_header() -> List[Tuple[int, str]]:
     """Load log record flag bitmasks from the ESP32 project's header.
@@ -258,6 +260,7 @@ class HighlightOptions:
 class PlotOptions:
     overlay_raw_temp: bool
     smooth: bool
+    rolling_mean_divisor: int
     enable_downsample: bool
     max_plot_points: int
     temp_unit: str
@@ -567,6 +570,19 @@ def _parse_user_time(text: str) -> Optional[datetime.datetime]:
         except ValueError:
             continue
     raise ValueError('Invalid time format. Use "YYYY-MM-DD HH:MM" (minutes only).')
+
+
+def _parse_positive_int(raw_text: str, field_label: str, default_value: int) -> int:
+    text = (raw_text or "").strip()
+    if not text:
+        return default_value
+    try:
+        parsed_value = int(text)
+    except ValueError as exc:
+        raise ValueError(f"{field_label} must be an integer >= 1") from exc
+    if parsed_value < 1:
+        raise ValueError(f"{field_label} must be an integer >= 1")
+    return parsed_value
 
 
 def _nearest_minute_string(minutes_index: pd.DatetimeIndex, target: datetime.datetime) -> str:
@@ -1414,7 +1430,7 @@ def _build_figure(
     window_size = 0
     valid_points = int(y_series.notna().sum())
     if options.smooth and valid_points >= 3:
-        window_size = min(151, max(3, valid_points // 40))
+        window_size = min(151, max(3, valid_points // options.rolling_mean_divisor))
         smoothed_series = y_series.rolling(
             window=window_size,
             center=True,
@@ -1890,6 +1906,7 @@ class PlotterApp:
         self.temp_f = tk.BooleanVar(value=False)
         self.overlay_raw = tk.BooleanVar(value=False)
         self.smooth = tk.BooleanVar(value=True)
+        self.rolling_mean_divisor_text = tk.StringVar(value=str(_DEFAULT_ROLLING_MEAN_DIVISOR))
         self.enable_downsample = tk.BooleanVar(value=True)
         self.max_plot_points = tk.IntVar(value=20000)
         self.pdf_plot_dpi = tk.IntVar(value=600)
@@ -1961,6 +1978,9 @@ class PlotterApp:
             column=1,
             sticky="w",
         )
+        row += 1
+        tk.Label(frm, text="Rolling-mean window divisor").grid(row=row, column=0, sticky="w")
+        tk.Entry(frm, textvariable=self.rolling_mean_divisor_text, width=10).grid(row=row, column=1, sticky="w")
         row += 1
         tk.Checkbutton(frm, text="Downsample large datasets (preserve spikes)", variable=self.enable_downsample).grid(row=row, column=1, sticky="w")
         row += 1
@@ -2098,6 +2118,17 @@ class PlotterApp:
         smooth: bool,
         overlay_raw: bool,
     ) -> PlotOptions:
+        if smooth:
+            rolling_mean_divisor = _parse_positive_int(
+                self.rolling_mean_divisor_text.get(),
+                "Rolling-mean window divisor",
+                _DEFAULT_ROLLING_MEAN_DIVISOR,
+            )
+            if not self.rolling_mean_divisor_text.get().strip():
+                self.rolling_mean_divisor_text.set(str(_DEFAULT_ROLLING_MEAN_DIVISOR))
+        else:
+            rolling_mean_divisor = _DEFAULT_ROLLING_MEAN_DIVISOR
+
         stats = StatsOptions(
             show_min=self.stats_show_min.get(),
             show_max=self.stats_show_max.get(),
@@ -2118,6 +2149,7 @@ class PlotterApp:
         return PlotOptions(
             overlay_raw_temp=overlay_raw,
             smooth=smooth,
+            rolling_mean_divisor=rolling_mean_divisor,
             enable_downsample=self.enable_downsample.get(),
             max_plot_points=int(self.max_plot_points.get()),
             temp_unit=temp_unit,
