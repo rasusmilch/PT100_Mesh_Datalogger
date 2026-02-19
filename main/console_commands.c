@@ -113,6 +113,10 @@ JoinArgsWithSpaces(int argc,
                    size_t out_size);
 static int
 CalTopicHelp(const char* topic);
+static void
+PrintModeHelpBody(void);
+static int
+ModeTopicHelp(const char* topic);
 
 /**
  * @brief Print combined calibration status including window stats, points, and
@@ -6481,6 +6485,48 @@ static const console_help_topic_t kCalTopics[] = {
   { 0 }
 };
 
+static const console_help_topic_t kModeTopics[] = {
+  {
+    .name = "show",
+    .summary = "Show stored boot mode and current runtime streaming state",
+    .synopsis = "mode show",
+    .details = "Prints nvs_boot_mode, current_mode, and data_streaming so "
+               "operators can compare persisted boot defaults with live "
+               "runtime behavior.",
+    .options = NULL,
+    .examples = "  mode show",
+  },
+  {
+    .name = "run",
+    .summary = "Switch to run policy immediately (runtime only)",
+    .synopsis = "mode run",
+    .details = "Applies run logging policy immediately and enables data "
+               "streaming without writing NVS.",
+    .options = NULL,
+    .examples = "  mode run",
+  },
+  {
+    .name = "diag",
+    .summary = "Switch to diagnostics policy immediately (runtime only)",
+    .synopsis = "mode diag",
+    .details = "Applies diagnostics logging policy immediately and disables "
+               "data streaming without writing NVS.",
+    .options = NULL,
+    .examples = "  mode diag",
+  },
+  {
+    .name = "set",
+    .summary = "Persist boot default mode in NVS",
+    .synopsis = "mode set diag|run",
+    .details = "Writes the boot default mode to NVS for next startup. Reboot "
+               "is required and runtime mode may not change immediately.",
+    .options = "  <diag|run>    Boot mode value to persist in NVS.",
+    .examples = "  mode set run\n"
+                "  mode set diag",
+  },
+  { 0 }
+};
+
 static void
 PrintCalHelpBody(void)
 {
@@ -6503,6 +6549,43 @@ CalTopicHelp(const char* topic)
   for (size_t i = 0; kCalTopics[i].name != NULL; ++i) {
     if (strcmp(kCalTopics[i].name, topic) == 0) {
       ConsoleHelpPrintTopicManpage("cal", &kCalTopics[i]);
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
+/**
+ * @brief Print the mode command help body with available subtopics and
+ * examples.
+ */
+static void
+PrintModeHelpBody(void)
+{
+  ConsoleHelpPrintTopicList(kModeTopics);
+  printf("Use: help mode <subcommand>\n\n");
+  printf("EXAMPLES\n");
+  printf("  mode show\n");
+  printf("  mode run\n");
+  printf("  mode set diag\n");
+}
+
+/**
+ * @brief Print detailed mode subtopic help for a specific subcommand.
+ * @param topic Mode subtopic name.
+ * @return 0 if the topic was found and printed, otherwise 1.
+ */
+static int
+ModeTopicHelp(const char* topic)
+{
+  if (topic == NULL || topic[0] == '\0') {
+    return 1;
+  }
+
+  for (size_t i = 0; kModeTopics[i].name != NULL; ++i) {
+    if (strcmp(kModeTopics[i].name, topic) == 0) {
+      ConsoleHelpPrintTopicManpage("mode", &kModeTopics[i]);
       return 0;
     }
   }
@@ -6701,14 +6784,20 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&cal_cmd));
 
-  g_mode_args.action = arg_str1(NULL, NULL, "<action>", "show|set");
+  g_mode_args.action = arg_str1(NULL, NULL, "<action>", "show|run|diag|set");
   g_mode_args.mode_value =
-    arg_str0(NULL, NULL, "<day|night|auto>", "Display mode");
+    arg_str0(NULL, NULL, "<diag|run>", "Boot mode to store in NVS (set only)");
   g_mode_args.end = arg_end(2);
   static const console_registry_entry_t mode_cmd = {
     .command = "mode",
-    .summary = "Show or set display mode",
-    .synopsis = "mode show | mode set day|night|auto",
+    .summary = "Show or set boot/runtime mode",
+    .synopsis = "mode show | mode run | mode diag | mode set diag|run",
+    .description =
+      "mode run/diag applies runtime behavior immediately without NVS writes. "
+      "mode set diag|run persists boot default in NVS (reboot required). "
+      "mode show prints stored boot mode plus current runtime streaming state.",
+    .print_body = PrintModeHelpBody,
+    .topic_help = &ModeTopicHelp,
     .func = &CommandMode,
     .argtable = (void**)&g_mode_args,
   };
