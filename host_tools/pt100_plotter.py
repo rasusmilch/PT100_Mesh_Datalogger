@@ -696,6 +696,59 @@ def _any_cal_valid_flags(df: pd.DataFrame) -> bool:
     return bool(((flags_numeric & cal_mask) != 0).any())
 
 
+def _cal_valid_fraction(df: pd.DataFrame) -> Optional[float]:
+    """Return fraction of records with CAL_VALID asserted, or None if unavailable."""
+    if "flags" not in df.columns:
+        return None
+    flags_numeric = pd.to_numeric(df["flags"], errors="coerce").dropna()
+    if flags_numeric.empty:
+        return None
+    flags_int = flags_numeric.astype("int64")
+    cal_mask = _get_flag_mask("CAL_VALID", 1 << 1)
+    return float(((flags_int & cal_mask) != 0).mean())
+
+
+def _format_applied_records_label(df: pd.DataFrame) -> str:
+    fraction = _cal_valid_fraction(df)
+    if fraction is None:
+        return "unknown (flags unavailable)"
+    pct = 100.0 * fraction
+    if pct <= 0.0:
+        return "no (0.0%)"
+    return f"yes ({pct:.1f}%)"
+
+
+def _segment_header_value(segments: List[MetadataSegment], key: str, default: str = "n/a") -> str:
+    """Return a consistent header value across segments, else a 'varies' marker."""
+    values = {((segment.header_dict.get(key) or "").strip()) for segment in segments}
+    if not values:
+        return default
+    if len(values) > 1:
+        return f"varies ({len(segments)} segments)"
+    value = next(iter(values))
+    return value if value else default
+
+
+def _format_span_label(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> str:
+    """Format a compact span label between two timestamps."""
+    delta = end_ts - start_ts
+    total_seconds = int(max(delta.total_seconds(), 0.0))
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+
+    parts: List[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds or not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
 _PTLOG_SIGNATURE_FIELDS = [
     "device_mac",
     "device_serial",
@@ -1565,21 +1618,6 @@ def _build_figure(
 
 
 
-def _audit_rows_for_report(audit: AuditSummary) -> List[List[str]]:
-    rows: List[List[str]] = [["Cal meta", audit.calibration_summary]]
-    rows.append(["Firmware", _truncate_text(audit.firmware_summary, max_len=56)])
-
-    segment_text = str(len(audit.segments))
-    if len(audit.segments) > 1:
-        segment_text += " (metadata changed; revisions present)"
-    rows.append(["Segments", segment_text])
-
-    if audit.calibration_warning:
-        rows.append(["Cal warning", audit.calibration_warning])
-    if audit.serial_source_note:
-        rows.append(["Serial note", audit.serial_source_note])
-    return rows
-
 def _node_ids_from_df(df: pd.DataFrame) -> str:
     if "node_id" not in df.columns:
         return "n/a"
@@ -1596,6 +1634,7 @@ def _export_pdf_report(
     fig_png_path: str,
     source_files: List[str],
     summary_rows: List[List[str]],
+    calibration_rows: List[List[str]],
     title: str,
     subtitle: str,
     warning_text: Optional[str] = None,
@@ -1667,7 +1706,25 @@ def _export_pdf_report(
         )
     )
     elements.append(table)
-    elements.append(Spacer(1, 10))
+
+    cal_table = Table(calibration_rows, colWidths=[2.3 * inch, 4.7 * inch])
+    cal_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (1, 0), colors.lightgrey),
+                ("TEXTCOLOR", (0, 0), (1, 0), colors.black),
+                ("FONTNAME", (0, 0), (1, 0), "Helvetica-Bold"),
+                ("ALIGN", (0, 0), (1, 0), "LEFT"),
+                ("FONTNAME", (0, 1), (1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (1, -1), 9.5),
+                ("BOTTOMPADDING", (0, 0), (1, 0), 7),
+                ("TOPPADDING", (0, 0), (1, 0), 7),
+                ("GRID", (0, 0), (-1, -1), 0.6, colors.grey),
+            ]
+        )
+    )
+    elements.append(cal_table)
+    elements.append(Spacer(1, 8))
 
     img = Image(fig_png_path, width=7.5 * inch, height=4.2 * inch)
     elements.append(img)
@@ -1686,6 +1743,7 @@ def _export_pdf_report_vector(
     fig: plt.Figure,
     source_files: List[str],
     summary_rows: List[List[str]],
+    calibration_rows: List[List[str]],
     title: str,
     subtitle: str,
     warning_text: Optional[str] = None,
@@ -1736,7 +1794,8 @@ def _export_pdf_report_vector(
         )
 
         
-        table_bbox = [0.0, 0.25, 1.0, 0.70]
+        summary_table_bbox = [0.0, 0.48, 1.0, 0.47]
+        calibration_table_bbox = [0.0, 0.27, 1.0, 0.18]
         if warning_text:
             ax.text(
                 0.5,
@@ -1750,8 +1809,9 @@ def _export_pdf_report_vector(
                 transform=ax.transAxes,
                 wrap=True,
             )
-            # Leave extra room above the table for the warning.
-            table_bbox = [0.0, 0.25, 1.0, 0.60]
+            # Leave extra room above the tables for the warning.
+            summary_table_bbox = [0.0, 0.48, 1.0, 0.37]
+            calibration_table_bbox = [0.0, 0.27, 1.0, 0.18]
 
 # Build a Matplotlib table (kept as vector text/lines in the PDF).
         # summary_rows includes a header row: ["Field", "Value"].
@@ -1764,10 +1824,23 @@ def _export_pdf_report_vector(
             cellLoc="left",
             colLoc="left",
             loc="upper left",
-            bbox=table_bbox,
+            bbox=summary_table_bbox,
         )
         table.auto_set_font_size(False)
         table.set_fontsize(9)
+
+        cal_cell_text = calibration_rows[1:] if len(calibration_rows) > 1 else []
+        cal_col_labels = calibration_rows[0] if calibration_rows else ["Field", "Value"]
+        cal_table = ax.table(
+            cellText=cal_cell_text,
+            colLabels=cal_col_labels,
+            cellLoc="left",
+            colLoc="left",
+            loc="upper left",
+            bbox=calibration_table_bbox,
+        )
+        cal_table.auto_set_font_size(False)
+        cal_table.set_fontsize(9)
 
         # Input file list at the bottom.
         file_list = "\n".join([os.path.basename(p) for p in source_files[:20]])
@@ -2055,7 +2128,15 @@ class PlotterApp:
         )
 
     def _dataset_is_calibrated(self) -> bool:
-        return bool(self.loaded and self.loaded.audit_summary.calibration_status == _CAL_STATUS_CALIBRATED)
+        if not self.loaded:
+            return False
+        df = self.loaded.dataframe
+        if "cal_temp_c" not in df.columns:
+            return False
+        fraction = _cal_valid_fraction(df)
+        if fraction is not None:
+            return fraction > 0.0
+        return self.loaded.audit_summary.calibration_status == _CAL_STATUS_CALIBRATED
 
     def _refresh_series_menu(self) -> None:
         base_choices = ["raw_temp_c", "raw_rtd_ohms"]
@@ -2420,7 +2501,7 @@ class PlotterApp:
             if "raw_temp_c" in df.columns:
                 y_name_effective = "raw_temp_c"
                 warning_text = (
-                    "Calibration evidence not present (cal_applied=1 and cal_points_count>0 required). "
+                    "Calibration evidence not present in record flags (CAL_VALID). "
                     "Using RAW temperature."
                 )
 
@@ -2497,7 +2578,17 @@ class PlotterApp:
         )
 
         series_label = _human_series_label(y_name_effective, temp_unit=temp_unit)
-        audit_rows = _audit_rows_for_report(self.loaded.audit_summary)
+        if display_series is not None and not display_series.empty:
+            start_ts = pd.to_datetime(display_series).min()
+            end_ts = pd.to_datetime(display_series).max()
+            span_str = _format_span_label(start_ts, end_ts)
+            data_range_value = f"{start_label} → {end_label} (span {span_str})"
+        else:
+            data_range_value = f"{start_label} → {end_label} ({len(df):,} rows)"
+        cal_points = _segment_header_value(self.loaded.audit_summary.segments, "cal_points_count")
+        cal_last_utc = _segment_header_value(self.loaded.audit_summary.segments, "cal_last_utc")
+        cal_due_utc = _segment_header_value(self.loaded.audit_summary.segments, "cal_due_utc")
+        cal_method = _segment_header_value(self.loaded.audit_summary.segments, "cal_method", default="<unset>")
 
         overlays = []
         if y_name_effective in ("cal_temp_c", "raw_temp_c"):
@@ -2522,19 +2613,24 @@ class PlotterApp:
 
         summary_rows = [
             ["Field", "Value"],
-            ["Time source", self.loaded.time_source],
             ["Time zone", display_config.display_tz_label],
-            ["Start", start_label],
-            ["End", end_label],
+            ["Data range", data_range_value],
             ["Series", series_label],
-            ["Calibration", self.loaded.audit_summary.calibration_status.title()],
             ["min / avg / max / std", f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
         ]
         if flags_summary != "n/a":
             summary_rows.append(["Flag issues", flags_summary])
         if stats_notes:
             summary_rows.append(["Stats filtering", "; ".join(stats_notes)])
-        summary_rows.extend(audit_rows)
+
+        calibration_rows = [
+            ["Field", "Value"],
+            ["Applied (records)", _format_applied_records_label(df)],
+            ["Points", cal_points],
+            ["Calibration date", cal_last_utc],
+            ["Due date", cal_due_utc],
+            ["Method", cal_method],
+        ]
 
         # Intentionally omit any "Overlays" row from the PDF summary. The report
         # should stay focused on time span, series, calibration, statistics, and
@@ -2547,6 +2643,7 @@ class PlotterApp:
                     fig=fig,
                     source_files=self.loaded.source_files,
                     summary_rows=summary_rows,
+                    calibration_rows=calibration_rows,
                     title=title,
                     subtitle=subtitle,
                     warning_text=warning_text,
@@ -2559,6 +2656,7 @@ class PlotterApp:
                     fig_png_path=fig_png_path,
                     source_files=self.loaded.source_files,
                     summary_rows=summary_rows,
+                    calibration_rows=calibration_rows,
                     title=title,
                     subtitle=subtitle,
                     warning_text=warning_text,
