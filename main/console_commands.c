@@ -115,6 +115,24 @@ static int
 CalTopicHelp(const char* topic);
 
 /**
+ * @brief Print combined calibration status including window stats, points, and
+ * schedule metadata.
+ * @param settings Active settings snapshot.
+ * @param state Runtime state for time stability / due-check flags.
+ */
+static void
+PrintCalibrationStatusUnified(const app_settings_t* settings,
+                              const runtime_state_t* state);
+
+/**
+ * @brief Force PTLOG daily file re-evaluation after calibration metadata
+ * changes that affect PTLOG header content.
+ * @param reason Human-readable trigger label for operator output.
+ */
+static void
+ForcePtlogRevisionForCalibrationMetadata(const char* reason);
+
+/**
  * @brief Print the compact calibration schedule and due status block.
  * @param settings Current settings.
  * @param state Current runtime state (may be NULL).
@@ -122,15 +140,6 @@ CalTopicHelp(const char* topic);
 static void
 PrintCalibrationStatusBlock(const app_settings_t* settings,
                             const runtime_state_t* state);
-
-/**
- * @brief Print detailed calibration schedule and due status information.
- * @param settings Current settings.
- * @param state Current runtime state (may be NULL).
- */
-static void
-PrintCalibrationStatusDetailed(const app_settings_t* settings,
-                               const runtime_state_t* state);
 
 /**
  * @brief Evaluate whether calibration is currently applied/valid for
@@ -3114,7 +3123,7 @@ CommandCal(int argc, char** argv)
   if (argc >= 2) {
     const char* action = argv[1];
     if (strcmp(action, "status") == 0) {
-      PrintCalibrationStatusDetailed(settings, RuntimeGetState());
+      PrintCalibrationStatusUnified(settings, RuntimeGetState());
       return 0;
     }
     if (strcmp(action, "set") == 0) {
@@ -3142,6 +3151,7 @@ CommandCal(int argc, char** argv)
           return 1;
         }
         printf("calibration override date set to %s\n", argv[3]);
+        ForcePtlogRevisionForCalibrationMetadata("cal set date");
         return 0;
       }
       if (strcmp(target, "method") == 0) {
@@ -3161,7 +3171,10 @@ CommandCal(int argc, char** argv)
           printf("save failed: %s\n", esp_err_to_name(result));
           return 1;
         }
+        (void)snprintf(
+          settings->cal_method, sizeof(settings->cal_method), "%s", method_buffer);
         printf("calibration method set to: %s\n", method_buffer);
+        ForcePtlogRevisionForCalibrationMetadata("cal set method");
         return 0;
       }
       if (strcmp(target, "due") == 0 || strcmp(target, "due_override") == 0) {
@@ -3197,6 +3210,9 @@ CommandCal(int argc, char** argv)
                (strcmp(target, "due") == 0) ? "due" : "due override",
                count_long,
                argv[4]);
+        ForcePtlogRevisionForCalibrationMetadata(
+          (strcmp(target, "due") == 0) ? "cal set due"
+                                        : "cal set due_override");
         return 0;
       }
       printf("usage: cal set date <YYYY-MM-DD> | cal set due <count> "
@@ -3220,7 +3236,9 @@ CommandCal(int argc, char** argv)
           printf("save failed: %s\n", esp_err_to_name(result));
           return 1;
         }
+        settings->cal_method[0] = '\0';
         printf("calibration method cleared\n");
+        ForcePtlogRevisionForCalibrationMetadata("cal clear method");
         return 0;
       } else {
         printf(
@@ -3234,6 +3252,11 @@ CommandCal(int argc, char** argv)
         return 1;
       }
       printf("calibration %s cleared\n", target);
+      ForcePtlogRevisionForCalibrationMetadata(
+        (strcmp(target, "date") == 0)
+          ? "cal clear date"
+          : ((strcmp(target, "due") == 0) ? "cal clear due"
+                                           : "cal clear due_override"));
       return 0;
     }
 
@@ -3508,53 +3531,19 @@ CommandCal(int argc, char** argv)
     return 0;
   }
 
-  if (strcmp(action, "show") == 0) {
-    int32_t last_raw_mC = 0;
-    int32_t mean_raw_mC = 0;
-    int32_t stddev_mC = 0;
-    MaybePushCalRawSampleFromSensor();
-
-    CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
-    const size_t sample_count = CalWindowGetSampleCount();
-    printf("cal_window_raw_last_c: %.3f\n", last_raw_mC / 1000.0);
-    printf("cal_window_raw_avg_c: %.3f\n", mean_raw_mC / 1000.0);
-    printf("cal_window_raw_stddev_c: %.3f\n", stddev_mC / 1000.0);
-    printf("cal_window_samples: %u\n", (unsigned)sample_count);
-    printf("cal_window_ready: %s\n", CalWindowIsReady() ? "yes" : "no");
-    printf("calibration_mode: %s\n",
-           CalibrationModeToString(settings->calibration.mode));
-    printf("cal_points: %u (raw_avg_C uses window average)\n",
-           (unsigned)settings->calibration_points_count);
-    const char* applied_reason = NULL;
-    const bool applied = ConsoleCalibrationIsApplied(
-      settings, RuntimeGetState(), &applied_reason);
-    printf("cal_model_valid: %s\n",
-           settings->calibration.is_valid ? "yes" : "no");
-    printf("cal_applied: %s\n", applied ? "yes" : "no");
-    if (!applied) {
-      printf("cal_applied_reason: %s\n", applied_reason);
-    }
-    for (size_t index = 0; index < settings->calibration_points_count;
-         ++index) {
-      const calibration_point_t* point = &settings->calibration_points[index];
-      const double raw_avg_c = point->raw_avg_mC / 1000.0;
-      const double actual_c = point->actual_mC / 1000.0;
-      const double residual_c = actual_c - raw_avg_c;
-      printf(
-        "  %u: raw_avg_C=%.3f actual_C=%.3f residual_C=%.3f stddev_C=%.3f\n",
-        (unsigned)(index + 1),
-        raw_avg_c,
-        actual_c,
-        residual_c,
-        point->raw_stddev_mC / 1000.0);
-    }
-    return 0;
-  }
-
   if (strcmp(action, "apply") == 0) {
     if (settings->calibration_points_count < 1) {
       printf("no points; use 'cal add <raw_c> <actual_c>' first\n");
       return 1;
+    }
+    if (settings->cal_method[0] == '\0') {
+      printf("warning: calibration method is unset; PTLOG headers will record "
+             "<unset>.\n");
+      printf("         set it now with: cal set method \"ice + satpt steam\"\n");
+    }
+    if (!TimeSyncIsSystemTimeValid()) {
+      printf("warning: system time is invalid; apply will not update Last UTC "
+             "until time is valid.\n");
     }
 
     calibration_model_t model;
@@ -3612,6 +3601,7 @@ CommandCal(int argc, char** argv)
     printf("fit diagnostics: rms_error=%.6f max_abs_residual=%.6f\n",
            diagnostics.rms_error_c,
            diagnostics.max_abs_residual_c);
+    ForcePtlogRevisionForCalibrationMetadata("cal apply");
 
     return 0;
   }
@@ -3621,7 +3611,7 @@ CommandCal(int argc, char** argv)
          "cal clear due | cal set due_override <count> <days|months|years> | "
          "cal clear due_override | cal set method <string...> | "
          "cal clear method | cal clear | cal add <raw_c> <actual_c> | "
-         "cal list | cal show | cal apply | cal live [seconds] "
+         "cal list | cal apply | cal live [seconds] "
          "[--every_ms 1000] | cal capture <actual_temp_c> "
          "[--stable_stddev_c 0.05] [--min_seconds 5] "
          "[--timeout_seconds 120] | cal stop\n");
@@ -5572,9 +5562,45 @@ PrintCalibrationStatusBlock(const app_settings_t* settings,
 }
 
 static void
-PrintCalibrationStatusDetailed(const app_settings_t* settings,
-                               const runtime_state_t* state)
+PrintCalibrationStatusUnified(const app_settings_t* settings,
+                              const runtime_state_t* state)
 {
+  int32_t last_raw_mC = 0;
+  int32_t mean_raw_mC = 0;
+  int32_t stddev_mC = 0;
+  MaybePushCalRawSampleFromSensor();
+
+  CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
+  const size_t sample_count = CalWindowGetSampleCount();
+  printf("cal_window_raw_last_c: %.3f\n", last_raw_mC / 1000.0);
+  printf("cal_window_raw_avg_c: %.3f\n", mean_raw_mC / 1000.0);
+  printf("cal_window_raw_stddev_c: %.3f\n", stddev_mC / 1000.0);
+  printf("cal_window_samples: %u\n", (unsigned)sample_count);
+  printf("cal_window_ready: %s\n", CalWindowIsReady() ? "yes" : "no");
+  printf("calibration_mode: %s\n",
+         CalibrationModeToString(settings->calibration.mode));
+  printf("cal_points: %u (raw_avg_C uses window average)\n",
+         (unsigned)settings->calibration_points_count);
+  const char* applied_reason = NULL;
+  const bool applied = ConsoleCalibrationIsApplied(settings, state, &applied_reason);
+  printf("cal_model_valid: %s\n", settings->calibration.is_valid ? "yes" : "no");
+  printf("cal_applied: %s\n", applied ? "yes" : "no");
+  if (!applied) {
+    printf("cal_applied_reason: %s\n", applied_reason);
+  }
+  for (size_t index = 0; index < settings->calibration_points_count; ++index) {
+    const calibration_point_t* point = &settings->calibration_points[index];
+    const double raw_avg_c = point->raw_avg_mC / 1000.0;
+    const double actual_c = point->actual_mC / 1000.0;
+    const double residual_c = actual_c - raw_avg_c;
+    printf("  %u: raw_avg_C=%.3f actual_C=%.3f residual_C=%.3f stddev_C=%.3f\n",
+           (unsigned)(index + 1),
+           raw_avg_c,
+           actual_c,
+           residual_c,
+           point->raw_stddev_mC / 1000.0);
+  }
+
   char base_last[32];
   char override_last[32];
   char base_due[32];
@@ -5614,10 +5640,6 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
   const bool check_suspended =
     (state != NULL) ? state->cal_due_check_suspended : !time_valid;
   const bool overdue = (state != NULL) ? state->cal_overdue : false;
-  const char* applied_reason = NULL;
-  const bool applied =
-    ConsoleCalibrationIsApplied(settings, state, &applied_reason);
-
   printf("Calibration:\n");
   printf("  Last UTC (base):     %s\n", base_last);
   printf("  Last UTC (override): %s\n", override_last);
@@ -5628,22 +5650,74 @@ PrintCalibrationStatusDetailed(const app_settings_t* settings,
   printf("  Effective last UTC:  %s\n", effective_last);
   printf("  Effective due:       %s\n", effective_due);
   printf("  Due date:            %s\n", due_date_buffer);
-  printf("  Points:              %u\n",
-         (unsigned)settings->calibration_points_count);
-  printf("  Model valid:         %s\n",
-         settings->calibration.is_valid ? "yes" : "no");
-  printf("  Applied:             %s\n", applied ? "yes" : "no");
-  if (!applied) {
-    printf("  Applied reason:      %s\n", applied_reason);
-  }
-  if (applied && settings->cal_method[0] == '\0') {
-    printf("  Note: Method is unset. Set it with: cal set method \"ice + satpt steam\"\n");
+  if (settings->cal_method[0] == '\0') {
+    printf("  Note: Method is unset. Set it with: cal set method \"<describe your method>\"\n");
   }
   printf("  Overdue:             %s\n", overdue ? "yes" : "no");
   printf("  Time valid:          %s\n", time_valid ? "yes" : "no");
   printf("  Time stable:         %s\n", time_stable ? "yes" : "no");
   printf("  Due check:           %s\n",
          check_suspended ? "suspended" : "active");
+}
+
+static void
+ForcePtlogRevisionForCalibrationMetadata(const char* reason)
+{
+  if (g_runtime == NULL || g_runtime->sd_logger == NULL) {
+    return;
+  }
+  if (!g_runtime->sd_logger->is_mounted) {
+    printf("PTLOG rollover deferred (%s): SD not mounted\n", reason);
+    return;
+  }
+  if (!TimeSyncIsSystemTimeValid()) {
+    printf("PTLOG rollover deferred (%s): system time invalid\n", reason);
+    return;
+  }
+
+  runtime_state_t* state = RuntimeGetState();
+  if (state == NULL) {
+    printf("PTLOG rollover deferred (%s): runtime state unavailable\n", reason);
+    return;
+  }
+  if (!RuntimeSdFsLock(state, pdMS_TO_TICKS(2000))) {
+    printf("PTLOG rollover deferred (%s): SD lock timeout\n", reason);
+    return;
+  }
+
+  const int64_t now_epoch = (int64_t)time(NULL);
+  const uint32_t previous_signature = g_runtime->sd_logger->current_header_signature;
+  ptlog_header_t header;
+  uint32_t signature = 0;
+  bool header_ok = RuntimeBuildPtlogHeader(now_epoch, &header, &signature);
+  esp_err_t ensure_result = ESP_FAIL;
+  if (header_ok) {
+    ensure_result = SdLoggerEnsureDailyFileWithHeader(
+      g_runtime->sd_logger, now_epoch, &header, signature);
+  }
+
+  RuntimeSdFsUnlock(state);
+
+  if (!header_ok) {
+    printf("PTLOG rollover failed (%s): unable to build PTLOG header\n", reason);
+    return;
+  }
+  if (ensure_result != ESP_OK) {
+    printf("PTLOG rollover failed (%s): %s\n",
+           reason,
+           esp_err_to_name(ensure_result));
+    return;
+  }
+
+  if (signature != previous_signature) {
+    printf("PTLOG revision rolled (%s): header changed (0x%08" PRIx32
+           " -> 0x%08" PRIx32 ")\n",
+           reason,
+           previous_signature,
+           signature);
+  } else {
+    printf("PTLOG header unchanged (%s); current file revision retained\n", reason);
+  }
 }
 
 static bool
@@ -6304,6 +6378,36 @@ static const console_help_topic_t kCalTopics[] = {
                 "  cal apply --mode poly2 --allow_wide_slope",
   },
   {
+    .name = "status",
+    .summary = "Show unified calibration status, points, and schedule metadata",
+    .synopsis = "cal status",
+    .details = "Prints window statistics, model/point state, residuals, and "
+               "calibration schedule metadata (last/due/method/time status) in "
+               "one deduplicated output.",
+    .options = NULL,
+    .examples = "  cal status",
+  },
+  {
+    .name = "set",
+    .summary = "Set calibration schedule metadata and method text",
+    .synopsis = "cal set date <YYYY-MM-DD>\n"
+                "cal set due <count> <days|months|years>\n"
+                "cal set due_override <count> <days|months|years>\n"
+                "cal set method <string...>",
+    .details = "Updates calibration metadata stored in NVS. Method text should "
+               "describe how calibration was performed and is embedded in PTLOG "
+               "headers; changes trigger immediate PTLOG revision rollover when "
+               "SD is mounted and system time is valid.",
+    .options = "  date <YYYY-MM-DD>                Override last calibration date (UTC).\n"
+               "  due <count> <unit>               Baseline due interval.\n"
+               "  due_override <count> <unit>      Override due interval.\n"
+               "  method <string...>               Method description; quote multi-word text.",
+    .examples = "  cal set date 2026-01-15\n"
+                "  cal set due 12 months\n"
+                "  cal set due_override 30 days\n"
+                "  cal set method \"ice + satpt steam\"",
+  },
+  {
     .name = "capture",
     .summary = "Capture a stable point from live sensor data and save it",
     .synopsis = "cal capture <actual_temp_c> [--stable_stddev_c 0.05] "
@@ -6365,15 +6469,6 @@ static const console_help_topic_t kCalTopics[] = {
                 "  cal live --seconds 20",
   },
   {
-    .name = "show",
-    .summary = "Show current window statistics and calibration points",
-    .synopsis = "cal show",
-    .details = "Prints rolling raw window metrics, calibration mode, point "
-               "count, and each point residual summary.",
-    .options = NULL,
-    .examples = "  cal show",
-  },
-  {
     .name = "stop",
     .summary = "Request cancellation of an active live/capture operation",
     .synopsis = "cal stop",
@@ -6392,7 +6487,8 @@ PrintCalHelpBody(void)
   ConsoleHelpPrintTopicList(kCalTopics);
   printf("Use: help cal <subcommand>\n\n");
   printf("EXAMPLES\n");
-  printf("  cal show\n");
+  printf("  cal status\n");
+  printf("  cal set method \"ice + satpt steam\"\n");
   printf("  cal add 24.81 25.00\n");
   printf("  cal capture 100.0 --stable_stddev_c 0.05\n");
 }
@@ -6568,7 +6664,10 @@ RegisterCommands(void)
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&rtd_cmd));
 
   g_cal_args.action = arg_str1(
-    NULL, NULL, "<action>", "clear|add|list|show|apply|live|capture|stop");
+    NULL,
+    NULL,
+    "<action>",
+    "status|set|clear|add|list|apply|live|capture|stop");
   g_cal_args.raw_c =
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw Celsius sample (use with 'add')");
   g_cal_args.actual_c =
@@ -6594,7 +6693,7 @@ RegisterCommands(void)
   static const console_registry_entry_t cal_cmd = {
     .command = "cal",
     .summary = "Manage calibration points and live capture",
-    .synopsis = "cal <show|list|add|clear|apply|live|capture|stop> ...",
+    .synopsis = "cal <status|set|list|add|clear|apply|live|capture|stop> ...",
     .print_body = PrintCalHelpBody,
     .topic_help = &CalTopicHelp,
     .func = &CommandCal,
