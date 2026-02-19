@@ -3039,9 +3039,9 @@ UpdateCalibrationDueState(runtime_state_t* state,
     state->cal_last_time_valid_utc = 0;
   }
 
-  const bool cal_due_check_suspended = !time_valid || !state->cal_time_stable;
+  const bool cal_due_check_suspended = !time_valid;
   bool cal_overdue = false;
-  if (!cal_due_check_suspended) {
+  if (time_valid) {
     const int64_t last_cal = (state->settings.cal_last_override_utc != 0)
                                ? state->settings.cal_last_override_utc
                                : state->settings.cal_last_utc;
@@ -3317,8 +3317,8 @@ DisplayTask(void* context)
 
     char text[12];
     const bool show_cal_overdue =
-      state->cached_status.time_valid && state->cached_status.cal_time_stable &&
-      state->cached_status.cal_overdue && ((now_ms / 750u) % 2u) == 0u;
+      state->cached_status.time_valid && state->cached_status.cal_overdue &&
+      ((now_ms / 750u) % 2u) == 0u;
     if (show_cal_overdue) {
       snprintf(text, sizeof(text), "CAL ");
     } else {
@@ -3528,8 +3528,7 @@ RuntimeCalibrationApplied(const runtime_state_t* state)
   }
   const app_settings_t* settings = &state->settings;
   return (settings->calibration_points_count > 0u) &&
-         settings->calibration.is_valid && !state->cal_overdue &&
-         !state->cal_due_check_suspended;
+         settings->calibration.is_valid && !state->cal_overdue;
 }
 
 static bool
