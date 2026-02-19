@@ -2612,25 +2612,27 @@ class PlotterApp:
                 overlays.append(f"highlight: {', '.join(highlights)}")
 
         summary_rows = [
-            ["Field", "Value"],
-            ["Time zone", display_config.display_tz_label],
-            ["Data range", data_range_value],
-            ["Series", series_label],
-            ["min / avg / max / std", f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
+            ["Metric", "Result"],
+            ["Reporting time zone", display_config.display_tz_label],
+            ["Measurement window", data_range_value],
+            ["Plotted series", series_label],
+            ["Summary statistics (min / mean / max / std dev)",
+            f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
         ]
         if flags_summary != "n/a":
-            summary_rows.append(["Flag issues", flags_summary])
+            summary_rows.append(["Data quality flags", flags_summary])
         if stats_notes:
-            summary_rows.append(["Stats filtering", "; ".join(stats_notes)])
+            summary_rows.append(["Statistics filters", "; ".join(stats_notes)])
 
         calibration_rows = [
-            ["Field", "Value"],
-            ["Applied (records)", _format_applied_records_label(df)],
-            ["Points", cal_points],
-            ["Calibration date", cal_last_utc],
-            ["Due date", cal_due_utc],
-            ["Method", cal_method],
+            ["Calibration item", "Recorded value"],
+            ["Calibration applied to records", _format_applied_records_label(df)],
+            ["Calibration points used", cal_points],
+            ["Calibration performed (UTC)", cal_last_utc],
+            ["Calibration due (UTC)", cal_due_utc],
+            ["Calibration method (operator notes)", cal_method],
         ]
+
 
         # Intentionally omit any "Overlays" row from the PDF summary. The report
         # should stay focused on time span, series, calibration, statistics, and
