@@ -35,8 +35,8 @@ static const uint8_t kCfgFilter50Hz = 0x01;
 // Fault status bits.
 static const uint8_t kFaultHighThreshold = 0x80;
 static const uint8_t kFaultLowThreshold = 0x40;
-static const uint8_t kFaultRefInLow = 0x20;
-static const uint8_t kFaultRefInHigh = 0x10;
+static const uint8_t kFaultRefInAboveBiasThreshold = 0x20;
+static const uint8_t kFaultRefInBelowBiasThreshold = 0x10;
 static const uint8_t kFaultRtdInLow = 0x08;
 static const uint8_t kFaultOverUnder = 0x04;
 static const uint8_t kFaultRtdFlag = 0x01; // Derived from RTD LSB fault bit.
@@ -420,18 +420,23 @@ Max31865FormatFault(uint8_t fault_status, char* out, size_t out_len)
     uint8_t bit;
     const char* label;
   } fault_map[] = {
-    { kFaultHighThreshold, "rtd_high" }, { kFaultLowThreshold, "rtd_low" },
-    { kFaultRefInLow, "refin_low" },     { kFaultRefInHigh, "refin_high" },
-    { kFaultRtdInLow, "rtdin_low" },     { kFaultOverUnder, "ov_uv" },
-    { kFaultRtdFlag, "fault_bit" },
+    { kFaultHighThreshold, "RTD high threshold" },
+    { kFaultLowThreshold, "RTD low threshold" },
+    { kFaultRefInAboveBiasThreshold, "REFIN- > 0.85*VBIAS" },
+    { kFaultRefInBelowBiasThreshold, "REFIN- < 0.85*VBIAS (FORCE- open)" },
+    { kFaultRtdInLow, "RTDIN- < 0.85*VBIAS (FORCE- open)" },
+    { kFaultOverUnder, "Over/undervoltage" },
+    { kFaultRtdFlag, "Fault summary bit (RTD LSB)" },
   };
+  bool matched = false;
 
   for (size_t i = 0; i < sizeof(fault_map) / sizeof(fault_map[0]); ++i) {
     if ((fault_status & fault_map[i].bit) != 0) {
+      matched = true;
       const int n = snprintf(out + written,
                              (written < out_len) ? (out_len - written) : 0,
                              "%s%s",
-                             (written > 0) ? "|" : "",
+                             (written > 0) ? ", " : "",
                              fault_map[i].label);
       if (n < 0) {
         break;
@@ -441,6 +446,11 @@ Max31865FormatFault(uint8_t fault_status, char* out, size_t out_len)
         break;
       }
     }
+  }
+  if (!matched) {
+    snprintf(out, out_len, "unknown(0x%02X)", fault_status);
+  } else {
+    out[out_len - 1] = '\0';
   }
 }
 
