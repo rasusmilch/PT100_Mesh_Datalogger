@@ -6171,11 +6171,15 @@ UpdateDebouncedRtdFault(runtime_state_t* state,
       }
       if ((now_ms - state->rtd_fault_pending_since_ms) >=
           (int64_t)settings->rtd_fault_assert_ms) {
+        char fault_desc[128] = { 0 };
+        Max31865FormatFault(
+          state->rtd_fault_last_status, fault_desc, sizeof(fault_desc));
         state->last_sensor_fault_present = true;
         state->rtd_fault_pending_since_ms = 0;
         ESP_LOGI(kTag,
-                 "RTD fault active: status=0x%02X assert_ms=%" PRIu32,
+                 "RTD fault active: status=0x%02X (%s) assert_ms=%" PRIu32,
                  state->rtd_fault_last_status,
+                 fault_desc,
                  settings->rtd_fault_assert_ms);
       }
     } else {
@@ -6347,6 +6351,9 @@ SensorTask(void* context)
         (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
          5000u);
       if (changed || rate_ok) {
+        char fault_desc[128] = { 0 };
+        Max31865FormatFault(
+          sample.fault_status, fault_desc, sizeof(fault_desc));
         // Avoid float formatting in logs. newlib's %f formatting is
         // stack-heavy.
         const int32_t res_milli_ohm =
@@ -6354,9 +6361,10 @@ SensorTask(void* context)
         const int32_t temp_milli_c =
           (int32_t)llround(sample.temperature_c * 1000.0);
         ESP_LOGW(kTag,
-                 "MAX31865 fault: status=0x%02X res_mohm=%" PRId32
+                 "MAX31865 fault: status=0x%02X (%s) res_mohm=%" PRId32
                  " temp_mC=%" PRId32,
                  sample.fault_status,
+                 fault_desc,
                  res_milli_ohm,
                  temp_milli_c);
         state->last_sensor_fault_log_ticks = now_ticks;
@@ -6389,7 +6397,13 @@ SensorTask(void* context)
       state->rtd_fault_last_status = 0xFFu;
     } else {
       if (state->rtd_fault_pending_was_raw) {
-        ESP_LOGW(kTag, "MAX31865 fault cleared");
+        char fault_desc[128] = { 0 };
+        Max31865FormatFault(
+          state->rtd_fault_last_status, fault_desc, sizeof(fault_desc));
+        ESP_LOGW(kTag,
+                 "MAX31865 fault cleared (last=0x%02X (%s))",
+                 state->rtd_fault_last_status,
+                 fault_desc);
       }
       state->rtd_fault_pending_was_raw = false;
     }

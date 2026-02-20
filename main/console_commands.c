@@ -54,6 +54,7 @@
 #include "esp_system.h"
 #include "i2c_bus.h"
 #include "linenoise/linenoise.h"
+#include "max31865_reader.h"
 #include "mem_guard.h"
 #include "runtime_manager.h"
 #include "runtime_markers.h"
@@ -352,9 +353,15 @@ PrintRtdFaultSettings(const app_settings_t* settings,
   printf("rtd_fault_assert_ms: %u\n", (unsigned)settings->rtd_fault_assert_ms);
   printf("rtd_fault_clear_ms: %u\n", (unsigned)settings->rtd_fault_clear_ms);
   if (state != NULL) {
+    char fault_desc[128] = { 0 };
+    Max31865FormatFault(
+      state->rtd_fault_last_status, fault_desc, sizeof(fault_desc));
+    printf("rtd_fault_debounced: %s\n",
+           state->last_sensor_fault_present ? "yes" : "no");
+    printf("rtd_fault_last_status: 0x%02X\n", state->rtd_fault_last_status);
+    printf("rtd_fault_last_desc: %s\n", fault_desc);
     printf("rtd_fault_suppressed_count: %u\n",
            (unsigned)state->rtd_fault_suppressed_count);
-    printf("rtd_fault_last_status: 0x%02X\n", state->rtd_fault_last_status);
   }
 }
 
@@ -849,6 +856,7 @@ CommandStatus(int argc, char** argv)
     printf("broker_bridge_active: %s\n", broker_bridge_active ? "yes" : "no");
   }
   PrintRtdEmaSettings(settings, g_runtime->sensor);
+  PrintRtdFaultSettings(settings, RuntimeGetState());
 
   // Ensure the TZ rules are loaded before formatting local time.
   // (TZ is applied via AppSettingsApplyTimeZone() at boot and by the tz/dst
