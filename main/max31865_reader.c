@@ -45,6 +45,15 @@ static const double kCvdA = 3.9083e-3;
 static const double kCvdB = -5.775e-7;
 static const double kCvdC = -4.183e-12;
 
+static double ResistanceToTemperature(const max31865_reader_t* reader,
+                                      double resistance_ohm);
+
+static void FillSample(max31865_sample_t* sample,
+                       uint16_t adc_code,
+                       double resistance,
+                       double temp_c,
+                       uint8_t fault_status);
+
 static bool
 Max31865AcquireSpiBus(max31865_reader_t* reader)
 {
@@ -269,28 +278,57 @@ ClearFaults(max31865_reader_t* reader, uint8_t base_config)
 }
 
 /**
- * @brief Execute WaitForConversionComplete.
+ * @brief Read raw RTD/fault registers and populate a parsed sample.
  * @param reader Parameter reader.
- * @param timeout_ms Parameter timeout_ms.
+ * @param base_config Parameter base_config.
+ * @param sample_out Parameter sample_out.
  * @return Return the function result.
  */
 static esp_err_t
-WaitForConversionComplete(max31865_reader_t* reader, int timeout_ms)
+ReadAndFinishOneShot(max31865_reader_t* reader,
+                     uint8_t base_config,
+                     max31865_sample_t* sample_out)
 {
-  const int64_t start_us = esp_timer_get_time();
-  const int64_t timeout_us = (int64_t)timeout_ms * 1000;
-  while ((esp_timer_get_time() - start_us) < timeout_us) {
-    uint8_t cfg = 0;
-    esp_err_t res = Max31865ReadReg(reader, kRegConfig, &cfg);
-    if (res != ESP_OK) {
-      return res;
-    }
-    if ((cfg & kCfgOneShot) == 0) {
-      return ESP_OK;
-    }
-    vTaskDelay(pdMS_TO_TICKS(2));
+  uint8_t rtd_raw[2] = { 0 };
+  esp_err_t result =
+    Max31865ReadRegs(reader, kRegRtdMsb, rtd_raw, sizeof(rtd_raw));
+
+  uint8_t fault_reg = 0;
+  if (result == ESP_OK) {
+    result = Max31865ReadReg(reader, kRegFaultStatus, &fault_reg);
   }
-  return ESP_ERR_TIMEOUT;
+
+  const esp_err_t disable_result = Max31865WriteReg(reader, kRegConfig, base_config);
+  if (result != ESP_OK) {
+    return result;
+  }
+  if (disable_result != ESP_OK) {
+    return disable_result;
+  }
+
+  if (IsInvalidRegisterPattern(fault_reg, rtd_raw)) {
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+
+  uint16_t rtd_code = ((uint16_t)rtd_raw[0] << 8) | rtd_raw[1];
+  const bool rtd_fault_bit = (rtd_code & 0x01u) != 0;
+  rtd_code >>= 1;
+
+  uint8_t combined_faults = fault_reg;
+  if (rtd_fault_bit) {
+    combined_faults |= kFaultRtdFlag;
+  }
+
+  const double resistance =
+    Max31865AdcCodeToResistance(rtd_code, reader->rref_ohm);
+  const double temp_c = ResistanceToTemperature(reader, resistance);
+
+  FillSample(sample_out, rtd_code, resistance, temp_c, combined_faults);
+
+  if (combined_faults != 0) {
+    (void)ClearFaults(reader, base_config);
+  }
+  return ESP_OK;
 }
 
 /**
@@ -660,72 +698,168 @@ Max31865ReadOnce(max31865_reader_t* reader, max31865_sample_t* sample_out)
     return ESP_ERR_INVALID_STATE;
   }
 
+  max31865_one_shot_state_t one_shot;
+  esp_err_t result = Max31865StartOneShot(reader, &one_shot);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  while (true) {
+    result = Max31865TryReadOneShot(reader, &one_shot, sample_out);
+    if (result == ESP_OK) {
+      return ESP_OK;
+    }
+    if (result != ESP_ERR_TIMEOUT) {
+      (void)Max31865AbortOneShot(reader, &one_shot);
+      return result;
+    }
+
+    const int64_t now_us = esp_timer_get_time();
+    int64_t delay_ms =
+      (one_shot.next_action_deadline_us > now_us)
+        ? (one_shot.next_action_deadline_us - now_us + 999) / 1000
+        : 1;
+    if (delay_ms < 1) {
+      delay_ms = 1;
+    }
+    vTaskDelay(pdMS_TO_TICKS((uint32_t)delay_ms));
+  }
+}
+
+/**
+ * @brief Start a non-blocking one-shot conversion sequence.
+ * @param reader Parameter reader.
+ * @param state_out Parameter state_out.
+ * @return Return the function result.
+ */
+esp_err_t
+Max31865StartOneShot(max31865_reader_t* reader,
+                     max31865_one_shot_state_t* state_out)
+{
+  if (reader == NULL || state_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!reader->is_initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
   const uint8_t base_config = BuildBaseConfig(reader);
-  (void)ClearFaults(reader, base_config);
-
-  esp_err_t result =
-    Max31865WriteReg(reader, kRegConfig, (uint8_t)(base_config | kCfgVbias));
+  esp_err_t result = ClearFaults(reader, base_config);
+  if (result != ESP_OK) {
+    return result;
+  }
+  result = Max31865WriteReg(reader, kRegConfig, (uint8_t)(base_config | kCfgVbias));
   if (result != ESP_OK) {
     return result;
   }
 
-  if (reader->bias_settle_ms > 0) {
-    vTaskDelay(pdMS_TO_TICKS(reader->bias_settle_ms));
-  }
-
-  result = Max31865WriteReg(
-    reader, kRegConfig, (uint8_t)(base_config | kCfgVbias | kCfgOneShot));
-  if (result != ESP_OK) {
-    (void)Max31865WriteReg(reader, kRegConfig, base_config);
-    return result;
-  }
-
-  const int wait_ms = ConversionDelayMs(reader) + reader->bias_settle_ms;
-  result = WaitForConversionComplete(reader, wait_ms + 10);
-  if (result == ESP_ERR_TIMEOUT) {
-    vTaskDelay(pdMS_TO_TICKS(wait_ms));
-    result = ESP_OK;
-  }
-
-  uint8_t rtd_raw[2] = { 0 };
-  if (result == ESP_OK) {
-    result = Max31865ReadRegs(reader, kRegRtdMsb, rtd_raw, sizeof(rtd_raw));
-  }
-
-  uint8_t fault_reg = 0;
-  if (result == ESP_OK) {
-    result = Max31865ReadReg(reader, kRegFaultStatus, &fault_reg);
-  }
-
-  (void)Max31865WriteReg(reader, kRegConfig, base_config);
-
-  if (result != ESP_OK) {
-    return result;
-  }
-
-  if (IsInvalidRegisterPattern(fault_reg, rtd_raw)) {
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-
-  uint16_t rtd_code = ((uint16_t)rtd_raw[0] << 8) | rtd_raw[1];
-  const bool rtd_fault_bit = (rtd_code & 0x01u) != 0;
-  rtd_code >>= 1;
-
-  uint8_t combined_faults = fault_reg;
-  if (rtd_fault_bit) {
-    combined_faults |= kFaultRtdFlag;
-  }
-
-  const double resistance =
-    Max31865AdcCodeToResistance(rtd_code, reader->rref_ohm);
-  const double temp_c = ResistanceToTemperature(reader, resistance);
-
-  FillSample(sample_out, rtd_code, resistance, temp_c, combined_faults);
-
-  if (combined_faults != 0) {
-    (void)ClearFaults(reader, base_config);
-  }
+  const int64_t now_us = esp_timer_get_time();
+  const int64_t bias_us = (int64_t)reader->bias_settle_ms * 1000;
+  const int64_t timeout_us =
+    (int64_t)(reader->bias_settle_ms + ConversionDelayMs(reader) + 50) * 1000;
+  state_out->phase = (reader->bias_settle_ms > 0)
+                       ? kMax31865OneShotBiasSettling
+                       : kMax31865OneShotConverting;
+  state_out->base_config = base_config;
+  state_out->next_action_deadline_us = now_us + bias_us;
+  state_out->hard_timeout_deadline_us = now_us + timeout_us;
+  state_out->conversion_started = false;
   return ESP_OK;
+}
+
+/**
+ * @brief Advance and optionally finish a started one-shot conversion.
+ * @param reader Parameter reader.
+ * @param state Parameter state.
+ * @param sample_out Parameter sample_out.
+ * @return Return the function result.
+ */
+esp_err_t
+Max31865TryReadOneShot(max31865_reader_t* reader,
+                       max31865_one_shot_state_t* state,
+                       max31865_sample_t* sample_out)
+{
+  if (reader == NULL || state == NULL || sample_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!reader->is_initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (state->phase == kMax31865OneShotIdle) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const int64_t now_us = esp_timer_get_time();
+  if (now_us < state->next_action_deadline_us) {
+    return ESP_ERR_TIMEOUT;
+  }
+
+  if (state->phase == kMax31865OneShotBiasSettling ||
+      (state->phase == kMax31865OneShotConverting &&
+       !state->conversion_started)) {
+    esp_err_t result = Max31865WriteReg(reader,
+                                        kRegConfig,
+                                        (uint8_t)(state->base_config | kCfgVbias |
+                                                  kCfgOneShot));
+    if (result != ESP_OK) {
+      (void)Max31865AbortOneShot(reader, state);
+      return result;
+    }
+
+    state->phase = kMax31865OneShotConverting;
+    state->conversion_started = true;
+    state->next_action_deadline_us =
+      now_us + ((int64_t)ConversionDelayMs(reader) * 1000);
+    return ESP_ERR_TIMEOUT;
+  }
+
+  if (now_us > state->hard_timeout_deadline_us) {
+    (void)Max31865AbortOneShot(reader, state);
+    return ESP_ERR_TIMEOUT;
+  }
+
+  uint8_t config = 0;
+  esp_err_t result = Max31865ReadReg(reader, kRegConfig, &config);
+  if (result != ESP_OK) {
+    (void)Max31865AbortOneShot(reader, state);
+    return result;
+  }
+  if ((config & kCfgOneShot) != 0) {
+    state->next_action_deadline_us = now_us + 2000;
+    return ESP_ERR_TIMEOUT;
+  }
+
+  result = ReadAndFinishOneShot(reader, state->base_config, sample_out);
+  state->phase = kMax31865OneShotIdle;
+  state->conversion_started = false;
+  return result;
+}
+
+/**
+ * @brief Abort a one-shot conversion by restoring base configuration.
+ * @param reader Parameter reader.
+ * @param state Parameter state.
+ * @return Return the function result.
+ */
+esp_err_t
+Max31865AbortOneShot(max31865_reader_t* reader, max31865_one_shot_state_t* state)
+{
+  if (reader == NULL || state == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!reader->is_initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  esp_err_t result = ESP_OK;
+  if (state->phase != kMax31865OneShotIdle) {
+    result = Max31865WriteReg(reader, kRegConfig, state->base_config);
+  }
+  state->phase = kMax31865OneShotIdle;
+  state->conversion_started = false;
+  state->next_action_deadline_us = 0;
+  state->hard_timeout_deadline_us = 0;
+  return result;
 }
 
 /**
@@ -842,12 +976,42 @@ Max31865ReadEmaUpdate(max31865_reader_t* reader,
     memset(sample_out, 0, sizeof(*sample_out));
     return res;
   }
-  if (sample.fault_present) {
-    FillSample(sample_out,
-               sample.adc_code,
-               sample.resistance_ohm,
-               sample.temperature_c,
-               sample.fault_status);
+  esp_err_t ema_result = Max31865ApplyEmaSample(reader, alpha, &sample, ema_temp_out);
+  if (ema_result != ESP_OK) {
+    memset(sample_out, 0, sizeof(*sample_out));
+    return ema_result;
+  }
+
+  FillSample(sample_out,
+             sample.adc_code,
+             sample.resistance_ohm,
+             sample.temperature_c,
+             sample.fault_status);
+  return ESP_OK;
+}
+
+/**
+ * @brief Update EMA state using a pre-acquired sample.
+ * @param reader Parameter reader.
+ * @param alpha Parameter alpha.
+ * @param sample Parameter sample.
+ * @param ema_temp_out Parameter ema_temp_out.
+ * @return Return the function result.
+ */
+esp_err_t
+Max31865ApplyEmaSample(max31865_reader_t* reader,
+                       double alpha,
+                       const max31865_sample_t* sample,
+                       double* ema_temp_out)
+{
+  if (reader == NULL || sample == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (alpha <= 0.0 || alpha > 1.0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (sample->fault_present) {
     if (ema_temp_out != NULL) {
       *ema_temp_out = reader->ema_temp_c;
     }
@@ -855,21 +1019,14 @@ Max31865ReadEmaUpdate(max31865_reader_t* reader,
   }
 
   if (!reader->ema_valid) {
-    reader->ema_resistance_ohm = sample.resistance_ohm;
+    reader->ema_resistance_ohm = sample->resistance_ohm;
     reader->ema_valid = true;
   } else {
-    reader->ema_resistance_ohm = alpha * sample.resistance_ohm +
-                                 (1.0 - alpha) * reader->ema_resistance_ohm;
+    reader->ema_resistance_ohm =
+      alpha * sample->resistance_ohm + (1.0 - alpha) * reader->ema_resistance_ohm;
   }
   reader->ema_temp_c =
     ResistanceToTemperature(reader, reader->ema_resistance_ohm);
-
-  FillSample(sample_out,
-             sample.adc_code,
-             sample.resistance_ohm,
-             sample.temperature_c,
-             sample.fault_status);
-
   if (ema_temp_out != NULL) {
     *ema_temp_out = reader->ema_temp_c;
   }

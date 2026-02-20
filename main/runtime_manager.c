@@ -258,6 +258,21 @@ UpdateDebouncedRtdFault(runtime_state_t* state,
                         uint8_t raw_fault_status);
 
 /**
+ * @brief Apply EMA settings to a freshly captured RTD sample.
+ * @param state Runtime state containing MAX31865 EMA storage.
+ * @param ema_enabled True when EMA filtering is enabled.
+ * @param alpha_permille EMA alpha in permille units [1, 1000].
+ * @param sample Sample to fold into EMA state.
+ * @param result Capture result associated with @p sample.
+ */
+static void
+UpdateSensorEmaFromSample(runtime_state_t* state,
+                          bool ema_enabled,
+                          uint16_t alpha_permille,
+                          const max31865_sample_t* sample,
+                          esp_err_t result);
+
+/**
  * @brief Execute RuntimeRecoverI2cBusCommon.
  * @param state Parameter state.
  * @param reason Parameter reason.
@@ -481,6 +496,29 @@ RegisterStackMonitorTask(const char* name,
         &g_stack_monitor, name, handle_ptr, stack_alloc_bytes)) {
     ESP_LOGW(kTag, "Stack monitor registry full; skipping %s", name);
   }
+}
+
+/**
+ * @brief Update EMA state with an already-read MAX31865 sample.
+ * @param state Runtime state containing sensor EMA fields.
+ * @param ema_enabled True when EMA filtering is enabled.
+ * @param alpha_permille EMA alpha in permille units [1, 1000].
+ * @param sample Sample captured in the current sensor loop iteration.
+ * @param result Capture status associated with @p sample.
+ */
+static void
+UpdateSensorEmaFromSample(runtime_state_t* state,
+                          bool ema_enabled,
+                          uint16_t alpha_permille,
+                          const max31865_sample_t* sample,
+                          esp_err_t result)
+{
+  if (state == NULL || sample == NULL || !ema_enabled || result != ESP_OK) {
+    return;
+  }
+
+  const double alpha = (double)alpha_permille / 1000.0;
+  (void)Max31865ApplyEmaSample(&state->sensor, alpha, sample, NULL);
 }
 
 static uint32_t
@@ -6229,6 +6267,7 @@ SensorTask(void* context)
     }
     state->spi_pause_ack_mask &= ~SPI_PAUSE_ACK_SENSOR;
     const uint32_t period_ms = state->settings.log_period_ms;
+    const int64_t loop_start_ms = esp_timer_get_time() / 1000;
 
     max31865_sample_t sample;
     memset(&sample, 0, sizeof(sample));
@@ -6247,13 +6286,48 @@ SensorTask(void* context)
     esp_err_t result = ESP_OK;
     double raw_temp_c = 0.0;
     double raw_res_ohm = 0.0;
-    if (ema_enabled) {
-      const double alpha = (double)alpha_permille / 1000.0;
-      result = Max31865ReadEmaUpdate(&state->sensor, alpha, &sample, NULL);
-    } else {
-      result = Max31865ReadOnce(&state->sensor, &sample);
-    }
+    max31865_one_shot_state_t one_shot = {
+      .phase = kMax31865OneShotIdle,
+    };
+
+    result = Max31865StartOneShot(&state->sensor, &one_shot);
     if (result == ESP_OK) {
+      while (!state->stop_requested && !state->spi_pause_requested) {
+        result = Max31865TryReadOneShot(&state->sensor, &one_shot, &sample);
+        if (result == ESP_OK || result != ESP_ERR_TIMEOUT) {
+          break;
+        }
+
+        const int64_t now_us = esp_timer_get_time();
+        int64_t delay_ms =
+          (one_shot.next_action_deadline_us > now_us)
+            ? ((one_shot.next_action_deadline_us - now_us + 999) / 1000)
+            : 1;
+        if (delay_ms < 1) {
+          delay_ms = 1;
+        } else if (delay_ms > 20) {
+          delay_ms = 20;
+        }
+        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS((uint32_t)delay_ms));
+      }
+    }
+
+    if ((state->stop_requested || state->spi_pause_requested) &&
+        one_shot.phase != kMax31865OneShotIdle) {
+      (void)Max31865AbortOneShot(&state->sensor, &one_shot);
+    }
+    if (state->stop_requested) {
+      break;
+    }
+    if (state->spi_pause_requested) {
+      state->spi_pause_ack_mask |= SPI_PAUSE_ACK_SENSOR;
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(50));
+      continue;
+    }
+
+    if (result == ESP_OK) {
+      UpdateSensorEmaFromSample(
+        state, ema_enabled, alpha_permille, &sample, result);
       raw_temp_c = sample.temperature_c;
       raw_res_ohm = sample.resistance_ohm;
     }
@@ -6448,7 +6522,11 @@ SensorTask(void* context)
       .disp_cal_temp_milli_c = disp_cal_milli_c,
     };
     (void)xQueueSend(state->log_queue, &msg, 0);
-    RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(period_ms));
+    const int64_t elapsed_ms = (esp_timer_get_time() / 1000) - loop_start_ms;
+    const int64_t remaining_ms = (int64_t)period_ms - elapsed_ms;
+    if (remaining_ms > 0) {
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS((uint32_t)remaining_ms));
+    }
   }
 
   state->sensor_task = NULL;
