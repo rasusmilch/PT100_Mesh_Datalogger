@@ -29,6 +29,22 @@ extern "C"
     bool fault_present;
   } max31865_sample_t;
 
+  typedef enum
+  {
+    kMax31865OneShotIdle = 0,
+    kMax31865OneShotBiasSettling,
+    kMax31865OneShotConverting,
+  } max31865_one_shot_phase_t;
+
+  typedef struct
+  {
+    max31865_one_shot_phase_t phase;
+    uint8_t base_config;
+    int64_t next_action_deadline_us;
+    int64_t hard_timeout_deadline_us;
+    bool conversion_started;
+  } max31865_one_shot_state_t;
+
   typedef struct
   {
     int requested_samples;
@@ -125,6 +141,45 @@ extern "C"
 
   // Read one conversion using pulsed bias + one-shot mode.
 /**
+ * @brief Start a non-blocking one-shot conversion sequence.
+ * @param reader Initialized MAX31865 reader instance.
+ * @param state_out One-shot state storage owned by the caller.
+ * @return ESP_OK when one-shot sequencing has started; error otherwise.
+ *
+ * Enables VBIAS, clears fault state, and initializes an asynchronous one-shot
+ * state machine. This function does not block for bias settle or conversion.
+ */
+  esp_err_t Max31865StartOneShot(max31865_reader_t* reader,
+                                 max31865_one_shot_state_t* state_out);
+
+/**
+ * @brief Advance and optionally finish a started one-shot conversion.
+ * @param reader Initialized MAX31865 reader instance.
+ * @param state In/out state previously initialized by Max31865StartOneShot().
+ * @param sample_out Receives the completed sample when ESP_OK is returned.
+ * @return ESP_OK when @p sample_out is valid, ESP_ERR_TIMEOUT while not ready,
+ *         or another ESP_ERR_* value on I/O/configuration failure.
+ *
+ * This function progresses the one-shot state machine without blocking. The
+ * caller should poll until ESP_OK or a terminal error is returned.
+ */
+  esp_err_t Max31865TryReadOneShot(max31865_reader_t* reader,
+                                   max31865_one_shot_state_t* state,
+                                   max31865_sample_t* sample_out);
+
+/**
+ * @brief Abort a started one-shot conversion and force the state idle.
+ * @param reader Initialized MAX31865 reader instance.
+ * @param state One-shot state to abort.
+ * @return ESP_OK if abort cleanup succeeds; error if SPI/config write fails.
+ *
+ * This disables VBIAS using the tracked base configuration and resets the
+ * caller-owned state machine so acquisition can be restarted safely.
+ */
+  esp_err_t Max31865AbortOneShot(max31865_reader_t* reader,
+                                 max31865_one_shot_state_t* state);
+
+/**
  * @brief Execute Max31865ReadOnce.
  * @param reader Parameter reader.
  * @param sample_out Parameter sample_out.
@@ -164,6 +219,20 @@ extern "C"
                                   double alpha,
                                   max31865_sample_t* sample_out,
                                   double* ema_temp_out);
+
+/**
+ * @brief Update MAX31865 EMA state using an already-acquired sample.
+ * @param reader Initialized MAX31865 reader instance.
+ * @param alpha EMA coefficient in (0, 1].
+ * @param sample Previously acquired RTD sample.
+ * @param ema_temp_out Optional EMA temperature output.
+ * @return ESP_OK when EMA state is updated or sample is faulted;
+ *         ESP_ERR_INVALID_ARG for invalid parameters.
+ */
+  esp_err_t Max31865ApplyEmaSample(max31865_reader_t* reader,
+                                   double alpha,
+                                   const max31865_sample_t* sample,
+                                   double* ema_temp_out);
 
   // Legacy convenience wrapper returning floats.
 /**
