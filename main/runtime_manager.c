@@ -3296,11 +3296,11 @@ DisplayTask(void* context)
                            state->cached_status.sd_mounted);
 
       // Operator feedback:
-      // - "SAFE" once fully stopped and SD is unmounted
+      // - "STOP" once fully stopped and SD is unmounted
       // - "SAVE" while draining/unmounting after stop
       // - "IDLE" otherwise
       const char* text =
-        sd_safe_to_remove ? "SAFE " : (stop_save_active ? "SAVE " : "IDLE ");
+        sd_safe_to_remove ? "STOP " : (stop_save_active ? "SAVE " : "IDLE ");
       if (strncmp(last_text, text, sizeof(last_text)) != 0) {
         Max7219DisplaySetText(&state->display, text);
         snprintf(last_text, sizeof(last_text), "%s", text);
@@ -3316,9 +3316,9 @@ DisplayTask(void* context)
     (void)flags;
 
     char text[12];
-    const bool show_cal_overdue =
-      state->cached_status.time_valid && state->cached_status.cal_overdue &&
-      ((now_ms / 750u) % 2u) == 0u;
+    const bool show_cal_overdue = state->cached_status.time_valid &&
+                                  state->cached_status.cal_overdue &&
+                                  ((now_ms / 750u) % 2u) == 0u;
     if (show_cal_overdue) {
       snprintf(text, sizeof(text), "CAL ");
     } else {
@@ -3639,10 +3639,8 @@ RuntimeBuildPtlogHeaderInternal(const runtime_state_t* state,
            RuntimeCalibrationApplied(state) ? 1u : 0u);
   const char* cal_method =
     (settings->cal_method[0] != '\0') ? settings->cal_method : "<unset>";
-  snprintf(header_out->cal_method,
-           sizeof(header_out->cal_method),
-           "%s",
-           cal_method);
+  snprintf(
+    header_out->cal_method, sizeof(header_out->cal_method), "%s", cal_method);
   snprintf(header_out->cal_context,
            sizeof(header_out->cal_context),
            "net_mode=%d",

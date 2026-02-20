@@ -2648,7 +2648,7 @@ class PlotterApp:
             ["Reporting time zone", display_config.display_tz_label],
             ["Measurement window", data_range_value],
             ["Plotted series", series_label],
-            ["Summary statistics (min / mean / max / std dev)",
+            ["Summary (min/mean/max/std dev)",
             f"{stats['min']} / {stats['avg']} / {stats['max']} / {stats['std']}"],
         ]
         if flags_summary != "n/a":
