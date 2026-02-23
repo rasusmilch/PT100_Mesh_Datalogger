@@ -61,6 +61,9 @@ extern "C"
     ALERT_SYSTEM_CODE_ERROR_I2C_HANG = 21,
   } alert_system_code_t;
 
+#define ALERT_SYSTEM_CODE_ERROR_MIN ALERT_SYSTEM_CODE_ERROR_SD_IO
+#define ALERT_SYSTEM_CODE_ERROR_MAX ALERT_SYSTEM_CODE_ERROR_I2C_HANG
+
   typedef struct
   {
     int32_t current_temp_milli_c;

@@ -132,6 +132,8 @@ static bool AlertManagerBuildBatchMessage(const alert_manager_t* manager,
                                           size_t title_size,
                                           char* body,
                                           size_t body_size);
+static alert_state_t* GetSystemErrorState(alert_manager_t* manager,
+                                          alert_system_code_t error_code);
 static int64_t AlertManagerComputeNextSendMs(const alert_manager_t* manager,
                                              int64_t now_ms,
                                              int retry_after_seconds);
@@ -1624,6 +1626,19 @@ AlertManagerEmitSystemMode(alert_manager_t* manager,
  * @param now_ms Parameter now_ms.
  * @param now_epoch Parameter now_epoch.
  */
+static alert_state_t*
+GetSystemErrorState(alert_manager_t* manager, alert_system_code_t error_code)
+{
+  if (manager == NULL) {
+    return NULL;
+  }
+  if (error_code >= ALERT_SYSTEM_CODE_ERROR_MIN &&
+      error_code <= ALERT_SYSTEM_CODE_ERROR_MAX) {
+    return &manager->system_error_state_by_code[error_code];
+  }
+  return &manager->states[0][ALERT_SYSTEM_ERROR];
+}
+
 void
 AlertManagerProcessSystemError(alert_manager_t* manager,
                                alert_system_code_t error_code,
@@ -1643,16 +1658,62 @@ AlertManagerProcessSystemError(alert_manager_t* manager,
   if (!FindOrAllocateLeafIndex(manager, leaf_id, &leaf_index)) {
     return;
   }
+
+  alert_state_t* state = GetSystemErrorState(manager, error_code);
+  if (state == NULL) {
+    return;
+  }
+
   alert_notification_payload_t payload = { 0 };
   FillPayloadBase(&payload, &manager->leaves[leaf_index], now_ms, now_epoch);
   payload.event_code = error_code;
-  ProcessAlert(manager,
-               leaf_index,
-               ALERT_SYSTEM_ERROR,
-               ALERT_SEV_CRIT,
-               active,
-               &payload,
-               now_ms);
+
+  if (active) {
+    state->last_seen_ms = now_ms;
+    if (!state->active) {
+      AlertStateTransition(state, true, now_ms);
+      payload.transitions = state->transitions;
+      if (AlertManagerQueueNotification(manager,
+                                        state,
+                                        ALERT_SYSTEM_ERROR,
+                                        ALERT_SEV_CRIT,
+                                        false,
+                                        manager->leaves[leaf_index].leaf_id,
+                                        &payload,
+                                        now_ms)) {
+        state->last_notify_ms = now_ms;
+      }
+      state->last_severity = ALERT_SEV_CRIT;
+    } else if (manager->config.per_key_cooldown_ms > 0 &&
+               (now_ms - state->last_notify_ms) >=
+                 (int64_t)manager->config.per_key_cooldown_ms) {
+      payload.transitions = state->transitions;
+      if (AlertManagerQueueNotification(manager,
+                                        state,
+                                        ALERT_SYSTEM_ERROR,
+                                        ALERT_SEV_CRIT,
+                                        false,
+                                        manager->leaves[leaf_index].leaf_id,
+                                        &payload,
+                                        now_ms)) {
+        state->last_notify_ms = now_ms;
+      }
+      state->last_severity = ALERT_SEV_CRIT;
+    }
+  } else if (state->active) {
+    AlertStateTransition(state, false, now_ms);
+    payload.transitions = state->transitions;
+    if (AlertManagerQueueNotification(manager,
+                                      state,
+                                      ALERT_SYSTEM_ERROR,
+                                      ALERT_SEV_CRIT,
+                                      true,
+                                      manager->leaves[leaf_index].leaf_id,
+                                      &payload,
+                                      now_ms)) {
+      state->last_notify_ms = now_ms;
+    }
+  }
 }
 
 /**
@@ -1851,8 +1912,16 @@ AlertNotificationKeyMatches(const alert_notification_t* left,
   if (left == NULL || right == NULL) {
     return false;
   }
-  return left->type == right->type && left->resolved == right->resolved &&
-         left->leaf_id == right->leaf_id && left->severity == right->severity;
+  if (left->type != right->type || left->resolved != right->resolved ||
+      left->leaf_id != right->leaf_id || left->severity != right->severity) {
+    return false;
+  }
+
+  if (left->type == ALERT_SYSTEM_ERROR) {
+    return left->payload.event_code == right->payload.event_code;
+  }
+
+  return true;
 }
 
 static bool
@@ -2371,22 +2440,37 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
     return false;
   }
 
-  alert_ntfy_batch_scratch_t local_scratch = { 0 };
+  alert_ntfy_batch_scratch_t* scratch = manager->ntfy_batch_scratch;
+  if (scratch == NULL) {
+    manager->ntfy_batch_scratch = heap_caps_calloc(
+      1, sizeof(*manager->ntfy_batch_scratch), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    scratch = manager->ntfy_batch_scratch;
+    if (scratch == NULL) {
+      ESP_LOGE(kTag, "Failed to allocate ntfy scratch storage for STOP flush");
+      return false;
+    }
+  }
+  memset(scratch, 0, sizeof(*scratch));
+
   const size_t notes_max = ALERT_NTFY_QUEUE_LEN;
   const size_t jobs_max = ALERT_NTFY_JOB_QUEUE_LEN;
-  alert_ntfy_job_t drained_jobs[ALERT_NTFY_JOB_QUEUE_LEN] = { 0 };
+  char drained_job_titles[ALERT_NTFY_JOB_QUEUE_LEN][ALERT_NTFY_JOB_TITLE_LEN] = { 0 };
 
   size_t notes_count = 0;
   while (notes_count < notes_max &&
-         xQueueReceive(manager->ntfy.queue, &local_scratch.notes[notes_count], 0) ==
-           pdTRUE) {
-    AlertManagerBatchAdd(&local_scratch.batch, &local_scratch.notes[notes_count]);
+         xQueueReceive(manager->ntfy.queue, &scratch->notes[notes_count], 0) == pdTRUE) {
+    AlertManagerBatchAdd(&scratch->batch, &scratch->notes[notes_count]);
     notes_count++;
   }
 
+  alert_ntfy_job_t drained_job = { 0 };
   size_t jobs_count = 0;
   while (jobs_count < jobs_max &&
-         xQueueReceive(manager->ntfy.job_queue, &drained_jobs[jobs_count], 0) == pdTRUE) {
+         xQueueReceive(manager->ntfy.job_queue, &drained_job, 0) == pdTRUE) {
+    snprintf(drained_job_titles[jobs_count],
+             sizeof(drained_job_titles[jobs_count]),
+             "%s",
+             drained_job.title);
     jobs_count++;
   }
 
@@ -2429,7 +2513,15 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
     const size_t max_titles = 6;
     const size_t emit = (jobs_count < max_titles) ? jobs_count : max_titles;
     for (size_t i = 0; i < emit; ++i) {
-      snprintf(summary, sizeof(summary), "- queued job: %s", drained_jobs[i].title);
+      const size_t kSummaryPrefixLen = 14; // "- queued job: "
+      const size_t max_title_chars = (sizeof(summary) > (kSummaryPrefixLen + 1))
+                                       ? (sizeof(summary) - (kSummaryPrefixLen + 1))
+                                       : 0;
+      snprintf(summary,
+               sizeof(summary),
+               "- queued job: %.*s",
+               (int)max_title_chars,
+               drained_job_titles[i]);
       (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
     }
     if (jobs_count > emit) {
@@ -2444,7 +2536,7 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
     const size_t emit = (notes_count < max_notes) ? notes_count : max_notes;
     for (size_t i = 0; i < emit; ++i) {
       char line[256];
-      AlertNotificationDescribe(manager, &local_scratch.notes[i], line, sizeof(line));
+      AlertNotificationDescribe(manager, &scratch->notes[i], line, sizeof(line));
       const size_t kSummaryPrefixLen = 2; // "- "
       const size_t max_line_chars = (sizeof(summary) > (kSummaryPrefixLen + 1))
                                       ? (sizeof(summary) - (kSummaryPrefixLen + 1))
