@@ -204,6 +204,9 @@ RuntimeLogNtfyBodyLines(const char* label, const char* text);
 static void
 RuntimeLogNtfyJob(const alert_ntfy_job_t* job, const char* stage);
 
+static void
+AppendStopStorageSummaryLine(runtime_state_t* state, alert_ntfy_job_t* job);
+
 /**
  * @brief Request net_tx + alert_http pause state and wait for acknowledgements.
  * @param state Runtime state.
@@ -7186,6 +7189,84 @@ RuntimeLogNtfyJob(const alert_ntfy_job_t* job, const char* stage)
 }
 
 static void
+AppendLineBounded(char* dest, size_t dest_size, const char* line)
+{
+  if (dest == NULL || line == NULL || dest_size == 0u) {
+    return;
+  }
+
+  const size_t used = strnlen(dest, dest_size);
+  if (used >= dest_size - 1u) {
+    dest[dest_size - 1u] = '\0';
+    return;
+  }
+
+  size_t write_pos = used;
+  if (write_pos > 0u && dest[write_pos - 1u] != '\n') {
+    dest[write_pos++] = '\n';
+  }
+
+  const size_t remaining = dest_size - write_pos;
+  if (remaining == 0u) {
+    dest[dest_size - 1u] = '\0';
+    return;
+  }
+
+  const size_t line_len = strlen(line);
+  const size_t copy_len = (line_len < (remaining - 1u)) ? line_len : (remaining - 1u);
+  if (copy_len > 0u) {
+    memcpy(dest + write_pos, line, copy_len);
+    write_pos += copy_len;
+  }
+  dest[write_pos] = '\0';
+}
+
+static void
+AppendStopStorageSummaryLine(runtime_state_t* state, alert_ntfy_job_t* job)
+{
+  if (state == NULL || job == NULL) {
+    return;
+  }
+
+  const runtime_cached_status_t* cached = &state->cached_status;
+  const bool sd_unhealthy = cached->sd_io_error_active || cached->sd_degraded ||
+                            cached->sd_out_of_space_active ||
+                            !cached->sd_card_present;
+
+  char storage_line[256];
+  if (sd_unhealthy) {
+    (void)snprintf(storage_line,
+                   sizeof(storage_line),
+                   "CRITICAL STORAGE: SD logging FAILED (sd_io=%u degraded=%u "
+                   "mounted=%u present=%u fail=%u backoff_ms=%u oos=%u) -> FRAM "
+                   "%u/%u overrun=%u (DATA LOSS LIKELY)",
+                   cached->sd_io_error_active ? 1u : 0u,
+                   cached->sd_degraded ? 1u : 0u,
+                   cached->sd_mounted ? 1u : 0u,
+                   cached->sd_card_present ? 1u : 0u,
+                   cached->sd_fail_count,
+                   cached->sd_backoff_remaining_ms,
+                   cached->sd_out_of_space_active ? 1u : 0u,
+                   cached->fram_count,
+                   cached->fram_capacity,
+                   cached->fram_overrun_active ? 1u : 0u);
+  } else {
+    (void)snprintf(storage_line,
+                   sizeof(storage_line),
+                   "STORAGE: SD OK (mounted=%u present=%u free=%" PRIu64 ") -> "
+                   "FRAM %u/%u overrun=%u",
+                   cached->sd_mounted ? 1u : 0u,
+                   cached->sd_card_present ? 1u : 0u,
+                   cached->sd_free_bytes,
+                   cached->fram_count,
+                   cached->fram_capacity,
+                   cached->fram_overrun_active ? 1u : 0u);
+  }
+
+  AppendLineBounded(job->body, sizeof(job->body), storage_line);
+}
+
+static void
 AlertHttpTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
@@ -10436,6 +10517,7 @@ EnterDiagMode(void)
                                           &stop_job,
                                           &drained_notes,
                                           &drained_jobs)) {
+      AppendStopStorageSummaryLine(&g_state, &stop_job);
       alert_ntfy_config_t cfg = {
         .url = stop_job.url,
         .topic = stop_job.topic,
