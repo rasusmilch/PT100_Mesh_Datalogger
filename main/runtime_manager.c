@@ -7320,35 +7320,42 @@ AppendStopStorageSummaryLine(runtime_state_t* state, alert_ntfy_job_t* job)
   const bool sd_unhealthy = cached->sd_io_error_active || cached->sd_degraded ||
                             cached->sd_out_of_space_active ||
                             !cached->sd_card_present;
+  const unsigned int sd_io = cached->sd_io_error_active ? 1U : 0U;
+  const unsigned int degraded = cached->sd_degraded ? 1U : 0U;
+  const unsigned int mounted = cached->sd_mounted ? 1U : 0U;
+  const unsigned int present = cached->sd_card_present ? 1U : 0U;
+  const unsigned int oos = cached->sd_out_of_space_active ? 1U : 0U;
+  const unsigned int overrun = cached->fram_overrun_active ? 1U : 0U;
 
   char storage_line[256];
   if (sd_unhealthy) {
     (void)snprintf(storage_line,
                    sizeof(storage_line),
                    "CRITICAL STORAGE: SD logging FAILED (sd_io=%u degraded=%u "
-                   "mounted=%u present=%u fail=%u backoff_ms=%u oos=%u) -> FRAM "
-                   "%u/%u overrun=%u (DATA LOSS LIKELY)",
-                   cached->sd_io_error_active ? 1u : 0u,
-                   cached->sd_degraded ? 1u : 0u,
-                   cached->sd_mounted ? 1u : 0u,
-                   cached->sd_card_present ? 1u : 0u,
+                   "mounted=%u present=%u fail=%" PRIu32 " backoff_ms=%" PRIu32
+                   " oos=%u) -> FRAM %" PRIu32 "/%" PRIu32
+                   " overrun=%u (DATA LOSS LIKELY)",
+                   sd_io,
+                   degraded,
+                   mounted,
+                   present,
                    cached->sd_fail_count,
                    cached->sd_backoff_remaining_ms,
-                   cached->sd_out_of_space_active ? 1u : 0u,
+                   oos,
                    cached->fram_count,
                    cached->fram_capacity,
-                   cached->fram_overrun_active ? 1u : 0u);
+                   overrun);
   } else {
     (void)snprintf(storage_line,
                    sizeof(storage_line),
                    "STORAGE: SD OK (mounted=%u present=%u free=%" PRIu64 ") -> "
-                   "FRAM %u/%u overrun=%u",
-                   cached->sd_mounted ? 1u : 0u,
-                   cached->sd_card_present ? 1u : 0u,
-                   cached->sd_free_bytes,
+                   "FRAM %" PRIu32 "/%" PRIu32 " overrun=%u",
+                   mounted,
+                   present,
+                   (uint64_t)cached->sd_free_bytes,
                    cached->fram_count,
                    cached->fram_capacity,
-                   cached->fram_overrun_active ? 1u : 0u);
+                   overrun);
   }
 
   AppendLineBounded(job->body, sizeof(job->body), storage_line);
