@@ -2445,7 +2445,15 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
     for (size_t i = 0; i < emit; ++i) {
       char line[256];
       AlertNotificationDescribe(manager, &local_scratch.notes[i], line, sizeof(line));
-      snprintf(summary, sizeof(summary), "- %s", line);
+      const size_t kSummaryPrefixLen = 2; // "- "
+      const size_t max_line_chars = (sizeof(summary) > (kSummaryPrefixLen + 1))
+                                      ? (sizeof(summary) - (kSummaryPrefixLen + 1))
+                                      : 0;
+      snprintf(summary,
+               sizeof(summary),
+               "- %.*s",
+               (int)max_line_chars,
+               line);
       (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
     }
     if (notes_count > emit) {
