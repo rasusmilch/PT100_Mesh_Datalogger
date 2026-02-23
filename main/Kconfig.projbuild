@@ -461,6 +461,14 @@ config APP_SD_PERIODIC_FLUSH_MS
     Even if the FRAM watermark is not reached, the app will attempt to flush
     buffered records after this many milliseconds to keep latency bounded.
 
+config APP_ALERT_STORAGE_STALL_MS
+  int "Storage stall alert threshold (ms)"
+  range 10000 3600000
+  default 120000
+  help
+    Raise storage_stall alert when FRAM remains at/above watermark and no SD
+    drain progress is observed for this long while SD is unhealthy.
+
 config APP_EXPORT_OUTBOX_DEPTH
   int "Export outbox depth (leaf)"
   range 16 1024

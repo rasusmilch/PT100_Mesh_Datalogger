@@ -121,6 +121,7 @@ static const uint32_t kSafeHoldMaxMs = 120000;
 static const uint32_t kSafeHoldMinRetryMs = 2000;
 static const uint32_t kSafeHoldMaxRetryMs = 60000;
 static const uint32_t kSafeHoldLogIntervalMs = 5000;
+static const uint32_t kStorageStallThresholdMs = CONFIG_APP_ALERT_STORAGE_STALL_MS;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
 static runtime_state_t g_state;
@@ -206,6 +207,12 @@ RuntimeLogNtfyJob(const alert_ntfy_job_t* job, const char* stage);
 
 static void
 AppendStopStorageSummaryLine(runtime_state_t* state, alert_ntfy_job_t* job);
+
+static void
+RuntimeResetStorageStallTracking(runtime_state_t* state, int64_t now_ms);
+
+static bool
+RuntimeComputeStorageStallCondition(runtime_state_t* state, int64_t now_ms);
 
 /**
  * @brief Request net_tx + alert_http pause state and wait for acknowledgements.
@@ -1098,6 +1105,80 @@ AlertManagerCanSend(const runtime_state_t* state)
     return true;
   }
   return WifiManagerIsConnected();
+}
+
+/**
+ * @brief Reset storage stall tracking baselines.
+ * @param state Runtime state.
+ * @param now_ms Current uptime in milliseconds.
+ */
+static void
+RuntimeResetStorageStallTracking(runtime_state_t* state, int64_t now_ms)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  if (now_ms < 0) {
+    now_ms = 0;
+  }
+
+  state->storage_stall_last_progress_ms = (uint32_t)now_ms;
+  state->storage_stall_last_fram_count = state->cached_status.fram_count;
+  state->storage_stall_last_sd_last_record_id =
+    SdLoggerLastRecordIdOnSd(&state->sd_logger);
+  state->storage_stall_last_sd_fail_count = state->cached_status.sd_fail_count;
+  state->storage_stall_active = false;
+}
+
+/**
+ * @brief Evaluate if storage drain appears stalled.
+ * @param state Runtime state.
+ * @param now_ms Current uptime in milliseconds.
+ * @return True when stall condition is active.
+ */
+static bool
+RuntimeComputeStorageStallCondition(runtime_state_t* state, int64_t now_ms)
+{
+  if (state == NULL || now_ms < 0) {
+    return false;
+  }
+
+  const uint32_t now_ms_u32 = (uint32_t)now_ms;
+  const uint32_t fram_count = state->cached_status.fram_count;
+  const uint32_t watermark = state->cached_status.fram_flush_watermark_records;
+  const uint64_t sd_last_record_id = SdLoggerLastRecordIdOnSd(&state->sd_logger);
+  const uint32_t sd_fail_count = state->cached_status.sd_fail_count;
+
+  const bool progress = (sd_last_record_id > state->storage_stall_last_sd_last_record_id) ||
+                        (fram_count < state->storage_stall_last_fram_count);
+  if (progress) {
+    state->storage_stall_last_progress_ms = now_ms_u32;
+  }
+
+  state->storage_stall_last_fram_count = fram_count;
+  state->storage_stall_last_sd_last_record_id = sd_last_record_id;
+
+  const bool fram_pressure = state->cached_status.fram_overrun_active ||
+                             (watermark > 0u && fram_count >= watermark);
+  const bool sd_issue = state->cached_status.sd_degraded ||
+                        (!state->cached_status.sd_mounted &&
+                         state->cached_status.sd_card_present) ||
+                        (state->cached_status.sd_backoff_remaining_ms > 0u) ||
+                        (sd_fail_count > state->storage_stall_last_sd_fail_count) ||
+                        state->cached_status.sd_io_error_active ||
+                        state->cached_status.sd_out_of_space_active;
+
+  state->storage_stall_last_sd_fail_count = sd_fail_count;
+
+  if (!state->cached_status.runtime_running || !fram_pressure || !sd_issue) {
+    state->storage_stall_active = false;
+    return false;
+  }
+
+  const uint32_t elapsed_ms = now_ms_u32 - state->storage_stall_last_progress_ms;
+  state->storage_stall_active = elapsed_ms >= kStorageStallThresholdMs;
+  return state->storage_stall_active;
 }
 
 static bool
@@ -8811,8 +8892,10 @@ ControlTask(void* context)
     if (current_phase != last_phase) {
       if (current_phase == RUNTIME_PHASE_RUNNING) {
         pending_mode_code = ALERT_SYSTEM_CODE_MODE_RUN;
+        RuntimeResetStorageStallTracking(state, now_ms);
       } else if (current_phase == RUNTIME_PHASE_DIAGNOSTICS) {
         pending_mode_code = ALERT_SYSTEM_CODE_MODE_DIAG;
+        RuntimeResetStorageStallTracking(state, now_ms);
       }
       last_phase = current_phase;
     }
@@ -8879,6 +8962,8 @@ ControlTask(void* context)
     if (alert_eligible) {
       const int64_t now_epoch =
         TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
+      const bool storage_stall_active =
+        RuntimeComputeStorageStallCondition(state, now_ms);
       if (alert_boot_pending) {
         AlertManagerEmitSystemBoot(&state->alert_manager, now_ms, now_epoch);
         alert_boot_pending = false;
@@ -8891,6 +8976,16 @@ ControlTask(void* context)
       AlertManagerProcessSystemError(&state->alert_manager,
                                      ALERT_SYSTEM_CODE_ERROR_SD_IO,
                                      state->cached_status.sd_io_error_active,
+                                     now_ms,
+                                     now_epoch);
+      AlertManagerProcessSystemError(&state->alert_manager,
+                                     ALERT_SYSTEM_CODE_ERROR_SD_OOS,
+                                     state->cached_status.sd_out_of_space_active,
+                                     now_ms,
+                                     now_epoch);
+      AlertManagerProcessSystemError(&state->alert_manager,
+                                     ALERT_SYSTEM_CODE_ERROR_STORAGE_STALL,
+                                     storage_stall_active,
                                      now_ms,
                                      now_epoch);
       AlertManagerProcessSystemError(&state->alert_manager,
@@ -8913,6 +9008,8 @@ ControlTask(void* context)
                                      state->cached_status.sensor_fault_present,
                                      now_ms,
                                      now_epoch);
+    } else {
+      RuntimeResetStorageStallTracking(state, now_ms);
     }
 
     if (state->runtime_phase == RUNTIME_PHASE_RUNNING &&
@@ -9422,6 +9519,7 @@ RuntimeManagerInitMinimal(void)
   g_state.runtime_phase = RUNTIME_PHASE_DIAGNOSTICS;
   g_state.pending_start = false;
   g_state.pending_stop = false;
+  RuntimeResetStorageStallTracking(&g_state, 0);
   SdCardDetectInit(&g_state.sd_card_detect);
   const bool sd_card_present = SdCardDetectPoll(&g_state.sd_card_detect, NULL);
   UpdateCachedBool(
@@ -10162,6 +10260,7 @@ RuntimeStart(void)
 
   g_state.logger_running = true;
   UpdateCachedBool(&g_state, &g_state.cached_status.runtime_running, true);
+  RuntimeResetStorageStallTracking(&g_state, esp_timer_get_time() / 1000);
 
   BaseType_t sensor_created = pdPASS;
   BaseType_t storage_created = pdPASS;
@@ -10337,6 +10436,7 @@ RuntimeStopSamplingOnly(runtime_state_t* state)
   state->logger_running = false;
   UpdateCachedBool(state, &state->cached_status.stop_requested, true);
   UpdateCachedBool(state, &state->cached_status.runtime_running, false);
+  RuntimeResetStorageStallTracking(state, esp_timer_get_time() / 1000);
 
   const TickType_t wait_start = xTaskGetTickCount();
   while ((state->sensor_task != NULL || state->storage_task != NULL ||

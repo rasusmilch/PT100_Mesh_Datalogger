@@ -2061,6 +2061,9 @@ AlertNotificationDescribe(const alert_manager_t* manager,
         case ALERT_SYSTEM_CODE_ERROR_I2C_HANG:
           error = "i2c hang";
           break;
+        case ALERT_SYSTEM_CODE_ERROR_SD_OOS:
+          error = "sd out of space";
+          break;
         default:
           break;
       }
