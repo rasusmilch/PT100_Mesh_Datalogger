@@ -3382,19 +3382,26 @@ DisplayTask(void* context)
     const bool stop_requested = state->cached_status.stop_requested;
     const bool sd_safe_to_remove = state->cached_status.sd_safe_to_remove;
     if (!runtime_running) {
-      const bool stop_save_active =
-        stop_requested && (state->cached_status.fram_count > 0u ||
-                           state->cached_status.sd_mounted);
-
-      // Operator feedback:
-      // - "STOP" once fully stopped and SD is unmounted
-      // - "SAVE" while draining/unmounting after stop
-      // - "IDLE" otherwise
-      const char* text =
-        sd_safe_to_remove ? "STOP " : (stop_save_active ? "SAVE " : "IDLE ");
-      if (strncmp(last_text, text, sizeof(last_text)) != 0) {
-        Max7219DisplaySetText(&state->display, text);
-        snprintf(last_text, sizeof(last_text), "%s", text);
+      if (stop_requested) {
+        const bool unsafe = !sd_safe_to_remove;
+        if (unsafe && ((now_ms / 500u) % 2u) == 0u) {
+          if (last_text[0] != '\0') {
+            Max7219DisplayClear(&state->display);
+            last_text[0] = '\0';
+          }
+        } else {
+          const char* text = unsafe ? "HOLD " : "SAFE ";
+          if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+            Max7219DisplaySetText(&state->display, text);
+            snprintf(last_text, sizeof(last_text), "%s", text);
+          }
+        }
+      } else {
+        const char* text = "IDLE ";
+        if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+          Max7219DisplaySetText(&state->display, text);
+          snprintf(last_text, sizeof(last_text), "%s", text);
+        }
       }
       vTaskDelay(pdMS_TO_TICKS(250));
       continue;
