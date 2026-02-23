@@ -9696,7 +9696,7 @@ RuntimeManagerInitFull(void)
     }
   }
 
-  const uint32_t kControlTaskStackBytes = 6144;
+  const uint32_t kControlTaskStackBytes = 8192;
   BaseType_t control_created = xTaskCreate(&ControlTask,
                                            "control",
                                            kControlTaskStackBytes,
@@ -10085,6 +10085,7 @@ RuntimeStart(void)
 
   const uint32_t kSensorStackBytes = 3584;
   const uint32_t kExportStackBytes = 3584;
+  const uint32_t kNetTxTaskStackBytes = 8192;
 
   if (effective_net_mode == APP_NET_MODE_DIRECT_WIFI) {
     ESP_LOGI(kTag, "Wi-Fi direct handled by net supervisor");

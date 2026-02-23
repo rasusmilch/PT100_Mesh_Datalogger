@@ -105,6 +105,7 @@ extern "C"
     alert_config_t config;
     alert_leaf_state_t leaves[ALERT_MAX_LEAVES];
     alert_state_t states[ALERT_MAX_LEAVES][ALERT_TYPE_COUNT];
+    alert_state_t system_error_state_by_code[ALERT_SYSTEM_CODE_ERROR_MAX + 1];
     alert_ntfy_batch_scratch_t* ntfy_batch_scratch;
     alert_ntfy_t ntfy;
     const char* root_id_string;
