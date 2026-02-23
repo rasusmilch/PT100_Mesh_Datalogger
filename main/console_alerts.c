@@ -9,6 +9,7 @@
 
 #include "alerts/alert_manager.h"
 #include "alerts/alert_ntfy.h"
+#include "console_help.h"
 #include "console_registry.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -28,6 +29,7 @@ static void PrintStatus(const alert_manager_t* manager);
 static void PrintLeafList(const alert_manager_t* manager);
 static int CommandAlert(int argc, char** argv);
 static int CommandRebootLatch(int argc, char** argv);
+static int AlertTopicHelp(const char* topic);
 static void PrintAlertHelpBody(void);
 static void PrintRebootLatchHelpBody(void);
 
@@ -38,6 +40,126 @@ static const char* const kAlertTypeNames[] = { "high",   "low",   "missing", "of
                                                "error",  "all" };
 static const size_t kAlertTypeNameCount =
   sizeof(kAlertTypeNames) / sizeof(kAlertTypeNames[0]);
+
+static const console_help_topic_t kAlertTopics[] = {
+  {
+    .name = "status",
+    .summary = "Show global alert status and current thresholds",
+    .synopsis = "alert status",
+    .details = "Prints enabled alert types, notification/rate-limit settings, "
+               "and active global plus per-leaf thresholds.",
+    .options = NULL,
+    .examples = "  alert status",
+  },
+  {
+    .name = "list",
+    .summary = "List leaf-level alert state (root only)",
+    .synopsis = "alert list",
+    .details = "Available only on the root node. Displays per-leaf alert "
+               "state and effective overrides.",
+    .options = NULL,
+    .examples = "  alert list",
+  },
+  {
+    .name = "types",
+    .summary = "Print valid alert type names",
+    .synopsis = "alert types",
+    .details = "Prints the accepted type strings used by enable/clear "
+               "operations.",
+    .options = NULL,
+    .examples = "  alert types",
+  },
+  {
+    .name = "enable",
+    .summary = "Enable or disable one alert type globally or per leaf",
+    .synopsis =
+      "alert enable <high|low|missing|offline|restart|root|boot|mode|error|all> <on|off> [leaf_id]",
+    .details = "Sets the enable mask for an alert type. Optional leaf_id "
+               "targeting is root-only and updates a leaf override.",
+    .options = "  <type>       Alert type name or all.\n"
+               "  <on|off>     Enable or disable alerts for that type.\n"
+               "  [leaf_id]    Optional leaf target; root node only.",
+    .examples = "  alert enable high on\n"
+                "  alert enable missing off 98:A3:16:12:57:B0",
+  },
+  {
+    .name = "set",
+    .summary = "Configure alert limits, timers, and hysteresis",
+    .synopsis = "alert set limit <leaf_id|default> <high|low> <value><C|F>\n"
+                "alert set missing_ms <ms>\n"
+                "alert set offline_ms <ms>\n"
+                "alert set hold_ms <ms>\n"
+                "alert set hyst <delta><C|F>",
+    .details = "Updates temperature limits and alert timing behavior. Limit "
+               "targets can be default (global) or a specific leaf override "
+               "(root only).",
+    .options = "  <leaf_id|default>  Limit target scope.\n"
+               "  <high|low>         Select high or low threshold.\n"
+               "  <value><C|F>       Threshold absolute temperature.\n"
+               "  <ms>               Millisecond duration value.\n"
+               "  <delta><C|F>       Hysteresis delta.",
+    .examples = "  alert set limit default high 80C\n"
+                "  alert set limit 98:A3:16:12:57:B0 low 30F\n"
+                "  alert set missing_ms 30000\n"
+                "  alert set hyst 0.5C",
+  },
+  {
+    .name = "ntfy",
+    .summary = "Configure ntfy endpoint fields and run a test",
+    .synopsis = "alert ntfy set url <value>\n"
+                "alert ntfy set topic <value>\n"
+                "alert ntfy set token <value|clear>\n"
+                "alert ntfy test",
+    .details = "Configures ntfy delivery endpoint metadata used by alerts. "
+               "Token is optional and may be cleared.",
+    .options = "  url <value>          Ntfy server URL.\n"
+               "  topic <value>        Ntfy topic name.\n"
+               "  token <value|clear>  Optional bearer token.\n"
+               "  test                 Send a test notification.",
+    .examples = "  alert ntfy set url https://ntfy.sh\n"
+                "  alert ntfy set topic PT100_Mesh_Datalogger\n"
+                "  alert ntfy set token clear\n"
+                "  alert ntfy test",
+  },
+  {
+    .name = "notify",
+    .summary = "Alias for ntfy",
+    .synopsis = "alert notify ...",
+    .details = "Alias for the ntfy subcommand. Use alert ntfy for canonical "
+               "documentation and syntax.",
+    .options = NULL,
+    .examples = "  alert notify set topic PT100_Mesh_Datalogger",
+  },
+  {
+    .name = "ratelimit",
+    .summary = "Tune alert delivery rate-limit controls",
+    .synopsis = "alert ratelimit set per_key_ms <ms>\n"
+                "alert ratelimit set per_minute <n>\n"
+                "alert ratelimit set min_interval_ms <ms>",
+    .details = "Adjusts global rate limiting applied before notification "
+               "delivery.",
+    .options = "  per_key_ms <ms>       Per-alert-key cooldown.\n"
+               "  per_minute <n>        Global send cap per minute.\n"
+               "  min_interval_ms <ms>  Minimum spacing for ntfy sends.",
+    .examples = "  alert ratelimit set per_key_ms 60000\n"
+                "  alert ratelimit set per_minute 20\n"
+                "  alert ratelimit set min_interval_ms 300000",
+  },
+  {
+    .name = "clear",
+    .summary = "Clear active alerts by type",
+    .synopsis =
+      "alert clear <high|low|missing|offline|restart|root|boot|mode|error|all> [leaf_id]",
+    .details = "Clears active alert state globally or for one leaf. Optional "
+               "leaf selection is root-only.",
+    .options = "  <type|all>  Alert type to clear, or all.\n"
+               "  [leaf_id]   Optional leaf target; root node only.",
+    .examples = "  alert clear high\n"
+                "  alert clear all\n"
+                "  alert clear missing 98:A3:16:12:57:B0",
+  },
+  { 0 },
+};
 
 static const char*
 RebootLatchGateReasonToString(runtime_reboot_alert_gate_reason_t reason)
@@ -528,6 +650,9 @@ CommandAlert(int argc, char** argv)
 
   alert_manager_t* manager = g_runtime->alert_manager;
   const char* action = argv[1];
+  if (strcmp(action, "notify") == 0) {
+    action = "ntfy";
+  }
 
   if (strcmp(action, "status") == 0) {
     PrintStatus(manager);
@@ -871,9 +996,10 @@ ConsoleAlertsRegister(app_runtime_t* runtime)
   static const console_registry_entry_t alert_cmd = {
     .command = "alert",
     .summary = "Manage alerting rules and status",
-    .synopsis = "alert <status|list|types|enable|leaf|hyst|test|notify>",
+    .synopsis = "alert <status|list|types|enable|set|ntfy|ratelimit|clear> ...",
     .description = "Inspect and configure the device alert manager.",
     .print_body = PrintAlertHelpBody,
+    .topic_help = &AlertTopicHelp,
     .func = &CommandAlert,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&alert_cmd));
@@ -892,20 +1018,39 @@ ConsoleAlertsRegister(app_runtime_t* runtime)
 static void
 PrintAlertHelpBody(void)
 {
-  printf("SUBCOMMANDS\n");
-  printf("  status                          Show global alert status\n");
-  printf("  list                            List leaf-level alert state\n");
-  printf("  types                           List supported alert type names\n");
-  printf("  enable <type> <on|off>          Enable/disable an alert type\n");
-  printf("  leaf <id> <type> <on|off>       Override one leaf/type pair\n");
-  printf("  hyst <type> show|set ...        Manage temperature hysteresis\n");
-  printf("  test [type]                     Emit a test alert\n");
-  printf("  notify show|set ...             Configure notification endpoint\n\n");
+  ConsoleHelpPrintTopicList(kAlertTopics);
+  printf("Use: help alert <subcommand>\n\n");
   printf("EXAMPLES\n");
   printf("  alert status\n");
   printf("  alert enable high on\n");
-  printf("  alert leaf 123 high off\n");
-  printf("  alert hyst high set 1.5\n");
+  printf("  alert set limit default high 80C\n");
+  printf("  alert set hyst 0.5C\n");
+  printf("  alert ntfy set url https://ntfy.sh\n");
+  printf("  alert ntfy set topic PT100_Mesh_Datalogger\n");
+  printf("  alert ratelimit set min_interval_ms 300000\n");
+  printf("  alert clear all\n");
+}
+
+/**
+ * @brief Print detailed alert subtopic help for a specific subcommand.
+ * @param topic Alert subtopic name.
+ * @return 0 if the topic was found and printed, otherwise 1.
+ */
+static int
+AlertTopicHelp(const char* topic)
+{
+  if (topic == NULL || topic[0] == '\0') {
+    return 1;
+  }
+
+  for (size_t i = 0; kAlertTopics[i].name != NULL; ++i) {
+    if (strcmp(kAlertTopics[i].name, topic) == 0) {
+      ConsoleHelpPrintTopicManpage("alert", &kAlertTopics[i]);
+      return 0;
+    }
+  }
+
+  return 1;
 }
 
 static void
