@@ -90,6 +90,7 @@ static bool GetLimits(const alert_manager_t* manager,
 static void RefreshMeshOnline(alert_manager_t* manager, int64_t now_ms);
 static void ApplyDefaults(alert_manager_t* manager);
 static int64_t ResolveNtfyMinIntervalMs(const alert_manager_t* manager);
+static uint32_t ResolveNtfyHttpTimeoutMs(const alert_manager_t* manager);
 static void FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size);
 static void FormatMilliC(int32_t milli_c, char* out, size_t out_size);
 static void FormatBatchWindow(int64_t window_ms, char* out, size_t out_size);
@@ -139,6 +140,10 @@ static bool AlertManagerSendBatchedNtfy(alert_manager_t* manager,
                                        int64_t now_epoch,
                                        uint32_t wait_ms,
                                        int64_t* next_attempt_ms);
+static bool AppendTextLine(char* body,
+                           size_t body_size,
+                           size_t* used,
+                           const char* text);
 
 static const char* kTag = "alert_mgr";
 static const int64_t kNtfyFailureMaxBackoffMs = 300000;
@@ -1775,6 +1780,13 @@ ResolveNtfyMinIntervalMs(const alert_manager_t* manager)
   return min_interval_ms;
 }
 
+static uint32_t
+ResolveNtfyHttpTimeoutMs(const alert_manager_t* manager)
+{
+  (void)manager;
+  return 0;
+}
+
 static void
 FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size)
 {
@@ -2264,7 +2276,7 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   snprintf(job.root_id, sizeof(job.root_id), "%s", manager->root_id_string);
   snprintf(job.title, sizeof(job.title), "%s", scratch->title);
   snprintf(job.body, sizeof(job.body), "%s", scratch->body);
-  job.http_timeout_ms = 0;
+  job.http_timeout_ms = ResolveNtfyHttpTimeoutMs(manager);
   job.attempt = 0;
   job.next_attempt_ms = now_ms;
 
@@ -2293,6 +2305,29 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   return true;
 }
 
+static bool
+AppendTextLine(char* body, size_t body_size, size_t* used, const char* text)
+{
+  if (body == NULL || used == NULL || text == NULL || body_size == 0) {
+    return false;
+  }
+  if (*used >= body_size - 1) {
+    body[body_size - 1] = '\0';
+    return false;
+  }
+  const int written = snprintf(body + *used, body_size - *used, "%s\n", text);
+  if (written < 0) {
+    return false;
+  }
+  if ((size_t)written >= (body_size - *used)) {
+    *used = body_size - 1;
+    body[body_size - 1] = '\0';
+    return false;
+  }
+  *used += (size_t)written;
+  return true;
+}
+
 bool
 AlertManagerPumpNtfy(alert_manager_t* manager,
                      int64_t now_ms,
@@ -2305,6 +2340,134 @@ AlertManagerPumpNtfy(alert_manager_t* manager,
   int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
   return AlertManagerSendBatchedNtfy(
     manager, now_ms, now_epoch, 0, next_attempt_ms);
+}
+
+/**
+ * @brief Build a consolidated stop-flush ntfy job and drain pending queues.
+ * @param manager Parameter manager.
+ * @param stop_reason Parameter stop_reason.
+ * @param now_ms Parameter now_ms.
+ * @param out_job Parameter out_job.
+ * @param out_notes_drained Parameter out_notes_drained.
+ * @param out_jobs_drained Parameter out_jobs_drained.
+ * @return True when a job was built.
+ */
+bool
+AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
+                                  const char* stop_reason,
+                                  int64_t now_ms,
+                                  alert_ntfy_job_t* out_job,
+                                  uint32_t* out_notes_drained,
+                                  uint32_t* out_jobs_drained)
+{
+  if (out_notes_drained != NULL) {
+    *out_notes_drained = 0;
+  }
+  if (out_jobs_drained != NULL) {
+    *out_jobs_drained = 0;
+  }
+  if (manager == NULL || out_job == NULL || manager->ntfy.queue == NULL ||
+      manager->ntfy.job_queue == NULL || !AlertManagerIsConfigured(manager)) {
+    return false;
+  }
+
+  alert_ntfy_batch_scratch_t local_scratch = { 0 };
+  const size_t notes_max = ALERT_NTFY_QUEUE_LEN;
+  const size_t jobs_max = ALERT_NTFY_JOB_QUEUE_LEN;
+  alert_ntfy_job_t drained_jobs[ALERT_NTFY_JOB_QUEUE_LEN] = { 0 };
+
+  size_t notes_count = 0;
+  while (notes_count < notes_max &&
+         xQueueReceive(manager->ntfy.queue, &local_scratch.notes[notes_count], 0) ==
+           pdTRUE) {
+    AlertManagerBatchAdd(&local_scratch.batch, &local_scratch.notes[notes_count]);
+    notes_count++;
+  }
+
+  size_t jobs_count = 0;
+  while (jobs_count < jobs_max &&
+         xQueueReceive(manager->ntfy.job_queue, &drained_jobs[jobs_count], 0) == pdTRUE) {
+    jobs_count++;
+  }
+
+  if (out_notes_drained != NULL) {
+    *out_notes_drained = (uint32_t)notes_count;
+  }
+  if (out_jobs_drained != NULL) {
+    *out_jobs_drained = (uint32_t)jobs_count;
+  }
+
+  memset(out_job, 0, sizeof(*out_job));
+  snprintf(out_job->url, sizeof(out_job->url), "%s", manager->config.ntfy_url);
+  snprintf(out_job->topic, sizeof(out_job->topic), "%s", manager->config.ntfy_topic);
+  snprintf(out_job->token, sizeof(out_job->token), "%s", manager->config.ntfy_token);
+  snprintf(out_job->root_id,
+           sizeof(out_job->root_id),
+           "%s",
+           (manager->root_id_string != NULL) ? manager->root_id_string : "root");
+  snprintf(out_job->title,
+           sizeof(out_job->title),
+           "STOP: Logger halted (consolidated)");
+
+  size_t used = 0;
+  char summary[192];
+  snprintf(summary,
+           sizeof(summary),
+           "STOP requested: %s",
+           (stop_reason != NULL && stop_reason[0] != '\0') ? stop_reason : "operator stop");
+  (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+
+  snprintf(summary,
+           sizeof(summary),
+           "Consolidated pending ntfy items: %u notes, %u jobs",
+           (unsigned)notes_count,
+           (unsigned)jobs_count);
+  (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+
+  if (jobs_count > 0) {
+    (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, "Queued job titles:");
+    const size_t max_titles = 6;
+    const size_t emit = (jobs_count < max_titles) ? jobs_count : max_titles;
+    for (size_t i = 0; i < emit; ++i) {
+      snprintf(summary, sizeof(summary), "- queued job: %s", drained_jobs[i].title);
+      (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+    }
+    if (jobs_count > emit) {
+      snprintf(summary, sizeof(summary), "- (+%u more jobs)", (unsigned)(jobs_count - emit));
+      (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+    }
+  }
+
+  if (notes_count > 0) {
+    (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, "Pending alert notes:");
+    const size_t max_notes = 10;
+    const size_t emit = (notes_count < max_notes) ? notes_count : max_notes;
+    for (size_t i = 0; i < emit; ++i) {
+      char line[256];
+      AlertNotificationDescribe(manager, &local_scratch.notes[i], line, sizeof(line));
+      snprintf(summary, sizeof(summary), "- %s", line);
+      (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+    }
+    if (notes_count > emit) {
+      snprintf(summary,
+               sizeof(summary),
+               "- (+%u more notes)",
+               (unsigned)(notes_count - emit));
+      (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+    }
+  }
+
+  snprintf(summary,
+           sizeof(summary),
+           "PT100 - %s",
+           (manager->root_id_string != NULL) ? manager->root_id_string : "root");
+  (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+
+  out_job->http_timeout_ms = ResolveNtfyHttpTimeoutMs(manager);
+  out_job->attempt = 0;
+  out_job->next_attempt_ms = now_ms;
+
+  return true;
 }
 
 /**

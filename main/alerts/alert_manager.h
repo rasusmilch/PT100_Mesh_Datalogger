@@ -445,6 +445,23 @@ extern "C"
                                        int64_t* next_attempt_ms);
 
   /**
+   * @brief Build a consolidated stop-flush ntfy job and drain pending queues.
+   * @param manager Parameter manager.
+   * @param stop_reason Parameter stop_reason.
+   * @param now_ms Parameter now_ms.
+   * @param out_job Parameter out_job.
+   * @param out_notes_drained Parameter out_notes_drained.
+   * @param out_jobs_drained Parameter out_jobs_drained.
+   * @return True when a job was built.
+   */
+  bool AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
+                                         const char* stop_reason,
+                                         int64_t now_ms,
+                                         alert_ntfy_job_t* out_job,
+                                         uint32_t* out_notes_drained,
+                                         uint32_t* out_jobs_drained);
+
+  /**
    * @brief Execute AlertManagerMonitorTask.
    * @param context Parameter context.
    * @note FreeRTOS task entry for the AlertManagerMonitorTask task.
