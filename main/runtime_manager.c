@@ -205,6 +205,17 @@ static void
 RuntimeLogNtfyJob(const alert_ntfy_job_t* job, const char* stage);
 
 /**
+ * @brief Request net_tx + alert_http pause state and wait for acknowledgements.
+ * @param state Runtime state.
+ * @param pause_enabled True to request pause, false to resume.
+ * @param timeout_ms Maximum wait for acknowledgement.
+ */
+static void
+RuntimeRequestNetPause(runtime_state_t* state,
+                       bool pause_enabled,
+                       uint32_t timeout_ms);
+
+/**
  * @brief Create the alert_http task with a PSRAM-backed stack.
  * @param state Runtime state (owns the task memory).
  * @param stack_bytes Stack size in bytes.
@@ -1677,6 +1688,45 @@ RuntimeResumeSpiUsers(runtime_state_t* state)
   state->spi_pause_ack_mask = 0;
   RuntimeNotifyTask(state->display_task);
   RuntimeNotifyTask(state->sensor_task);
+}
+
+/**
+ * @brief Request net_tx + alert_http pause state and wait for acknowledgements.
+ * @param state Runtime state.
+ * @param pause_enabled True to request pause, false to resume.
+ * @param timeout_ms Maximum wait for acknowledgement.
+ */
+static void
+RuntimeRequestNetPause(runtime_state_t* state,
+                       bool pause_enabled,
+                       uint32_t timeout_ms)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  state->net_tx_pause_requested = pause_enabled;
+  state->alert_http_pause_requested = pause_enabled;
+  RuntimeNotifyTask(state->net_tx_task);
+  RuntimeNotifyTask(state->alert_http_task);
+
+  const TickType_t wait_start = xTaskGetTickCount();
+  while (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < timeout_ms) {
+    const bool net_ok = (state->net_tx_task == NULL) ||
+                        (state->net_tx_paused == pause_enabled);
+    const bool alert_ok = (state->alert_http_task == NULL) ||
+                          (state->alert_http_paused == pause_enabled);
+    if (net_ok && alert_ok) {
+      return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  ESP_LOGW(kTag,
+           "net pause timeout: requested=%d net_paused=%d alert_paused=%d",
+           (int)pause_enabled,
+           (int)state->net_tx_paused,
+           (int)state->alert_http_paused);
 }
 
 static void
@@ -7146,6 +7196,18 @@ AlertHttpTask(void* context)
 
   uint32_t min_stack_hwm_bytes = UINT32_MAX;
   while (!state->stop_requested) {
+    if (state->alert_http_pause_requested) {
+      state->alert_http_paused = true;
+      while (state->alert_http_pause_requested && !state->stop_requested) {
+        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(20));
+      }
+      state->alert_http_paused = false;
+      if (state->stop_requested) {
+        ESP_LOGW(kTag, "alert_http pause interrupted by stop request");
+        break;
+      }
+    }
+
     const uint32_t hwm_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
     if (hwm_bytes < min_stack_hwm_bytes) {
       min_stack_hwm_bytes = hwm_bytes;
@@ -7172,6 +7234,9 @@ AlertHttpTask(void* context)
       RuntimeInterruptibleDelayTicks(
         pdMS_TO_TICKS((uint32_t)(ready_ms - now_ms)));
       if (state->stop_requested) {
+        ESP_LOGW(kTag,
+                 "alert_http stop requested before send; job retained title=\"%s\"",
+                 job.title);
         break;
       }
     }
@@ -7246,6 +7311,7 @@ AlertHttpTask(void* context)
     }
   }
 
+  state->alert_http_paused = false;
   state->alert_http_task = NULL;
   vTaskDelete(NULL);
 }
@@ -7264,6 +7330,17 @@ NetTxTask(void* context)
   uint32_t min_stack_hwm_bytes = UINT32_MAX;
 
   while (!state->stop_requested) {
+    if (state->net_tx_pause_requested) {
+      state->net_tx_paused = true;
+      while (state->net_tx_pause_requested && !state->stop_requested) {
+        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS(20));
+      }
+      state->net_tx_paused = false;
+      if (state->stop_requested) {
+        break;
+      }
+    }
+
     const uint32_t hwm_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
     if (hwm_bytes < min_stack_hwm_bytes) {
       min_stack_hwm_bytes = hwm_bytes;
@@ -7313,6 +7390,7 @@ NetTxTask(void* context)
   DrainExportOutboxQueue(state);
   DrainBrokerOutboxQueue(state);
   NetTxDrainAlertQueue(state);
+  state->net_tx_paused = false;
   state->net_tx_task = NULL;
   vTaskDelete(NULL);
 }
@@ -9857,6 +9935,10 @@ RuntimeStart(void)
 #endif
 
   g_state.stop_requested = false;
+  g_state.net_tx_pause_requested = false;
+  g_state.net_tx_paused = false;
+  g_state.alert_http_pause_requested = false;
+  g_state.alert_http_paused = false;
   UpdateCachedBool(&g_state, &g_state.cached_status.stop_requested, false);
   UpdateCachedBool(&g_state, &g_state.cached_status.sd_safe_to_remove, false);
   g_state.fram_full = false;
@@ -10265,6 +10347,10 @@ RuntimeStopAllTasks(runtime_state_t* state)
   MqttClientWrapStop(&state->mqtt_client);
   UpdateMqttConnectionState(state);
   state->stop_requested = false;
+  state->net_tx_pause_requested = false;
+  state->net_tx_paused = false;
+  state->alert_http_pause_requested = false;
+  state->alert_http_paused = false;
   state->spi_pause_requested = false;
   state->spi_pause_ack_mask = 0;
   UpdateCachedBool(state, &state->cached_status.stop_requested, false);
@@ -10333,6 +10419,66 @@ EnterDiagMode(void)
   g_state.runtime_phase = RUNTIME_PHASE_STOPPING;
   RuntimeSetLogPolicyDiag();
   RuntimeEnableDataStreaming(false);
+  ESP_LOGW(kTag, "Stop requested (pre-flush)");
+  RuntimeRequestNetPause(&g_state, true, 1500u);
+  uint32_t drained_notes = 0;
+  uint32_t drained_jobs = 0;
+  int stop_http_status = 0;
+  esp_err_t stop_ntfy_err = ESP_OK;
+  bool stop_flush_attempted = false;
+  if (AlertManagerIsConfigured(&g_state.alert_manager)) {
+    alert_ntfy_job_t stop_job = { 0 };
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if (AlertManagerBuildStopFlushNtfyJob(&g_state.alert_manager,
+                                          "operator requested STOP (RUN -> DIAG)",
+                                          now_ms,
+                                          &stop_job,
+                                          &drained_notes,
+                                          &drained_jobs)) {
+      alert_ntfy_config_t cfg = {
+        .url = stop_job.url,
+        .topic = stop_job.topic,
+        .token = stop_job.token,
+        .root_id = stop_job.root_id,
+        .http_timeout_ms = stop_job.http_timeout_ms,
+      };
+      int retry_after_seconds = -1;
+      stop_flush_attempted = true;
+      alert_ntfy_result_t stop_result_ntfy =
+        AlertNtfySendText(&g_state.alert_manager.ntfy,
+                          &cfg,
+                          stop_job.title,
+                          stop_job.body,
+                          &retry_after_seconds,
+                          &stop_http_status,
+                          &stop_ntfy_err);
+      AlertManagerUpdateNtfySendState(&g_state.alert_manager,
+                                      stop_result_ntfy,
+                                      stop_http_status,
+                                      retry_after_seconds,
+                                      stop_ntfy_err,
+                                      now_ms,
+                                      NULL);
+      ESP_LOGW(kTag,
+               "ntfy stop flush: drained_notes=%u drained_jobs=%u send_result=%s http_status=%d err=%s",
+               (unsigned)drained_notes,
+               (unsigned)drained_jobs,
+               (stop_result_ntfy == ALERT_NTFY_OK)
+                 ? "OK"
+                 : ((stop_result_ntfy == ALERT_NTFY_SKIPPED) ? "SKIPPED"
+                                                             : "FAIL"),
+               stop_http_status,
+               esp_err_to_name(stop_ntfy_err));
+    }
+  }
+  if (!stop_flush_attempted) {
+    ESP_LOGW(kTag,
+             "ntfy stop flush: drained_notes=%u drained_jobs=%u send_result=SKIPPED http_status=%d",
+             (unsigned)drained_notes,
+             (unsigned)drained_jobs,
+             stop_http_status);
+  }
+  RuntimeRequestNetPause(&g_state, false, 500u);
   ESP_LOGW(kTag, "Stop: sampling halt requested");
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
   bool allow_drain = (stop_result == ESP_OK);

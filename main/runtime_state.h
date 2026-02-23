@@ -241,7 +241,7 @@ extern "C"
     // marginal during watermark drains and day-rollover file creation (very
     // low observed watermark), which can lead to corruption/trace traps.
     kSdFlushTaskStackBytes = 8192,    // bytes
-    kNetTxTaskStackBytes = 6144,      // bytes
+    kNetTxTaskStackBytes = 8192,      // bytes
     kAlertHttpTaskStackBytes = 11264, // bytes
   };
 
@@ -449,6 +449,10 @@ extern "C"
     bool system_running;
     bool logger_running;
     bool stop_requested;
+    volatile bool net_tx_pause_requested;
+    volatile bool net_tx_paused;
+    volatile bool alert_http_pause_requested;
+    volatile bool alert_http_paused;
     bool spi_pause_requested;
     uint32_t spi_pause_ack_mask;
     bool mesh_started;
