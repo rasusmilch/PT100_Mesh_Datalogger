@@ -919,6 +919,9 @@ AlertNtfySend(alert_ntfy_t* ntfy,
         case ALERT_SYSTEM_CODE_ERROR_I2C_HANG:
           error = "i2c_hang";
           break;
+        case ALERT_SYSTEM_CODE_ERROR_SD_OOS:
+          error = "sd_oos";
+          break;
         default:
           known = false;
           break;

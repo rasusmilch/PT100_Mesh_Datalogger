@@ -473,6 +473,12 @@ extern "C"
     alert_system_code_t reboot_alert_code;
     int64_t reboot_alert_next_check_ms;
 
+    uint32_t storage_stall_last_progress_ms;
+    uint32_t storage_stall_last_fram_count;
+    uint64_t storage_stall_last_sd_last_record_id;
+    uint32_t storage_stall_last_sd_fail_count;
+    bool storage_stall_active;
+
     bool request_run_start;
     bool request_run_stop;
     portMUX_TYPE request_lock;
