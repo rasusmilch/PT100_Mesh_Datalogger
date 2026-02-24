@@ -321,6 +321,24 @@ RuntimeRecoverI2cBusLocked(runtime_state_t* state,
 static void
 RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context);
 
+/**
+ * @brief Enqueue an ntfy job and optionally wait for AlertHttpTask completion.
+ * @param state Runtime state.
+ * @param job Ntfy job to enqueue.
+ * @param wait_ms Maximum time to wait for send counters to change.
+ * @param status_out Optional pointer receiving last HTTP status.
+ * @param err_out Optional pointer receiving last esp_err_t.
+ * @param retry_after_seconds_out Optional pointer receiving cooldown-derived retry seconds.
+ * @return Result indicating enqueue/wait/send outcome.
+ */
+static alert_ntfy_result_t
+RuntimeEnqueueNtfyJobAndWait(runtime_state_t* state,
+                             const alert_ntfy_job_t* job,
+                             uint32_t wait_ms,
+                             int* status_out,
+                             esp_err_t* err_out,
+                             int* retry_after_seconds_out);
+
 static void
 RuntimeDumpLocks(runtime_state_t* state, const char* reason);
 
@@ -1527,6 +1545,96 @@ RuntimeEnqueueSystemErrorNote(runtime_state_t* state,
   return AlertNtfyEnqueue(&state->alert_manager.ntfy, &note);
 }
 
+/**
+ * @brief Enqueue an ntfy job and optionally wait for AlertHttpTask completion.
+ * @param state Runtime state.
+ * @param job Ntfy job to enqueue.
+ * @param wait_ms Maximum time to wait for send counters to change.
+ * @param status_out Optional pointer receiving last HTTP status.
+ * @param err_out Optional pointer receiving last esp_err_t.
+ * @param retry_after_seconds_out Optional pointer receiving cooldown-derived retry seconds.
+ * @return Result indicating enqueue/wait/send outcome.
+ */
+static alert_ntfy_result_t
+RuntimeEnqueueNtfyJobAndWait(runtime_state_t* state,
+                             const alert_ntfy_job_t* job,
+                             uint32_t wait_ms,
+                             int* status_out,
+                             esp_err_t* err_out,
+                             int* retry_after_seconds_out)
+{
+  if (status_out != NULL) {
+    *status_out = 0;
+  }
+  if (err_out != NULL) {
+    *err_out = ESP_OK;
+  }
+  if (retry_after_seconds_out != NULL) {
+    *retry_after_seconds_out = -1;
+  }
+  if (state == NULL) {
+    if (err_out != NULL) {
+      *err_out = ESP_ERR_INVALID_ARG;
+    }
+    return ALERT_NTFY_FAILED;
+  }
+  if (state->alert_manager.ntfy.job_queue == NULL) {
+    if (err_out != NULL) {
+      *err_out = ESP_ERR_INVALID_STATE;
+    }
+    return ALERT_NTFY_SKIPPED;
+  }
+
+  const uint32_t success_before = state->alert_manager.ntfy.send_success;
+  const uint32_t fail_before = state->alert_manager.ntfy.send_fail;
+  if (job != NULL && !AlertNtfyEnqueueJob(&state->alert_manager.ntfy, job)) {
+    if (err_out != NULL) {
+      *err_out = ESP_FAIL;
+    }
+    return ALERT_NTFY_FAILED;
+  }
+
+  const int64_t start_ms = esp_timer_get_time() / 1000;
+  while (!state->stop_requested) {
+    const bool sent_ok = (state->alert_manager.ntfy.send_success != success_before);
+    const bool sent_fail = (state->alert_manager.ntfy.send_fail != fail_before);
+    if (sent_ok || sent_fail) {
+      break;
+    }
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if ((uint32_t)(now_ms - start_ms) >= wait_ms) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(25));
+  }
+
+  const int64_t now_ms = esp_timer_get_time() / 1000;
+  if (status_out != NULL) {
+    *status_out = state->alert_manager.ntfy.last_http_status;
+  }
+  if (err_out != NULL) {
+    *err_out = state->alert_manager.ntfy.last_err;
+  }
+  if (retry_after_seconds_out != NULL) {
+    *retry_after_seconds_out = -1;
+    if (state->alert_manager.ntfy.cooldown_until_ms > now_ms) {
+      *retry_after_seconds_out =
+        (int)((state->alert_manager.ntfy.cooldown_until_ms - now_ms + 999) / 1000);
+    }
+  }
+
+  if (state->alert_manager.ntfy.send_success != success_before) {
+    return ALERT_NTFY_OK;
+  }
+  if (state->alert_manager.ntfy.send_fail != fail_before) {
+    return ALERT_NTFY_FAILED;
+  }
+  if (err_out != NULL && *err_out == ESP_OK) {
+    *err_out = ESP_ERR_TIMEOUT;
+  }
+  return ALERT_NTFY_SKIPPED;
+}
+
 static alert_ntfy_result_t
 RuntimeAttemptPreRebootAlertSendDetailed(runtime_state_t* state,
                                          alert_system_code_t code,
@@ -1576,42 +1684,24 @@ RuntimeAttemptPreRebootAlertSendDetailed(runtime_state_t* state,
     return ALERT_NTFY_SKIPPED;
   }
 
-  alert_notification_t note = { 0 };
-  note.type = ALERT_SYSTEM_ERROR;
-  note.severity = ALERT_SEV_CRIT;
-  note.resolved = false;
-  note.leaf_id = state->local_leaf_id;
-  note.payload.event_code = (uint32_t)code;
-  note.payload.event_epoch = (event_epoch > 0) ? event_epoch : -1;
-  note.payload.event_uptime_ms = event_uptime_ms;
+  const int64_t now_ms = esp_timer_get_time() / 1000;
+  if (!RuntimeEnqueueSystemErrorNote(
+        state, code, false, event_epoch, event_uptime_ms)) {
+    if (err_out != NULL) {
+      *err_out = ESP_FAIL;
+    }
+    return ALERT_NTFY_FAILED;
+  }
 
-  alert_ntfy_config_t cfg = {
-    .url = state->alert_manager.config.ntfy_url,
-    .topic = state->alert_manager.config.ntfy_topic,
-    .token = state->alert_manager.config.ntfy_token,
-    .root_id = state->alert_manager.root_id_string,
-    .http_timeout_ms = kRebootAlertHttpTimeoutMs,
-  };
+  int64_t next_attempt_ms = now_ms;
+  (void)AlertManagerPumpNtfy(&state->alert_manager, now_ms, &next_attempt_ms);
 
-  int status = 0;
-  int retry_after_seconds = -1;
-  esp_err_t err = ESP_OK;
-  alert_ntfy_result_t result = AlertNtfySend(&state->alert_manager.ntfy,
-                                             &cfg,
-                                             &note,
-                                             &retry_after_seconds,
-                                             &status,
-                                             &err);
-  if (status_out != NULL) {
-    *status_out = status;
-  }
-  if (retry_after_seconds_out != NULL) {
-    *retry_after_seconds_out = retry_after_seconds;
-  }
-  if (err_out != NULL) {
-    *err_out = err;
-  }
-  return result;
+  return RuntimeEnqueueNtfyJobAndWait(state,
+                                      NULL,
+                                      kRebootAlertHttpTimeoutMs,
+                                      status_out,
+                                      err_out,
+                                      retry_after_seconds_out);
 }
 
 esp_err_t
@@ -5665,14 +5755,23 @@ RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context)
   int status = 0;
   int retry_after_seconds = -1;
   esp_err_t ntfy_err = ESP_OK;
-  alert_ntfy_result_t ntfy_result =
-    RuntimeAttemptPreRebootAlertSendDetailed(state,
-                                             ALERT_SYSTEM_CODE_ERROR_SD_IO,
-                                             event_epoch,
-                                             event_uptime_ms,
-                                             &retry_after_seconds,
-                                             &status,
-                                             &ntfy_err);
+  alert_ntfy_result_t ntfy_result = ALERT_NTFY_SKIPPED;
+  if (RuntimeEnqueueSystemErrorNote(state,
+                                    ALERT_SYSTEM_CODE_ERROR_SD_IO,
+                                    false,
+                                    event_epoch,
+                                    event_uptime_ms)) {
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    int64_t next_attempt_ms = now_ms;
+    (void)AlertManagerPumpNtfy(&state->alert_manager, now_ms, &next_attempt_ms);
+
+    ntfy_result = RuntimeEnqueueNtfyJobAndWait(state,
+                                               NULL,
+                                               kRebootAlertHttpTimeoutMs,
+                                               &status,
+                                               &ntfy_err,
+                                               &retry_after_seconds);
+  }
   if (ntfy_result == ALERT_NTFY_OK) {
     RuntimeRebootAlertLatchClear();
   } else {
@@ -10616,7 +10715,6 @@ EnterDiagMode(void)
   RuntimeSetLogPolicyDiag();
   RuntimeEnableDataStreaming(false);
   ESP_LOGW(kTag, "Stop requested (pre-flush)");
-  RuntimeRequestNetPause(&g_state, true, 1500u);
   uint32_t drained_notes = 0;
   uint32_t drained_jobs = 0;
   int stop_http_status = 0;
@@ -10632,30 +10730,15 @@ EnterDiagMode(void)
                                           &drained_notes,
                                           &drained_jobs)) {
       AppendStopStorageSummaryLine(&g_state, &stop_job);
-      alert_ntfy_config_t cfg = {
-        .url = stop_job.url,
-        .topic = stop_job.topic,
-        .token = stop_job.token,
-        .root_id = stop_job.root_id,
-        .http_timeout_ms = stop_job.http_timeout_ms,
-      };
       int retry_after_seconds = -1;
       stop_flush_attempted = true;
-      alert_ntfy_result_t stop_result_ntfy =
-        AlertNtfySendText(&g_state.alert_manager.ntfy,
-                          &cfg,
-                          stop_job.title,
-                          stop_job.body,
-                          &retry_after_seconds,
-                          &stop_http_status,
-                          &stop_ntfy_err);
-      AlertManagerUpdateNtfySendState(&g_state.alert_manager,
-                                      stop_result_ntfy,
-                                      stop_http_status,
-                                      retry_after_seconds,
-                                      stop_ntfy_err,
-                                      now_ms,
-                                      NULL);
+      alert_ntfy_result_t stop_result_ntfy = RuntimeEnqueueNtfyJobAndWait(
+        &g_state,
+        &stop_job,
+        1500u,
+        &stop_http_status,
+        &stop_ntfy_err,
+        &retry_after_seconds);
       ESP_LOGW(kTag,
                "ntfy stop flush: drained_notes=%u drained_jobs=%u send_result=%s http_status=%d err=%s",
                (unsigned)drained_notes,
@@ -10675,7 +10758,7 @@ EnterDiagMode(void)
              (unsigned)drained_jobs,
              stop_http_status);
   }
-  RuntimeRequestNetPause(&g_state, false, 500u);
+  RuntimeRequestNetPause(&g_state, true, 1500u);
   ESP_LOGW(kTag, "Stop: sampling halt requested");
   esp_err_t stop_result = RuntimeStopSamplingOnly(&g_state);
   bool allow_drain = (stop_result == ESP_OK);
