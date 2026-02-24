@@ -376,6 +376,12 @@ static void
 UpdateCachedBool(runtime_state_t* state, bool* field, bool value);
 
 static void
+RuntimeLatchOperatorHold(runtime_state_t* state, uint32_t now_ms);
+
+static void
+RuntimeClearOperatorHold(runtime_state_t* state);
+
+static void
 UpdateCachedUint64(runtime_state_t* state, uint64_t* field, uint64_t value);
 
 static bool
@@ -2064,6 +2070,36 @@ UpdateCachedBool(runtime_state_t* state, bool* field, bool value)
 }
 
 /**
+ * @brief Latch operator hold state for immediate display feedback.
+ * @param state Runtime state.
+ * @param now_ms Button/event uptime in milliseconds.
+ */
+static void
+RuntimeLatchOperatorHold(runtime_state_t* state, uint32_t now_ms)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  (void)now_ms;
+  UpdateCachedBool(state, &state->cached_status.operator_hold_latched, true);
+}
+
+/**
+ * @brief Clear operator hold latch when returning to RUN mode.
+ * @param state Runtime state.
+ */
+static void
+RuntimeClearOperatorHold(runtime_state_t* state)
+{
+  if (state == NULL) {
+    return;
+  }
+
+  UpdateCachedBool(state, &state->cached_status.operator_hold_latched, false);
+}
+
+/**
  * @brief Execute UpdateCachedUint32.
  * @param state Parameter state.
  * @param field Parameter field.
@@ -3523,6 +3559,18 @@ DisplayTask(void* context)
       last_warn_mask = 0;
     }
 
+    const bool operator_hold = state->cached_status.operator_hold_latched;
+    const bool sd_safe_to_remove = state->cached_status.sd_safe_to_remove;
+    if (operator_hold) {
+      const char* text = sd_safe_to_remove ? "SAFE " : "HOLD ";
+      if (strncmp(last_text, text, sizeof(last_text)) != 0) {
+        Max7219DisplaySetText(&state->display, text);
+        snprintf(last_text, sizeof(last_text), "%s", text);
+      }
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
     const bool warn_overlay_active =
       warn_count > 0 &&
       ((now_ms % warn_overlay_period_ms) < warn_overlay_duration_ms);
@@ -3551,7 +3599,6 @@ DisplayTask(void* context)
 
     const bool runtime_running = state->cached_status.runtime_running;
     const bool stop_requested = state->cached_status.stop_requested;
-    const bool sd_safe_to_remove = state->cached_status.sd_safe_to_remove;
     if (!runtime_running) {
       if (stop_requested) {
         const bool unsafe = !sd_safe_to_remove;
@@ -8949,6 +8996,7 @@ ControlTask(void* context)
                  button_event.uptime_ms);
       } else if (button_event.id == GPIO_BUTTON_RUN_STOP) {
         request_stop = true;
+        RuntimeLatchOperatorHold(state, button_event.uptime_ms);
         ESP_LOGI(kTag,
                  "button run stop (uptime=%" PRIu32 " ms)",
                  button_event.uptime_ms);
@@ -10693,6 +10741,7 @@ RuntimeIsRunning(void)
 esp_err_t
 EnterRunMode(void)
 {
+  RuntimeClearOperatorHold(&g_state);
   RuntimeSetLogPolicyRun();
 
   esp_err_t result = RuntimeStart();
@@ -10711,6 +10760,8 @@ EnterRunMode(void)
 esp_err_t
 EnterDiagMode(void)
 {
+  const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+  RuntimeLatchOperatorHold(&g_state, now_ms);
   g_state.runtime_phase = RUNTIME_PHASE_STOPPING;
   RuntimeSetLogPolicyDiag();
   RuntimeEnableDataStreaming(false);

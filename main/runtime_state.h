@@ -119,6 +119,7 @@ extern "C"
     // runtime
     bool runtime_running;
     bool stop_requested;
+    bool operator_hold_latched;
     bool system_running;
 
     // config (written by settings load/apply)
