@@ -297,6 +297,15 @@ config APP_SD_CS_GPIO
   range -1 48
   default 14
 
+config APP_SD_SPI_MAX_FREQ_KHZ
+  int "SD SPI max clock (kHz)"
+  range 400 20000
+  default 5000
+  help
+    Maximum SDSPI clock used for SD card access. Lower values improve
+    signal margin on long/noisy wiring, while higher values may improve
+    throughput on clean hardware.
+
 config APP_SD_CARD_DETECT_GPIO
   int "SD card detect GPIO (-1 disables)"
   range -1 48

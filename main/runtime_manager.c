@@ -9628,7 +9628,7 @@ RuntimeManagerInitFull(void)
     .batch_target_bytes = g_state.settings.sd_batch_bytes_target,
     .tail_scan_bytes = CONFIG_APP_SD_TAIL_SCAN_BYTES,
     .file_buffer_bytes = CONFIG_APP_SD_FILE_BUFFER_BYTES,
-    .max_freq_khz = 0,
+    .max_freq_khz = CONFIG_APP_SD_SPI_MAX_FREQ_KHZ,
   };
   SdLoggerInit(&g_state.sd_logger, &sd_config);
 

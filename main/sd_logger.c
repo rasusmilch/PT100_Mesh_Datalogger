@@ -119,7 +119,7 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
   const size_t default_batch = 128 * 1024;
   const size_t default_tail_scan = 256 * 1024;
   const size_t default_buffer = 64 * 1024;
-  const uint32_t default_max_freq_khz = 10000;
+  const uint32_t default_max_freq_khz = CONFIG_APP_SD_SPI_MAX_FREQ_KHZ;
 
   logger->config.batch_target_bytes =
     DefaultOr(config ? config->batch_target_bytes : 0, default_batch);
@@ -561,7 +561,10 @@ SdLoggerMountInternal(sd_logger_t* logger,
 
   logger->is_mounted = true;
   logger->card = card;
-  ESP_LOGI(kTag, "SD mounted at %s", logger->mount_point);
+  ESP_LOGI(kTag,
+           "SD mounted at %s (SDSPI max clock=%u kHz)",
+           logger->mount_point,
+           (unsigned)logger->config.max_freq_khz);
 
   // Give the card a brief settle window after mount, especially if it was
   // inserted while the system was already running.
@@ -990,24 +993,34 @@ write_retry:
 
   if (flush_mode == SD_APPEND_FLUSH_ALWAYS) {
     if (fflush(logger->file) != 0) {
-      ESP_LOGE(kTag, "fflush() failed: errno=%d (%s)", errno, strerror(errno));
-      SetAppendDiagnostics(&stats_out->diag, "fflush", errno);
-      if (!retry_after_reclaim && stats_out->diag.errno_value == ENOSPC) {
-        uint32_t deleted_files = 0;
-        if (SdLoggerReclaimSpaceLocked(
-              logger, required_free_bytes, &deleted_files) == ESP_OK &&
-            deleted_files > 0) {
-          logger->space_reclaim_active = true;
-          logger->space_reclaim_deleted_total += deleted_files;
-          stats_out->space_reclaim_deleted_files += deleted_files;
+      const int errno_first = errno;
+      clearerr(logger->file);
+      vTaskDelay(pdMS_TO_TICKS(50));
+      if (fflush(logger->file) == 0) {
+        ESP_LOGW(kTag,
+                 "fflush() recovered on retry (first errno=%d: %s)",
+                 errno_first,
+                 strerror(errno_first));
+      } else {
+        ESP_LOGE(kTag, "fflush() failed: errno=%d (%s)", errno, strerror(errno));
+        SetAppendDiagnostics(&stats_out->diag, "fflush", errno);
+        if (!retry_after_reclaim && stats_out->diag.errno_value == ENOSPC) {
+          uint32_t deleted_files = 0;
+          if (SdLoggerReclaimSpaceLocked(
+                logger, required_free_bytes, &deleted_files) == ESP_OK &&
+              deleted_files > 0) {
+            logger->space_reclaim_active = true;
+            logger->space_reclaim_deleted_total += deleted_files;
+            stats_out->space_reclaim_deleted_files += deleted_files;
+          }
+          retry_after_reclaim = true;
+          clearerr(logger->file);
+          goto write_retry;
         }
-        retry_after_reclaim = true;
-        clearerr(logger->file);
-        goto write_retry;
+        (void)SdLoggerGetSpaceInfoLocked(
+          logger, &total_bytes, &stats_out->space_free_bytes_after);
+        return ESP_FAIL;
       }
-      (void)SdLoggerGetSpaceInfoLocked(
-        logger, &total_bytes, &stats_out->space_free_bytes_after);
-      return ESP_FAIL;
     }
   }
 
