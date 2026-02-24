@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -53,6 +54,8 @@ static void FillSample(max31865_sample_t* sample,
                        double resistance,
                        double temp_c,
                        uint8_t fault_status);
+
+static esp_err_t ConfigureRdyGpio(max31865_reader_t* reader);
 
 static bool
 Max31865AcquireSpiBus(max31865_reader_t* reader)
@@ -507,6 +510,67 @@ InitializeFaultThresholds(max31865_reader_t* reader)
 }
 
 /**
+ * @brief Configure optional MAX31865 RDY GPIO input behavior.
+ * @param reader Initialized reader storage to receive RDY configuration.
+ * @return ESP_OK when configuration succeeds or RDY is disabled.
+ */
+static esp_err_t
+ConfigureRdyGpio(max31865_reader_t* reader)
+{
+  if (reader == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  reader->rdy_gpio = CONFIG_APP_MAX31865_RDY_GPIO;
+  reader->rdy_enabled = (reader->rdy_gpio >= 0);
+#if CONFIG_APP_MAX31865_RDY_READY_HIGH
+  reader->rdy_ready_level = 1;
+#else
+  reader->rdy_ready_level = 0;
+#endif
+
+  if (!reader->rdy_enabled) {
+    ESP_LOGI(kTag, "RDY GPIO disabled");
+    return ESP_OK;
+  }
+
+  gpio_config_t io_config = {
+    .pin_bit_mask = (1ULL << reader->rdy_gpio),
+    .mode = GPIO_MODE_INPUT,
+    .pull_up_en = GPIO_PULLUP_DISABLE,
+    .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE,
+  };
+
+#if CONFIG_APP_MAX31865_RDY_PULLUP
+  io_config.pull_up_en = GPIO_PULLUP_ENABLE;
+#elif CONFIG_APP_MAX31865_RDY_PULLDOWN
+  io_config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+#endif
+
+  esp_err_t result = gpio_config(&io_config);
+  if (result != ESP_OK) {
+    reader->rdy_enabled = false;
+    return result;
+  }
+
+#if CONFIG_APP_MAX31865_RDY_PULLUP
+  const char* pull_mode = "pullup";
+#elif CONFIG_APP_MAX31865_RDY_PULLDOWN
+  const char* pull_mode = "pulldown";
+#else
+  const char* pull_mode = "none";
+#endif
+
+  ESP_LOGI(kTag,
+           "RDY GPIO configured (gpio=%d pull=%s ready_level=%u)",
+           reader->rdy_gpio,
+           pull_mode,
+           (unsigned)reader->rdy_ready_level);
+  return ESP_OK;
+}
+
+/**
  * @brief Execute Max31865ReaderInit.
  * @param reader Parameter reader.
  * @param host Parameter host.
@@ -603,6 +667,12 @@ Max31865ReaderInit(max31865_reader_t* reader,
   reader->ema_valid = false;
   reader->ema_temp_c = 0.0;
   reader->ema_resistance_ohm = 0.0;
+
+  result = ConfigureRdyGpio(reader);
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "RDY GPIO config failed: %s", esp_err_to_name(result));
+    return result;
+  }
 
   const uint8_t base_config = BuildBaseConfig(reader);
   InitializeFaultThresholds(reader);
@@ -818,15 +888,25 @@ Max31865TryReadOneShot(max31865_reader_t* reader,
     return ESP_ERR_TIMEOUT;
   }
 
-  uint8_t config = 0;
-  esp_err_t result = Max31865ReadReg(reader, kRegConfig, &config);
-  if (result != ESP_OK) {
-    (void)Max31865AbortOneShot(reader, state);
-    return result;
-  }
-  if ((config & kCfgOneShot) != 0) {
-    state->next_action_deadline_us = now_us + 2000;
-    return ESP_ERR_TIMEOUT;
+  esp_err_t result = ESP_OK;
+  if (reader->rdy_enabled) {
+    const int rdy_level = gpio_get_level((gpio_num_t)reader->rdy_gpio);
+    if (rdy_level < 0 ||
+        (uint8_t)rdy_level != reader->rdy_ready_level) {
+      state->next_action_deadline_us = now_us + ((int64_t)10 * 1000);
+      return ESP_ERR_TIMEOUT;
+    }
+  } else {
+    uint8_t config = 0;
+    result = Max31865ReadReg(reader, kRegConfig, &config);
+    if (result != ESP_OK) {
+      (void)Max31865AbortOneShot(reader, state);
+      return result;
+    }
+    if ((config & kCfgOneShot) != 0) {
+      state->next_action_deadline_us = now_us + 2000;
+      return ESP_ERR_TIMEOUT;
+    }
   }
 
   result = ReadAndFinishOneShot(reader, state->base_config, sample_out);
