@@ -202,6 +202,7 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
                   const char* title,
                   const char* body,
                   const char* priority,
+                  const char* sequence_id,
                   int* out_retry_after_seconds,
                   int* out_status,
                   esp_err_t* out_err);
@@ -532,6 +533,7 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
                   const char* title,
                   const char* body,
                   const char* priority,
+                  const char* sequence_id,
                   int* out_retry_after_seconds,
                   int* out_status,
                   esp_err_t* out_err)
@@ -632,6 +634,9 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
     (void)esp_http_client_set_header(client, "Priority", priority);
   }
   (void)esp_http_client_set_header(client, "Tags", "pt100,mesh,alarm");
+  if (sequence_id != NULL && sequence_id[0] != '\0') {
+    (void)esp_http_client_set_header(client, "X-Sequence-ID", sequence_id);
+  }
   if (cfg->token != NULL && cfg->token[0] != '\0') {
     char auth[160];
     snprintf(auth, sizeof(auth), "Bearer %s", cfg->token);
@@ -958,6 +963,7 @@ AlertNtfySend(alert_ntfy_t* ntfy,
                            title,
                            body,
                            SeverityToPriority(note->severity),
+                           NULL,
                            out_retry_after_seconds,
                            out_status,
                            out_err);
@@ -969,6 +975,7 @@ AlertNtfySend(alert_ntfy_t* ntfy,
  * @param cfg Parameter cfg.
  * @param title Parameter title.
  * @param body Parameter body.
+ * @param sequence_id Parameter sequence_id.
  * @param out_retry_after_seconds Parameter out_retry_after_seconds.
  * @param out_status Parameter out_status.
  * @param out_err Parameter out_err.
@@ -979,6 +986,7 @@ AlertNtfySendText(alert_ntfy_t* ntfy,
                   const alert_ntfy_config_t* cfg,
                   const char* title,
                   const char* body,
+                  const char* sequence_id,
                   int* out_retry_after_seconds,
                   int* out_status,
                   esp_err_t* out_err)
@@ -988,6 +996,7 @@ AlertNtfySendText(alert_ntfy_t* ntfy,
                            title,
                            body,
                            "default",
+                           sequence_id,
                            out_retry_after_seconds,
                            out_status,
                            out_err);

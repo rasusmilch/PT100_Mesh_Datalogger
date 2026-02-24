@@ -9,6 +9,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mesh_lite.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -137,6 +138,17 @@ static alert_state_t* GetSystemErrorState(alert_manager_t* manager,
 static int64_t AlertManagerComputeNextSendMs(const alert_manager_t* manager,
                                              int64_t now_ms,
                                              int retry_after_seconds);
+/**
+ * @brief Build a stable ntfy sequence ID for a queued HTTP job.
+ * @param boot_nonce Random nonce generated at boot.
+ * @param msg_seq Monotonic message sequence number.
+ * @param out Output buffer for formatted ID.
+ * @param out_size Size of output buffer.
+ */
+static void AlertManagerBuildNtfySequenceId(uint32_t boot_nonce,
+                                            uint32_t msg_seq,
+                                            char* out,
+                                            size_t out_size);
 static bool AlertManagerSendBatchedNtfy(alert_manager_t* manager,
                                        int64_t now_ms,
                                        int64_t now_epoch,
@@ -831,6 +843,7 @@ AlertManagerInit(alert_manager_t* manager,
   memset(manager, 0, sizeof(*manager));
   manager->root_id_string = root_id_string;
   manager->local_leaf_id = local_leaf_id;
+  manager->ntfy_boot_nonce = esp_random();
   ApplyDefaults(manager);
   manager->ntfy_batch_scratch = heap_caps_calloc(
     1,
@@ -2295,6 +2308,26 @@ AlertManagerComputeNextSendMs(const alert_manager_t* manager,
   return min_send_ms;
 }
 
+/**
+ * @brief Build a stable ntfy sequence ID for a queued HTTP job.
+ * @param boot_nonce Random nonce generated at boot.
+ * @param msg_seq Monotonic message sequence number.
+ * @param out Output buffer for formatted ID.
+ * @param out_size Size of output buffer.
+ */
+static void
+AlertManagerBuildNtfySequenceId(uint32_t boot_nonce,
+                                uint32_t msg_seq,
+                                char* out,
+                                size_t out_size)
+{
+  if (out == NULL || out_size == 0u) {
+    return;
+  }
+  (void)snprintf(
+    out, out_size, "pt100-%08" PRIx32 "-%08" PRIx32, boot_nonce, msg_seq);
+}
+
 static bool
 AlertManagerSendBatchedNtfy(alert_manager_t* manager,
                             int64_t now_ms,
@@ -2349,6 +2382,10 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   snprintf(job.title, sizeof(job.title), "%s", scratch->title);
   snprintf(job.body, sizeof(job.body), "%s", scratch->body);
   job.http_timeout_ms = ResolveNtfyHttpTimeoutMs(manager);
+  AlertManagerBuildNtfySequenceId(manager->ntfy_boot_nonce,
+                                  msg_seq,
+                                  job.sequence_id,
+                                  sizeof(job.sequence_id));
   job.attempt = 0;
   job.next_attempt_ms = now_ms;
 
@@ -2366,9 +2403,10 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
 
   manager->ntfy.last_attempt_ms = now_ms;
   ESP_LOGI(kTag,
-           "ntfy job queued seq=%" PRIu32 " status=%d title=\"%s\" total=%" PRIu32
+           "ntfy job queued seq=%" PRIu32 " seq_id=%s status=%d title=\"%s\" total=%" PRIu32
            " unique=%u",
            msg_seq,
+           job.sequence_id,
            manager->ntfy.last_http_status,
            scratch->title,
            scratch->batch.total_count,

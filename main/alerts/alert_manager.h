@@ -110,6 +110,7 @@ extern "C"
     alert_ntfy_t ntfy;
     const char* root_id_string;
     uint64_t local_leaf_id;
+    uint32_t ntfy_boot_nonce;
     uint32_t global_window_start_ms;
     uint32_t global_sent_in_window;
   } alert_manager_t;

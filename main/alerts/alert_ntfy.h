@@ -22,6 +22,7 @@ extern "C"
 #define ALERT_NTFY_JOB_TOPIC_LEN 64
 #define ALERT_NTFY_JOB_TOKEN_LEN 128
 #define ALERT_NTFY_JOB_ROOT_ID_LEN 32
+#define ALERT_NTFY_JOB_SEQUENCE_ID_LEN 48
 
   typedef enum
   {
@@ -95,6 +96,7 @@ extern "C"
     char topic[ALERT_NTFY_JOB_TOPIC_LEN];
     char token[ALERT_NTFY_JOB_TOKEN_LEN];
     char root_id[ALERT_NTFY_JOB_ROOT_ID_LEN];
+    char sequence_id[ALERT_NTFY_JOB_SEQUENCE_ID_LEN];
     char title[ALERT_NTFY_JOB_TITLE_LEN];
     char body[ALERT_NTFY_JOB_BODY_LEN];
     uint32_t http_timeout_ms;
@@ -196,6 +198,7 @@ extern "C"
                                         const alert_ntfy_config_t* cfg,
                                         const char* title,
                                         const char* body,
+                                        const char* sequence_id,
                                         int* out_retry_after_seconds,
                                         int* out_status,
                                         esp_err_t* out_err);
