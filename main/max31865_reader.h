@@ -65,6 +65,9 @@ extern "C"
     uint8_t wires;          // 2, 3, or 4
     uint8_t filter_hz;      // 50 or 60
     uint32_t bias_settle_ms;
+    int rdy_gpio;
+    bool rdy_enabled;
+    uint8_t rdy_ready_level;
     max31865_conversion_t conversion;
     bool pulsed_bias;
     bool is_initialized;

@@ -170,6 +170,36 @@ config APP_MAX31865_CS_GPIO
   range -1 48
   default 10
 
+config APP_MAX31865_RDY_GPIO
+  int "MAX31865 RDY GPIO (-1 disables)"
+  range -1 48
+  default 6
+  help
+    MAX31865 RDY pin GPIO number. Set to -1 to disable RDY usage.
+
+choice APP_MAX31865_RDY_PULL
+  prompt "MAX31865 RDY pull resistor"
+  default APP_MAX31865_RDY_PULL_NONE
+  depends on APP_MAX31865_RDY_GPIO != -1
+
+config APP_MAX31865_RDY_PULL_NONE
+  bool "None"
+
+config APP_MAX31865_RDY_PULLUP
+  bool "Pull-up"
+
+config APP_MAX31865_RDY_PULLDOWN
+  bool "Pull-down"
+
+endchoice
+
+config APP_MAX31865_RDY_READY_HIGH
+  bool "MAX31865 RDY ready level is HIGH"
+  default n
+  depends on APP_MAX31865_RDY_GPIO != -1
+  help
+    When disabled, ready level is LOW.
+
 config APP_MAX7219_ENABLE
   bool "Enable MAX7219 32x8 display"
   default y
