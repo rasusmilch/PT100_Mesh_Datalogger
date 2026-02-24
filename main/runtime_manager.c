@@ -7415,8 +7415,9 @@ RuntimeLogNtfyJob(const alert_ntfy_job_t* job, const char* stage)
   }
   const char* stage_name = (stage != NULL) ? stage : "unknown";
   ESP_LOGI(kTag,
-           "runtime: ntfy job %s title=\"%s\" attempt=%" PRIu32,
+           "runtime: ntfy job %s seq_id=\"%s\" title=\"%s\" attempt=%" PRIu32,
            stage_name,
+           job->sequence_id,
            job->title,
            job->attempt + 1);
   RuntimeLogNtfyBodyLines(stage_name, job->body);
@@ -7588,6 +7589,7 @@ AlertHttpTask(void* context)
                                                    &cfg,
                                                    job.title,
                                                    job.body,
+                                                   job.sequence_id,
                                                    &retry_after_seconds,
                                                    &status,
                                                    &err);
