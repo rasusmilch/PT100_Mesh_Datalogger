@@ -9,7 +9,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mesh_lite.h"
-#include "esp_system.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -39,105 +39,135 @@ typedef struct alert_ntfy_batch_scratch_s
 } alert_ntfy_batch_scratch_t;
 
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
-static uint64_t PackMacToId(const uint8_t mac[6]);
+static uint64_t
+PackMacToId(const uint8_t mac[6]);
 #endif
-static uint64_t ResolveLeafId(const alert_manager_t* manager, uint64_t leaf_id);
-static alert_leaf_state_t* FindLeaf(alert_manager_t* manager, uint64_t leaf_id);
-static alert_leaf_state_t* FindOrAllocateLeaf(alert_manager_t* manager,
-                                               uint64_t leaf_id);
-static bool FindOrAllocateLeafIndex(alert_manager_t* manager,
-                                    uint64_t leaf_id,
-                                    size_t* index_out);
-static bool GetLeafConfig(const alert_manager_t* manager,
-                          uint64_t leaf_id,
-                          alert_leaf_config_t* out);
-static alert_leaf_config_t* GetOrCreateLeafConfig(alert_manager_t* manager,
-                                                  uint64_t leaf_id);
-static uint32_t EffectiveEnableMask(const alert_manager_t* manager,
-                                    uint64_t leaf_id);
-static void AlertStateTransition(alert_state_t* state,
-                                 bool active,
-                                 int64_t now_ms);
-static bool AlertManagerQueueNotification(alert_manager_t* manager,
-                                          alert_state_t* state,
-                                          alert_type_t type,
-                                          alert_severity_t severity,
-                                          bool resolved,
-                                          uint64_t leaf_id,
-                                          const alert_notification_payload_t* payload,
-                                          int64_t now_ms);
-static bool AlertManagerQueueOneShot(alert_manager_t* manager,
-                                     alert_state_t* state,
-                                     alert_type_t type,
-                                     alert_severity_t severity,
-                                     uint64_t leaf_id,
-                                     const alert_notification_payload_t* payload,
-                                     int64_t now_ms);
-static void FillPayloadBase(alert_notification_payload_t* payload,
-                            const alert_leaf_state_t* leaf,
-                            int64_t now_ms,
-                            int64_t now_epoch);
-static void ProcessAlert(alert_manager_t* manager,
-                         size_t leaf_index,
+static uint64_t
+ResolveLeafId(const alert_manager_t* manager, uint64_t leaf_id);
+static alert_leaf_state_t*
+FindLeaf(alert_manager_t* manager, uint64_t leaf_id);
+static alert_leaf_state_t*
+FindOrAllocateLeaf(alert_manager_t* manager, uint64_t leaf_id);
+static bool
+FindOrAllocateLeafIndex(alert_manager_t* manager,
+                        uint64_t leaf_id,
+                        size_t* index_out);
+static bool
+GetLeafConfig(const alert_manager_t* manager,
+              uint64_t leaf_id,
+              alert_leaf_config_t* out);
+static alert_leaf_config_t*
+GetOrCreateLeafConfig(alert_manager_t* manager, uint64_t leaf_id);
+static uint32_t
+EffectiveEnableMask(const alert_manager_t* manager, uint64_t leaf_id);
+static void
+AlertStateTransition(alert_state_t* state, bool active, int64_t now_ms);
+static bool
+AlertManagerQueueNotification(alert_manager_t* manager,
+                              alert_state_t* state,
+                              alert_type_t type,
+                              alert_severity_t severity,
+                              bool resolved,
+                              uint64_t leaf_id,
+                              const alert_notification_payload_t* payload,
+                              int64_t now_ms);
+static bool
+AlertManagerQueueOneShot(alert_manager_t* manager,
+                         alert_state_t* state,
                          alert_type_t type,
                          alert_severity_t severity,
-                         bool condition_active,
-                         alert_notification_payload_t* payload,
+                         uint64_t leaf_id,
+                         const alert_notification_payload_t* payload,
                          int64_t now_ms);
-static bool GetLimits(const alert_manager_t* manager,
-                      uint64_t leaf_id,
-                      int32_t* high_out,
-                      int32_t* low_out);
-static void RefreshMeshOnline(alert_manager_t* manager, int64_t now_ms);
-static void ApplyDefaults(alert_manager_t* manager);
-static int64_t ResolveNtfyMinIntervalMs(const alert_manager_t* manager);
-static uint32_t ResolveNtfyHttpTimeoutMs(const alert_manager_t* manager);
-static void FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size);
-static void FormatMilliC(int32_t milli_c, char* out, size_t out_size);
-static void FormatBatchWindow(int64_t window_ms, char* out, size_t out_size);
-static bool AlertNotificationKeyMatches(const alert_notification_t* left,
-                                        const alert_notification_t* right);
-static bool AlertNotificationIsLeafScoped(const alert_notification_t* note);
-static void AlertNotificationDescribe(const alert_manager_t* manager,
-                                      const alert_notification_t* note,
-                                      char* out,
-                                      size_t out_size);
-static void AlertManagerLogNtfyNoteQueued(const alert_manager_t* manager,
-                                          const alert_notification_t* note);
-static void AlertManagerLogNtfyBodyLines(const char* label, const char* text);
-static uint32_t SaturatingDeltaMs(int64_t now_ms, int64_t then_ms);
-static void LogNonmonotonicDelta(uint64_t leaf_id,
-                                 int64_t now_ms,
-                                 int64_t then_ms,
-                                 uint32_t gap_ms);
-static bool IsLikelySequenceWrap(uint32_t last_seq, uint32_t new_seq);
-static bool ShouldAlertLeafRestart(const alert_leaf_state_t* leaf,
-                                   const log_record_t* record,
-                                   const char** reason_out);
-static void LogLeafRestartDetection(const alert_leaf_state_t* leaf,
-                                    const log_record_t* record,
-                                    int64_t now_ms,
-                                    int64_t now_epoch,
-                                    const char* reason);
-static void AlertManagerBatchInit(alert_batch_t* batch);
-static void AlertManagerBatchAdd(alert_batch_t* batch,
-                                 const alert_notification_t* note);
-static size_t AlertManagerDrainNtfyQueue(alert_manager_t* manager,
-                                         alert_notification_t* notes,
-                                         size_t max_notes,
-                                         uint32_t wait_ms);
-static bool AlertManagerBuildBatchMessage(const alert_manager_t* manager,
-                                          const alert_batch_t* batch,
-                                          uint32_t msg_seq,
-                                          char* title,
-                                          size_t title_size,
-                                          char* body,
-                                          size_t body_size);
-static alert_state_t* GetSystemErrorState(alert_manager_t* manager,
-                                          alert_system_code_t error_code);
-static int64_t AlertManagerComputeNextSendMs(const alert_manager_t* manager,
-                                             int64_t now_ms,
-                                             int retry_after_seconds);
+static void
+FillPayloadBase(alert_notification_payload_t* payload,
+                const alert_leaf_state_t* leaf,
+                int64_t now_ms,
+                int64_t now_epoch);
+static void
+ProcessAlert(alert_manager_t* manager,
+             size_t leaf_index,
+             alert_type_t type,
+             alert_severity_t severity,
+             bool condition_active,
+             alert_notification_payload_t* payload,
+             int64_t now_ms);
+static bool
+GetLimits(const alert_manager_t* manager,
+          uint64_t leaf_id,
+          int32_t* high_out,
+          int32_t* low_out);
+static void
+RefreshMeshOnline(alert_manager_t* manager, int64_t now_ms);
+static void
+ApplyDefaults(alert_manager_t* manager);
+static int64_t
+ResolveNtfyMinIntervalMs(const alert_manager_t* manager);
+static uint32_t
+ResolveNtfyHttpTimeoutMs(const alert_manager_t* manager);
+static void
+FormatEpoch(int64_t epoch_seconds, char* out, size_t out_size);
+static void
+FormatMilliC(int32_t milli_c, char* out, size_t out_size);
+static void
+FormatBatchWindow(int64_t window_ms, char* out, size_t out_size);
+static bool
+AlertNotificationKeyMatches(const alert_notification_t* left,
+                            const alert_notification_t* right);
+static bool
+AlertNotificationIsLeafScoped(const alert_notification_t* note);
+static void
+AlertNotificationDescribe(const alert_manager_t* manager,
+                          const alert_notification_t* note,
+                          char* out,
+                          size_t out_size);
+static void
+AlertManagerLogNtfyNoteQueued(const alert_manager_t* manager,
+                              const alert_notification_t* note);
+static void
+AlertManagerLogNtfyBodyLines(const char* label, const char* text);
+static uint32_t
+SaturatingDeltaMs(int64_t now_ms, int64_t then_ms);
+static void
+LogNonmonotonicDelta(uint64_t leaf_id,
+                     int64_t now_ms,
+                     int64_t then_ms,
+                     uint32_t gap_ms);
+static bool
+IsLikelySequenceWrap(uint32_t last_seq, uint32_t new_seq);
+static bool
+ShouldAlertLeafRestart(const alert_leaf_state_t* leaf,
+                       const log_record_t* record,
+                       const char** reason_out);
+static void
+LogLeafRestartDetection(const alert_leaf_state_t* leaf,
+                        const log_record_t* record,
+                        int64_t now_ms,
+                        int64_t now_epoch,
+                        const char* reason);
+static void
+AlertManagerBatchInit(alert_batch_t* batch);
+static void
+AlertManagerBatchAdd(alert_batch_t* batch, const alert_notification_t* note);
+static size_t
+AlertManagerDrainNtfyQueue(alert_manager_t* manager,
+                           alert_notification_t* notes,
+                           size_t max_notes,
+                           uint32_t wait_ms);
+static bool
+AlertManagerBuildBatchMessage(const alert_manager_t* manager,
+                              const alert_batch_t* batch,
+                              uint32_t msg_seq,
+                              char* title,
+                              size_t title_size,
+                              char* body,
+                              size_t body_size);
+static alert_state_t*
+GetSystemErrorState(alert_manager_t* manager, alert_system_code_t error_code);
+static int64_t
+AlertManagerComputeNextSendMs(const alert_manager_t* manager,
+                              int64_t now_ms,
+                              int retry_after_seconds);
 /**
  * @brief Build a stable ntfy sequence ID for a queued HTTP job.
  * @param boot_nonce Random nonce generated at boot.
@@ -145,19 +175,19 @@ static int64_t AlertManagerComputeNextSendMs(const alert_manager_t* manager,
  * @param out Output buffer for formatted ID.
  * @param out_size Size of output buffer.
  */
-static void AlertManagerBuildNtfySequenceId(uint32_t boot_nonce,
-                                            uint32_t msg_seq,
-                                            char* out,
-                                            size_t out_size);
-static bool AlertManagerSendBatchedNtfy(alert_manager_t* manager,
-                                       int64_t now_ms,
-                                       int64_t now_epoch,
-                                       uint32_t wait_ms,
-                                       int64_t* next_attempt_ms);
-static bool AppendTextLine(char* body,
-                           size_t body_size,
-                           size_t* used,
-                           const char* text);
+static void
+AlertManagerBuildNtfySequenceId(uint32_t boot_nonce,
+                                uint32_t msg_seq,
+                                char* out,
+                                size_t out_size);
+static bool
+AlertManagerSendBatchedNtfy(alert_manager_t* manager,
+                            int64_t now_ms,
+                            int64_t now_epoch,
+                            uint32_t wait_ms,
+                            int64_t* next_attempt_ms);
+static bool
+AppendTextLine(char* body, size_t body_size, size_t* used, const char* text);
 
 static const char* kTag = "alert_mgr";
 static const int64_t kNtfyFailureMaxBackoffMs = 300000;
@@ -232,8 +262,8 @@ LogNonmonotonicDelta(uint64_t leaf_id,
   char leaf_id_string[32] = "";
   AlertManagerFormatLeafId(leaf_id, leaf_id_string, sizeof(leaf_id_string));
   ESP_LOGW(kTag,
-           "non-monotonic leaf time for %s now_ms=%" PRId64
-           " then_ms=%" PRId64 " gap=%" PRIu32 "ms (clamped negative delta)",
+           "non-monotonic leaf time for %s now_ms=%" PRId64 " then_ms=%" PRId64
+           " gap=%" PRIu32 "ms (clamped negative delta)",
            leaf_id_string,
            now_ms,
            then_ms,
@@ -307,7 +337,8 @@ LogLeafRestartDetection(const alert_leaf_state_t* leaf,
     return;
   }
   char leaf_id_string[32] = "";
-  AlertManagerFormatLeafId(leaf->leaf_id, leaf_id_string, sizeof(leaf_id_string));
+  AlertManagerFormatLeafId(
+    leaf->leaf_id, leaf_id_string, sizeof(leaf_id_string));
   ESP_LOGW(kTag,
            "leaf sequence regression (%s) for %s last_seq=%" PRIu32
            " new_seq=%" PRIu32 " last_record_id=%" PRIu64
@@ -598,14 +629,8 @@ AlertManagerQueueOneShot(alert_manager_t* manager,
     state->notify_suppressed_count++;
     return false;
   }
-  if (AlertManagerQueueNotification(manager,
-                                    state,
-                                    type,
-                                    severity,
-                                    false,
-                                    leaf_id,
-                                    payload,
-                                    now_ms)) {
+  if (AlertManagerQueueNotification(
+        manager, state, type, severity, false, leaf_id, payload, now_ms)) {
     if (state != NULL) {
       state->last_notify_ms = now_ms;
       state->last_severity = severity;
@@ -845,10 +870,10 @@ AlertManagerInit(alert_manager_t* manager,
   manager->local_leaf_id = local_leaf_id;
   manager->ntfy_boot_nonce = esp_random();
   ApplyDefaults(manager);
-  manager->ntfy_batch_scratch = heap_caps_calloc(
-    1,
-    sizeof(*manager->ntfy_batch_scratch),
-    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  manager->ntfy_batch_scratch =
+    heap_caps_calloc(1,
+                     sizeof(*manager->ntfy_batch_scratch),
+                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (manager->ntfy_batch_scratch == NULL) {
     ESP_LOGE(kTag, "Failed to allocate ntfy scratch storage in PSRAM");
   }
@@ -971,8 +996,7 @@ AlertManagerOnSample(alert_manager_t* manager,
                                   &payload,
                                   now_ms);
   }
-  const bool cal_valid =
-    (record->flags & LOG_RECORD_FLAG_CAL_VALID) != 0u;
+  const bool cal_valid = (record->flags & LOG_RECORD_FLAG_CAL_VALID) != 0u;
   if (record->sequence != 0u) {
     if (leaf->last_seq == 0 || record->sequence > leaf->last_seq ||
         IsLikelySequenceWrap(leaf->last_seq, record->sequence)) {
@@ -1035,9 +1059,8 @@ AlertManagerOnLoggingSessionStart(alert_manager_t* manager,
   }
 
   size_t leaf_index = 0;
-  if (!FindOrAllocateLeafIndex(manager,
-                               ResolveLeafId(manager, manager->local_leaf_id),
-                               &leaf_index)) {
+  if (!FindOrAllocateLeafIndex(
+        manager, ResolveLeafId(manager, manager->local_leaf_id), &leaf_index)) {
     return;
   }
 
@@ -1155,8 +1178,7 @@ AlertManagerTick(alert_manager_t* manager, int64_t now_ms, int64_t now_epoch)
     if ((mask & (1u << ALERT_MISSING_RECORDS)) != 0u &&
         leaf->last_rx_uptime_ms > 0) {
       const uint32_t gap = SaturatingDeltaMs(now_ms, leaf->last_rx_uptime_ms);
-      LogNonmonotonicDelta(
-        leaf->leaf_id, now_ms, leaf->last_rx_uptime_ms, gap);
+      LogNonmonotonicDelta(leaf->leaf_id, now_ms, leaf->last_rx_uptime_ms, gap);
       const bool missing_active = gap >= manager->config.missing_gap_ms;
       alert_notification_payload_t payload = { 0 };
       FillPayloadBase(&payload, leaf, now_ms, now_epoch);
@@ -1422,14 +1444,13 @@ AlertManagerSetNtfyUrl(alert_manager_t* manager, const char* url)
   }
 
   char normalized_url[sizeof(manager->config.ntfy_url)] = { 0 };
-  if (!AlertNtfySanitizeBaseUrl(url,
-                                normalized_url,
-                                sizeof(normalized_url),
-                                NULL)) {
+  if (!AlertNtfySanitizeBaseUrl(
+        url, normalized_url, sizeof(normalized_url), NULL)) {
     return false;
   }
 
-  strlcpy(manager->config.ntfy_url, normalized_url, sizeof(manager->config.ntfy_url));
+  strlcpy(
+    manager->config.ntfy_url, normalized_url, sizeof(manager->config.ntfy_url));
   return AlertManagerSaveConfig(manager) == ESP_OK;
 }
 
@@ -1585,13 +1606,14 @@ AlertManagerEmitSystemBoot(alert_manager_t* manager,
   alert_notification_payload_t payload = { 0 };
   FillPayloadBase(&payload, &manager->leaves[leaf_index], now_ms, now_epoch);
   payload.event_code = ALERT_SYSTEM_CODE_BOOT;
-  (void)AlertManagerQueueOneShot(manager,
-                                 &manager->states[leaf_index][ALERT_SYSTEM_BOOT],
-                                 ALERT_SYSTEM_BOOT,
-                                 ALERT_SEV_INFO,
-                                 leaf_id,
-                                 &payload,
-                                 now_ms);
+  (void)AlertManagerQueueOneShot(
+    manager,
+    &manager->states[leaf_index][ALERT_SYSTEM_BOOT],
+    ALERT_SYSTEM_BOOT,
+    ALERT_SEV_INFO,
+    leaf_id,
+    &payload,
+    now_ms);
 }
 
 /**
@@ -1622,13 +1644,14 @@ AlertManagerEmitSystemMode(alert_manager_t* manager,
   alert_notification_payload_t payload = { 0 };
   FillPayloadBase(&payload, &manager->leaves[leaf_index], now_ms, now_epoch);
   payload.event_code = mode_code;
-  (void)AlertManagerQueueOneShot(manager,
-                                 &manager->states[leaf_index][ALERT_SYSTEM_MODE],
-                                 ALERT_SYSTEM_MODE,
-                                 ALERT_SEV_INFO,
-                                 leaf_id,
-                                 &payload,
-                                 now_ms);
+  (void)AlertManagerQueueOneShot(
+    manager,
+    &manager->states[leaf_index][ALERT_SYSTEM_MODE],
+    ALERT_SYSTEM_MODE,
+    ALERT_SEV_INFO,
+    leaf_id,
+    &payload,
+    now_ms);
 }
 
 /**
@@ -1976,9 +1999,8 @@ AlertNotificationDescribe(const alert_manager_t* manager,
     case ALERT_TEMP_HIGH: {
       char temp_str[24];
       char limit_str[24];
-      FormatMilliC(note->payload.current_temp_milli_c,
-                   temp_str,
-                   sizeof(temp_str));
+      FormatMilliC(
+        note->payload.current_temp_milli_c, temp_str, sizeof(temp_str));
       FormatMilliC(note->payload.limit_milli_c, limit_str, sizeof(limit_str));
       snprintf(out + strlen(out),
                out_size - strlen(out),
@@ -1990,9 +2012,8 @@ AlertNotificationDescribe(const alert_manager_t* manager,
     case ALERT_TEMP_LOW: {
       char temp_str[24];
       char limit_str[24];
-      FormatMilliC(note->payload.current_temp_milli_c,
-                   temp_str,
-                   sizeof(temp_str));
+      FormatMilliC(
+        note->payload.current_temp_milli_c, temp_str, sizeof(temp_str));
       FormatMilliC(note->payload.limit_milli_c, limit_str, sizeof(limit_str));
       snprintf(out + strlen(out),
                out_size - strlen(out),
@@ -2029,10 +2050,8 @@ AlertNotificationDescribe(const alert_manager_t* manager,
       } else if (note->payload.event_code == ALERT_SYSTEM_CODE_MODE_DIAG) {
         mode = "diag";
       }
-      snprintf(out + strlen(out),
-               out_size - strlen(out),
-               "system mode %s",
-               mode);
+      snprintf(
+        out + strlen(out), out_size - strlen(out), "system mode %s", mode);
       break;
     }
     case ALERT_SYSTEM_ERROR: {
@@ -2080,10 +2099,8 @@ AlertNotificationDescribe(const alert_manager_t* manager,
         default:
           break;
       }
-      snprintf(out + strlen(out),
-               out_size - strlen(out),
-               "system error %s",
-               error);
+      snprintf(
+        out + strlen(out), out_size - strlen(out), "system error %s", error);
       break;
     }
     default:
@@ -2092,9 +2109,7 @@ AlertNotificationDescribe(const alert_manager_t* manager,
   }
 
   if (note->resolved) {
-    snprintf(out + strlen(out),
-             out_size - strlen(out),
-             " — cleared");
+    snprintf(out + strlen(out), out_size - strlen(out), " — cleared");
   } else {
     snprintf(out + strlen(out), out_size - strlen(out), " — active");
   }
@@ -2109,15 +2124,15 @@ AlertManagerLogNtfyNoteQueued(const alert_manager_t* manager,
   }
   char describe[256] = "";
   AlertNotificationDescribe(manager, note, describe, sizeof(describe));
-  ESP_LOGI(
-    kTag,
-    "ntfy note queued: %s event_epoch=%" PRId64 " event_uptime_ms=%" PRId64
-    " last_rx_epoch=%" PRId64 " last_rx_uptime_ms=%" PRId64,
-    describe,
-    note->payload.event_epoch,
-    note->payload.event_uptime_ms,
-    note->payload.last_rx_epoch,
-    note->payload.last_rx_uptime_ms);
+  ESP_LOGI(kTag,
+           "ntfy note queued: %s event_epoch=%" PRId64
+           " event_uptime_ms=%" PRId64 " last_rx_epoch=%" PRId64
+           " last_rx_uptime_ms=%" PRId64,
+           describe,
+           note->payload.event_epoch,
+           note->payload.event_uptime_ms,
+           note->payload.last_rx_epoch,
+           note->payload.last_rx_uptime_ms);
 }
 
 static void
@@ -2133,7 +2148,8 @@ AlertManagerLogNtfyBodyLines(const char* label, const char* text)
   const bool truncated = (raw_len == ALERT_NTFY_JOB_BODY_LEN);
   char cleaned[ALERT_NTFY_JOB_BODY_LEN + 1];
   size_t cleaned_len = 0;
-  for (size_t i = 0; i < raw_len && cleaned_len < ALERT_NTFY_JOB_BODY_LEN; ++i) {
+  for (size_t i = 0; i < raw_len && cleaned_len < ALERT_NTFY_JOB_BODY_LEN;
+       ++i) {
     if (text[i] == '\r') {
       continue;
     }
@@ -2243,7 +2259,8 @@ AlertManagerBuildBatchMessage(const alert_manager_t* manager,
   FormatBatchWindow(ResolveNtfyMinIntervalMs(manager), window, sizeof(window));
   int written = snprintf(body,
                          body_size,
-                         "Message seq: %" PRIu32 "\nBatched %" PRIu32 " alerts over last %s:\n\n",
+                         "Message seq: %" PRIu32 "\nBatched %" PRIu32
+                         " alerts over last %s:\n\n",
                          msg_seq,
                          batch->total_count,
                          window);
@@ -2253,18 +2270,15 @@ AlertManagerBuildBatchMessage(const alert_manager_t* manager,
   size_t used = (size_t)written;
   for (size_t i = 0; i < batch->entry_count; ++i) {
     char line[256];
-    AlertNotificationDescribe(manager,
-                              &batch->entries[i].note,
-                              line,
-                              sizeof(line));
+    AlertNotificationDescribe(
+      manager, &batch->entries[i].note, line, sizeof(line));
     if (batch->entries[i].count > 1) {
       snprintf(line + strlen(line),
                sizeof(line) - strlen(line),
                " (x%" PRIu32 ")",
                batch->entries[i].count);
     }
-    int line_written =
-      snprintf(body + used, body_size - used, "• %s\n", line);
+    int line_written = snprintf(body + used, body_size - used, "• %s\n", line);
     if (line_written < 0) {
       break;
     }
@@ -2278,10 +2292,7 @@ AlertManagerBuildBatchMessage(const alert_manager_t* manager,
   if (batch->last_event_epoch > 0) {
     char time_str[32];
     FormatEpoch(batch->last_event_epoch, time_str, sizeof(time_str));
-    snprintf(body + used,
-             body_size - used,
-             "\nLast event: %s\n",
-             time_str);
+    snprintf(body + used, body_size - used, "\nLast event: %s\n", time_str);
   } else if (batch->last_event_uptime_ms > 0) {
     snprintf(body + used,
              body_size - used,
@@ -2350,8 +2361,8 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
 
   const size_t max_notes = ALERT_NTFY_QUEUE_LEN;
   alert_ntfy_batch_scratch_t* scratch = manager->ntfy_batch_scratch;
-  size_t note_count = AlertManagerDrainNtfyQueue(
-    manager, scratch->notes, max_notes, wait_ms);
+  size_t note_count =
+    AlertManagerDrainNtfyQueue(manager, scratch->notes, max_notes, wait_ms);
   if (note_count == 0) {
     return false;
   }
@@ -2363,14 +2374,13 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
     AlertManagerBatchAdd(&scratch->batch, &scratch->notes[i]);
   }
 
-  if (!AlertManagerBuildBatchMessage(
-        manager,
-        &scratch->batch,
-        msg_seq,
-        scratch->title,
-        sizeof(scratch->title),
-        scratch->body,
-        sizeof(scratch->body))) {
+  if (!AlertManagerBuildBatchMessage(manager,
+                                     &scratch->batch,
+                                     msg_seq,
+                                     scratch->title,
+                                     sizeof(scratch->title),
+                                     scratch->body,
+                                     sizeof(scratch->body))) {
     return false;
   }
 
@@ -2403,8 +2413,8 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
 
   manager->ntfy.last_attempt_ms = now_ms;
   ESP_LOGI(kTag,
-           "ntfy job queued seq=%" PRIu32 " seq_id=%s status=%d title=\"%s\" total=%" PRIu32
-           " unique=%u",
+           "ntfy job queued seq=%" PRIu32
+           " seq_id=%s status=%d title=\"%s\" total=%" PRIu32 " unique=%u",
            msg_seq,
            job.sequence_id,
            manager->ntfy.last_http_status,
@@ -2483,8 +2493,10 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
 
   alert_ntfy_batch_scratch_t* scratch = manager->ntfy_batch_scratch;
   if (scratch == NULL) {
-    manager->ntfy_batch_scratch = heap_caps_calloc(
-      1, sizeof(*manager->ntfy_batch_scratch), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    manager->ntfy_batch_scratch =
+      heap_caps_calloc(1,
+                       sizeof(*manager->ntfy_batch_scratch),
+                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     scratch = manager->ntfy_batch_scratch;
     if (scratch == NULL) {
       ESP_LOGE(kTag, "Failed to allocate ntfy scratch storage for STOP flush");
@@ -2495,11 +2507,13 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
 
   const size_t notes_max = ALERT_NTFY_QUEUE_LEN;
   const size_t jobs_max = ALERT_NTFY_JOB_QUEUE_LEN;
-  char drained_job_titles[ALERT_NTFY_JOB_QUEUE_LEN][ALERT_NTFY_JOB_TITLE_LEN] = { 0 };
+  char drained_job_titles[ALERT_NTFY_JOB_QUEUE_LEN]
+                         [ALERT_NTFY_JOB_TITLE_LEN] = { 0 };
 
   size_t notes_count = 0;
   while (notes_count < notes_max &&
-         xQueueReceive(manager->ntfy.queue, &scratch->notes[notes_count], 0) == pdTRUE) {
+         xQueueReceive(manager->ntfy.queue, &scratch->notes[notes_count], 0) ==
+           pdTRUE) {
     AlertManagerBatchAdd(&scratch->batch, &scratch->notes[notes_count]);
     notes_count++;
   }
@@ -2524,12 +2538,15 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
 
   memset(out_job, 0, sizeof(*out_job));
   snprintf(out_job->url, sizeof(out_job->url), "%s", manager->config.ntfy_url);
-  snprintf(out_job->topic, sizeof(out_job->topic), "%s", manager->config.ntfy_topic);
-  snprintf(out_job->token, sizeof(out_job->token), "%s", manager->config.ntfy_token);
+  snprintf(
+    out_job->topic, sizeof(out_job->topic), "%s", manager->config.ntfy_topic);
+  snprintf(
+    out_job->token, sizeof(out_job->token), "%s", manager->config.ntfy_token);
   snprintf(out_job->root_id,
            sizeof(out_job->root_id),
            "%s",
-           (manager->root_id_string != NULL) ? manager->root_id_string : "root");
+           (manager->root_id_string != NULL) ? manager->root_id_string
+                                             : "root");
   snprintf(out_job->title,
            sizeof(out_job->title),
            "STOP: Logger halted (consolidated)");
@@ -2539,7 +2556,8 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
   snprintf(summary,
            sizeof(summary),
            "STOP requested: %s",
-           (stop_reason != NULL && stop_reason[0] != '\0') ? stop_reason : "operator stop");
+           (stop_reason != NULL && stop_reason[0] != '\0') ? stop_reason
+                                                           : "operator stop");
   (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
 
   snprintf(summary,
@@ -2550,58 +2568,67 @@ AlertManagerBuildStopFlushNtfyJob(alert_manager_t* manager,
   (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
 
   if (jobs_count > 0) {
-    (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, "Queued job titles:");
+    (void)AppendTextLine(
+      out_job->body, sizeof(out_job->body), &used, "Queued job titles:");
     const size_t max_titles = 6;
     const size_t emit = (jobs_count < max_titles) ? jobs_count : max_titles;
     for (size_t i = 0; i < emit; ++i) {
       const size_t kSummaryPrefixLen = 14; // "- queued job: "
-      const size_t max_title_chars = (sizeof(summary) > (kSummaryPrefixLen + 1))
-                                       ? (sizeof(summary) - (kSummaryPrefixLen + 1))
-                                       : 0;
+      const size_t max_title_chars =
+        (sizeof(summary) > (kSummaryPrefixLen + 1))
+          ? (sizeof(summary) - (kSummaryPrefixLen + 1))
+          : 0;
       snprintf(summary,
                sizeof(summary),
                "- queued job: %.*s",
                (int)max_title_chars,
                drained_job_titles[i]);
-      (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+      (void)AppendTextLine(
+        out_job->body, sizeof(out_job->body), &used, summary);
     }
     if (jobs_count > emit) {
-      snprintf(summary, sizeof(summary), "- (+%u more jobs)", (unsigned)(jobs_count - emit));
-      (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+      snprintf(summary,
+               sizeof(summary),
+               "- (+%u more jobs)",
+               (unsigned)(jobs_count - emit));
+      (void)AppendTextLine(
+        out_job->body, sizeof(out_job->body), &used, summary);
     }
   }
 
   if (notes_count > 0) {
-    (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, "Pending alert notes:");
+    (void)AppendTextLine(
+      out_job->body, sizeof(out_job->body), &used, "Pending alert notes:");
     const size_t max_notes = 10;
     const size_t emit = (notes_count < max_notes) ? notes_count : max_notes;
     for (size_t i = 0; i < emit; ++i) {
       char line[256];
-      AlertNotificationDescribe(manager, &scratch->notes[i], line, sizeof(line));
+      AlertNotificationDescribe(
+        manager, &scratch->notes[i], line, sizeof(line));
       const size_t kSummaryPrefixLen = 2; // "- "
-      const size_t max_line_chars = (sizeof(summary) > (kSummaryPrefixLen + 1))
-                                      ? (sizeof(summary) - (kSummaryPrefixLen + 1))
-                                      : 0;
-      snprintf(summary,
-               sizeof(summary),
-               "- %.*s",
-               (int)max_line_chars,
-               line);
-      (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+      const size_t max_line_chars =
+        (sizeof(summary) > (kSummaryPrefixLen + 1))
+          ? (sizeof(summary) - (kSummaryPrefixLen + 1))
+          : 0;
+      snprintf(summary, sizeof(summary), "- %.*s", (int)max_line_chars, line);
+      (void)AppendTextLine(
+        out_job->body, sizeof(out_job->body), &used, summary);
     }
     if (notes_count > emit) {
       snprintf(summary,
                sizeof(summary),
                "- (+%u more notes)",
                (unsigned)(notes_count - emit));
-      (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
+      (void)AppendTextLine(
+        out_job->body, sizeof(out_job->body), &used, summary);
     }
   }
 
   snprintf(summary,
            sizeof(summary),
            "PT100 - %s",
-           (manager->root_id_string != NULL) ? manager->root_id_string : "root");
+           (manager->root_id_string != NULL) ? manager->root_id_string
+                                             : "root");
   (void)AppendTextLine(out_job->body, sizeof(out_job->body), &used, summary);
 
   out_job->http_timeout_ms = ResolveNtfyHttpTimeoutMs(manager);
@@ -2704,11 +2731,9 @@ AlertManagerSenderTask(void* context)
     int64_t now_ms = esp_timer_get_time() / 1000;
     int64_t now_epoch = TimeSyncIsSystemTimeValid() ? (int64_t)time(NULL) : -1;
     if (ctx->manager->ntfy.cooldown_until_ms > now_ms) {
-      int64_t remaining_ms =
-        ctx->manager->ntfy.cooldown_until_ms - now_ms;
+      int64_t remaining_ms = ctx->manager->ntfy.cooldown_until_ms - now_ms;
       if (remaining_ms > 0) {
-        (void)ulTaskNotifyTake(pdTRUE,
-                               pdMS_TO_TICKS((uint32_t)remaining_ms));
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((uint32_t)remaining_ms));
         if (*ctx->stop_requested) {
           break;
         }
