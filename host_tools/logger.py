@@ -55,6 +55,7 @@ class OutputConfig:
     decode_errors: str
     flush_lines: int
     flush_interval_sec: float
+    fsync_on_flush: bool
     print_to_stdout: bool
 
 
@@ -264,6 +265,9 @@ class SessionLogger:
 
         self._output_file = self._open_output_file()
         self._stdin_thread: Optional[threading.Thread] = None
+        self._flush_thread: Optional[threading.Thread] = None
+        self._close_lock = threading.Lock()
+        self._closed = False
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -295,6 +299,8 @@ class SessionLogger:
         line = f"{prefix}{message}\n"
         with self._log_file_lock:
             self._output_file.write(line)
+        self._lines_since_flush += 1
+        self._maybe_flush_due()
         if self._output_config.print_to_stdout:
             sys.stdout.write(line)
             sys.stdout.flush()
@@ -329,12 +335,7 @@ class SessionLogger:
             self._output_file.write(file_line)
 
         self._lines_since_flush += 1
-        now = time.monotonic()
-        if (
-            self._lines_since_flush >= self._output_config.flush_lines
-            or (now - self._last_flush_time) >= self._output_config.flush_interval_sec
-        ):
-            self._flush()
+        self._maybe_flush_due()
 
         if self._output_config.print_to_stdout:
             display_line = f"{host_prefix}{stripped}"
@@ -343,43 +344,106 @@ class SessionLogger:
 
     def _flush(self) -> None:
         with self._log_file_lock:
+            if self._closed:
+                return
             self._output_file.flush()
+            if self._output_config.fsync_on_flush:
+                os.fsync(self._output_file.fileno())
         self._lines_since_flush = 0
         self._last_flush_time = time.monotonic()
+
+    def _maybe_flush_due(self) -> None:
+        now = time.monotonic()
+        flush_due_to_lines = self._output_config.flush_lines > 0 and self._lines_since_flush >= self._output_config.flush_lines
+        flush_due_to_time = self._output_config.flush_interval_sec > 0 and (now - self._last_flush_time) >= self._output_config.flush_interval_sec
+        if flush_due_to_lines or flush_due_to_time:
+            self._flush()
 
     def _start_stdin_thread_if_enabled(self) -> None:
         if not self._interactive_config.enabled or self._stdin_thread is not None:
             return
 
         def reader() -> None:
-            while not self._stop_event.is_set():
-                user_text = sys.stdin.readline()
-                if user_text == "":
-                    return
-                user_text = user_text.rstrip("\r\n")
-                if not user_text:
-                    continue
+            try:
+                while not self._stop_event.is_set():
+                    user_text = sys.stdin.readline()
+                    if user_text == "":
+                        return
+                    user_text = user_text.rstrip("\r\n")
+                    if not user_text:
+                        continue
 
-                # Local commands start with "!" (handled by main loop):
-                #   !reset         -> run reset
-                #   !bootloader    -> bootloader reset
-                payload = (user_text + "\n").encode("utf-8", errors="replace") if user_text.startswith("!") else (
-                    (user_text + self._interactive_config.input_eol).encode(
-                        self._interactive_config.input_encoding,
-                        errors=self._interactive_config.input_errors,
+                    # Local commands start with "!" (handled by main loop):
+                    #   !reset         -> run reset
+                    #   !bootloader    -> bootloader reset
+                    payload = (user_text + "\n").encode("utf-8", errors="replace") if user_text.startswith("!") else (
+                        (user_text + self._interactive_config.input_eol).encode(
+                            self._interactive_config.input_encoding,
+                            errors=self._interactive_config.input_errors,
+                        )
                     )
-                )
-                self._input_queue.put(payload)
+                    self._input_queue.put(payload)
 
-                if self._interactive_config.local_echo:
-                    sys.stdout.write(f"{Ansi.DIM}>> {user_text}{Ansi.RESET}\n")
-                    sys.stdout.flush()
+                    if self._interactive_config.local_echo:
+                        sys.stdout.write(f"{Ansi.DIM}>> {user_text}{Ansi.RESET}\n")
+                        sys.stdout.flush()
 
-                if self._interactive_config.input_log:
-                    self._log_meta(f"stdin: {user_text}")
+                    if self._interactive_config.input_log:
+                        self._log_meta(f"stdin: {user_text}")
+            except BaseException as exc:
+                sys.stderr.write(f"logger: stdin-reader failed: {exc}\n")
+                sys.stderr.flush()
+                self.stop()
+                try:
+                    self._flush()
+                except Exception:
+                    pass
 
         self._stdin_thread = threading.Thread(target=reader, name="stdin-reader", daemon=True)
         self._stdin_thread.start()
+
+    def _start_flush_thread_if_needed(self) -> None:
+        if self._flush_thread is not None:
+            return
+        if self._output_config.flush_lines <= 0 and self._output_config.flush_interval_sec <= 0:
+            return
+
+        def flush_timer() -> None:
+            try:
+                while not self._stop_event.is_set():
+                    if self._output_config.flush_interval_sec > 0 and self._lines_since_flush > 0:
+                        if (time.monotonic() - self._last_flush_time) >= self._output_config.flush_interval_sec:
+                            self._flush()
+                    self._stop_event.wait(0.5)
+            except BaseException as exc:
+                sys.stderr.write(f"logger: flush-timer failed: {exc}\n")
+                sys.stderr.flush()
+                self.stop()
+                try:
+                    self._flush()
+                except Exception:
+                    pass
+
+        self._flush_thread = threading.Thread(target=flush_timer, name="flush-timer", daemon=True)
+        self._flush_thread.start()
+
+    def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self.stop()
+
+            if self._stdin_thread is not None and self._stdin_thread.is_alive():
+                self._stdin_thread.join(timeout=1.0)
+            if self._flush_thread is not None and self._flush_thread.is_alive():
+                self._flush_thread.join(timeout=1.0)
+
+            try:
+                self._flush()
+            finally:
+                with self._log_file_lock:
+                    self._output_file.close()
+                    self._closed = True
 
     def _resolve_port(self) -> Optional[str]:
         if self._serial_config.port.lower() != "auto":
@@ -518,45 +582,47 @@ class SessionLogger:
 
     def run(self) -> int:
         self._start_stdin_thread_if_enabled()
+        self._start_flush_thread_if_needed()
         self._log_meta(f"logger: started utc={_utc_now_iso()}")
 
-        while not self._stop_event.is_set():
-            port = self._resolve_port()
-            if not port:
-                self._log_meta("logger: no serial ports found; waiting...")
-                if not self._reconnect_config.reconnect:
-                    return 2
-                time.sleep(self._reconnect_config.port_scan_delay_sec)
-                continue
+        try:
+            while not self._stop_event.is_set():
+                port = self._resolve_port()
+                if not port:
+                    self._log_meta("logger: no serial ports found; waiting...")
+                    if not self._reconnect_config.reconnect:
+                        return 2
+                    time.sleep(self._reconnect_config.port_scan_delay_sec)
+                    continue
 
-            self._log_meta(f"logger: opening {port} @ {self._serial_config.baudrate}")
-            try:
-                with self._open_serial(port) as ser:
-                    self._log_meta("logger: connected")
-                    self._perform_reset_if_enabled(ser)
+                self._log_meta(f"logger: opening {port} @ {self._serial_config.baudrate}")
+                try:
+                    with self._open_serial(port) as ser:
+                        self._log_meta("logger: connected")
+                        self._perform_reset_if_enabled(ser)
 
-                    while not self._stop_event.is_set():
-                        if self._interactive_config.enabled:
-                            self._send_pending_input(ser)
+                        while not self._stop_event.is_set():
+                            if self._interactive_config.enabled:
+                                self._send_pending_input(ser)
 
-                        raw = ser.readline()
-                        if not raw:
-                            continue
+                            raw = ser.readline()
+                            if not raw:
+                                continue
 
-                        text = raw.decode(self._output_config.decode_encoding, errors=self._output_config.decode_errors)
-                        self._write_output_line(text)
+                            text = raw.decode(self._output_config.decode_encoding, errors=self._output_config.decode_errors)
+                            self._write_output_line(text)
 
-            except (serial.SerialException, OSError) as exc:
-                self._log_meta(f"logger: disconnected: {exc}")
-                if not self._reconnect_config.reconnect:
-                    self._log_meta("logger: reconnect disabled; exiting")
-                    self._flush()
-                    return 1
-                time.sleep(self._reconnect_config.reconnect_delay_sec)
+                except (serial.SerialException, OSError) as exc:
+                    self._log_meta(f"logger: disconnected: {exc}")
+                    if not self._reconnect_config.reconnect:
+                        self._log_meta("logger: reconnect disabled; exiting")
+                        return 1
+                    time.sleep(self._reconnect_config.reconnect_delay_sec)
 
-        self._log_meta("logger: stopping")
-        self._flush()
-        return 0
+            self._log_meta("logger: stopping")
+            return 0
+        finally:
+            self.close()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -580,8 +646,12 @@ def _build_parser() -> argparse.ArgumentParser:
     output_group.add_argument("--no-stdout", action="store_true", help="Do not print to stdout.")
     output_group.add_argument("--encoding", default="utf-8", help="Decode serial bytes using this encoding.")
     output_group.add_argument("--errors", default="replace", choices=["strict", "replace", "ignore"], help="Decode error behavior.")
-    output_group.add_argument("--flush-lines", type=int, default=200, help="Flush to disk after N lines.")
-    output_group.add_argument("--flush-interval-sec", type=float, default=2.0, help="Flush to disk after N seconds.")
+    output_group.add_argument("--flush-lines", type=int, default=0, help="Flush to disk after N lines (<=0 disables line-based flushing).")
+    output_group.add_argument("--flush-interval-sec", type=float, default=600.0, help="Flush to disk after N seconds (<=0 disables time-based flushing).")
+    fsync_group = output_group.add_mutually_exclusive_group()
+    fsync_group.add_argument("--fsync", dest="fsync", action="store_true", help="Force data to disk with os.fsync() on each flush.")
+    fsync_group.add_argument("--no-fsync", dest="fsync", action="store_false", help="Disable os.fsync() on flush for higher throughput.")
+    parser.set_defaults(fsync=True)
 
     reconnect_group = parser.add_argument_group("Reconnect")
     reconnect_group.add_argument("--no-reconnect", action="store_true", help="Exit on first disconnect.")
@@ -631,6 +701,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         decode_errors=args.errors,
         flush_lines=args.flush_lines,
         flush_interval_sec=args.flush_interval_sec,
+        fsync_on_flush=args.fsync,
         print_to_stdout=(not args.no_stdout),
     )
     reconnect_config = ReconnectConfig(
@@ -673,7 +744,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    return session_logger.run()
+    try:
+        return session_logger.run()
+    except BaseException:
+        session_logger.close()
+        raise
 
 
 if __name__ == "__main__":
