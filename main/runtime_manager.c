@@ -122,7 +122,8 @@ static const uint32_t kSafeHoldMaxMs = 120000;
 static const uint32_t kSafeHoldMinRetryMs = 2000;
 static const uint32_t kSafeHoldMaxRetryMs = 60000;
 static const uint32_t kSafeHoldLogIntervalMs = 5000;
-static const uint32_t kStorageStallThresholdMs = CONFIG_APP_ALERT_STORAGE_STALL_MS;
+static const uint32_t kStorageStallThresholdMs =
+  CONFIG_APP_ALERT_STORAGE_STALL_MS;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
 static runtime_state_t g_state;
@@ -332,7 +333,8 @@ RuntimeRebootOnSdEioEscalation(runtime_state_t* state, const char* context);
  * @param wait_ms Maximum time to wait for send counters to change.
  * @param status_out Optional pointer receiving last HTTP status.
  * @param err_out Optional pointer receiving last esp_err_t.
- * @param retry_after_seconds_out Optional pointer receiving cooldown-derived retry seconds.
+ * @param retry_after_seconds_out Optional pointer receiving cooldown-derived
+ * retry seconds.
  * @return Result indicating enqueue/wait/send outcome.
  */
 static alert_ntfy_result_t
@@ -1190,11 +1192,13 @@ RuntimeComputeStorageStallCondition(runtime_state_t* state, int64_t now_ms)
   const uint32_t now_ms_u32 = (uint32_t)now_ms;
   const uint32_t fram_count = state->cached_status.fram_count;
   const uint32_t watermark = state->cached_status.fram_flush_watermark_records;
-  const uint64_t sd_last_record_id = SdLoggerLastRecordIdOnSd(&state->sd_logger);
+  const uint64_t sd_last_record_id =
+    SdLoggerLastRecordIdOnSd(&state->sd_logger);
   const uint32_t sd_fail_count = state->cached_status.sd_fail_count;
 
-  const bool progress = (sd_last_record_id > state->storage_stall_last_sd_last_record_id) ||
-                        (fram_count < state->storage_stall_last_fram_count);
+  const bool progress =
+    (sd_last_record_id > state->storage_stall_last_sd_last_record_id) ||
+    (fram_count < state->storage_stall_last_fram_count);
   if (progress) {
     state->storage_stall_last_progress_ms = now_ms_u32;
   }
@@ -1204,13 +1208,14 @@ RuntimeComputeStorageStallCondition(runtime_state_t* state, int64_t now_ms)
 
   const bool fram_pressure = state->cached_status.fram_overrun_active ||
                              (watermark > 0u && fram_count >= watermark);
-  const bool sd_issue = state->cached_status.sd_degraded ||
-                        (!state->cached_status.sd_mounted &&
-                         state->cached_status.sd_card_present) ||
-                        (state->cached_status.sd_backoff_remaining_ms > 0u) ||
-                        (sd_fail_count > state->storage_stall_last_sd_fail_count) ||
-                        state->cached_status.sd_io_error_active ||
-                        state->cached_status.sd_out_of_space_active;
+  const bool sd_issue =
+    state->cached_status.sd_degraded ||
+    (!state->cached_status.sd_mounted &&
+     state->cached_status.sd_card_present) ||
+    (state->cached_status.sd_backoff_remaining_ms > 0u) ||
+    (sd_fail_count > state->storage_stall_last_sd_fail_count) ||
+    state->cached_status.sd_io_error_active ||
+    state->cached_status.sd_out_of_space_active;
 
   state->storage_stall_last_sd_fail_count = sd_fail_count;
 
@@ -1219,7 +1224,8 @@ RuntimeComputeStorageStallCondition(runtime_state_t* state, int64_t now_ms)
     return false;
   }
 
-  const uint32_t elapsed_ms = now_ms_u32 - state->storage_stall_last_progress_ms;
+  const uint32_t elapsed_ms =
+    now_ms_u32 - state->storage_stall_last_progress_ms;
   state->storage_stall_active = elapsed_ms >= kStorageStallThresholdMs;
   return state->storage_stall_active;
 }
@@ -1577,7 +1583,8 @@ RuntimeEnqueueSystemErrorNote(runtime_state_t* state,
  * @param wait_ms Maximum time to wait for send counters to change.
  * @param status_out Optional pointer receiving last HTTP status.
  * @param err_out Optional pointer receiving last esp_err_t.
- * @param retry_after_seconds_out Optional pointer receiving cooldown-derived retry seconds.
+ * @param retry_after_seconds_out Optional pointer receiving cooldown-derived
+ * retry seconds.
  * @return Result indicating enqueue/wait/send outcome.
  */
 static alert_ntfy_result_t
@@ -1621,7 +1628,8 @@ RuntimeEnqueueNtfyJobAndWait(runtime_state_t* state,
 
   const int64_t start_ms = esp_timer_get_time() / 1000;
   while (!state->stop_requested) {
-    const bool sent_ok = (state->alert_manager.ntfy.send_success != success_before);
+    const bool sent_ok =
+      (state->alert_manager.ntfy.send_success != success_before);
     const bool sent_fail = (state->alert_manager.ntfy.send_fail != fail_before);
     if (sent_ok || sent_fail) {
       break;
@@ -1644,7 +1652,8 @@ RuntimeEnqueueNtfyJobAndWait(runtime_state_t* state,
     *retry_after_seconds_out = -1;
     if (state->alert_manager.ntfy.cooldown_until_ms > now_ms) {
       *retry_after_seconds_out =
-        (int)((state->alert_manager.ntfy.cooldown_until_ms - now_ms + 999) / 1000);
+        (int)((state->alert_manager.ntfy.cooldown_until_ms - now_ms + 999) /
+              1000);
     }
   }
 
@@ -1911,8 +1920,8 @@ RuntimeRequestNetPause(runtime_state_t* state,
 
   const TickType_t wait_start = xTaskGetTickCount();
   while (pdTICKS_TO_MS(xTaskGetTickCount() - wait_start) < timeout_ms) {
-    const bool net_ok = (state->net_tx_task == NULL) ||
-                        (state->net_tx_paused == pause_enabled);
+    const bool net_ok =
+      (state->net_tx_task == NULL) || (state->net_tx_paused == pause_enabled);
     const bool alert_ok = (state->alert_http_task == NULL) ||
                           (state->alert_http_paused == pause_enabled);
     if (net_ok && alert_ok) {
@@ -6829,7 +6838,8 @@ SensorTask(void* context)
         }
       }
     } else {
-      if (state->rtd_fault_pending_was_raw && state->rtd_fault_last_status != 0) {
+      if (state->rtd_fault_pending_was_raw &&
+          state->rtd_fault_last_status != 0) {
         char fault_desc[128] = { 0 };
         Max31865FormatFault(
           state->rtd_fault_last_status, fault_desc, sizeof(fault_desc));
@@ -7526,7 +7536,8 @@ AppendLineBounded(char* dest, size_t dest_size, const char* line)
   }
 
   const size_t line_len = strlen(line);
-  const size_t copy_len = (line_len < (remaining - 1u)) ? line_len : (remaining - 1u);
+  const size_t copy_len =
+    (line_len < (remaining - 1u)) ? line_len : (remaining - 1u);
   if (copy_len > 0u) {
     memcpy(dest + write_pos, line, copy_len);
     write_pos += copy_len;
@@ -7635,9 +7646,10 @@ AlertHttpTask(void* context)
       RuntimeInterruptibleDelayTicks(
         pdMS_TO_TICKS((uint32_t)(ready_ms - now_ms)));
       if (state->stop_requested) {
-        ESP_LOGW(kTag,
-                 "alert_http stop requested before send; job retained title=\"%s\"",
-                 job.title);
+        ESP_LOGW(
+          kTag,
+          "alert_http stop requested before send; job retained title=\"%s\"",
+          job.title);
         break;
       }
     }
@@ -9212,11 +9224,12 @@ ControlTask(void* context)
                                      state->cached_status.sd_io_error_active,
                                      now_ms,
                                      now_epoch);
-      AlertManagerProcessSystemError(&state->alert_manager,
-                                     ALERT_SYSTEM_CODE_ERROR_SD_OOS,
-                                     state->cached_status.sd_out_of_space_active,
-                                     now_ms,
-                                     now_epoch);
+      AlertManagerProcessSystemError(
+        &state->alert_manager,
+        ALERT_SYSTEM_CODE_ERROR_SD_OOS,
+        state->cached_status.sd_out_of_space_active,
+        now_ms,
+        now_epoch);
       AlertManagerProcessSystemError(&state->alert_manager,
                                      ALERT_SYSTEM_CODE_ERROR_STORAGE_STALL,
                                      storage_stall_active,
@@ -10509,7 +10522,7 @@ RuntimeStart(void)
   BaseType_t alert_http_created = pdPASS;
   BaseType_t wifi_direct_created = pdPASS;
 
-  const uint32_t kSensorStackBytes = 3584;
+  const uint32_t kSensorStackBytes = 4608;
   const uint32_t kExportStackBytes = 3584;
   const uint32_t kNetTxTaskStackBytes = 8192;
 
@@ -10859,37 +10872,40 @@ EnterDiagMode(void)
   if (AlertManagerIsConfigured(&g_state.alert_manager)) {
     alert_ntfy_job_t stop_job = { 0 };
     const int64_t now_ms = esp_timer_get_time() / 1000;
-    if (AlertManagerBuildStopFlushNtfyJob(&g_state.alert_manager,
-                                          "operator requested STOP (RUN -> DIAG)",
-                                          now_ms,
-                                          &stop_job,
-                                          &drained_notes,
-                                          &drained_jobs)) {
+    if (AlertManagerBuildStopFlushNtfyJob(
+          &g_state.alert_manager,
+          "operator requested STOP (RUN -> DIAG)",
+          now_ms,
+          &stop_job,
+          &drained_notes,
+          &drained_jobs)) {
       AppendStopStorageSummaryLine(&g_state, &stop_job);
       int retry_after_seconds = -1;
       stop_flush_attempted = true;
-      alert_ntfy_result_t stop_result_ntfy = RuntimeEnqueueNtfyJobAndWait(
-        &g_state,
-        &stop_job,
-        1500u,
-        &stop_http_status,
-        &stop_ntfy_err,
-        &retry_after_seconds);
-      ESP_LOGW(kTag,
-               "ntfy stop flush: drained_notes=%u drained_jobs=%u send_result=%s http_status=%d err=%s",
-               (unsigned)drained_notes,
-               (unsigned)drained_jobs,
-               (stop_result_ntfy == ALERT_NTFY_OK)
-                 ? "OK"
-                 : ((stop_result_ntfy == ALERT_NTFY_SKIPPED) ? "SKIPPED"
-                                                             : "FAIL"),
-               stop_http_status,
-               esp_err_to_name(stop_ntfy_err));
+      alert_ntfy_result_t stop_result_ntfy =
+        RuntimeEnqueueNtfyJobAndWait(&g_state,
+                                     &stop_job,
+                                     1500u,
+                                     &stop_http_status,
+                                     &stop_ntfy_err,
+                                     &retry_after_seconds);
+      ESP_LOGW(
+        kTag,
+        "ntfy stop flush: drained_notes=%u drained_jobs=%u send_result=%s "
+        "http_status=%d err=%s",
+        (unsigned)drained_notes,
+        (unsigned)drained_jobs,
+        (stop_result_ntfy == ALERT_NTFY_OK)
+          ? "OK"
+          : ((stop_result_ntfy == ALERT_NTFY_SKIPPED) ? "SKIPPED" : "FAIL"),
+        stop_http_status,
+        esp_err_to_name(stop_ntfy_err));
     }
   }
   if (!stop_flush_attempted) {
     ESP_LOGW(kTag,
-             "ntfy stop flush: drained_notes=%u drained_jobs=%u send_result=SKIPPED http_status=%d",
+             "ntfy stop flush: drained_notes=%u drained_jobs=%u "
+             "send_result=SKIPPED http_status=%d",
              (unsigned)drained_notes,
              (unsigned)drained_jobs,
              stop_http_status);
