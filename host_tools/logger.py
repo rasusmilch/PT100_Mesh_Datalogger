@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Sequence, Tuple
 
 import serial
@@ -120,7 +120,7 @@ def _maybe_enable_windows_ansi() -> None:
 
 
 def _utc_now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _local_now_iso() -> str:
