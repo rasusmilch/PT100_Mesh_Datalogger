@@ -94,6 +94,7 @@ static const uint32_t kAlertHttpSendFailLogRateLimitMs = 60000;
 static const uint32_t kAlertHttpRetryDelayMs = 1000;
 static const uint32_t kAlertHttpMaxAttempts = 3;
 static const TickType_t kSdIoLockTimeoutTicks = pdMS_TO_TICKS(2000);
+static const TickType_t kSensorSpiBusLockTimeoutTicks = pdMS_TO_TICKS(20);
 static const TickType_t kFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const TickType_t kI2cIoLockTimeoutTicks = pdMS_TO_TICKS(150);
 static const TickType_t kI2cRecoveryLockTimeoutTicks = pdMS_TO_TICKS(2000);
@@ -2509,10 +2510,10 @@ RuntimeSdIoUnlock(runtime_state_t* state)
   RuntimeSdFsUnlock(state);
 }
 
-static bool
-RuntimeSpiBusLock(void* context, TickType_t timeout_ticks)
+bool
+RuntimeSpiBusLockForSharedDevices(runtime_state_t* state,
+                                  TickType_t timeout_ticks)
 {
-  runtime_state_t* state = (runtime_state_t*)context;
   if (state == NULL) {
     return false;
   }
@@ -2527,14 +2528,26 @@ RuntimeSpiBusLock(void* context, TickType_t timeout_ticks)
   return true;
 }
 
-static void
-RuntimeSpiBusUnlock(void* context)
+void
+RuntimeSpiBusUnlockForSharedDevices(runtime_state_t* state)
 {
-  runtime_state_t* state = (runtime_state_t*)context;
   if (state == NULL || state->spi_bus_mutex == NULL) {
     return;
   }
   (void)xSemaphoreGive(state->spi_bus_mutex);
+}
+
+static bool
+RuntimeSpiBusLock(void* context, TickType_t timeout_ticks)
+{
+  return RuntimeSpiBusLockForSharedDevices((runtime_state_t*)context,
+                                           timeout_ticks);
+}
+
+static void
+RuntimeSpiBusUnlock(void* context)
+{
+  RuntimeSpiBusUnlockForSharedDevices((runtime_state_t*)context);
 }
 
 static bool
@@ -6082,7 +6095,12 @@ SdFlushWorkerTickEx(runtime_state_t* state,
   uint32_t corrupt_skips_this_call = 0;
   const uint32_t kMaxCorruptSkipsThisCall = 8;
   const TickType_t fram_log_timeout_ticks = pdMS_TO_TICKS(250);
+  if (!RuntimeSpiBusLockForSharedDevices(state, kSdIoLockTimeoutTicks)) {
+    result = ESP_ERR_TIMEOUT;
+    goto flush_done;
+  }
   EnsureSdMountedLocked(state);
+  RuntimeSpiBusUnlockForSharedDevices(state);
   if (!state->sd_logger.is_mounted) {
     result = ESP_OK;
     goto flush_done;
@@ -6203,12 +6221,17 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     const int64_t epoch_for_file = (first_record.timestamp_epoch_sec > 0)
                                      ? first_record.timestamp_epoch_sec
                                      : (int64_t)time(NULL);
+    if (!RuntimeSpiBusLockForSharedDevices(state, kSdIoLockTimeoutTicks)) {
+      result = ESP_ERR_TIMEOUT;
+      goto flush_done;
+    }
     state->sd_flush_phase = "flush:sync";
     esp_err_t sync_result = EnsureSdSyncedForEpoch(state, epoch_for_file);
     if (sync_result != ESP_OK) {
       RuntimeDiagHeapCheck(state, "SD unmount (flush sync before)", false);
       (void)SdLoggerUnmount(&state->sd_logger);
       RuntimeDiagHeapCheck(state, "SD unmount (flush sync after)", false);
+      RuntimeSpiBusUnlockForSharedDevices(state);
       MarkSdFailure(state, "SD sync failed", "sync", sync_result, 0, true);
       state->sd_flush_last_err = sync_result;
       state->sd_flush_sd_errs++;
@@ -6246,6 +6269,8 @@ SdFlushWorkerTickEx(runtime_state_t* state,
     UpdateCachedUint32(state,
                        &state->cached_status.sd_space_reclaim_deleted_total,
                        SdLoggerSpaceReclaimDeletedTotal(&state->sd_logger));
+
+    RuntimeSpiBusUnlockForSharedDevices(state);
 
     if (write_result != ESP_OK) {
       if (append_stats.diag.errno_value == ENOSPC) {
@@ -6790,7 +6815,8 @@ SensorTask(void* context)
         state->last_sensor_fault_log_ticks = now_ticks;
       }
 
-      if (result == ESP_ERR_INVALID_STATE && !sd_flush_spi_busy) {
+      if (result == ESP_ERR_INVALID_STATE && !sd_flush_spi_busy &&
+          !state->sd_flush_in_progress) {
         esp_err_t recover_result = Max31865RecoverToBaseConfig(&state->sensor);
         if (recover_result == ESP_OK) {
           if (changed || rate_ok) {
@@ -9411,6 +9437,11 @@ InitializeMax31865Sensor(runtime_state_t* state, spi_host_device_t spi_host)
       kTag, "Max31865ReaderInit failed: %s", esp_err_to_name(sensor_result));
     return sensor_result;
   }
+  state->sensor.spi_bus_lock = RuntimeSpiBusLock;
+  state->sensor.spi_bus_unlock = RuntimeSpiBusUnlock;
+  state->sensor.spi_bus_lock_context = state;
+  state->sensor.spi_bus_lock_timeout_ticks = kSensorSpiBusLockTimeoutTicks;
+
   if (state->settings.calibration.is_valid) {
     calibration_context_t current_context;
     AppSettingsBuildCalibrationContextFromReader(&current_context,
