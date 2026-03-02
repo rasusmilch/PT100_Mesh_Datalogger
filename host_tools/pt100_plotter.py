@@ -712,14 +712,45 @@ def _any_cal_valid_flags(df: pd.DataFrame) -> bool:
     return bool(((flags_numeric & cal_mask) != 0).any())
 
 
+def _parse_flags_series_to_int64(flags_series: pd.Series) -> pd.Series:
+    """Return Int64 flags for each row; NA for unparseable values."""
+    if pd.api.types.is_numeric_dtype(flags_series):
+        numeric = pd.to_numeric(flags_series, errors="coerce")
+        whole = numeric.where(numeric.isna() | (numeric % 1 == 0))
+        return whole.astype("Int64")
+
+    parsed = []
+    for value in flags_series:
+        if pd.isna(value):
+            parsed.append(pd.NA)
+            continue
+        text = str(value).strip()
+        if not text:
+            parsed.append(pd.NA)
+            continue
+        try:
+            parsed.append(int(text, 0))
+            continue
+        except Exception:
+            pass
+        try:
+            as_float = float(text)
+            if as_float.is_integer():
+                parsed.append(int(as_float))
+            else:
+                parsed.append(pd.NA)
+        except Exception:
+            parsed.append(pd.NA)
+    return pd.Series(parsed, index=flags_series.index, dtype="Int64")
+
+
 def _cal_valid_fraction(df: pd.DataFrame) -> Optional[float]:
     """Return fraction of records with CAL_VALID asserted, or None if unavailable."""
     if "flags" not in df.columns:
         return None
-    flags_numeric = pd.to_numeric(df["flags"], errors="coerce").dropna()
-    if flags_numeric.empty:
+    flags_int = _parse_flags_series_to_int64(df["flags"]).dropna()
+    if flags_int.empty:
         return None
-    flags_int = flags_numeric.astype("int64")
     cal_mask = _get_flag_mask("CAL_VALID", 1 << 1)
     return float(((flags_int & cal_mask) != 0).mean())
 
@@ -729,7 +760,7 @@ def _is_fully_calibrated(df: pd.DataFrame) -> bool:
     if "flags" not in df.columns or "cal_temp_c" not in df.columns:
         return False
 
-    flags = pd.to_numeric(df["flags"], errors="coerce")
+    flags = _parse_flags_series_to_int64(df["flags"])
     if flags.isna().any():
         return False
 
@@ -738,7 +769,7 @@ def _is_fully_calibrated(df: pd.DataFrame) -> bool:
         return False
 
     cal_mask = _get_flag_mask("CAL_VALID", 1 << 1)
-    return bool(((flags.astype("int64") & cal_mask) != 0).all())
+    return bool((((flags.astype("int64") & cal_mask) != 0)).all())
 
 
 def _format_applied_records_label(df: pd.DataFrame) -> str:
@@ -782,8 +813,8 @@ def _format_span_label(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> str:
     return " ".join(parts)
 
 
-def _format_utc_iso_to_local_date(utc_text: str, display_tz: Optional[datetime.tzinfo]) -> str:
-    """Convert a UTC ISO timestamp string into a local YYYY-MM-DD date string."""
+def _format_performed_utc_to_local_date(utc_text: str, display_tz: Optional[datetime.tzinfo]) -> str:
+    """Convert a performed UTC timestamp string into a local YYYY-MM-DD date string."""
     if utc_text in ("", "n/a", "<unset>"):
         return utc_text
 
@@ -794,6 +825,15 @@ def _format_utc_iso_to_local_date(utc_text: str, display_tz: Optional[datetime.t
     if display_tz is not None:
         timestamp = timestamp.tz_convert(display_tz)
     return timestamp.strftime("%Y-%m-%d")
+
+
+def _format_due_utc_midnight_to_date_preserve_day(utc_text: str) -> str:
+    """Return due-date day as recorded, without timezone conversion."""
+    if utc_text in ("", "n/a", "<unset>"):
+        return utc_text
+    if "T" in utc_text:
+        return utc_text.split("T", 1)[0]
+    return utc_text
 
 
 _PTLOG_SIGNATURE_FIELDS = [
@@ -1419,19 +1459,11 @@ def _add_start_date_label_if_multiday(ax: plt.Axes, x_values: pd.Series) -> None
         ax: Matplotlib axes to annotate.
         x_values: Datetime-like x-axis values (timezone-aware preferred).
     """
-    if x_values.empty:
+    if not _needs_multiday_date_label(x_values):
         return
 
     parsed = pd.to_datetime(x_values, errors="coerce")
-    if parsed.empty:
-        return
-
     start_ts = parsed.min()
-    end_ts = parsed.max()
-    if pd.isna(start_ts) or pd.isna(end_ts):
-        return
-    if start_ts.date() == end_ts.date():
-        return
 
     fig = ax.figure
     try:
@@ -1449,7 +1481,7 @@ def _add_start_date_label_if_multiday(ax: plt.Axes, x_values: pd.Series) -> None
     start_text = ax.text(
         0.0,
         y,
-        start_ts.strftime("%Y-%m-%d"),
+        start_ts.strftime("%Y-%b-%d").upper(),
         transform=offset.get_transform(),
         ha="left",
         va=offset.get_va(),
@@ -1457,8 +1489,21 @@ def _add_start_date_label_if_multiday(ax: plt.Axes, x_values: pd.Series) -> None
         zorder=5,
     )
     start_text.set_gid("pt100_start_date")
+    start_text.set_in_layout(True)
+    start_text.set_clip_on(False)
     start_text.set_fontproperties(offset.get_fontproperties())
     start_text.set_color(offset.get_color())
+
+
+def _needs_multiday_date_label(x_values: pd.Series) -> bool:
+    parsed = pd.to_datetime(x_values, errors="coerce")
+    if parsed.empty:
+        return False
+    start_ts = parsed.min()
+    end_ts = parsed.max()
+    if pd.isna(start_ts) or pd.isna(end_ts):
+        return False
+    return start_ts.date() != end_ts.date()
 
 
 def _build_figure(
@@ -1703,13 +1748,17 @@ def _build_figure(
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=tzinfo))
 
+    needs_start_date_label = (time_column == "__time") and _needs_multiday_date_label(x_values)
+    if needs_start_date_label:
+        _add_start_date_label_if_multiday(ax, x_values)
+
     # Tight layout; reserve space if we used a suptitle.
     if suptitle:
         fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
     else:
         fig.tight_layout()
 
-    if time_column == "__time":
+    if needs_start_date_label:
         _add_start_date_label_if_multiday(ax, x_values)
 
     return fig, int(len(plot_positions)), total_points
@@ -2005,6 +2054,7 @@ class PlotterApp:
         self.highlight_upper_limit = tk.StringVar(value="")
         self.highlight_lower_limit = tk.StringVar(value="")
         self._warned_aggregated = False
+        self._auto_selected_cal_series = False
 
         self._build_ui()
 
@@ -2267,7 +2317,14 @@ class PlotterApp:
         menu = self.y_menu["menu"]
         menu.delete(0, "end")
         for choice in choices:
-            menu.add_command(label=choice, command=tk._setit(self.y_choice, choice))
+            menu.add_command(label=choice, command=self._build_series_menu_callback(choice))
+
+    def _build_series_menu_callback(self, choice: str):
+        def _on_select() -> None:
+            self._auto_selected_cal_series = True
+            self.y_choice.set(choice)
+
+        return _on_select
 
     def _ensure_valid_y_choice(self) -> None:
         self._refresh_series_menu()
@@ -2283,6 +2340,11 @@ class PlotterApp:
             preferred = available[0]
 
         current = self.y_choice.get()
+        if preferred == "cal_temp_c" and current == "raw_temp_c" and not self._auto_selected_cal_series:
+            self.y_choice.set("cal_temp_c")
+            self._auto_selected_cal_series = True
+            return
+
         if current not in available or (current == "cal_temp_c" and not self._dataset_is_calibrated()):
             self.y_choice.set(preferred)
 
@@ -2306,6 +2368,7 @@ class PlotterApp:
         self.save_trim_btn.config(state=tk.NORMAL)
         self.pdf_btn.config(state=tk.NORMAL)
         self._warned_aggregated = False
+        self._auto_selected_cal_series = False
         self._ensure_valid_y_choice()
         self._autofill_time_range()
 
@@ -2510,8 +2573,14 @@ class PlotterApp:
         else:
             display_config = DisplayTimeConfig(display_tz=None, display_tz_label="n/a")
 
-        if self.y_choice.get() == "raw_temp_c" and "cal_temp_c" in trimmed.columns and _is_fully_calibrated(trimmed):
+        if (
+            self.y_choice.get() == "raw_temp_c"
+            and "cal_temp_c" in trimmed.columns
+            and _is_fully_calibrated(trimmed)
+            and not self._auto_selected_cal_series
+        ):
             self.y_choice.set("cal_temp_c")
+            self._auto_selected_cal_series = True
 
         return trimmed, start_label, end_label, summary, display_config, display_series
 
@@ -2709,8 +2778,8 @@ class PlotterApp:
         cal_points = _segment_header_value(self.loaded.audit_summary.segments, "cal_points_count")
         cal_last_utc = _segment_header_value(self.loaded.audit_summary.segments, "cal_last_utc")
         cal_due_utc = _segment_header_value(self.loaded.audit_summary.segments, "cal_due_utc")
-        cal_last_local = _format_utc_iso_to_local_date(cal_last_utc, display_config.display_tz)
-        cal_due_local = _format_utc_iso_to_local_date(cal_due_utc, display_config.display_tz)
+        cal_last_local = _format_performed_utc_to_local_date(cal_last_utc, display_config.display_tz)
+        cal_due_local = _format_due_utc_midnight_to_date_preserve_day(cal_due_utc)
         cal_method = _segment_header_value(self.loaded.audit_summary.segments, "cal_method", default="<unset>")
 
         overlays = []
@@ -2752,7 +2821,7 @@ class PlotterApp:
             ["Calibration applied to records", _format_applied_records_label(df)],
             ["Calibration points used", cal_points],
             ["Calibration performed (local date)", cal_last_local],
-            ["Calibration due (local date)", cal_due_local],
+            ["Calibration due (date)", cal_due_local],
             ["Calibration method (operator notes)", cal_method],
         ]
 
