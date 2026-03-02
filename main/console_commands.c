@@ -2072,8 +2072,15 @@ CommandSdView(const sd_logger_t* logger)
     return 1;
   }
 
+  if (!RuntimeSpiBusLockForSharedDevices(state, pdMS_TO_TICKS(2000))) {
+    RuntimeSdIoUnlock(state);
+    printf("sd view failed: spi bus lock timeout\n");
+    return 1;
+  }
+
   DIR* dir = opendir(logger->mount_point);
   if (dir == NULL) {
+    RuntimeSpiBusUnlockForSharedDevices(state);
     RuntimeSdIoUnlock(state);
     printf("sd view failed: %s\n", strerror(errno));
     return 1;
@@ -2111,6 +2118,7 @@ CommandSdView(const sd_logger_t* logger)
     ++file_count;
   }
   closedir(dir);
+  RuntimeSpiBusUnlockForSharedDevices(state);
   RuntimeSdIoUnlock(state);
   printf("sd file count: %d\n", file_count);
   return 0;
@@ -2157,7 +2165,12 @@ SdFormatOp(app_runtime_t* runtime, void* ctx)
   if (state == NULL || !RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
     return ESP_ERR_TIMEOUT;
   }
+  if (!RuntimeSpiBusLockForSharedDevices(state, pdMS_TO_TICKS(2000))) {
+    RuntimeSdIoUnlock(state);
+    return ESP_ERR_TIMEOUT;
+  }
   esp_err_t result = SdLoggerFormatDestructive(runtime->sd_logger);
+  RuntimeSpiBusUnlockForSharedDevices(state);
   RuntimeSdIoUnlock(state);
   return result;
 }

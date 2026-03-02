@@ -244,6 +244,21 @@ extern "C"
   void RuntimeSdIoUnlock(runtime_state_t* state);
 
   /**
+   * @brief Execute RuntimeSpiBusLockForSharedDevices.
+   * @param state Parameter state.
+   * @param timeout_ticks Parameter timeout_ticks.
+   * @return Return the function result.
+   */
+  bool RuntimeSpiBusLockForSharedDevices(runtime_state_t* state,
+                                         TickType_t timeout_ticks);
+
+  /**
+   * @brief Execute RuntimeSpiBusUnlockForSharedDevices.
+   * @param state Parameter state.
+   */
+  void RuntimeSpiBusUnlockForSharedDevices(runtime_state_t* state);
+
+  /**
    * @brief Dump current lock diagnostics to log output.
    * @param reason Reason string for the dump.
    */
