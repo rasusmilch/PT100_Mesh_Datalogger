@@ -1381,6 +1381,41 @@ def _add_highlight_spans(
         )
 
 
+def _add_start_date_label_if_multiday(ax: plt.Axes, x_values: pd.Series) -> None:
+    """Add a left-side x-axis start date label when plotted data spans multiple days.
+
+    Args:
+        ax: Matplotlib axes to annotate.
+        x_values: Datetime-like x-axis values (timezone-aware preferred).
+    """
+    if x_values.empty:
+        return
+
+    parsed = pd.to_datetime(x_values, errors="coerce")
+    if parsed.empty:
+        return
+
+    start_ts = parsed.min()
+    end_ts = parsed.max()
+    if pd.isna(start_ts) or pd.isna(end_ts):
+        return
+    if start_ts.date() == end_ts.date():
+        return
+
+    offset = ax.xaxis.get_offset_text()
+    y = offset.get_position()[1]
+    start_text = ax.text(
+        0.0,
+        y,
+        start_ts.strftime("%Y-%m-%d"),
+        transform=offset.get_transform(),
+        ha="left",
+        va=offset.get_va(),
+    )
+    start_text.set_fontproperties(offset.get_fontproperties())
+    start_text.set_color(offset.get_color())
+
+
 def _build_figure(
     df: pd.DataFrame,
     time_column: str,
@@ -1622,6 +1657,7 @@ def _build_figure(
         locator = mdates.AutoDateLocator(minticks=4, maxticks=10)
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=tzinfo))
+        _add_start_date_label_if_multiday(ax, x_values)
 
     # Tight layout; reserve space if we used a suptitle.
     if suptitle:
