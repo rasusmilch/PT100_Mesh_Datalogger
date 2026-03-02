@@ -1465,32 +1465,26 @@ def _add_start_date_label_if_multiday(ax: plt.Axes, x_values: pd.Series) -> None
     parsed = pd.to_datetime(x_values, errors="coerce")
     start_ts = parsed.min()
 
-    fig = ax.figure
-    try:
-        fig.canvas.draw()
-    except Exception:
-        pass
-
     offset = ax.xaxis.get_offset_text()
     y = offset.get_position()[1]
 
-    for txt in list(ax.texts):
-        if txt.get_gid() == "pt100_start_date":
-            txt.remove()
+    start_text = next((txt for txt in ax.texts if txt.get_gid() == "pt100_start_date"), None)
+    if start_text is None:
+        start_text = ax.text(
+            0.0,
+            y,
+            "",
+            zorder=5,
+        )
+        start_text.set_gid("pt100_start_date")
+        start_text.set_in_layout(True)
+        start_text.set_clip_on(False)
 
-    start_text = ax.text(
-        0.0,
-        y,
-        start_ts.strftime("%Y-%b-%d").upper(),
-        transform=offset.get_transform(),
-        ha="left",
-        va=offset.get_va(),
-        clip_on=False,
-        zorder=5,
-    )
-    start_text.set_gid("pt100_start_date")
-    start_text.set_in_layout(True)
-    start_text.set_clip_on(False)
+    start_text.set_text(start_ts.strftime("%Y-%b-%d"))
+    start_text.set_transform(offset.get_transform())
+    start_text.set_ha("left")
+    start_text.set_va(offset.get_va())
+    start_text.set_position((0.0, y))
     start_text.set_fontproperties(offset.get_fontproperties())
     start_text.set_color(offset.get_color())
 
@@ -1750,6 +1744,7 @@ def _build_figure(
 
     needs_start_date_label = (time_column == "__time") and _needs_multiday_date_label(x_values)
     if needs_start_date_label:
+        fig.canvas.draw()
         _add_start_date_label_if_multiday(ax, x_values)
 
     # Tight layout; reserve space if we used a suptitle.
@@ -1759,6 +1754,13 @@ def _build_figure(
         fig.tight_layout()
 
     if needs_start_date_label:
+        fig.canvas.draw()
+        _add_start_date_label_if_multiday(ax, x_values)
+        if suptitle:
+            fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
+        else:
+            fig.tight_layout()
+        fig.canvas.draw()
         _add_start_date_label_if_multiday(ax, x_values)
 
     return fig, int(len(plot_positions)), total_points
