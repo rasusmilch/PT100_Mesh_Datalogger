@@ -809,6 +809,10 @@ Max31865StartOneShot(max31865_reader_t* reader,
   if (reader == NULL || state_out == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+
+  memset(state_out, 0, sizeof(*state_out));
+  state_out->phase = kMax31865OneShotIdle;
+
   if (!reader->is_initialized) {
     return ESP_ERR_INVALID_STATE;
   }
@@ -940,6 +944,35 @@ Max31865AbortOneShot(max31865_reader_t* reader, max31865_one_shot_state_t* state
   state->next_action_deadline_us = 0;
   state->hard_timeout_deadline_us = 0;
   return result;
+}
+
+/**
+ * @brief Recover MAX31865 register state to known-good base configuration.
+ * @param reader Parameter reader.
+ * @return Return the function result.
+ */
+esp_err_t
+Max31865RecoverToBaseConfig(max31865_reader_t* reader)
+{
+  if (reader == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!reader->is_initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const uint8_t base_config = BuildBaseConfig(reader);
+  esp_err_t result = Max31865WriteReg(reader, kRegConfig, base_config);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = ClearFaults(reader, base_config);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  return Max31865WriteReg(reader, kRegConfig, base_config);
 }
 
 /**

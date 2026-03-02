@@ -293,6 +293,9 @@ UpdateSensorEmaFromSample(runtime_state_t* state,
                           const max31865_sample_t* sample,
                           esp_err_t result);
 
+static const char*
+Max31865OneShotPhaseToString(max31865_one_shot_phase_t phase);
+
 /**
  * @brief Execute RuntimeRecoverI2cBusCommon.
  * @param state Parameter state.
@@ -564,6 +567,21 @@ UpdateSensorEmaFromSample(runtime_state_t* state,
 
   const double alpha = (double)alpha_permille / 1000.0;
   (void)Max31865ApplyEmaSample(&state->sensor, alpha, sample, NULL);
+}
+
+static const char*
+Max31865OneShotPhaseToString(max31865_one_shot_phase_t phase)
+{
+  switch (phase) {
+    case kMax31865OneShotIdle:
+      return "Idle";
+    case kMax31865OneShotBiasSettling:
+      return "BiasSettling";
+    case kMax31865OneShotConverting:
+      return "Converting";
+    default:
+      return "Unknown";
+  }
 }
 
 static uint32_t
@@ -6632,11 +6650,10 @@ SensorTask(void* context)
     }
 
     const bool raw_rtd_fault_present =
-      (result == ESP_OK && sample.fault_present) ||
-      (result != ESP_OK && result != ESP_ERR_INVALID_RESPONSE);
+      (result == ESP_OK && sample.fault_present);
     const uint8_t raw_rtd_fault_status =
-      (result == ESP_OK) ? sample.fault_status : 0xFFu;
-    if (result != ESP_ERR_INVALID_RESPONSE) {
+      (result == ESP_OK) ? sample.fault_status : 0u;
+    if (result == ESP_OK) {
       UpdateDebouncedRtdFault(state,
                               &state->settings,
                               raw_rtd_fault_present,
@@ -6744,20 +6761,49 @@ SensorTask(void* context)
       // Best-effort: skip fault logging/state changes when SD flush holds the
       // shared SPI bus.
     } else if (result != ESP_OK) {
-      const bool changed = !state->rtd_fault_pending_was_raw ||
-                           state->rtd_fault_last_status != 0xFFu;
+      const bool changed = !state->sensor_read_err_pending ||
+                           state->last_sensor_read_err != result;
+      state->max31865_read_err_count++;
+      state->max31865_last_read_err = result;
+      state->last_sensor_read_err = result;
+      state->sensor_read_err_pending = true;
+      if (result == ESP_ERR_INVALID_STATE) {
+        state->max31865_invalid_state_count++;
+      }
       const bool rate_ok =
         (state->last_sensor_fault_log_ticks == 0) ||
         (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
          5000u);
       if (changed || rate_ok) {
-        ESP_LOGW(kTag, "MAX31865 read failed: %s", esp_err_to_name(result));
+        if (result == ESP_ERR_INVALID_STATE) {
+          ESP_LOGW(kTag,
+                   "MAX31865 read failed: %s (init=%u phase=%s conv_started=%u "
+                   "base_cfg=0x%02X)",
+                   esp_err_to_name(result),
+                   state->sensor.is_initialized ? 1u : 0u,
+                   Max31865OneShotPhaseToString(one_shot.phase),
+                   one_shot.conversion_started ? 1u : 0u,
+                   one_shot.base_config);
+        } else {
+          ESP_LOGW(kTag, "MAX31865 read failed: %s", esp_err_to_name(result));
+        }
         state->last_sensor_fault_log_ticks = now_ticks;
       }
-      state->rtd_fault_pending_was_raw = true;
-      state->rtd_fault_last_status = 0xFFu;
+
+      if (result == ESP_ERR_INVALID_STATE && !sd_flush_spi_busy) {
+        esp_err_t recover_result = Max31865RecoverToBaseConfig(&state->sensor);
+        if (recover_result == ESP_OK) {
+          if (changed || rate_ok) {
+            ESP_LOGW(kTag, "MAX31865 recover-to-base succeeded");
+          }
+        } else if (changed || rate_ok) {
+          ESP_LOGW(kTag,
+                   "MAX31865 recover-to-base failed: %s",
+                   esp_err_to_name(recover_result));
+        }
+      }
     } else {
-      if (state->rtd_fault_pending_was_raw) {
+      if (state->rtd_fault_pending_was_raw && state->rtd_fault_last_status != 0) {
         char fault_desc[128] = { 0 };
         Max31865FormatFault(
           state->rtd_fault_last_status, fault_desc, sizeof(fault_desc));
@@ -6766,7 +6812,13 @@ SensorTask(void* context)
                  state->rtd_fault_last_status,
                  fault_desc);
       }
+      if (state->sensor_read_err_pending) {
+        ESP_LOGW(kTag,
+                 "MAX31865 read recovered (last_err=%s)",
+                 esp_err_to_name(state->last_sensor_read_err));
+      }
       state->rtd_fault_pending_was_raw = false;
+      state->sensor_read_err_pending = false;
     }
     UpdateCachedBool(state,
                      &state->cached_status.sensor_fault_present,

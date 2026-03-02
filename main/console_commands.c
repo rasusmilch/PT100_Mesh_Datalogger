@@ -362,6 +362,12 @@ PrintRtdFaultSettings(const app_settings_t* settings,
     printf("rtd_fault_last_desc: %s\n", fault_desc);
     printf("rtd_fault_suppressed_count: %u\n",
            (unsigned)state->rtd_fault_suppressed_count);
+    printf("rtd_read_err_last: %s\n",
+           esp_err_to_name(state->max31865_last_read_err));
+    printf("rtd_read_err_count: %u\n",
+           (unsigned)state->max31865_read_err_count);
+    printf("rtd_invalid_state_count: %u\n",
+           (unsigned)state->max31865_invalid_state_count);
   }
 }
 

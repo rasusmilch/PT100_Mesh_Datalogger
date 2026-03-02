@@ -183,6 +183,13 @@ extern "C"
                                  max31865_one_shot_state_t* state);
 
 /**
+ * @brief Restore base configuration, disable VBIAS, and clear latched faults.
+ * @param reader Initialized MAX31865 reader.
+ * @return ESP_OK on success; error otherwise.
+ */
+  esp_err_t Max31865RecoverToBaseConfig(max31865_reader_t* reader);
+
+/**
  * @brief Execute Max31865ReadOnce.
  * @param reader Parameter reader.
  * @param sample_out Parameter sample_out.
