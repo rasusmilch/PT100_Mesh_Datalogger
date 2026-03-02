@@ -724,6 +724,23 @@ def _cal_valid_fraction(df: pd.DataFrame) -> Optional[float]:
     return float(((flags_int & cal_mask) != 0).mean())
 
 
+def _is_fully_calibrated(df: pd.DataFrame) -> bool:
+    """Return True when every row is CAL_VALID and calibrated temperatures are usable."""
+    if "flags" not in df.columns or "cal_temp_c" not in df.columns:
+        return False
+
+    flags = pd.to_numeric(df["flags"], errors="coerce")
+    if flags.isna().any():
+        return False
+
+    cal_values = pd.to_numeric(df["cal_temp_c"], errors="coerce")
+    if cal_values.isna().all():
+        return False
+
+    cal_mask = _get_flag_mask("CAL_VALID", 1 << 1)
+    return bool(((flags.astype("int64") & cal_mask) != 0).all())
+
+
 def _format_applied_records_label(df: pd.DataFrame) -> str:
     fraction = _cal_valid_fraction(df)
     if fraction is None:
@@ -763,6 +780,20 @@ def _format_span_label(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> str:
     if seconds or not parts:
         parts.append(f"{seconds}s")
     return " ".join(parts)
+
+
+def _format_utc_iso_to_local_date(utc_text: str, display_tz: Optional[datetime.tzinfo]) -> str:
+    """Convert a UTC ISO timestamp string into a local YYYY-MM-DD date string."""
+    if utc_text in ("", "n/a", "<unset>"):
+        return utc_text
+
+    timestamp = pd.to_datetime(utc_text, utc=True, errors="coerce")
+    if pd.isna(timestamp):
+        return utc_text
+
+    if display_tz is not None:
+        timestamp = timestamp.tz_convert(display_tz)
+    return timestamp.strftime("%Y-%m-%d")
 
 
 _PTLOG_SIGNATURE_FIELDS = [
@@ -1402,8 +1433,19 @@ def _add_start_date_label_if_multiday(ax: plt.Axes, x_values: pd.Series) -> None
     if start_ts.date() == end_ts.date():
         return
 
+    fig = ax.figure
+    try:
+        fig.canvas.draw()
+    except Exception:
+        pass
+
     offset = ax.xaxis.get_offset_text()
     y = offset.get_position()[1]
+
+    for txt in list(ax.texts):
+        if txt.get_gid() == "pt100_start_date":
+            txt.remove()
+
     start_text = ax.text(
         0.0,
         y,
@@ -1411,7 +1453,10 @@ def _add_start_date_label_if_multiday(ax: plt.Axes, x_values: pd.Series) -> None
         transform=offset.get_transform(),
         ha="left",
         va=offset.get_va(),
+        clip_on=False,
+        zorder=5,
     )
+    start_text.set_gid("pt100_start_date")
     start_text.set_fontproperties(offset.get_fontproperties())
     start_text.set_color(offset.get_color())
 
@@ -1657,13 +1702,15 @@ def _build_figure(
         locator = mdates.AutoDateLocator(minticks=4, maxticks=10)
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=tzinfo))
-        _add_start_date_label_if_multiday(ax, x_values)
 
     # Tight layout; reserve space if we used a suptitle.
     if suptitle:
         fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
     else:
         fig.tight_layout()
+
+    if time_column == "__time":
+        _add_start_date_label_if_multiday(ax, x_values)
 
     return fig, int(len(plot_positions)), total_points
 
@@ -2228,7 +2275,9 @@ class PlotterApp:
         if not available:
             return
 
-        if "raw_temp_c" in available:
+        if self.loaded and "cal_temp_c" in available and _is_fully_calibrated(self.loaded.dataframe):
+            preferred = "cal_temp_c"
+        elif "raw_temp_c" in available:
             preferred = "raw_temp_c"
         else:
             preferred = available[0]
@@ -2460,6 +2509,10 @@ class PlotterApp:
             )
         else:
             display_config = DisplayTimeConfig(display_tz=None, display_tz_label="n/a")
+
+        if self.y_choice.get() == "raw_temp_c" and "cal_temp_c" in trimmed.columns and _is_fully_calibrated(trimmed):
+            self.y_choice.set("cal_temp_c")
+
         return trimmed, start_label, end_label, summary, display_config, display_series
 
     def save_trimmed_csv(self) -> None:
@@ -2656,6 +2709,8 @@ class PlotterApp:
         cal_points = _segment_header_value(self.loaded.audit_summary.segments, "cal_points_count")
         cal_last_utc = _segment_header_value(self.loaded.audit_summary.segments, "cal_last_utc")
         cal_due_utc = _segment_header_value(self.loaded.audit_summary.segments, "cal_due_utc")
+        cal_last_local = _format_utc_iso_to_local_date(cal_last_utc, display_config.display_tz)
+        cal_due_local = _format_utc_iso_to_local_date(cal_due_utc, display_config.display_tz)
         cal_method = _segment_header_value(self.loaded.audit_summary.segments, "cal_method", default="<unset>")
 
         overlays = []
@@ -2696,8 +2751,8 @@ class PlotterApp:
             ["Calibration item", "Recorded value"],
             ["Calibration applied to records", _format_applied_records_label(df)],
             ["Calibration points used", cal_points],
-            ["Calibration performed (UTC)", cal_last_utc],
-            ["Calibration due (UTC)", cal_due_utc],
+            ["Calibration performed (local date)", cal_last_local],
+            ["Calibration due (local date)", cal_due_local],
             ["Calibration method (operator notes)", cal_method],
         ]
 
