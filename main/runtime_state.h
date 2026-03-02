@@ -408,8 +408,13 @@ extern "C"
     int64_t rtd_fault_pending_since_ms;
     int64_t rtd_clear_pending_since_ms;
     bool rtd_fault_pending_was_raw;
+    bool sensor_read_err_pending;
     uint32_t rtd_fault_suppressed_count;
     uint8_t rtd_fault_last_status;
+    esp_err_t last_sensor_read_err;
+    uint32_t max31865_read_err_count;
+    esp_err_t max31865_last_read_err;
+    uint32_t max31865_invalid_state_count;
     TickType_t last_sensor_fault_log_ticks;
     TickType_t last_sensor_spi_log_ticks;
     uint32_t sensor_spi_invalid_streak;
