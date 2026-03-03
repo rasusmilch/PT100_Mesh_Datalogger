@@ -44,6 +44,12 @@ PackMacToId(const uint8_t mac[6]);
 #endif
 static uint64_t
 ResolveLeafId(const alert_manager_t* manager, uint64_t leaf_id);
+static void
+ResetMissingGapLearning(alert_leaf_state_t* leaf);
+static void
+UpdateMissingGapLearning(alert_manager_t* manager,
+                         alert_leaf_state_t* leaf,
+                         int64_t now_ms);
 static alert_leaf_state_t*
 FindLeaf(alert_manager_t* manager, uint64_t leaf_id);
 static alert_leaf_state_t*
@@ -246,6 +252,61 @@ SaturatingDeltaMs(int64_t now_ms, int64_t then_ms)
   return (uint32_t)delta;
 }
 
+/**
+ * @brief Reset per-leaf missing-gap learning state.
+ * @param leaf Leaf state to reset.
+ * @details Clears the sample counter and learned threshold so missing-record
+ * detection is suppressed until two fresh samples are observed.
+ */
+static void
+ResetMissingGapLearning(alert_leaf_state_t* leaf)
+{
+  if (leaf == NULL) {
+    return;
+  }
+  leaf->missing_gap_sample_count = 0;
+  leaf->missing_gap_threshold_ms = 0;
+}
+
+/**
+ * @brief Update per-leaf missing-gap learning from the latest sample.
+ * @param manager Alert manager instance.
+ * @param leaf Leaf state to update.
+ * @param now_ms Current uptime in milliseconds.
+ * @details On the first observed sample, only increments the sample counter.
+ * On subsequent samples, computes a missing-gap threshold from the most recent
+ * interval (1.5x) while enforcing config.missing_gap_ms as a floor.
+ */
+static void
+UpdateMissingGapLearning(alert_manager_t* manager,
+                         alert_leaf_state_t* leaf,
+                         int64_t now_ms)
+{
+  if (manager == NULL || leaf == NULL) {
+    return;
+  }
+
+  if (leaf->missing_gap_sample_count == 0) {
+    leaf->missing_gap_sample_count = 1;
+    return;
+  }
+
+  const uint32_t last_interval_ms =
+    SaturatingDeltaMs(now_ms, leaf->last_rx_uptime_ms);
+  if (last_interval_ms > 0) {
+    const uint32_t computed =
+      last_interval_ms + (last_interval_ms / 2);
+    leaf->missing_gap_threshold_ms =
+      (computed > manager->config.missing_gap_ms)
+        ? computed
+        : manager->config.missing_gap_ms;
+  }
+
+  if (leaf->missing_gap_sample_count < UINT8_MAX) {
+    ++leaf->missing_gap_sample_count;
+  }
+}
+
 static void
 LogNonmonotonicDelta(uint64_t leaf_id,
                      int64_t now_ms,
@@ -394,8 +455,10 @@ FindOrAllocateLeaf(alert_manager_t* manager, uint64_t leaf_id)
   }
   for (size_t i = 0; i < ALERT_MAX_LEAVES; ++i) {
     if (!manager->leaves[i].in_use) {
-      manager->leaves[i].in_use = true;
-      manager->leaves[i].leaf_id = leaf_id;
+      manager->leaves[i] = (alert_leaf_state_t){
+        .in_use = true,
+        .leaf_id = leaf_id,
+      };
       return &manager->leaves[i];
     }
   }
@@ -995,6 +1058,7 @@ AlertManagerOnSample(alert_manager_t* manager,
                                   leaf_id,
                                   &payload,
                                   now_ms);
+    ResetMissingGapLearning(leaf);
   }
   const bool cal_valid = (record->flags & LOG_RECORD_FLAG_CAL_VALID) != 0u;
   if (record->sequence != 0u) {
@@ -1008,6 +1072,7 @@ AlertManagerOnSample(alert_manager_t* manager,
   }
   leaf->last_temp_milli_c =
     cal_valid ? record->temp_milli_c : record->raw_temp_milli_c;
+  UpdateMissingGapLearning(manager, leaf, now_ms);
   leaf->last_rx_uptime_ms = now_ms;
   leaf->last_rx_epoch = (record->timestamp_epoch_sec > 0)
                           ? record->timestamp_epoch_sec
@@ -1072,6 +1137,7 @@ AlertManagerOnLoggingSessionStart(alert_manager_t* manager,
   leaf->last_restart_log_ms = 0;
   leaf->high_hold_start_ms = 0;
   leaf->low_hold_start_ms = 0;
+  ResetMissingGapLearning(leaf);
 
   memset(manager->states[leaf_index], 0, sizeof(manager->states[leaf_index]));
 
@@ -1176,14 +1242,20 @@ AlertManagerTick(alert_manager_t* manager, int64_t now_ms, int64_t now_epoch)
     }
 
     if ((mask & (1u << ALERT_MISSING_RECORDS)) != 0u &&
-        leaf->last_rx_uptime_ms > 0) {
+        leaf->last_rx_uptime_ms > 0 && leaf->missing_gap_sample_count >= 2 &&
+        leaf->missing_gap_threshold_ms > 0) {
       const uint32_t gap = SaturatingDeltaMs(now_ms, leaf->last_rx_uptime_ms);
+      const uint32_t threshold_ms =
+        (leaf->missing_gap_threshold_ms > manager->config.missing_gap_ms)
+          ? leaf->missing_gap_threshold_ms
+          : manager->config.missing_gap_ms;
       LogNonmonotonicDelta(leaf->leaf_id, now_ms, leaf->last_rx_uptime_ms, gap);
-      const bool missing_active = gap >= manager->config.missing_gap_ms;
+      const bool missing_active = gap >= threshold_ms;
       alert_notification_payload_t payload = { 0 };
       FillPayloadBase(&payload, leaf, now_ms, now_epoch);
       payload.duration_ms = gap;
-      payload.limit_milli_c = (int32_t)manager->config.missing_gap_ms;
+      payload.limit_milli_c =
+        (threshold_ms > (uint32_t)INT32_MAX) ? INT32_MAX : (int32_t)threshold_ms;
       ProcessAlert(manager,
                    i,
                    ALERT_MISSING_RECORDS,
