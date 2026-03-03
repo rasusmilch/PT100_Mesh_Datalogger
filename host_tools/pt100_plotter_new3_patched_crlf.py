@@ -1453,40 +1453,140 @@ def _add_highlight_spans(
 
 
 def _add_start_date_label_if_multiday(ax: plt.Axes, x_values: pd.Series) -> None:
-    """Add a left-side x-axis start date label when plotted data spans multiple days.
+    """Add a left-side x-axis start time+date label when plotted data spans multiple days.
 
-    Args:
-        ax: Matplotlib axes to annotate.
-        x_values: Datetime-like x-axis values (timezone-aware preferred).
+    Matplotlib's ConciseDateFormatter typically shows the *end* time as a tick label and
+    the *end* date as an x-axis offset text (drawn below the ticks). On multi-day plots,
+    the left edge often lacks a matching start label.
+
+    This function adds a two-line start label at the left edge:
+
+      HH:MM
+      YYYY-Mmm-DD
+
+    The label is anchored to the *date-line* baseline used by the existing right-side
+    date (prefer the x-axis offset text when present). This keeps the placement stable
+    across backends (screen vs saved PNG/PDF).
     """
     if not _needs_multiday_date_label(x_values):
         return
 
     parsed = pd.to_datetime(x_values, errors="coerce")
     start_ts = parsed.min()
+    if pd.isna(start_ts):
+        return
 
-    offset = ax.xaxis.get_offset_text()
-    y = offset.get_position()[1]
+    fig = ax.figure
+    try:
+        # Ensure tick/offset label extents are resolved for this backend.
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+    except Exception:
+        return
 
-    start_text = next((txt for txt in ax.texts if txt.get_gid() == "pt100_start_date"), None)
+    tick_labels = [
+        label
+        for label in ax.get_xticklabels()
+        if label.get_visible() and (label.get_text() or "").strip()
+    ]
+
+    # ConciseDateFormatter commonly emits 'YYYY-Mmm-DD' for the date line.
+    date_pattern = re.compile(r"\d{4}-[A-Za-z]{3}-\d{2}")
+
+    # --- Choose a reference baseline and style source -----------------------
+    # Prefer the x-axis offset text (this is where ConciseDateFormatter often draws the date line).
+    baseline_source = None
+    baseline_bbox = None
+
+    offset_text = ax.xaxis.get_offset_text()
+    offset_text_value = (offset_text.get_text() or "").strip() if offset_text is not None else ""
+    if offset_text is not None and offset_text.get_visible() and offset_text_value:
+        try:
+            baseline_bbox = offset_text.get_window_extent(renderer=renderer)
+            baseline_source = offset_text
+        except Exception:
+            baseline_bbox = None
+            baseline_source = None
+
+    # If no usable offset text, fall back to a tick label that contains a date line (if any),
+    # otherwise just use the right-most visible tick label.
+    if baseline_bbox is None:
+        reference_label = None
+        for candidate in reversed(tick_labels):
+            if date_pattern.search(candidate.get_text() or ""):
+                reference_label = candidate
+                break
+        if reference_label is None and tick_labels:
+            reference_label = tick_labels[-1]
+        if reference_label is None:
+            return
+        try:
+            baseline_bbox = reference_label.get_window_extent(renderer=renderer)
+            baseline_source = reference_label
+        except Exception:
+            return
+
+    # --- Choose an X anchor (left-most date-only tick label we are replacing) ---
+    left_candidate = None
+    left_candidate_bbox = None
+    for candidate in tick_labels:
+        candidate_text = (candidate.get_text() or "")
+        if date_pattern.search(candidate_text) and (":" not in candidate_text):
+            try:
+                bbox = candidate.get_window_extent(renderer=renderer)
+            except Exception:
+                continue
+            if left_candidate_bbox is None or bbox.x0 < left_candidate_bbox.x0:
+                left_candidate = candidate
+                left_candidate_bbox = bbox
+
+    try:
+        ax_bbox = ax.get_window_extent(renderer=renderer)
+    except Exception:
+        return
+
+    x_display = float(left_candidate_bbox.x0) if left_candidate_bbox is not None else float(ax_bbox.x0)
+
+    # IMPORTANT: anchor to the *date line* baseline (offset text when available).
+    y_display = float(baseline_bbox.y0)
+
+    x_fig, y_fig = fig.transFigure.inverted().transform((x_display, y_display))
+
+    # Hide the original left date-only tick label so we don't duplicate/overlap it.
+    if left_candidate is not None:
+        left_candidate.set_visible(False)
+
+    # Hide any legacy single-line start-date annotation from earlier versions.
+    legacy = next((txt for txt in fig.texts if txt.get_gid() == "pt100_start_date"), None)
+    if legacy is not None:
+        legacy.set_visible(False)
+
+    start_stamp = pd.Timestamp(start_ts)
+    start_label = f"{start_stamp.strftime('%H:%M')}\n{start_stamp.strftime('%Y-%b-%d')}"
+
+    start_text = next((txt for txt in fig.texts if txt.get_gid() == "pt100_start_datetime"), None)
     if start_text is None:
-        start_text = ax.text(
-            0.0,
-            y,
+        start_text = fig.text(
+            x_fig,
+            y_fig,
             "",
+            ha="left",
+            va="bottom",
             zorder=5,
         )
-        start_text.set_gid("pt100_start_date")
+        start_text.set_gid("pt100_start_datetime")
         start_text.set_in_layout(True)
         start_text.set_clip_on(False)
 
-    start_text.set_text(start_ts.strftime("%Y-%b-%d"))
-    start_text.set_transform(offset.get_transform())
-    start_text.set_ha("left")
-    start_text.set_va(offset.get_va())
-    start_text.set_position((0.0, y))
-    start_text.set_fontproperties(offset.get_fontproperties())
-    start_text.set_color(offset.get_color())
+    start_text.set_text(start_label)
+    start_text.set_position((x_fig, y_fig))
+
+    # Match style to whatever we used as the baseline reference.
+    if baseline_source is not None:
+        start_text.set_fontproperties(baseline_source.get_fontproperties())
+        start_text.set_color(baseline_source.get_color())
+
+
 
 
 def _needs_multiday_date_label(x_values: pd.Series) -> bool:
@@ -1742,13 +1842,28 @@ def _build_figure(
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=tzinfo))
 
+    needs_start_date_label = (time_column == "__time") and _needs_multiday_date_label(x_values)
+    if needs_start_date_label:
+        fig.canvas.draw()
+        _add_start_date_label_if_multiday(ax, x_values)
+
     # Tight layout; reserve space if we used a suptitle.
     if suptitle:
         fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
     else:
         fig.tight_layout()
 
-     return fig, int(len(plot_positions)), total_points
+    if needs_start_date_label:
+        fig.canvas.draw()
+        _add_start_date_label_if_multiday(ax, x_values)
+        if suptitle:
+            fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
+        else:
+            fig.tight_layout()
+        fig.canvas.draw()
+        _add_start_date_label_if_multiday(ax, x_values)
+
+    return fig, int(len(plot_positions)), total_points
 
 
 
