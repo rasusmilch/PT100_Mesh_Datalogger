@@ -86,6 +86,8 @@ extern "C"
     bool online;
     int64_t high_hold_start_ms;
     int64_t low_hold_start_ms;
+    uint8_t missing_gap_sample_count;
+    uint32_t missing_gap_threshold_ms;
   } alert_leaf_state_t;
 
   typedef struct
