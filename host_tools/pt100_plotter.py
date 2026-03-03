@@ -1748,10 +1748,7 @@ def _build_figure(
     else:
         fig.tight_layout()
 
-     return fig, int(len(plot_positions)), total_points
-
-
-
+    return fig, int(len(plot_positions)), total_points
 
 def _node_ids_from_df(df: pd.DataFrame) -> str:
     if "node_id" not in df.columns:
