@@ -297,6 +297,11 @@ extern "C"
   void RuntimeNudgeWifiDirectTask(void);
 
   /**
+   * @brief Execute RuntimeNudgeSensorTask.
+   */
+  void RuntimeNudgeSensorTask(void);
+
+  /**
    * @brief Execute RuntimeSdUnmountNow.
    * @return Return the function result.
    */

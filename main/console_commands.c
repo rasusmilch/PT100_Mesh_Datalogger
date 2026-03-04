@@ -118,6 +118,13 @@ static void
 PrintModeHelpBody(void);
 static int
 ModeTopicHelp(const char* topic);
+/**
+ * @brief Compute effective sensor poll period shown by console diagnostics.
+ * @param settings Current settings snapshot.
+ * @return Effective poll period in milliseconds.
+ */
+static uint32_t
+ConsoleEffectiveSensorPollPeriodMs(const app_settings_t* settings);
 
 /**
  * @brief Print combined calibration status including window stats, points, and
@@ -810,6 +817,39 @@ SaveCalibrationWithContext(const calibration_model_t* model)
 }
 
 /**
+ * @brief Compute effective sensor polling period from display and log periods.
+ * @param settings Current settings snapshot.
+ * @return Poll period in milliseconds clamped to [100, 3600000].
+ */
+static uint32_t
+ConsoleEffectiveSensorPollPeriodMs(const app_settings_t* settings)
+{
+  uint32_t display_period_ms = 1000u;
+  uint32_t log_period_ms = 1000u;
+
+  if (settings != NULL) {
+    display_period_ms = settings->display_sample_period_ms;
+    log_period_ms = settings->log_period_ms;
+  }
+
+  if (display_period_ms == 0u) {
+    display_period_ms = 1000u;
+  }
+  if (display_period_ms < 100u) {
+    display_period_ms = 100u;
+  } else if (display_period_ms > 3600000u) {
+    display_period_ms = 3600000u;
+  }
+
+  if (log_period_ms >= 100u && log_period_ms <= 3600000u &&
+      log_period_ms < display_period_ms) {
+    display_period_ms = log_period_ms;
+  }
+
+  return display_period_ms;
+}
+
+/**
  * @brief Execute CommandStatus.
  * @param argc Parameter argc.
  * @param argv Parameter argv.
@@ -830,6 +870,8 @@ CommandStatus(int argc, char** argv)
   printf("runtime_running: %s\n", RuntimeIsRunning() ? "yes" : "no");
   printf("time_valid: %s\n", TimeSyncIsSystemTimeValid() ? "yes" : "no");
   printf("log_period_ms: %u\n", (unsigned)settings->log_period_ms);
+  printf("display_sample_period_ms: %u\n",
+         (unsigned)settings->display_sample_period_ms);
   printf("rtc_resync_period_ms: %u\n",
          (unsigned)settings->rtc_resync_period_ms);
   printf("sd_flush_period_ms: %u\n", (unsigned)settings->sd_flush_period_ms);
@@ -1335,7 +1377,7 @@ CommandDisplay(int argc, char** argv)
   }
   if (argc < 2) {
     printf(
-      "usage: disp show | disp units C|F | disp attn ... | disp test [ms]\n");
+      "usage: disp show | disp units C|F | disp interval <ms> | disp attn ... | disp test [ms]\n");
     return 1;
   }
 
@@ -1358,6 +1400,10 @@ CommandDisplay(int argc, char** argv)
     printf("display_units: %s (effective: %s)\n",
            AppSettingsDisplayUnitsToString(g_runtime->settings->display_units),
            AppSettingsDisplayUnitsToString(effective_units));
+    printf("display_sample_period_ms: %u\n",
+           (unsigned)g_runtime->settings->display_sample_period_ms);
+    printf("sensor_poll_period_ms (effective): %u\n",
+           (unsigned)ConsoleEffectiveSensorPollPeriodMs(g_runtime->settings));
     printf("max7219_enabled: %s\n", display_enabled ? "yes" : "no");
     printf("max7219_spi_host: %d%s\n",
            display_host_id,
@@ -1392,6 +1438,34 @@ CommandDisplay(int argc, char** argv)
     UnitsGpioClearRtcOverride();
     UnitsGpioApplySettings(g_runtime->settings);
     printf("display_units set to %s\n", AppSettingsDisplayUnitsToString(units));
+    return 0;
+  }
+
+  if (strcmp(action, "interval") == 0) {
+    if (argc != 3) {
+      printf("usage: disp interval <ms>\n");
+      return 1;
+    }
+    char* end = NULL;
+    long interval_ms_long = strtol(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0') {
+      printf("invalid interval\n");
+      return 1;
+    }
+    if (interval_ms_long < 100 || interval_ms_long > 3600000) {
+      printf("invalid interval\n");
+      return 1;
+    }
+
+    const uint32_t interval_ms = (uint32_t)interval_ms_long;
+    g_runtime->settings->display_sample_period_ms = interval_ms;
+    esp_err_t result = AppSettingsSaveDisplaySamplePeriodMs(interval_ms);
+    if (result != ESP_OK) {
+      printf("save failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    RuntimeNudgeSensorTask();
+    printf("display_sample_period_ms set to %u\n", (unsigned)interval_ms);
     return 0;
   }
 
@@ -1462,7 +1536,7 @@ CommandDisplay(int argc, char** argv)
   }
 
   printf(
-    "unknown action. usage: disp show | disp units C|F | disp attn ... | disp "
+    "unknown action. usage: disp show | disp units C|F | disp interval <ms> | disp attn ... | disp "
     "test [ms]\n");
   return 1;
 }
@@ -2423,6 +2497,7 @@ CommandLog(int argc, char** argv)
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
     }
+    RuntimeNudgeSensorTask();
     printf("log_period_ms set to %d\n", interval_ms);
     return 0;
   }
@@ -6665,7 +6740,7 @@ RegisterCommands(void)
   static const console_registry_entry_t disp_cmd = {
     .command = "disp",
     .summary = "Configure display units and attention mode",
-    .synopsis = "disp show | disp units C|F | disp attn ...",
+    .synopsis = "disp show | disp units C|F | disp interval <ms> | disp attn ...",
     .func = &CommandDisplay,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&disp_cmd));

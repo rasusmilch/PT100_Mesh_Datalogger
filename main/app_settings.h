@@ -77,6 +77,7 @@ extern "C"
   typedef struct
   {
     uint32_t log_period_ms;
+    uint32_t display_sample_period_ms;
     uint32_t fram_flush_watermark_records;
     uint32_t sd_flush_period_ms;
     uint32_t sd_batch_bytes_target;
@@ -134,6 +135,14 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t AppSettingsSaveLogPeriodMs(uint32_t log_period_ms);
+
+/**
+ * @brief Persist updated display/sample period to NVS.
+ * @param display_sample_period_ms Display/sample period in milliseconds.
+ * @return ESP_OK on success; otherwise an ESP-IDF error code.
+ */
+  esp_err_t
+  AppSettingsSaveDisplaySamplePeriodMs(uint32_t display_sample_period_ms);
 
   // Persists updated FRAM flush watermark to NVS.
 /**
