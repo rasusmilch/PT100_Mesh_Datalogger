@@ -217,6 +217,14 @@ static bool
 RuntimeComputeStorageStallCondition(runtime_state_t* state, int64_t now_ms);
 
 /**
+ * @brief Compute effective sensor polling period for sampling/display updates.
+ * @param settings Current app settings snapshot.
+ * @return Effective polling period in milliseconds.
+ */
+static uint32_t
+RuntimeEffectiveSensorPollPeriodMs(const app_settings_t* settings);
+
+/**
  * @brief Request net_tx + alert_http pause state and wait for acknowledgements.
  * @param state Runtime state.
  * @param pause_enabled True to request pause, false to resume.
@@ -6589,6 +6597,39 @@ UpdateDebouncedRtdFault(runtime_state_t* state,
 }
 
 /**
+ * @brief Compute effective sensor polling period from display/log intervals.
+ * @param settings Current app settings snapshot.
+ * @return Polling period in milliseconds, clamped to [100, 3600000].
+ */
+static uint32_t
+RuntimeEffectiveSensorPollPeriodMs(const app_settings_t* settings)
+{
+  uint32_t display_period_ms = 1000u;
+  uint32_t log_period_ms = 1000u;
+
+  if (settings != NULL) {
+    display_period_ms = settings->display_sample_period_ms;
+    log_period_ms = settings->log_period_ms;
+  }
+
+  if (display_period_ms == 0u) {
+    display_period_ms = 1000u;
+  }
+  if (display_period_ms < 100u) {
+    display_period_ms = 100u;
+  } else if (display_period_ms > 3600000u) {
+    display_period_ms = 3600000u;
+  }
+
+  if (log_period_ms >= 100u && log_period_ms <= 3600000u &&
+      log_period_ms < display_period_ms) {
+    display_period_ms = log_period_ms;
+  }
+
+  return display_period_ms;
+}
+
+/**
  * @brief Execute SensorTask.
  * @param context Parameter context.
  * @note FreeRTOS task entry for the SensorTask task.
@@ -6597,6 +6638,9 @@ static void
 SensorTask(void* context)
 {
   runtime_state_t* state = (runtime_state_t*)context;
+  int64_t next_log_due_ms = 0;
+  uint32_t last_log_period_ms = 0;
+  bool first_log = true;
 
   while (!state->stop_requested) {
     if (state->spi_pause_requested) {
@@ -6605,7 +6649,16 @@ SensorTask(void* context)
       continue;
     }
     state->spi_pause_ack_mask &= ~SPI_PAUSE_ACK_SENSOR;
-    const uint32_t period_ms = state->settings.log_period_ms;
+    uint32_t log_period_ms = state->settings.log_period_ms;
+    if (log_period_ms < 100u || log_period_ms > 3600000u) {
+      log_period_ms = 1000u;
+    }
+    const uint32_t poll_period_ms =
+      RuntimeEffectiveSensorPollPeriodMs(&state->settings);
+    if (log_period_ms != last_log_period_ms) {
+      first_log = true;
+      last_log_period_ms = log_period_ms;
+    }
     const int64_t loop_start_ms = esp_timer_get_time() / 1000;
 
     max31865_sample_t sample;
@@ -6891,14 +6944,29 @@ SensorTask(void* context)
     state->last_update_ticks = xTaskGetTickCount();
     taskEXIT_CRITICAL(&state->last_temp_lock);
 
-    sensor_sample_msg_t msg = {
-      .record = record,
-      .disp_raw_temp_milli_c = disp_raw_milli_c,
-      .disp_cal_temp_milli_c = disp_cal_milli_c,
-    };
-    (void)xQueueSend(state->log_queue, &msg, 0);
+    bool log_due = false;
+    if (first_log) {
+      log_due = true;
+      next_log_due_ms = now_ms + (int64_t)log_period_ms;
+      first_log = false;
+    } else if (now_ms >= next_log_due_ms) {
+      log_due = true;
+      while (next_log_due_ms <= now_ms) {
+        next_log_due_ms += (int64_t)log_period_ms;
+      }
+    }
+
+    if (log_due) {
+      sensor_sample_msg_t msg = {
+        .record = record,
+        .disp_raw_temp_milli_c = disp_raw_milli_c,
+        .disp_cal_temp_milli_c = disp_cal_milli_c,
+      };
+      (void)xQueueSend(state->log_queue, &msg, 0);
+    }
+
     const int64_t elapsed_ms = (esp_timer_get_time() / 1000) - loop_start_ms;
-    const int64_t remaining_ms = (int64_t)period_ms - elapsed_ms;
+    const int64_t remaining_ms = (int64_t)poll_period_ms - elapsed_ms;
     if (remaining_ms > 0) {
       RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS((uint32_t)remaining_ms));
     }
@@ -11097,6 +11165,15 @@ void
 RuntimeNudgeWifiDirectTask(void)
 {
   RuntimeNotifyTask(g_state.wifi_direct_task);
+}
+
+/**
+ * @brief Notify SensorTask to wake immediately and re-evaluate settings.
+ */
+void
+RuntimeNudgeSensorTask(void)
+{
+  RuntimeNotifyTask(g_state.sensor_task);
 }
 
 /**

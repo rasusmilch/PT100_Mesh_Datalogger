@@ -20,6 +20,7 @@ static const char* kTag = "settings";
 
 static const char* kNvsNamespace = "pt100_logger";
 static const char* kKeyLogPeriodMs = "log_period_ms";
+static const char* kKeyDisplaySamplePeriodMs = "disp_samp_ms";
 static const char* kKeyFlushWatermark = "flush_wm_rec";
 static const char* kKeySdFlushPeriodMs = "sd_flush_ms";
 static const char* kKeySdBatchBytes = "sd_batch_bytes";
@@ -149,6 +150,14 @@ AppSettingsSaveBlob(const app_settings_t* settings);
 
 static esp_err_t
 OpenNvs(nvs_handle_t* handle_out);
+/**
+ * @brief Load optional display/sample period from standalone NVS key.
+ * @param handle Open NVS handle.
+ * @param settings_out Settings snapshot to update when key is valid.
+ */
+static void
+AppSettingsMaybeLoadDisplaySamplePeriodMs(nvs_handle_t handle,
+                                          app_settings_t* settings_out);
 static bool
 IsPrintableSettingString(const char* value, size_t max_len);
 
@@ -374,6 +383,8 @@ static void
 ApplyDefaults(app_settings_t* settings)
 {
   settings->log_period_ms = (uint32_t)CONFIG_APP_LOG_PERIOD_MS_DEFAULT;
+  settings->display_sample_period_ms =
+    (uint32_t)CONFIG_APP_DISPLAY_SAMPLE_PERIOD_MS_DEFAULT;
   settings->fram_flush_watermark_records =
     (uint32_t)CONFIG_APP_FRAM_FLUSH_WATERMARK_RECORDS_DEFAULT;
   settings->sd_flush_period_ms = (uint32_t)CONFIG_APP_SD_PERIODIC_FLUSH_MS;
@@ -1365,6 +1376,27 @@ AppSettingsLoadLegacy(nvs_handle_t handle,
 }
 
 /**
+ * @brief Load display/sample period override from standalone NVS key.
+ * @param handle Open NVS handle.
+ * @param settings_out Settings snapshot to update when a valid key is found.
+ */
+static void
+AppSettingsMaybeLoadDisplaySamplePeriodMs(nvs_handle_t handle,
+                                          app_settings_t* settings_out)
+{
+  if (settings_out == NULL) {
+    return;
+  }
+
+  uint32_t value = 0;
+  const esp_err_t result =
+    nvs_get_u32(handle, kKeyDisplaySamplePeriodMs, &value);
+  if (result == ESP_OK && value >= 100u && value <= 3600000u) {
+    settings_out->display_sample_period_ms = value;
+  }
+}
+
+/**
  * @brief Log a summary of the loaded settings.
  * @param settings Parameter settings.
  */
@@ -1376,12 +1408,13 @@ LogSettingsLoaded(const app_settings_t* settings)
   }
   ESP_LOGI(
     kTag,
-    "Loaded: period=%ums wm=%u sd_flush_ms=%u sd_batch=%u rtc_resync_ms=%u "
+    "Loaded: period=%ums disp_samp_ms=%u wm=%u sd_flush_ms=%u sd_batch=%u rtc_resync_ms=%u "
     "deg=%u cal_points=%u tz=%s dst=%u role=%s allow_children=%u "
     "display_units=%s net_mode=%s mqtt_en=%u mqtt_uri=%s mqtt_pfx=%s "
     "mqtt_qos=%u mqtt_ret=%u mqtt_bridge=%s rtd_f_as_ms=%u rtd_f_cl_ms=%u "
     "disp_attn_pol=0x%08" PRIX32 " disp_attn_mask=0x%08" PRIX32,
     (unsigned)settings->log_period_ms,
+    (unsigned)settings->display_sample_period_ms,
     (unsigned)settings->fram_flush_watermark_records,
     (unsigned)settings->sd_flush_period_ms,
     (unsigned)settings->sd_batch_bytes_target,
@@ -1488,6 +1521,7 @@ AppSettingsLoad(app_settings_t* settings_out)
 
   if (selected_blob != NULL) {
     ApplyPersistedSettings(&selected_blob->payload, settings_out);
+    AppSettingsMaybeLoadDisplaySamplePeriodMs(handle, settings_out);
     g_settings_blob_generation = selected_blob->header.generation;
     g_display_attention_policy = settings_out->display_attention_policy;
     g_display_attention_mask = settings_out->display_attention_mask;
@@ -1504,6 +1538,7 @@ AppSettingsLoad(app_settings_t* settings_out)
 
   bool legacy_migrated = false;
   result = AppSettingsLoadLegacy(handle, settings_out, &legacy_migrated);
+  AppSettingsMaybeLoadDisplaySamplePeriodMs(handle, settings_out);
   nvs_close(handle);
   if (result != ESP_OK) {
     return result;
@@ -1541,6 +1576,44 @@ AppSettingsSaveLogPeriodMs(uint32_t log_period_ms)
   InitSettingsSnapshot(&settings);
   settings.log_period_ms = log_period_ms;
   return PersistSettingsSnapshot(&settings);
+}
+
+/**
+ * @brief Persist updated display/sample period to standalone NVS key.
+ * @param display_sample_period_ms Display/sample period in milliseconds.
+ * @return ESP_OK on success; otherwise an ESP-IDF error code.
+ */
+esp_err_t
+AppSettingsSaveDisplaySamplePeriodMs(uint32_t display_sample_period_ms)
+{
+  if (display_sample_period_ms < 100u || display_sample_period_ms > 3600000u) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t handle;
+  esp_err_t result = OpenNvs(&handle);
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  result = nvs_set_u32(handle,
+                       kKeyDisplaySamplePeriodMs,
+                       display_sample_period_ms);
+  if (result == ESP_OK) {
+    result = nvs_commit(handle);
+  }
+  nvs_close(handle);
+
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  if (!g_saved_settings_valid) {
+    ApplyDefaults(&g_saved_settings);
+    g_saved_settings_valid = true;
+  }
+  g_saved_settings.display_sample_period_ms = display_sample_period_ms;
+  return ESP_OK;
 }
 
 /**

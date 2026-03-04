@@ -452,6 +452,11 @@ config APP_LOG_PERIOD_MS_DEFAULT
   range 100 3600000
   default 1000
 
+config APP_DISPLAY_SAMPLE_PERIOD_MS_DEFAULT
+  int "Default display/sample period (ms)"
+  range 100 3600000
+  default 1000
+
 config APP_FRAM_FLUSH_WATERMARK_RECORDS_DEFAULT
   int "Default flush watermark (records)"
   range 1 1000000
