@@ -10,11 +10,15 @@ static const char* kTag = "calibration";
 typedef struct
 {
   int32_t samples_milli_c[CAL_WINDOW_SIZE];
+  int32_t samples_milli_ohm[CAL_WINDOW_SIZE];
   size_t count;
   size_t index;
   int32_t last_raw_milli_c;
   int32_t mean_raw_milli_c;
   int32_t stddev_raw_milli_c;
+  int32_t last_raw_milli_ohm;
+  int32_t mean_raw_milli_ohm;
+  int32_t stddev_raw_milli_ohm;
 } cal_window_state_t;
 
 static cal_window_state_t g_cal_window;
@@ -553,15 +557,17 @@ CalibrationModelFitFromPointsWithOptions(
  * @param raw_milli_c Parameter raw_milli_c.
  */
 void
-CalWindowPushRawSample(int32_t raw_milli_c)
+CalWindowPushRawSample(int32_t raw_milli_c, int32_t raw_milli_ohm)
 {
   g_cal_window.samples_milli_c[g_cal_window.index] = raw_milli_c;
+  g_cal_window.samples_milli_ohm[g_cal_window.index] = raw_milli_ohm;
   g_cal_window.index = (g_cal_window.index + 1) % CAL_WINDOW_SIZE;
   if (g_cal_window.count < CAL_WINDOW_SIZE) {
     g_cal_window.count++;
   }
 
   g_cal_window.last_raw_milli_c = raw_milli_c;
+  g_cal_window.last_raw_milli_ohm = raw_milli_ohm;
 
   double sum = 0.0;
   for (size_t i = 0; i < g_cal_window.count; ++i) {
@@ -581,6 +587,25 @@ CalWindowPushRawSample(int32_t raw_milli_c)
 
   g_cal_window.mean_raw_milli_c = (int32_t)llround(mean);
   g_cal_window.stddev_raw_milli_c = (int32_t)llround(stddev);
+
+  sum = 0.0;
+  for (size_t i = 0; i < g_cal_window.count; ++i) {
+    sum += g_cal_window.samples_milli_ohm[i];
+  }
+  const double mean_ohm = sum / (double)g_cal_window.count;
+
+  variance_sum = 0.0;
+  for (size_t i = 0; i < g_cal_window.count; ++i) {
+    const double delta =
+      (double)g_cal_window.samples_milli_ohm[i] - mean_ohm;
+    variance_sum += delta * delta;
+  }
+  const double variance_ohm =
+    (g_cal_window.count > 0) ? (variance_sum / g_cal_window.count) : 0.0;
+  const double stddev_ohm = sqrt(variance_ohm);
+
+  g_cal_window.mean_raw_milli_ohm = (int32_t)llround(mean_ohm);
+  g_cal_window.stddev_raw_milli_ohm = (int32_t)llround(stddev_ohm);
 }
 
 /**
@@ -631,5 +656,27 @@ CalWindowGetStats(int32_t* out_last_raw_mC,
   }
   if (out_stddev_mC != NULL) {
     *out_stddev_mC = g_cal_window.stddev_raw_milli_c;
+  }
+}
+
+/**
+ * @brief Read latest/mean/stddev resistance statistics from calibration window.
+ * @param out_last_raw_mOhm Receives the most recent resistance sample.
+ * @param out_mean_raw_mOhm Receives the mean resistance sample.
+ * @param out_stddev_mOhm Receives resistance sample standard deviation.
+ */
+void
+CalWindowGetResistanceStats(int32_t* out_last_raw_mOhm,
+                            int32_t* out_mean_raw_mOhm,
+                            int32_t* out_stddev_mOhm)
+{
+  if (out_last_raw_mOhm != NULL) {
+    *out_last_raw_mOhm = g_cal_window.last_raw_milli_ohm;
+  }
+  if (out_mean_raw_mOhm != NULL) {
+    *out_mean_raw_mOhm = g_cal_window.mean_raw_milli_ohm;
+  }
+  if (out_stddev_mOhm != NULL) {
+    *out_stddev_mOhm = g_cal_window.stddev_raw_milli_ohm;
   }
 }

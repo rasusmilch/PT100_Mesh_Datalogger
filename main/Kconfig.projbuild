@@ -312,7 +312,7 @@ endchoice
 
 choice APP_MAX31865_CONVERSION
   prompt "RTD temperature conversion method"
-  default APP_MAX31865_CONVERSION_TABLE_PT100
+  default APP_MAX31865_CONVERSION_CVD_ITERATIVE
 
 config APP_MAX31865_CONVERSION_TABLE_PT100
   bool "ITS-90 PT100 table (binary search + interpolation)"

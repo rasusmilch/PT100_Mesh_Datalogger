@@ -46,8 +46,7 @@ static const double kCvdA = 3.9083e-3;
 static const double kCvdB = -5.775e-7;
 static const double kCvdC = -4.183e-12;
 
-static double ResistanceToTemperature(const max31865_reader_t* reader,
-                                      double resistance_ohm);
+
 
 static void FillSample(max31865_sample_t* sample,
                        uint16_t adc_code,
@@ -324,7 +323,7 @@ ReadAndFinishOneShot(max31865_reader_t* reader,
 
   const double resistance =
     Max31865AdcCodeToResistance(rtd_code, reader->rref_ohm);
-  const double temp_c = ResistanceToTemperature(reader, resistance);
+  const double temp_c = Max31865ResistanceToTemperature(reader, resistance);
 
   FillSample(sample_out, rtd_code, resistance, temp_c, combined_faults);
 
@@ -430,12 +429,37 @@ ConvertCvdIterative(double resistance_ohm, double r0_ohm)
  * @param resistance_ohm Parameter resistance_ohm.
  * @return Return the function result.
  */
-static double
-ResistanceToTemperature(const max31865_reader_t* reader, double resistance_ohm)
+double
+Max31865ResistanceToTemperature(const max31865_reader_t* reader,
+                                double resistance_ohm)
 {
+  if (reader == NULL) {
+    return NAN;
+  }
   return (reader->conversion == kMax31865ConversionCvdIterative)
            ? ConvertCvdIterative(resistance_ohm, reader->rtd_nominal_ohm)
            : ConvertTablePt100(resistance_ohm, reader->rtd_nominal_ohm);
+}
+
+/**
+ * @brief Convert PT100 temperature to resistance via the CVD polynomial.
+ * @param temperature_c Temperature in Celsius.
+ * @param r0_ohm Nominal 0C resistance.
+ * @return Equivalent resistance in ohms.
+ */
+double
+Max31865TemperatureToResistanceCvd(double temperature_c, double r0_ohm)
+{
+  if (r0_ohm <= 0.0) {
+    return NAN;
+  }
+  const double t = temperature_c;
+  const double t2 = t * t;
+  const double t3 = t2 * t;
+  if (t >= 0.0) {
+    return r0_ohm * (1.0 + kCvdA * t + kCvdB * t2);
+  }
+  return r0_ohm * (1.0 + kCvdA * t + kCvdB * t2 + kCvdC * (t - 100.0) * t3);
 }
 
 /**
@@ -1139,7 +1163,7 @@ Max31865ApplyEmaSample(max31865_reader_t* reader,
       alpha * sample->resistance_ohm + (1.0 - alpha) * reader->ema_resistance_ohm;
   }
   reader->ema_temp_c =
-    ResistanceToTemperature(reader, reader->ema_resistance_ohm);
+    Max31865ResistanceToTemperature(reader, reader->ema_resistance_ohm);
   if (ema_temp_out != NULL) {
     *ema_temp_out = reader->ema_temp_c;
   }
