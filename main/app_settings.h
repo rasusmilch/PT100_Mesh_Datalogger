@@ -87,6 +87,7 @@ extern "C"
     bool calibration_context_valid;
     calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
     uint8_t calibration_points_count;
+    calibration_domain_t calibration_domain;
     // Calibration tracking (UTC-based)
     int64_t cal_last_utc;
     int64_t cal_last_override_utc;
@@ -211,6 +212,13 @@ extern "C"
   esp_err_t AppSettingsSaveCalibrationPoints(
     const calibration_point_t* points,
     size_t points_count);
+
+/**
+ * @brief Persist the active calibration domain metadata.
+ * @param domain Calibration domain enum value.
+ * @return ESP_OK on success; otherwise an ESP-IDF error code.
+ */
+  esp_err_t AppSettingsSaveCalibrationDomain(calibration_domain_t domain);
 
   // Persists updated RTD EMA enabled flag.
 /**

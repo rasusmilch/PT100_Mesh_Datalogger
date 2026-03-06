@@ -241,7 +241,8 @@ MaybePushCalRawSampleFromSensor(void)
   }
 
   int32_t raw_milli_c = (int32_t)llround(sample.temperature_c * 1000.0);
-  CalWindowPushRawSample(raw_milli_c);
+  int32_t raw_milli_ohm = (int32_t)llround(sample.resistance_ohm * 1000.0);
+  CalWindowPushRawSample(raw_milli_c, raw_milli_ohm);
 }
 
 typedef enum
@@ -1715,18 +1716,35 @@ CommandRaw(int argc, char** argv)
     return 1;
   }
 
-  const double calibrated = CalibrationModelEvaluateWithPoints(
-    &g_runtime->settings->calibration,
-    sample.temperature_c,
-    g_runtime->settings->calibration_points,
-    g_runtime->settings->calibration_points_count);
+  const calibration_domain_t domain = g_runtime->settings->calibration_domain;
+  double corrected_resistance_ohm = sample.resistance_ohm;
+  double calibrated_temp_c = sample.temperature_c;
+  if (domain == CAL_DOMAIN_RESISTANCE_OHM) {
+    corrected_resistance_ohm = CalibrationModelEvaluateWithPoints(
+      &g_runtime->settings->calibration,
+      sample.resistance_ohm,
+      g_runtime->settings->calibration_points,
+      g_runtime->settings->calibration_points_count);
+    calibrated_temp_c = Max31865ResistanceToTemperature(
+      g_runtime->sensor, corrected_resistance_ohm);
+  } else {
+    calibrated_temp_c = CalibrationModelEvaluateWithPoints(
+      &g_runtime->settings->calibration,
+      sample.temperature_c,
+      g_runtime->settings->calibration_points,
+      g_runtime->settings->calibration_points_count);
+  }
+
   char fault[64] = { 0 };
   Max31865FormatFault(sample.fault_status, fault, sizeof(fault));
 
   printf("adc_code_15: %u\n", (unsigned)sample.adc_code);
   printf("resistance_ohm: %.3f\n", sample.resistance_ohm);
+  if (domain == CAL_DOMAIN_RESISTANCE_OHM) {
+    printf("corrected_resistance_ohm: %.3f\n", corrected_resistance_ohm);
+  }
   printf("temp_raw_c: %.3f\n", sample.temperature_c);
-  printf("temp_cal_c: %.3f\n", calibrated);
+  printf("temp_cal_c: %.3f\n", calibrated_temp_c);
   printf("fault: %s (0x%02x)\n", fault, (unsigned)sample.fault_status);
   return 0;
 }
@@ -3103,7 +3121,10 @@ CalConsoleOpTask(void* task_arg)
     int32_t last_raw_mC = 0;
     int32_t mean_raw_mC = 0;
     int32_t stddev_mC = 0;
+    int32_t mean_raw_mOhm = 0;
+    int32_t stddev_mOhm = 0;
     CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
+    CalWindowGetResistanceStats(NULL, &mean_raw_mOhm, &stddev_mOhm);
     const size_t sample_count = CalWindowGetSampleCount();
     const int64_t now_us = esp_timer_get_time();
     const bool print_due =
@@ -3168,24 +3189,32 @@ CalConsoleOpTask(void* task_arg)
         point->raw_avg_mC = mean_raw_mC;
         point->actual_mC = (int32_t)llround(actual_temp_c * 1000.0);
         point->raw_stddev_mC = stddev_mC;
+        point->raw_avg_mOhm = mean_raw_mOhm;
+        point->raw_stddev_mOhm = stddev_mOhm;
         point->sample_count = (uint16_t)sample_count;
         point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
         point->timestamp_epoch_sec =
           point->time_valid ? (int64_t)time(NULL) : 0;
         settings->calibration_points_count++;
+        settings->calibration_domain = CAL_DOMAIN_RESISTANCE_OHM;
         esp_err_t save_result = AppSettingsSaveCalibrationPoints(
           settings->calibration_points, settings->calibration_points_count);
+        if (save_result == ESP_OK) {
+          save_result = AppSettingsSaveCalibrationDomain(
+            settings->calibration_domain);
+        }
         if (save_result != ESP_OK) {
           printf("save failed: %s\n", esp_err_to_name(save_result));
           break;
         }
         printf(
           "cal capture OK: point=#%u actual=%.3fC mean_raw=%.3fC std=%.3fC "
-          "saved\n",
+          "mean_raw_ohm=%.6f saved\n",
           (unsigned)settings->calibration_points_count,
           actual_temp_c,
           mean_raw_mC / 1000.0,
-          stddev_c);
+          stddev_c,
+          mean_raw_mOhm / 1000.0);
         break;
       }
 
@@ -3571,6 +3600,7 @@ CommandCal(int argc, char** argv)
   if (strcmp(action, "clear") == 0) {
     CalibrationModelInitIdentity(&settings->calibration);
     settings->calibration_points_count = 0;
+    settings->calibration_domain = CAL_DOMAIN_TEMP_C;
     memset(
       settings->calibration_points, 0, sizeof(settings->calibration_points));
     esp_err_t result = SaveCalibrationWithContext(&settings->calibration);
@@ -3580,6 +3610,9 @@ CommandCal(int argc, char** argv)
     }
     result = AppSettingsSaveCalibrationPoints(
       settings->calibration_points, settings->calibration_points_count);
+    if (result == ESP_OK) {
+      result = AppSettingsSaveCalibrationDomain(settings->calibration_domain);
+    }
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -3593,6 +3626,10 @@ CommandCal(int argc, char** argv)
       printf("usage: cal add <raw_c> <actual_c>\n");
       return 1;
     }
+    if (settings->calibration_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+      printf("cal add is legacy temp-domain only; use 'cal capture <actual_c>'\n");
+      return 1;
+    }
     if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
       printf("already have %u points; run 'cal apply' or 'cal clear'\n",
              (unsigned)settings->calibration_points_count);
@@ -3604,6 +3641,8 @@ CommandCal(int argc, char** argv)
     point->raw_avg_mC = (int32_t)llround(g_cal_args.raw_c->dval[0] * 1000.0);
     point->actual_mC = (int32_t)llround(g_cal_args.actual_c->dval[0] * 1000.0);
     point->raw_stddev_mC = 0;
+    point->raw_avg_mOhm = 0;
+    point->raw_stddev_mOhm = 0;
     point->sample_count = 0;
     point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
     point->timestamp_epoch_sec = point->time_valid ? (int64_t)time(NULL) : 0;
@@ -3627,11 +3666,13 @@ CommandCal(int argc, char** argv)
     for (size_t index = 0; index < settings->calibration_points_count;
          ++index) {
       const calibration_point_t* point = &settings->calibration_points[index];
-      printf("  %u: raw_avg=%.6f actual=%.6f stddev=%.6f samples=%u\n",
+      printf("  %u: raw_avg_C=%.6f actual_C=%.6f stddev_C=%.6f raw_avg_Ohm=%.6f stddev_Ohm=%.6f samples=%u\n",
              (unsigned)(index + 1),
              point->raw_avg_mC / 1000.0,
              point->actual_mC / 1000.0,
              point->raw_stddev_mC / 1000.0,
+             point->raw_avg_mOhm / 1000.0,
+             point->raw_stddev_mOhm / 1000.0,
              (unsigned)point->sample_count);
     }
     return 0;
@@ -3650,6 +3691,41 @@ CommandCal(int argc, char** argv)
     if (!TimeSyncIsSystemTimeValid()) {
       printf("warning: system time is invalid; apply will not update Last UTC "
              "until time is valid.\n");
+    }
+
+    bool have_resistance_points = false;
+    bool have_temp_only_points = false;
+    for (size_t i = 0; i < settings->calibration_points_count; ++i) {
+      const calibration_point_t* point = &settings->calibration_points[i];
+      if (point->raw_avg_mOhm > 0) {
+        have_resistance_points = true;
+      } else {
+        have_temp_only_points = true;
+      }
+    }
+    if (have_resistance_points && have_temp_only_points) {
+      printf("cal apply failed: mixed-domain point set (temp + resistance). "
+             "Use cal clear and rebuild a single-domain set.\n");
+      return 1;
+    }
+
+    calibration_domain_t apply_domain =
+      have_resistance_points ? CAL_DOMAIN_RESISTANCE_OHM : CAL_DOMAIN_TEMP_C;
+
+    calibration_point_t fit_points[CALIBRATION_MAX_POINTS] = { 0 };
+    for (size_t i = 0; i < settings->calibration_points_count; ++i) {
+      fit_points[i] = settings->calibration_points[i];
+      if (apply_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+        const double actual_c = fit_points[i].actual_mC / 1000.0;
+        const double ideal_ohm = Max31865TemperatureToResistanceCvd(
+          actual_c, g_runtime->sensor->rtd_nominal_ohm);
+        if (!isfinite(ideal_ohm)) {
+          printf("cal apply failed: invalid CVD resistance conversion\n");
+          return 1;
+        }
+        fit_points[i].raw_avg_mC = fit_points[i].raw_avg_mOhm;
+        fit_points[i].actual_mC = (int32_t)llround(ideal_ohm * 1000.0);
+      }
     }
 
     calibration_model_t model;
@@ -3676,10 +3752,17 @@ CommandCal(int argc, char** argv)
       }
     }
     options.allow_wide_slope = (g_cal_args.allow_wide_slope->count > 0);
+    if (apply_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+      options.min_slope = 0.9;
+      options.max_slope = 1.1;
+      options.guard_min_c = 80.0;
+      options.guard_max_c = 180.0;
+      options.max_abs_correction_c = 10.0;
+    }
 
     calibration_fit_diagnostics_t diagnostics = { 0 };
     esp_err_t result = CalibrationModelFitFromPointsWithOptions(
-      settings->calibration_points,
+      fit_points,
       settings->calibration_points_count,
       &options,
       &model,
@@ -3690,14 +3773,19 @@ CommandCal(int argc, char** argv)
     }
 
     settings->calibration = model;
+    settings->calibration_domain = apply_domain;
     result = SaveCalibrationWithContext(&model);
+    if (result == ESP_OK) {
+      result = AppSettingsSaveCalibrationDomain(settings->calibration_domain);
+    }
     if (result != ESP_OK) {
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
     }
 
-    printf("calibration applied: mode=%s degree=%u coeffs=[%.9g, %.9g, %.9g, "
+    printf("calibration applied: domain=%s mode=%s degree=%u coeffs=[%.9g, %.9g, %.9g, "
            "%.9g]\n",
+           (apply_domain == CAL_DOMAIN_RESISTANCE_OHM) ? "resistance" : "legacy_temp",
            CalibrationModeToString(model.mode),
            (unsigned)model.degree,
            model.coefficients[0],
@@ -3711,6 +3799,7 @@ CommandCal(int argc, char** argv)
 
     return 0;
   }
+
 
   printf("unknown action. usage: cal status | cal set date <YYYY-MM-DD> | "
          "cal clear date | cal set due <count> <days|months|years> | "
@@ -5674,17 +5763,28 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
   int32_t last_raw_mC = 0;
   int32_t mean_raw_mC = 0;
   int32_t stddev_mC = 0;
+  int32_t last_raw_mOhm = 0;
+  int32_t mean_raw_mOhm = 0;
+  int32_t stddev_mOhm = 0;
   MaybePushCalRawSampleFromSensor();
 
   CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
+  CalWindowGetResistanceStats(&last_raw_mOhm, &mean_raw_mOhm, &stddev_mOhm);
   const size_t sample_count = CalWindowGetSampleCount();
   printf("cal_window_raw_last_c: %.3f\n", last_raw_mC / 1000.0);
   printf("cal_window_raw_avg_c: %.3f\n", mean_raw_mC / 1000.0);
   printf("cal_window_raw_stddev_c: %.3f\n", stddev_mC / 1000.0);
+  printf("cal_window_raw_last_ohm: %.3f\n", last_raw_mOhm / 1000.0);
+  printf("cal_window_raw_avg_ohm: %.3f\n", mean_raw_mOhm / 1000.0);
+  printf("cal_window_raw_stddev_ohm: %.3f\n", stddev_mOhm / 1000.0);
   printf("cal_window_samples: %u\n", (unsigned)sample_count);
   printf("cal_window_ready: %s\n", CalWindowIsReady() ? "yes" : "no");
   printf("calibration_mode: %s\n",
          CalibrationModeToString(settings->calibration.mode));
+  printf("calibration_domain: %s\n",
+         (settings->calibration_domain == CAL_DOMAIN_RESISTANCE_OHM)
+           ? "resistance"
+           : "legacy_temp");
   printf("cal_points: %u (raw_avg_C uses window average)\n",
          (unsigned)settings->calibration_points_count);
   const char* applied_reason = NULL;
@@ -5699,10 +5799,11 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
     const double raw_avg_c = point->raw_avg_mC / 1000.0;
     const double actual_c = point->actual_mC / 1000.0;
     const double residual_c = actual_c - raw_avg_c;
-    printf("  %u: raw_avg_C=%.3f actual_C=%.3f residual_C=%.3f stddev_C=%.3f\n",
+    printf("  %u: raw_avg_C=%.3f actual_C=%.3f raw_avg_Ohm=%.3f residual_C=%.3f stddev_C=%.3f\n",
            (unsigned)(index + 1),
            raw_avg_c,
            actual_c,
+           point->raw_avg_mOhm / 1000.0,
            residual_c,
            point->raw_stddev_mC / 1000.0);
   }

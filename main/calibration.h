@@ -21,11 +21,19 @@ extern "C"
 #define CALIBRATION_GUARD_MAX_C 200.0
 #define CALIBRATION_MAX_CORRECTION_C 20.0
 
+  typedef enum
+  {
+    CAL_DOMAIN_TEMP_C = 0,
+    CAL_DOMAIN_RESISTANCE_OHM = 1,
+  } calibration_domain_t;
+
   typedef struct
   {
     int32_t raw_avg_mC;
     int32_t actual_mC;
     int32_t raw_stddev_mC;
+    int32_t raw_avg_mOhm;
+    int32_t raw_stddev_mOhm;
     uint16_t sample_count;
     uint8_t time_valid;
     int64_t timestamp_epoch_sec;
@@ -134,7 +142,7 @@ extern "C"
    * @brief Execute CalWindowPushRawSample.
    * @param raw_milli_c Parameter raw_milli_c.
    */
-  void CalWindowPushRawSample(int32_t raw_milli_c);
+  void CalWindowPushRawSample(int32_t raw_milli_c, int32_t raw_milli_ohm);
   /**
    * @brief Execute CalWindowClear.
    */
@@ -158,6 +166,17 @@ extern "C"
   void CalWindowGetStats(int32_t* out_last_raw_mC,
                          int32_t* out_mean_raw_mC,
                          int32_t* out_stddev_mC);
+
+/**
+ * @brief Read latest/mean/stddev resistance statistics from the calibration
+ * capture window.
+ * @param out_last_raw_mOhm Receives the most recent sample in milli-ohms.
+ * @param out_mean_raw_mOhm Receives the mean sample in milli-ohms.
+ * @param out_stddev_mOhm Receives the stddev in milli-ohms.
+ */
+  void CalWindowGetResistanceStats(int32_t* out_last_raw_mOhm,
+                                   int32_t* out_mean_raw_mOhm,
+                                   int32_t* out_stddev_mOhm);
 
 #ifdef __cplusplus
 }

@@ -272,6 +272,24 @@ extern "C"
  */
   double Max31865AdcCodeToResistance(uint16_t adc_code, double rref_ohm);
 
+/**
+ * @brief Convert RTD resistance to temperature using the reader conversion mode.
+ * @param reader Reader configuration containing conversion mode and r0.
+ * @param resistance_ohm RTD resistance in ohms.
+ * @return Temperature in Celsius.
+ */
+  double Max31865ResistanceToTemperature(const max31865_reader_t* reader,
+                                         double resistance_ohm);
+
+/**
+ * @brief Convert temperature to PT100 resistance using CVD coefficients.
+ * @param temperature_c Temperature in Celsius.
+ * @param r0_ohm Nominal RTD resistance at 0C.
+ * @return Resistance in ohms.
+ */
+  double Max31865TemperatureToResistanceCvd(double temperature_c,
+                                            double r0_ohm);
+
 #ifdef __cplusplus
 }
 #endif

@@ -6750,9 +6750,11 @@ SensorTask(void* context)
     }
 
     double disp_raw_temp_c = raw_temp_c;
+    double disp_raw_res_ohm = raw_res_ohm;
     if (result == ESP_OK && !sample.fault_present && ema_enabled &&
         state->sensor.ema_valid) {
       disp_raw_temp_c = state->sensor.ema_temp_c;
+      disp_raw_res_ohm = state->sensor.ema_resistance_ohm;
     }
 
     log_record_t record;
@@ -6782,22 +6784,42 @@ SensorTask(void* context)
       disp_selected_milli_c = disp_raw_milli_c;
 
       if (calibration_applied) {
-        const double raw_cal_c = CalibrationModelEvaluateWithPoints(
-          &state->settings.calibration,
-          raw_temp_c,
-          state->settings.calibration_points,
-          state->settings.calibration_points_count);
-        const double disp_cal_c = CalibrationModelEvaluateWithPoints(
-          &state->settings.calibration,
-          disp_raw_temp_c,
-          state->settings.calibration_points,
-          state->settings.calibration_points_count);
-        record.temp_milli_c = (int32_t)llround(raw_cal_c * 1000.0);
-        disp_cal_milli_c = (int32_t)llround(disp_cal_c * 1000.0);
+        if (state->settings.calibration_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+          const double corrected_raw_res_ohm = CalibrationModelEvaluateWithPoints(
+            &state->settings.calibration,
+            raw_res_ohm,
+            state->settings.calibration_points,
+            state->settings.calibration_points_count);
+          const double corrected_disp_res_ohm = CalibrationModelEvaluateWithPoints(
+            &state->settings.calibration,
+            disp_raw_res_ohm,
+            state->settings.calibration_points,
+            state->settings.calibration_points_count);
+          const double raw_cal_c = Max31865ResistanceToTemperature(
+            &state->sensor, corrected_raw_res_ohm);
+          const double disp_cal_c = Max31865ResistanceToTemperature(
+            &state->sensor, corrected_disp_res_ohm);
+          record.temp_milli_c = (int32_t)llround(raw_cal_c * 1000.0);
+          disp_cal_milli_c = (int32_t)llround(disp_cal_c * 1000.0);
+        } else {
+          const double raw_cal_c = CalibrationModelEvaluateWithPoints(
+            &state->settings.calibration,
+            raw_temp_c,
+            state->settings.calibration_points,
+            state->settings.calibration_points_count);
+          const double disp_cal_c = CalibrationModelEvaluateWithPoints(
+            &state->settings.calibration,
+            disp_raw_temp_c,
+            state->settings.calibration_points,
+            state->settings.calibration_points_count);
+          record.temp_milli_c = (int32_t)llround(raw_cal_c * 1000.0);
+          disp_cal_milli_c = (int32_t)llround(disp_cal_c * 1000.0);
+        }
         disp_selected_milli_c = disp_cal_milli_c;
       }
 
-      CalWindowPushRawSample(disp_raw_milli_c);
+      CalWindowPushRawSample(disp_raw_milli_c,
+                             (int32_t)llround(disp_raw_res_ohm * 1000.0));
       if (sample.fault_present) {
         record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
       }
