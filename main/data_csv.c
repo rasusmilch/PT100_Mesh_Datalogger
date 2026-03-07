@@ -10,9 +10,37 @@
 
 static const char* kCsvHeader =
   "schema_ver,record_id,seq,epoch_utc,iso8601_local,raw_rtd_ohms,raw_temp_c,"
-  "cal_temp_c,flags,node_id\n";
+  "cal_temp_c,flags,fault_status,node_id\n";
 
 static char g_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
+
+static void
+FormatSignedMilliFixed3(int64_t milli_value, char* out, size_t out_size);
+
+/**
+ * @brief Format a signed milli-unit value as fixed-point with 3 decimals or as nan on sensor faults.
+ *
+ * @param record Record to format from.
+ * @param milli_value Signed milli-unit value to format when not faulted.
+ * @param out Output buffer.
+ * @param out_size Output buffer size in bytes.
+ */
+static void
+FormatSignedMilliOrNan(const log_record_t* record,
+                       int64_t milli_value,
+                       char* out,
+                       size_t out_size)
+{
+  if (out == NULL || out_size == 0) {
+    return;
+  }
+  if (record != NULL &&
+      (record->flags & LOG_RECORD_FLAG_SENSOR_FAULT) != 0) {
+    (void)snprintf(out, out_size, "nan");
+    return;
+  }
+  FormatSignedMilliFixed3(milli_value, out, out_size);
+}
 
 /**
  * @brief Format a signed milli-unit value as fixed-point with 3 decimals.
@@ -173,18 +201,23 @@ CsvFormatRow(const log_record_t* record,
   char raw_c_str[24] = { 0 };
   char temp_c_str[24] = { 0 };
   char resistance_ohm_str[24] = { 0 };
-  FormatSignedMilliFixed3(
-    (int64_t)record->raw_temp_milli_c, raw_c_str, sizeof(raw_c_str));
-  FormatSignedMilliFixed3(
-    (int64_t)record->temp_milli_c, temp_c_str, sizeof(temp_c_str));
-  FormatSignedMilliFixed3((int64_t)record->resistance_milli_ohm,
-                          resistance_ohm_str,
-                          sizeof(resistance_ohm_str));
+  FormatSignedMilliOrNan(
+    record, (int64_t)record->raw_temp_milli_c, raw_c_str, sizeof(raw_c_str));
+  FormatSignedMilliOrNan(
+    record, (int64_t)record->temp_milli_c, temp_c_str, sizeof(temp_c_str));
+  FormatSignedMilliOrNan(record,
+                         (int64_t)record->resistance_milli_ohm,
+                         resistance_ohm_str,
+                         sizeof(resistance_ohm_str));
+
+  const uint8_t fault_status =
+    ((record->flags & LOG_RECORD_FLAG_SENSOR_FAULT) != 0) ? record->fault_status
+                                                           : 0u;
 
   const int length =
     snprintf(out,
              out_size,
-             "%u,%" PRIu64 ",%u,%" PRId64 ",%s,%s,%s,%s,0x%04x,%s\n",
+             "%u,%" PRIu64 ",%u,%" PRId64 ",%s,%s,%s,%s,0x%04x,0x%02x,%s\n",
              CSV_SCHEMA_VERSION,
              record->record_id,
              (unsigned)record->sequence,
@@ -194,6 +227,7 @@ CsvFormatRow(const log_record_t* record,
              raw_c_str,
              temp_c_str,
              (unsigned)record->flags,
+             (unsigned)fault_status,
              node);
   if (length < 0 || (size_t)length >= out_size) {
     return false;

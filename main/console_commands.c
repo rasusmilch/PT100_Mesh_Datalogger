@@ -2069,6 +2069,7 @@ CommandFram(int argc, char** argv)
              record.temp_milli_c / 1000.0,
              record.resistance_milli_ohm / 1000.0);
       printf("  flags: 0x%04x [%s]\n", (unsigned)record.flags, flags_string);
+      printf("  fault_status: 0x%02x\n", (unsigned)record.fault_status);
     }
     ConsoleFramLogUnlock(state);
   }

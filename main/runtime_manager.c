@@ -6759,6 +6759,8 @@ SensorTask(void* context)
 
     log_record_t record;
     memset(&record, 0, sizeof(record));
+    record.fault_status = 0u;
+    record.reserved0 = 0u;
     int64_t epoch_sec = 0;
     int32_t millis = 0;
     TimeSyncGetNow(&epoch_sec, &millis);
@@ -6822,6 +6824,7 @@ SensorTask(void* context)
                              (int32_t)llround(disp_raw_res_ohm * 1000.0));
       if (sample.fault_present) {
         record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
+        record.fault_status = sample.fault_status;
       }
     } else {
       record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
