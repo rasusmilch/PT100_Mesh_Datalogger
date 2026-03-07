@@ -370,6 +370,26 @@ PrintRtdFaultSettings(const app_settings_t* settings,
     printf("rtd_fault_last_desc: %s\n", fault_desc);
     printf("rtd_fault_suppressed_count: %u\n",
            (unsigned)state->rtd_fault_suppressed_count);
+    printf("rtd_fault_first_read_count: %u\n",
+           (unsigned)state->rtd_fault_first_read_count);
+    printf("rtd_fault_retry_fault_count: %u\n",
+           (unsigned)state->rtd_fault_retry_fault_count);
+    printf("rtd_fault_retry_clean_count: %u\n",
+           (unsigned)state->rtd_fault_retry_clean_count);
+    printf("rtd_fault_last_first_status: 0x%02X\n",
+           state->rtd_fault_last_first_status);
+    printf("rtd_fault_last_retry_status: 0x%02X\n",
+           state->rtd_fault_last_retry_status);
+    printf("rtd_fault_last_retry_err: %s\n",
+           esp_err_to_name(state->rtd_fault_last_retry_err));
+    printf("rtd_fault_ntfy_pending_first_read_count: %u\n",
+           (unsigned)state->rtd_fault_ntfy_pending_first_read_count);
+    printf("rtd_fault_ntfy_pending_retry_fault_count: %u\n",
+           (unsigned)state->rtd_fault_ntfy_pending_retry_fault_count);
+    printf("rtd_fault_ntfy_pending_retry_clean_count: %u\n",
+           (unsigned)state->rtd_fault_ntfy_pending_retry_clean_count);
+    printf("rtd_fault_ntfy_suppressed_count: %u\n",
+           (unsigned)state->rtd_fault_ntfy_suppressed_count);
     printf("rtd_read_err_last: %s\n",
            esp_err_to_name(state->max31865_last_read_err));
     printf("rtd_read_err_count: %u\n",

@@ -122,6 +122,9 @@ static const uint32_t kSafeHoldMaxMs = 120000;
 static const uint32_t kSafeHoldMinRetryMs = 2000;
 static const uint32_t kSafeHoldMaxRetryMs = 60000;
 static const uint32_t kSafeHoldLogIntervalMs = 5000;
+static const uint32_t kRtdFaultNtfyBatchHoldoffMs = 30000;
+static const uint32_t kRtdFaultNtfyMinResendIntervalMs = 300000;
+static const uint32_t kRtdFaultNtfyPendingThreshold = 5;
 static const uint32_t kStorageStallThresholdMs =
   CONFIG_APP_ALERT_STORAGE_STALL_MS;
 static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
@@ -287,6 +290,71 @@ UpdateDebouncedRtdFault(runtime_state_t* state,
                         bool sd_flush_busy,
                         int64_t now_ms,
                         uint8_t raw_fault_status);
+
+/**
+ * @brief Perform one MAX31865 one-shot conversion/read cycle.
+ * @param state Runtime state owning the MAX31865 reader.
+ * @param sample_out Output sample buffer.
+ * @param one_shot_out Optional one-shot state snapshot for diagnostics.
+ * @return ESP_OK on read completion, or an ESP_ERR_* code on failure.
+ */
+static esp_err_t
+RuntimePerformSingleMax31865Read(runtime_state_t* state,
+                                 max31865_sample_t* sample_out,
+                                 max31865_one_shot_state_t* one_shot_out);
+
+/**
+ * @brief Perform MAX31865 one-shot read with immediate fault confirmation retry.
+ * @param state Runtime state owning counters and MAX31865 reader.
+ * @param sample_out Authoritative sample for this sensor loop.
+ * @param used_retry_out True when a same-loop retry was attempted.
+ * @param retry_faulted_out True when retry completed with a faulted sample.
+ * @param first_fault_status_out Fault status from the first read fault.
+ * @param retry_fault_status_out Fault status from the retry read, if any.
+ * @param retry_result_out Retry read result (ESP_OK or hard error).
+ * @return Result of the authoritative sample path.
+ */
+static esp_err_t
+RuntimePerformMax31865ReadWithFaultRetry(runtime_state_t* state,
+                                         max31865_sample_t* sample_out,
+                                         bool* used_retry_out,
+                                         bool* retry_faulted_out,
+                                         uint8_t* first_fault_status_out,
+                                         uint8_t* retry_fault_status_out,
+                                         esp_err_t* retry_result_out);
+
+/**
+ * @brief Accumulate RTD retry diagnostics for rate-limited ntfy summary jobs.
+ */
+static void
+RuntimeAccumulateRtdFaultNtfy(runtime_state_t* state,
+                              bool first_fault,
+                              bool retry_fault,
+                              bool retry_clean,
+                              uint8_t first_status,
+                              uint8_t retry_status,
+                              esp_err_t retry_err,
+                              int64_t now_ms);
+
+/**
+ * @brief Check whether pending RTD retry diagnostics should be sent now.
+ */
+static bool
+RuntimeShouldSendRtdFaultNtfy(const runtime_state_t* state, int64_t now_ms);
+
+/**
+ * @brief Build a custom ntfy summary job from pending RTD retry diagnostics.
+ */
+static bool
+RuntimeBuildRtdFaultSummaryNtfyJob(runtime_state_t* state,
+                                   int64_t now_ms,
+                                   alert_ntfy_job_t* out_job);
+
+/**
+ * @brief Try to enqueue a pending RTD retry diagnostic ntfy summary job.
+ */
+static void
+RuntimeMaybeSendRtdFaultSummaryNtfy(runtime_state_t* state, int64_t now_ms);
 
 /**
  * @brief Apply EMA settings to a freshly captured RTD sample.
@@ -3485,8 +3553,9 @@ BuildDisplayTestText(char* text, size_t text_size, uint32_t elapsed_ms)
 static void
 DisplayTask(void* context)
 {
-  // DisplayTask must only read RuntimeHealth snapshot; do not call subsystem
-  // APIs here. Guardrail: grep -R
+  // SensorTask is the only owner of MAX31865 conversions. DisplayTask
+  // must only read RuntimeHealth/cached values; never trigger sensor reads.
+  // Guardrail: grep -R
   // "MeshTransportIsConnected|esp_mesh_lite_get_level|TimeSyncIsSystemTimeValid|SdLogger|FramLog"
   // main/*display*
   runtime_state_t* state = (runtime_state_t*)context;
@@ -6628,6 +6697,315 @@ RuntimeEffectiveSensorPollPeriodMs(const app_settings_t* settings)
 
   return display_period_ms;
 }
+/**
+ * @brief Perform one MAX31865 one-shot conversion/read cycle.
+ * @param state Runtime state owning the MAX31865 reader.
+ * @param sample_out Output sample buffer.
+ * @param one_shot_out Optional one-shot state snapshot for diagnostics.
+ * @return ESP_OK on read completion, or an ESP_ERR_* code on failure.
+ */
+static esp_err_t
+RuntimePerformSingleMax31865Read(runtime_state_t* state,
+                                 max31865_sample_t* sample_out,
+                                 max31865_one_shot_state_t* one_shot_out)
+{
+  if (state == NULL || sample_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  max31865_one_shot_state_t one_shot = {
+    .phase = kMax31865OneShotIdle,
+  };
+  esp_err_t result = Max31865StartOneShot(&state->sensor, &one_shot);
+  if (result == ESP_OK) {
+    while (!state->stop_requested && !state->spi_pause_requested) {
+      result = Max31865TryReadOneShot(&state->sensor, &one_shot, sample_out);
+      if (result == ESP_OK || result != ESP_ERR_TIMEOUT) {
+        break;
+      }
+
+      const int64_t now_us = esp_timer_get_time();
+      int64_t delay_ms =
+        (one_shot.next_action_deadline_us > now_us)
+          ? ((one_shot.next_action_deadline_us - now_us + 999) / 1000)
+          : 1;
+      if (delay_ms < 1) {
+        delay_ms = 1;
+      } else if (delay_ms > 20) {
+        delay_ms = 20;
+      }
+      RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS((uint32_t)delay_ms));
+    }
+  }
+
+  if ((state->stop_requested || state->spi_pause_requested) &&
+      one_shot.phase != kMax31865OneShotIdle) {
+    (void)Max31865AbortOneShot(&state->sensor, &one_shot);
+  }
+
+  if (one_shot_out != NULL) {
+    *one_shot_out = one_shot;
+  }
+  return result;
+}
+
+/**
+ * @brief Perform MAX31865 one-shot read with immediate fault confirmation retry.
+ * @param state Runtime state owning counters and MAX31865 reader.
+ * @param sample_out Authoritative sample for this sensor loop.
+ * @param used_retry_out True when a same-loop retry was attempted.
+ * @param retry_faulted_out True when retry completed with a faulted sample.
+ * @param first_fault_status_out Fault status from the first read fault.
+ * @param retry_fault_status_out Fault status from the retry read, if any.
+ * @param retry_result_out Retry read result (ESP_OK or hard error).
+ * @return Result of the authoritative sample path.
+ */
+static esp_err_t
+RuntimePerformMax31865ReadWithFaultRetry(runtime_state_t* state,
+                                         max31865_sample_t* sample_out,
+                                         bool* used_retry_out,
+                                         bool* retry_faulted_out,
+                                         uint8_t* first_fault_status_out,
+                                         uint8_t* retry_fault_status_out,
+                                         esp_err_t* retry_result_out)
+{
+  if (state == NULL || sample_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (used_retry_out != NULL) {
+    *used_retry_out = false;
+  }
+  if (retry_faulted_out != NULL) {
+    *retry_faulted_out = false;
+  }
+  if (first_fault_status_out != NULL) {
+    *first_fault_status_out = 0u;
+  }
+  if (retry_fault_status_out != NULL) {
+    *retry_fault_status_out = 0u;
+  }
+  if (retry_result_out != NULL) {
+    *retry_result_out = ESP_OK;
+  }
+
+  esp_err_t first_result = RuntimePerformSingleMax31865Read(state, sample_out, NULL);
+  if (first_result != ESP_OK || !sample_out->fault_present) {
+    return first_result;
+  }
+
+  state->rtd_fault_first_read_count++;
+  state->rtd_fault_last_first_status = sample_out->fault_status;
+  if (first_fault_status_out != NULL) {
+    *first_fault_status_out = sample_out->fault_status;
+  }
+
+  if (used_retry_out != NULL) {
+    *used_retry_out = true;
+  }
+
+  max31865_sample_t retry_sample = { 0 };
+  esp_err_t retry_result = RuntimePerformSingleMax31865Read(state, &retry_sample, NULL);
+  state->rtd_fault_last_retry_err = retry_result;
+  if (retry_result_out != NULL) {
+    *retry_result_out = retry_result;
+  }
+
+  if (retry_result != ESP_OK) {
+    return first_result;
+  }
+
+  state->rtd_fault_last_retry_status = retry_sample.fault_status;
+  if (retry_fault_status_out != NULL) {
+    *retry_fault_status_out = retry_sample.fault_status;
+  }
+
+  if (!retry_sample.fault_present) {
+    state->rtd_fault_retry_clean_count++;
+    *sample_out = retry_sample;
+    return ESP_OK;
+  }
+
+  state->rtd_fault_retry_fault_count++;
+  if (retry_faulted_out != NULL) {
+    *retry_faulted_out = true;
+  }
+  *sample_out = retry_sample;
+  return ESP_OK;
+}
+
+
+
+/**
+ * @brief Accumulate RTD retry diagnostics for rate-limited ntfy summary jobs.
+ */
+static void
+RuntimeAccumulateRtdFaultNtfy(runtime_state_t* state,
+                              bool first_fault,
+                              bool retry_fault,
+                              bool retry_clean,
+                              uint8_t first_status,
+                              uint8_t retry_status,
+                              esp_err_t retry_err,
+                              int64_t now_ms)
+{
+  if (state == NULL || !first_fault) {
+    return;
+  }
+
+  state->rtd_fault_ntfy_pending_first_read_count++;
+  if (retry_fault) {
+    state->rtd_fault_ntfy_pending_retry_fault_count++;
+  }
+  if (retry_clean) {
+    state->rtd_fault_ntfy_pending_retry_clean_count++;
+  }
+  if (state->rtd_fault_ntfy_first_pending_ms == 0) {
+    state->rtd_fault_ntfy_first_pending_ms = now_ms;
+  }
+  state->rtd_fault_ntfy_last_first_status = first_status;
+  state->rtd_fault_ntfy_last_retry_status = retry_status;
+  state->rtd_fault_last_retry_err = retry_err;
+}
+
+/**
+ * @brief Check whether pending RTD retry diagnostics should be sent now.
+ */
+static bool
+RuntimeShouldSendRtdFaultNtfy(const runtime_state_t* state, int64_t now_ms)
+{
+  if (state == NULL) {
+    return false;
+  }
+
+  const uint32_t pending_total =
+    state->rtd_fault_ntfy_pending_first_read_count +
+    state->rtd_fault_ntfy_pending_retry_fault_count +
+    state->rtd_fault_ntfy_pending_retry_clean_count;
+  if (pending_total == 0u) {
+    return false;
+  }
+
+  if (pending_total >= kRtdFaultNtfyPendingThreshold) {
+    return true;
+  }
+
+  if (state->rtd_fault_ntfy_first_pending_ms > 0 &&
+      (now_ms - state->rtd_fault_ntfy_first_pending_ms) >=
+        (int64_t)kRtdFaultNtfyBatchHoldoffMs) {
+    return true;
+  }
+
+  if (state->rtd_fault_ntfy_last_sent_ms == 0 ||
+      (now_ms - state->rtd_fault_ntfy_last_sent_ms) >=
+        (int64_t)kRtdFaultNtfyMinResendIntervalMs) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * @brief Build a custom ntfy summary job from pending RTD retry diagnostics.
+ */
+static bool
+RuntimeBuildRtdFaultSummaryNtfyJob(runtime_state_t* state,
+                                   int64_t now_ms,
+                                   alert_ntfy_job_t* out_job)
+{
+  if (state == NULL || out_job == NULL || !AlertManagerIsConfigured(&state->alert_manager)) {
+    return false;
+  }
+
+  memset(out_job, 0, sizeof(*out_job));
+  snprintf(out_job->url, sizeof(out_job->url), "%s", state->alert_manager.config.ntfy_url);
+  snprintf(out_job->topic, sizeof(out_job->topic), "%s", state->alert_manager.config.ntfy_topic);
+  snprintf(out_job->token, sizeof(out_job->token), "%s", state->alert_manager.config.ntfy_token);
+  snprintf(out_job->root_id, sizeof(out_job->root_id), "%s", state->node_id_string);
+  snprintf(out_job->sequence_id,
+           sizeof(out_job->sequence_id),
+           "rtd-summary-%" PRId64 "-%" PRIu32,
+           now_ms,
+           state->rtd_fault_first_read_count);
+  snprintf(out_job->title, sizeof(out_job->title), "RTD transient faults summary");
+  out_job->http_timeout_ms = 1500;
+
+  char first_desc[128] = { 0 };
+  char retry_desc[128] = { 0 };
+  Max31865FormatFault(state->rtd_fault_ntfy_last_first_status,
+                      first_desc,
+                      sizeof(first_desc));
+  Max31865FormatFault(state->rtd_fault_ntfy_last_retry_status,
+                      retry_desc,
+                      sizeof(retry_desc));
+
+  const int64_t batch_start_ms = state->rtd_fault_ntfy_first_pending_ms;
+  const bool has_retry_status = state->rtd_fault_ntfy_last_retry_status != 0u;
+  const bool has_retry_err = state->rtd_fault_last_retry_err != ESP_OK;
+
+  snprintf(out_job->body,
+           sizeof(out_job->body),
+           "Raw MAX31865 RTD fault retry summary\n"
+           "Batch window start: %" PRId64 " ms uptime\n"
+           "Batch counts: first-read=%" PRIu32 " retry-fault=%" PRIu32
+           " retry-clean=%" PRIu32 "\n"
+           "Cumulative counts: first-read=%" PRIu32 " retry-fault=%" PRIu32
+           " retry-clean=%" PRIu32 "\n"
+           "Last first fault status: 0x%02X (%s)\n"
+           "Last retry fault status: 0x%02X (%s)\n"
+           "Last retry error: %s\n"
+           "Meaning: retry-clean indicates a transient fault that cleared on "
+           "immediate reread",
+           batch_start_ms,
+           state->rtd_fault_ntfy_pending_first_read_count,
+           state->rtd_fault_ntfy_pending_retry_fault_count,
+           state->rtd_fault_ntfy_pending_retry_clean_count,
+           state->rtd_fault_first_read_count,
+           state->rtd_fault_retry_fault_count,
+           state->rtd_fault_retry_clean_count,
+           state->rtd_fault_ntfy_last_first_status,
+           first_desc,
+           has_retry_status ? state->rtd_fault_ntfy_last_retry_status : 0u,
+           has_retry_status ? retry_desc : "n/a",
+           has_retry_err ? esp_err_to_name(state->rtd_fault_last_retry_err)
+                         : "ESP_OK");
+
+  return true;
+}
+
+/**
+ * @brief Try to enqueue a pending RTD retry diagnostic ntfy summary job.
+ */
+static void
+RuntimeMaybeSendRtdFaultSummaryNtfy(runtime_state_t* state, int64_t now_ms)
+{
+  if (!RuntimeShouldSendRtdFaultNtfy(state, now_ms)) {
+    return;
+  }
+
+  alert_ntfy_job_t job = { 0 };
+  if (!RuntimeBuildRtdFaultSummaryNtfyJob(state, now_ms, &job)) {
+    return;
+  }
+
+  if (state->alert_manager.ntfy.cooldown_until_ms > now_ms) {
+    state->rtd_fault_ntfy_suppressed_count++;
+    return;
+  }
+
+  if (!AlertNtfyEnqueueJob(&state->alert_manager.ntfy, &job)) {
+    state->rtd_fault_ntfy_suppressed_count++;
+    return;
+  }
+
+  state->rtd_fault_ntfy_pending_first_read_count = 0;
+  state->rtd_fault_ntfy_pending_retry_fault_count = 0;
+  state->rtd_fault_ntfy_pending_retry_clean_count = 0;
+  state->rtd_fault_ntfy_first_pending_ms = 0;
+  state->rtd_fault_ntfy_last_sent_ms = now_ms;
+}
+
+
 
 /**
  * @brief Execute SensorTask.
@@ -6678,36 +7056,23 @@ SensorTask(void* context)
     esp_err_t result = ESP_OK;
     double raw_temp_c = 0.0;
     double raw_res_ohm = 0.0;
-    max31865_one_shot_state_t one_shot = {
-      .phase = kMax31865OneShotIdle,
-    };
+    bool used_retry = false;
+    bool retry_faulted = false;
+    bool retry_clean = false;
+    uint8_t first_fault_status = 0u;
+    uint8_t retry_fault_status = 0u;
+    esp_err_t retry_result = ESP_OK;
 
-    result = Max31865StartOneShot(&state->sensor, &one_shot);
-    if (result == ESP_OK) {
-      while (!state->stop_requested && !state->spi_pause_requested) {
-        result = Max31865TryReadOneShot(&state->sensor, &one_shot, &sample);
-        if (result == ESP_OK || result != ESP_ERR_TIMEOUT) {
-          break;
-        }
-
-        const int64_t now_us = esp_timer_get_time();
-        int64_t delay_ms =
-          (one_shot.next_action_deadline_us > now_us)
-            ? ((one_shot.next_action_deadline_us - now_us + 999) / 1000)
-            : 1;
-        if (delay_ms < 1) {
-          delay_ms = 1;
-        } else if (delay_ms > 20) {
-          delay_ms = 20;
-        }
-        RuntimeInterruptibleDelayTicks(pdMS_TO_TICKS((uint32_t)delay_ms));
-      }
-    }
-
-    if ((state->stop_requested || state->spi_pause_requested) &&
-        one_shot.phase != kMax31865OneShotIdle) {
-      (void)Max31865AbortOneShot(&state->sensor, &one_shot);
-    }
+    // SensorTask is the sole owner of MAX31865 conversions. DisplayTask and
+    // logging consume only this loop's cached sample/result.
+    result = RuntimePerformMax31865ReadWithFaultRetry(state,
+                                                      &sample,
+                                                      &used_retry,
+                                                      &retry_faulted,
+                                                      &first_fault_status,
+                                                      &retry_fault_status,
+                                                      &retry_result);
+    retry_clean = (used_retry && retry_result == ESP_OK && !retry_faulted);
     if (state->stop_requested) {
       break;
     }
@@ -6740,6 +7105,14 @@ SensorTask(void* context)
       (result == ESP_OK && sample.fault_present);
     const uint8_t raw_rtd_fault_status =
       (result == ESP_OK) ? sample.fault_status : 0u;
+    RuntimeAccumulateRtdFaultNtfy(state,
+                                  used_retry,
+                                  retry_faulted,
+                                  retry_clean,
+                                  first_fault_status,
+                                  retry_fault_status,
+                                  retry_result,
+                                  now_ms);
     if (result == ESP_OK) {
       UpdateDebouncedRtdFault(state,
                               &state->settings,
@@ -6833,6 +7206,25 @@ SensorTask(void* context)
     // Log sensor faults in a rate-limited way so operators see
     // wiring/open/short issues without flooding the console.
     const TickType_t now_ticks = xTaskGetTickCount();
+    if (retry_clean) {
+      const bool retry_rate_ok =
+        (state->last_sensor_fault_log_ticks == 0) ||
+        (pdTICKS_TO_MS(now_ticks - state->last_sensor_fault_log_ticks) >=
+         5000u);
+      if (retry_rate_ok) {
+        char first_desc[128] = { 0 };
+        Max31865FormatFault(
+          first_fault_status, first_desc, sizeof(first_desc));
+        ESP_LOGW(
+          kTag,
+          "MAX31865 transient fault recovered by retry: first=0x%02X (%s) first_count=%" PRIu32 " retry_clean_count=%" PRIu32,
+          first_fault_status,
+          first_desc,
+          state->rtd_fault_first_read_count,
+          state->rtd_fault_retry_clean_count);
+        state->last_sensor_fault_log_ticks = now_ticks;
+      }
+    }
     if (result == ESP_OK && sample.fault_present) {
       const bool changed = !state->rtd_fault_pending_was_raw ||
                            state->rtd_fault_last_status != sample.fault_status;
@@ -6851,8 +7243,9 @@ SensorTask(void* context)
         const int32_t temp_milli_c =
           (int32_t)llround(sample.temperature_c * 1000.0);
         ESP_LOGW(kTag,
-                 "MAX31865 fault: status=0x%02X (%s) res_mohm=%" PRId32
+                 "MAX31865 fault%s: status=0x%02X (%s) res_mohm=%" PRId32
                  " temp_mC=%" PRId32,
+                 (used_retry ? " (confirmed on retry)" : ""),
                  sample.fault_status,
                  fault_desc,
                  res_milli_ohm,
@@ -6889,13 +7282,10 @@ SensorTask(void* context)
       if (changed || rate_ok) {
         if (result == ESP_ERR_INVALID_STATE) {
           ESP_LOGW(kTag,
-                   "MAX31865 read failed: %s (init=%u phase=%s conv_started=%u "
-                   "base_cfg=0x%02X)",
+                   "MAX31865 read failed: %s (init=%u phase=%s)",
                    esp_err_to_name(result),
                    state->sensor.is_initialized ? 1u : 0u,
-                   Max31865OneShotPhaseToString(one_shot.phase),
-                   one_shot.conversion_started ? 1u : 0u,
-                   one_shot.base_config);
+                   Max31865OneShotPhaseToString(kMax31865OneShotIdle));
         } else {
           ESP_LOGW(kTag, "MAX31865 read failed: %s", esp_err_to_name(result));
         }
@@ -9348,6 +9738,7 @@ ControlTask(void* context)
                                      state->cached_status.sensor_fault_present,
                                      now_ms,
                                      now_epoch);
+      RuntimeMaybeSendRtdFaultSummaryNtfy(state, now_ms);
     } else {
       RuntimeResetStorageStallTracking(state, now_ms);
     }
