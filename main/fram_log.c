@@ -12,7 +12,7 @@
 static const char* kTag = "fram_log";
 
 #define FRAM_LOG_MAGIC 0x46524C47u // 'FRLG'
-#define FRAM_LOG_VERSION 3u
+#define FRAM_LOG_VERSION 4u
 
 // Reserve some bytes for two header copies.
 static const uint32_t kHeaderCopy0Address = 0;

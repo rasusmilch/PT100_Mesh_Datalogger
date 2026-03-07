@@ -3,8 +3,9 @@
 PT100 Mesh Logger Log Plotter + PDF Report
 
 - Loads 1+ CSV/PTLOG exports from PT100 nodes.
-- Supports schema_ver 1 and 2.
+- Supports schema_ver 1, 2, and 3.
   - schema_ver 2 adds: record_id (uint64-ish monotonic identifier).
+  - schema_ver 3 adds: fault_status (MAX31865 fault byte).
 - Plots selected series vs time.
 - Optional trim by start/end time (minute resolution) with strict validation.
 - Can plot across days by selecting multiple daily CSV files OR selecting a folder.
@@ -61,6 +62,17 @@ except ImportError:  # pragma: no cover - fallback for older Python
 # --- CSV log_record flags (from main/log_record.h) -------------------------
 # We keep a built-in fallback so this host tool can run standalone.
 # If the project header is present, we parse it at runtime to stay in sync.
+
+# MAX31865 fault-status bit labels (matches firmware Max31865FormatFault()).
+_MAX31865_FAULT_BITS: List[Tuple[int, str]] = [
+    (0x80, "RTD high threshold"),
+    (0x40, "RTD low threshold"),
+    (0x20, "REFIN- > 0.85*VBIAS"),
+    (0x10, "REFIN- < 0.85*VBIAS (FORCE- open)"),
+    (0x08, "RTDIN- < 0.85*VBIAS (FORCE- open)"),
+    (0x04, "Over/undervoltage"),
+    (0x01, "Fault summary bit (RTD LSB)"),
+]
 
 # Known flag labels (short name -> human label).
 _FLAG_LABELS: Dict[str, str] = {
@@ -416,12 +428,33 @@ def _human_time_label(time_column: str) -> str:
     return time_column
 
 
+def _parse_int_cell(value: object) -> Optional[int]:
+    """Parse decimal/hex-like values into int with tolerant input handling."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text, 0)
+        except ValueError:
+            return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:
+        return None
+
+
 def _normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize schema differences so plotting works across schema versions.
 
     This tool needs a consistent set of column names and data types across CSV
-    schema versions. In particular, the 'flags' column is parsed as an integer
-    bitmask (accepting either decimal or hex strings like '0x0042').
+    schema versions. In particular, integer-like text columns (for example
+    'flags' and schema 3 'fault_status') are parsed as integers with base-auto
+    behavior, so both decimal and hex strings such as '0x13' are accepted.
     """
     df = df.copy()
 
@@ -437,34 +470,21 @@ def _normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
             df["record_id"] = pd.NA
 
     if "flags" in df.columns:
-        def _parse_flags_cell(value: object) -> Optional[int]:
-            if value is None or (isinstance(value, float) and math.isnan(value)):
-                return None
-            if isinstance(value, (int, np.integer)):
-                return int(value)
-            if isinstance(value, str):
-                text = value.strip()
-                if not text:
-                    return None
-                try:
-                    return int(text, 0)
-                except ValueError:
-                    return None
-            try:
-                return int(value)  # type: ignore[arg-type]
-            except Exception:
-                return None
-
-        parsed_flags = df["flags"].apply(_parse_flags_cell)
+        parsed_flags = df["flags"].apply(_parse_int_cell)
         df["flags"] = pd.array(parsed_flags, dtype="Int64")
     else:
         df["flags"] = pd.array([pd.NA] * len(df), dtype="Int64")
+
+    if "fault_status" in df.columns:
+        parsed_fault_status = df["fault_status"].apply(_parse_int_cell)
+        df["fault_status"] = pd.array(parsed_fault_status, dtype="Int64")
+    else:
+        df["fault_status"] = pd.array([0] * len(df), dtype="Int64")
 
     if "node_id" not in df.columns:
         df["node_id"] = ""
 
     return df
-
 
 
 def _pick_time_source(
@@ -1223,6 +1243,48 @@ def _format_flags_summary(
 
 
 
+
+
+def _decode_max31865_fault_status(fault_status: int) -> str:
+    """Return a comma-separated label list for a MAX31865 fault-status byte."""
+    labels = [label for bit, label in _MAX31865_FAULT_BITS if (fault_status & bit) != 0]
+    if labels:
+        return ", ".join(labels)
+    return f"unknown(0x{fault_status:02X})"
+
+
+def _format_fault_status_summary(df: pd.DataFrame) -> str:
+    """Build a fault-status summary for rows flagged with SENSOR_FAULT."""
+    if "flags" not in df.columns or "fault_status" not in df.columns:
+        return "n/a"
+
+    flags_numeric = pd.to_numeric(df["flags"], errors="coerce").fillna(0).astype("int64")
+    sensor_fault_mask = _get_flag_mask("SENSOR_FAULT", 1 << 4)
+    if sensor_fault_mask == 0:
+        return "n/a"
+
+    fault_rows = (flags_numeric & sensor_fault_mask) != 0
+    if not bool(fault_rows.any()):
+        return "n/a"
+
+    fault_status_numeric = pd.to_numeric(df.loc[fault_rows, "fault_status"], errors="coerce").fillna(0).astype("int64")
+    nonzero = fault_status_numeric[fault_status_numeric != 0]
+
+    lines: List[str] = []
+    if not nonzero.empty:
+        counts = nonzero.value_counts().sort_index()
+        for code, count in counts.items():
+            code_int = int(code) & 0xFF
+            label = _decode_max31865_fault_status(code_int)
+            row_word = "row" if int(count) == 1 else "rows"
+            lines.append(f"0x{code_int:02X}: {int(count)} {row_word} ({label})")
+
+    unknown_count = int((fault_status_numeric == 0).sum())
+    if unknown_count > 0:
+        row_word = "row" if unknown_count == 1 else "rows"
+        lines.append(f"unknown/unavailable fault_status: {unknown_count} {row_word}")
+
+    return "\n".join(lines) if lines else "n/a"
 
 
 def _apply_flag_filters_for_stats(
@@ -2797,6 +2859,9 @@ class PlotterApp:
         ]
         if flags_summary != "n/a":
             summary_rows.append(["Data quality flags", flags_summary])
+        fault_status_summary = _format_fault_status_summary(df)
+        if fault_status_summary != "n/a":
+            summary_rows.append(["Sensor fault detail", fault_status_summary])
         if stats_notes:
             summary_rows.append(["Statistics filters", "; ".join(stats_notes)])
 

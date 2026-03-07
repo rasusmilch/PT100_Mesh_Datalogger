@@ -11,7 +11,7 @@ extern "C"
 {
 #endif
 
-#define CSV_SCHEMA_VERSION 2u
+#define CSV_SCHEMA_VERSION 3u
 
 typedef bool (*csv_write_fn_t)(const char* bytes, size_t len, void* context);
 

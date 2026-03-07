@@ -11,7 +11,7 @@ extern "C"
 // Fixed on-media record format. Keep this stable once you start generating log
 // files, and bump LOG_RECORD_SCHEMA_VER when changing on-media layout.
 #define LOG_RECORD_MAGIC 0x544C4F47u // 'TLOG'
-#define LOG_RECORD_SCHEMA_VER 2u
+#define LOG_RECORD_SCHEMA_VER 3u
 
   // Record flags.
   typedef enum
@@ -39,6 +39,8 @@ extern "C"
     int32_t temp_milli_c;         // Calibrated temperature (milli-°C)
     int32_t resistance_milli_ohm; // PT100 resistance (milli-ohm)
     uint16_t flags;               // log_record_flags_t
+    uint8_t fault_status;         // MAX31865 fault byte (0x00 if none/unavailable)
+    uint8_t reserved0;            // Reserved. Must be zero.
     uint16_t crc16_ccitt;         // CRC16-CCITT over all prior bytes.
   } log_record_t;
 #pragma pack(pop)
