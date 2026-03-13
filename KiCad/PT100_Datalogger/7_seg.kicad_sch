@@ -1,0 +1,15 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "b8ad5b96-2484-4562-99f5-21fed0bb3d7e")
+	(paper "USLetter")
+	(title_block
+		(title "HVAC ESP32 Node")
+		(date "2025-06-06")
+		(rev "1.0")
+		(company "Robert Susmilch")
+		(comment 1 "HVAC relay node for controlling heating/cooling")
+	)
+	(lib_symbols)
+)
