@@ -1,11 +1,17 @@
 menu "PT100 Logger"
 
+menu "General / Node Role"
+
 config APP_NODE_IS_ROOT
   bool "Build as mesh root node"
   default n
   help
     Root connects to the external Wi-Fi router, runs SNTP, and forwards incoming
     mesh packets over UART to the host.
+
+endmenu
+
+menu "Network / Mesh / Time Sync"
 
 config APP_WIFI_ROUTER_SSID
   string "Router SSID (root uses this to reach the Internet)"
@@ -77,36 +83,6 @@ config APP_WIFI_HEAP_TRACE_LARGEST_INTERNAL_THRESHOLD_BYTES
     Dump heap trace results after Wi-Fi init/start if the largest internal
     free block drops below this threshold.
 
-config APP_MEM_GUARD_ENABLE
-  bool "Enable mem guard allocation tracking"
-  default y
-  help
-    When enabled, allocation wrappers track allocations and optionally log
-    when allocations occur during the RUN phase.
-
-config APP_MEM_GUARD_LOG_ENABLE
-  bool "Enable mem guard allocation warnings"
-  default y
-  depends on APP_MEM_GUARD_ENABLE
-  help
-    When enabled, allocations during the RUN phase emit a warning with a
-    configurable rate limit.
-
-config APP_MEM_GUARD_LOG_RATE_LIMIT_MS
-  int "Mem guard warning rate limit (ms)"
-  default 60000
-  depends on APP_MEM_GUARD_LOG_ENABLE
-  help
-    Minimum time between repeated mem guard warnings during RUN. Set to 0 to
-    log every allocation.
-
-config APP_MEM_GUARD_STRICT
-  bool "Abort on allocations during RUN phase"
-  default n
-  depends on APP_MEM_GUARD_ENABLE
-  help
-    When enabled, any allocation during RUN will abort quickly.
-
 config APP_MESH_DISABLE_ROUTER
   bool "Disable router backhaul (Mesh-Lite only mode)"
   default n
@@ -145,10 +121,11 @@ config APP_MESH_AP_CONNECTIONS
   range 1 10
   default 6
 
-config APP_SPI_HOST
-  int "SPI host (2=SPI2_HOST, 3=SPI3_HOST)"
-  range 2 3
-  default 2
+endmenu
+
+menu "GPIO Map"
+
+menu "Shared SPI / RTD Pins"
 
 config APP_SPI_MOSI_GPIO
   int "SPI MOSI GPIO"
@@ -200,23 +177,9 @@ config APP_MAX31865_RDY_READY_HIGH
   help
     When disabled, ready level is LOW.
 
-config APP_MAX7219_ENABLE
-  bool "Enable MAX7219 32x8 display"
-  default y
+endmenu
 
-config APP_MAX7219_SHARE_APP_SPI_BUS
-  bool "MAX7219 shares app SPI bus"
-  default n
-  help
-    When enabled, the MAX7219 display uses the shared app SPI bus and does not
-    initialize its own SPI bus configuration. Only enable this if the MAX7219
-    MOSI/SCLK pins are physically tied to the APP_SPI MOSI/SCLK pins.
-
-config APP_MAX7219_SPI_HOST
-  int "MAX7219 SPI host (2=SPI2_HOST, 3=SPI3_HOST)" if !APP_MAX7219_SHARE_APP_SPI_BUS
-  range 2 3
-  default APP_SPI_HOST if APP_MAX7219_SHARE_APP_SPI_BUS
-  default 3
+menu "Display Pins"
 
 config APP_MAX7219_MOSI_GPIO
   int "MAX7219 MOSI GPIO" if !APP_MAX7219_SHARE_APP_SPI_BUS
@@ -235,35 +198,171 @@ config APP_MAX7219_CS_GPIO
   range -1 48
   default 16
 
-config APP_MAX7219_CHAIN_LEN
-  int "MAX7219 chain length"
-  range 1 8
-  default 4
+endmenu
 
-config APP_MAX7219_REVERSE_MODULE_ORDER
-  bool "Reverse MAX7219 module order (4,3,2,1)"
+menu "Storage / I2C Pins"
+
+config APP_SD_CS_GPIO
+  int "SD card CS GPIO"
+  range -1 48
+  default 14
+
+config APP_SD_CARD_DETECT_GPIO
+  int "SD card detect GPIO (-1 disables)"
+  range -1 48
+  default -1
+  help
+    GPIO input that indicates SD card presence. Set to -1 to disable.
+
+choice APP_SD_CARD_DETECT_PRESENT_LEVEL
+  prompt "SD card detect polarity (card present when level is...)"
+  depends on APP_SD_CARD_DETECT_GPIO != -1
+  default APP_SD_CARD_DETECT_PRESENT_LOW
+
+config APP_SD_CARD_DETECT_PRESENT_LOW
+  bool "LOW"
+
+config APP_SD_CARD_DETECT_PRESENT_HIGH
+  bool "HIGH"
+
+endchoice
+
+config APP_SD_CARD_DETECT_DEBOUNCE_MS
+  int "SD card detect debounce (ms)"
+  range 0 500
+  default 50
+  depends on APP_SD_CARD_DETECT_GPIO != -1
+
+config APP_SD_CARD_DETECT_USE_INTERNAL_PULL
+  bool "Enable internal pull resistor for SD detect"
+  default y
+  depends on APP_SD_CARD_DETECT_GPIO != -1
+
+config APP_I2C_SDA_GPIO
+  int "I2C SDA GPIO (DS3231)"
+  range -1 48
+  default 7
+
+config APP_I2C_SCL_GPIO
+  int "I2C SCL GPIO (DS3231)"
+  range -1 48
+  default 8
+
+endmenu
+
+menu "Runtime Control / Override Pins"
+
+config APP_RUN_STOP_GPIO_ENABLE
+  bool "Enable run stop GPIO input"
+  default n
+
+config APP_RUN_STOP_GPIO_NUM
+  int "Run stop GPIO number (active-low)"
+  range -1 48
+  default -1
+  depends on APP_RUN_STOP_GPIO_ENABLE
+
+config APP_RUN_START_GPIO_ENABLE
+  bool "Enable run start GPIO input"
+  default n
+
+config APP_RUN_START_GPIO_NUM
+  int "Run start GPIO number (active-low)"
+  range -1 48
+  default -1
+  depends on APP_RUN_START_GPIO_ENABLE
+
+config APP_DIAGNOSTICS_OVERRIDE_GPIO
+  int "Diagnostics override GPIO (active low, pull-up enabled, -1 to disable)"
+  range -1 48
+  default -1
+  help
+    If set to a valid GPIO, holding the pin low at reset forces diagnostics
+    boot mode regardless of the stored NVS boot mode. The input uses an
+    internal pull-up.
+
+config APP_RUN_OVERRIDE_GPIO
+  int "Run override GPIO (active low, pull-up enabled, -1 to disable)"
+  range -1 48
+  default -1
+  help
+    If set to a valid GPIO, holding the pin low at reset forces run boot mode
+    regardless of the stored NVS boot mode. The input uses an internal pull-up.
+
+endmenu
+
+menu "Units GPIO"
+
+config APP_UNITS_GPIO_ENABLE
+  bool "Enable runtime units override via GPIO"
+  default n
+  help
+    When enabled, a GPIO input can override the display units at runtime
+    without reboot. The pin level selects Celsius or Fahrenheit.
+
+config APP_UNITS_GPIO_TOGGLE_ON_PRESS
+  bool "Units GPIO toggles on button press"
   default y
   help
-    Enable this if the daisy-chained MAX7219 modules are physically arranged
-    left-to-right as 4,3,2,1. This swaps 8-column blocks so text reads
-    left-to-right.
+    When enabled, each debounced press toggles display units and stores the
+    selection in RTC memory for warm-reset persistence. Disable to use legacy
+    level-select behavior.
 
-config APP_MAX7219_INTENSITY
-  int "MAX7219 intensity (0-15)"
-  range 0 15
-  default 6
+config APP_UNITS_GPIO_DEFAULT_PIN
+  int "Default units GPIO pin (-1 disables override)"
+  range -1 48
+  default -1
+  help
+    Default GPIO used for runtime unit switching. Set to -1 to disable.
 
-config APP_MAX7219_ROTATE_180
-  bool "Rotate MAX7219 output 180 degrees"
+config APP_UNITS_GPIO_DEFAULT_PULL
+  int "Default units GPIO pull (0=none, 1=up, 2=down)"
+  range 0 2
+  default 1
+  help
+    Input pull configuration for the units GPIO.
+
+config APP_UNITS_GPIO_DEFAULT_LEVEL_FOR_C
+  bool "GPIO high level selects Celsius"
   default n
+  help
+    When enabled, a HIGH pin level means Celsius; otherwise LOW selects Celsius.
 
-config APP_MAX7219_MIRROR_X
-  bool "Mirror MAX7219 output horizontally"
-  default n
+config APP_UNITS_TOGGLE_HOLD_MS
+  int "Units toggle button hold time (ms)"
+  range 0 5000
+  default 0
 
-config APP_MAX7219_MIRROR_Y
-  bool "Mirror MAX7219 output vertically"
-  default n
+endmenu
+
+menu "Data Stream UART Pins"
+
+config APP_DATA_STREAM_UART_TX_GPIO
+  int "Data stream UART0 TX GPIO"
+  range -1 48
+  default 43
+  help
+    UART0 TX GPIO used by the data stream backend. Set to -1 to leave the
+    current UART0 TX pin mapping unchanged.
+
+config APP_DATA_STREAM_UART_RX_GPIO
+  int "Data stream UART0 RX GPIO"
+  range -1 48
+  default 44
+  help
+    UART0 RX GPIO used by the data stream backend. Set to -1 to leave the
+    current UART0 RX pin mapping unchanged.
+
+endmenu
+
+endmenu
+
+menu "RTD / MAX31865"
+
+config APP_SPI_HOST
+  int "SPI host (2=SPI2_HOST, 3=SPI3_HOST)"
+  range 2 3
+  default 2
 
 config APP_MAX31865_RREF_OHMS
   int "MAX31865 reference resistor (ohms)"
@@ -322,100 +421,61 @@ config APP_MAX31865_CONVERSION_CVD_ITERATIVE
 
 endchoice
 
-config APP_SD_CS_GPIO
-  int "SD card CS GPIO"
-  range -1 48
-  default 14
+endmenu
 
-config APP_SD_SPI_MAX_FREQ_KHZ
-  int "SD SPI max clock (kHz)"
-  range 400 20000
-  default 5000
-  help
-    Maximum SDSPI clock used for SD card access. Lower values improve
-    signal margin on long/noisy wiring, while higher values may improve
-    throughput on clean hardware.
+menu "MAX7219 Display"
 
-config APP_SD_CARD_DETECT_GPIO
-  int "SD card detect GPIO (-1 disables)"
-  range -1 48
-  default -1
-  help
-    GPIO input that indicates SD card presence. Set to -1 to disable.
-
-choice APP_SD_CARD_DETECT_PRESENT_LEVEL
-  prompt "SD card detect polarity (card present when level is...)"
-  depends on APP_SD_CARD_DETECT_GPIO != -1
-  default APP_SD_CARD_DETECT_PRESENT_LOW
-
-config APP_SD_CARD_DETECT_PRESENT_LOW
-  bool "LOW"
-
-config APP_SD_CARD_DETECT_PRESENT_HIGH
-  bool "HIGH"
-
-endchoice
-
-config APP_SD_CARD_DETECT_DEBOUNCE_MS
-  int "SD card detect debounce (ms)"
-  range 0 500
-  default 50
-  depends on APP_SD_CARD_DETECT_GPIO != -1
-
-config APP_SD_CARD_DETECT_USE_INTERNAL_PULL
-  bool "Enable internal pull resistor for SD detect"
+config APP_MAX7219_ENABLE
+  bool "Enable MAX7219 32x8 display"
   default y
-  depends on APP_SD_CARD_DETECT_GPIO != -1
 
-config APP_RUN_STOP_GPIO_ENABLE
-  bool "Enable run stop GPIO input"
+config APP_MAX7219_SHARE_APP_SPI_BUS
+  bool "MAX7219 shares app SPI bus"
+  default n
+  help
+    When enabled, the MAX7219 display uses the shared app SPI bus and does not
+    initialize its own SPI bus configuration. Only enable this if the MAX7219
+    MOSI/SCLK pins are physically tied to the APP_SPI MOSI/SCLK pins.
+
+config APP_MAX7219_SPI_HOST
+  int "MAX7219 SPI host (2=SPI2_HOST, 3=SPI3_HOST)" if !APP_MAX7219_SHARE_APP_SPI_BUS
+  range 2 3
+  default APP_SPI_HOST if APP_MAX7219_SHARE_APP_SPI_BUS
+  default 3
+
+config APP_MAX7219_CHAIN_LEN
+  int "MAX7219 chain length"
+  range 1 8
+  default 4
+
+config APP_MAX7219_REVERSE_MODULE_ORDER
+  bool "Reverse MAX7219 module order (4,3,2,1)"
+  default y
+  help
+    Enable this if the daisy-chained MAX7219 modules are physically arranged
+    left-to-right as 4,3,2,1. This swaps 8-column blocks so text reads
+    left-to-right.
+
+config APP_MAX7219_INTENSITY
+  int "MAX7219 intensity (0-15)"
+  range 0 15
+  default 6
+
+config APP_MAX7219_ROTATE_180
+  bool "Rotate MAX7219 output 180 degrees"
   default n
 
-config APP_RUN_STOP_GPIO_NUM
-  int "Run stop GPIO number (active-low)"
-  range -1 48
-  default -1
-  depends on APP_RUN_STOP_GPIO_ENABLE
-
-config APP_RUN_START_GPIO_ENABLE
-  bool "Enable run start GPIO input"
+config APP_MAX7219_MIRROR_X
+  bool "Mirror MAX7219 output horizontally"
   default n
 
-config APP_RUN_START_GPIO_NUM
-  int "Run start GPIO number (active-low)"
-  range -1 48
-  default -1
-  depends on APP_RUN_START_GPIO_ENABLE
+config APP_MAX7219_MIRROR_Y
+  bool "Mirror MAX7219 output vertically"
+  default n
 
-config APP_BUTTONS_POLL_MS
-  int "Button poll interval (ms)"
-  range 1 100
-  default 10
+endmenu
 
-config APP_BUTTONS_DEBOUNCE_MS
-  int "Button debounce time (ms)"
-  range 1 1000
-  default 30
-
-config APP_BUTTONS_HOLDOFF_MS
-  int "Button holdoff after press event (ms)"
-  range 0 5000
-  default 250
-
-config APP_BUTTONS_TASK_STACK_BYTES
-  int "Unified button task stack size (bytes)"
-  range 1024 4096
-  default 2048
-
-config APP_RUN_START_HOLD_MS
-  int "Run start button hold time (ms)"
-  range 0 5000
-  default 100
-
-config APP_RUN_STOP_HOLD_MS
-  int "Run stop button hold time (ms)"
-  range 0 5000
-  default 100
+menu "Storage / Logging / FRAM / SD"
 
 config APP_FRAM_SIZE_BYTES
   int "FRAM size in bytes"
@@ -481,22 +541,6 @@ config APP_MAX_CSV_LINE_BYTES
     Maximum size for formatted CSV rows, including the trailing newline. This
     buffer is allocated once and reused for CSV formatting.
 
-config APP_DATA_STREAM_UART_TX_GPIO
-  int "Data stream UART0 TX GPIO"
-  range -1 48
-  default 43
-  help
-    UART0 TX GPIO used by the data stream backend. Set to -1 to leave the
-    current UART0 TX pin mapping unchanged.
-
-config APP_DATA_STREAM_UART_RX_GPIO
-  int "Data stream UART0 RX GPIO"
-  range -1 48
-  default 44
-  help
-    UART0 RX GPIO used by the data stream backend. Set to -1 to leave the
-    current UART0 RX pin mapping unchanged.
-
 config APP_SD_PERIODIC_FLUSH_MS
   int "Periodic flush interval (ms)"
   range 1000 3600000
@@ -512,88 +556,6 @@ config APP_ALERT_STORAGE_STALL_MS
   help
     Raise storage_stall alert when FRAM remains at/above watermark and no SD
     drain progress is observed for this long while SD is unhealthy.
-
-config APP_EXPORT_OUTBOX_DEPTH
-  int "Export outbox depth (leaf)"
-  range 16 1024
-  default 128
-  help
-    Number of records to buffer for mesh/MQTT export on leaf nodes.
-
-config APP_BROKER_OUTBOX_DEPTH
-  int "Broker outbox depth (root)"
-  range 32 2048
-  default 256
-  help
-    Number of publish items to buffer for upstream MQTT on the root.
-
-config APP_EXPORT_RATE_LIMIT_MS
-  int "Export log rate limit (ms)"
-  range 1000 600000
-  default 60000
-  help
-    Minimum interval between repeated export warning logs (outbox full, publish failures).
-
-config APP_HEAP_MONITOR_ENABLE
-  bool "Enable heap fragmentation monitor"
-  default y
-
-config APP_HEAP_MONITOR_PERIOD_MS
-  int "Heap monitor sample period (ms)"
-  range 1000 3600000
-  default 60000
-  depends on APP_HEAP_MONITOR_ENABLE
-
-config APP_HEAP_INTERNAL_LARGEST_WARN_BYTES
-  int "Internal heap warn if largest free block < (bytes)"
-  range 0 1048576
-  default 8192
-  depends on APP_HEAP_MONITOR_ENABLE
-
-config APP_HEAP_INTERNAL_LARGEST_CRIT_BYTES
-  int "Internal heap critical if largest free block < (bytes)"
-  range 0 1048576
-  default 4096
-  depends on APP_HEAP_MONITOR_ENABLE
-
-config APP_HEAP_INTERNAL_FRAG_WARN_PCT
-  int "Internal heap warn if fragmentation >= (%)"
-  range 0 100
-  default 70
-  depends on APP_HEAP_MONITOR_ENABLE
-
-config APP_HEAP_INTERNAL_FRAG_CRIT_PCT
-  int "Internal heap critical if fragmentation >= (%)"
-  range 0 100
-  default 85
-  depends on APP_HEAP_MONITOR_ENABLE
-
-config APP_HEAP_PSRAM_MONITOR_ENABLE
-  bool "Also monitor PSRAM heap"
-  default y
-  depends on APP_HEAP_MONITOR_ENABLE
-
-choice APP_HEAP_GUARD_ACTION
-  prompt "Heap guard action on repeated critical condition"
-  default APP_HEAP_GUARD_ACTION_NONE
-  depends on APP_HEAP_MONITOR_ENABLE
-
-config APP_HEAP_GUARD_ACTION_NONE
-  bool "None (monitor only)"
-
-config APP_HEAP_GUARD_ACTION_RUN_STOP
-  bool "Request run stop (enter diagnostics safely)"
-
-config APP_HEAP_GUARD_ACTION_RESTART
-  bool "Restart device"
-
-endchoice
-
-config APP_HEAP_GUARD_CRIT_CONSECUTIVE_SAMPLES
-  int "Critical samples required before guard action"
-  range 1 20
-  default 3
-  depends on APP_HEAP_MONITOR_ENABLE && (APP_HEAP_GUARD_ACTION_RUN_STOP || APP_HEAP_GUARD_ACTION_RESTART)
 
 config APP_STOP_DRAIN_MAX_MS
   int "Stop drain max duration (ms, -1 for no limit)"
@@ -664,15 +626,14 @@ config APP_SD_FILE_BUFFER_BYTES
   range 4096 262144
   default 8096
 
-config APP_I2C_SDA_GPIO
-  int "I2C SDA GPIO (DS3231)"
-  range -1 48
-  default 7
-
-config APP_I2C_SCL_GPIO
-  int "I2C SCL GPIO (DS3231)"
-  range -1 48
-  default 8
+config APP_SD_SPI_MAX_FREQ_KHZ
+  int "SD SPI max clock (kHz)"
+  range 400 20000
+  default 5000
+  help
+    Maximum SDSPI clock used for SD card access. Lower values improve
+    signal margin on long/noisy wiring, while higher values may improve
+    throughput on clean hardware.
 
 config APP_DS3231_I2C_ADDR
   int "DS3231 I2C address"
@@ -681,64 +642,159 @@ config APP_DS3231_I2C_ADDR
   help
     104 decimal = 0x68.
 
-config APP_DIAGNOSTICS_OVERRIDE_GPIO
-  int "Diagnostics override GPIO (active low, pull-up enabled, -1 to disable)"
-  range -1 48
-  default -1
+endmenu
+
+menu "Runtime Controls / Buttons"
+
+config APP_BUTTONS_POLL_MS
+  int "Button poll interval (ms)"
+  range 1 100
+  default 10
+
+config APP_BUTTONS_DEBOUNCE_MS
+  int "Button debounce time (ms)"
+  range 1 1000
+  default 30
+
+config APP_BUTTONS_HOLDOFF_MS
+  int "Button holdoff after press event (ms)"
+  range 0 5000
+  default 250
+
+config APP_BUTTONS_TASK_STACK_BYTES
+  int "Unified button task stack size (bytes)"
+  range 1024 4096
+  default 2048
+
+config APP_RUN_START_HOLD_MS
+  int "Run start button hold time (ms)"
+  range 0 5000
+  default 100
+
+config APP_RUN_STOP_HOLD_MS
+  int "Run stop button hold time (ms)"
+  range 0 5000
+  default 100
+
+endmenu
+
+menu "Export / MQTT / Mesh Uplink"
+
+config APP_EXPORT_OUTBOX_DEPTH
+  int "Export outbox depth (leaf)"
+  range 16 1024
+  default 128
   help
-    If set to a valid GPIO, holding the pin low at reset forces diagnostics
-    boot mode regardless of the stored NVS boot mode. The input uses an
-    internal pull-up.
+    Number of records to buffer for mesh/MQTT export on leaf nodes.
 
-config APP_RUN_OVERRIDE_GPIO
-  int "Run override GPIO (active low, pull-up enabled, -1 to disable)"
-  range -1 48
-  default -1
+config APP_BROKER_OUTBOX_DEPTH
+  int "Broker outbox depth (root)"
+  range 32 2048
+  default 256
   help
-    If set to a valid GPIO, holding the pin low at reset forces run boot mode
-    regardless of the stored NVS boot mode. The input uses an internal pull-up.
+    Number of publish items to buffer for upstream MQTT on the root.
 
-menu "Units GPIO"
-
-config APP_UNITS_GPIO_ENABLE
-  bool "Enable runtime units override via GPIO"
-  default n
+config APP_EXPORT_RATE_LIMIT_MS
+  int "Export log rate limit (ms)"
+  range 1000 600000
+  default 60000
   help
-    When enabled, a GPIO input can override the display units at runtime
-    without reboot. The pin level selects Celsius or Fahrenheit.
+    Minimum interval between repeated export warning logs (outbox full, publish failures).
 
-config APP_UNITS_GPIO_TOGGLE_ON_PRESS
-  bool "Units GPIO toggles on button press"
+endmenu
+
+menu "Heap / Memory Guard"
+
+config APP_MEM_GUARD_ENABLE
+  bool "Enable mem guard allocation tracking"
   default y
   help
-    When enabled, each debounced press toggles display units and stores the
-    selection in RTC memory for warm-reset persistence. Disable to use legacy
-    level-select behavior.
+    When enabled, allocation wrappers track allocations and optionally log
+    when allocations occur during the RUN phase.
 
-config APP_UNITS_GPIO_DEFAULT_PIN
-  int "Default units GPIO pin (-1 disables override)"
-  range -1 48
-  default -1
+config APP_MEM_GUARD_LOG_ENABLE
+  bool "Enable mem guard allocation warnings"
+  default y
+  depends on APP_MEM_GUARD_ENABLE
   help
-    Default GPIO used for runtime unit switching. Set to -1 to disable.
+    When enabled, allocations during the RUN phase emit a warning with a
+    configurable rate limit.
 
-config APP_UNITS_GPIO_DEFAULT_PULL
-  int "Default units GPIO pull (0=none, 1=up, 2=down)"
-  range 0 2
-  default 1
+config APP_MEM_GUARD_LOG_RATE_LIMIT_MS
+  int "Mem guard warning rate limit (ms)"
+  default 60000
+  depends on APP_MEM_GUARD_LOG_ENABLE
   help
-    Input pull configuration for the units GPIO.
+    Minimum time between repeated mem guard warnings during RUN. Set to 0 to
+    log every allocation.
 
-config APP_UNITS_GPIO_DEFAULT_LEVEL_FOR_C
-  bool "GPIO high level selects Celsius"
+config APP_MEM_GUARD_STRICT
+  bool "Abort on allocations during RUN phase"
   default n
+  depends on APP_MEM_GUARD_ENABLE
   help
-    When enabled, a HIGH pin level means Celsius; otherwise LOW selects Celsius.
+    When enabled, any allocation during RUN will abort quickly.
 
-config APP_UNITS_TOGGLE_HOLD_MS
-  int "Units toggle button hold time (ms)"
-  range 0 5000
-  default 0
+config APP_HEAP_MONITOR_ENABLE
+  bool "Enable heap fragmentation monitor"
+  default y
+
+config APP_HEAP_MONITOR_PERIOD_MS
+  int "Heap monitor sample period (ms)"
+  range 1000 3600000
+  default 60000
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_INTERNAL_LARGEST_WARN_BYTES
+  int "Internal heap warn if largest free block < (bytes)"
+  range 0 1048576
+  default 8192
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_INTERNAL_LARGEST_CRIT_BYTES
+  int "Internal heap critical if largest free block < (bytes)"
+  range 0 1048576
+  default 4096
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_INTERNAL_FRAG_WARN_PCT
+  int "Internal heap warn if fragmentation >= (%)"
+  range 0 100
+  default 70
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_INTERNAL_FRAG_CRIT_PCT
+  int "Internal heap critical if fragmentation >= (%)"
+  range 0 100
+  default 85
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_PSRAM_MONITOR_ENABLE
+  bool "Also monitor PSRAM heap"
+  default y
+  depends on APP_HEAP_MONITOR_ENABLE
+
+choice APP_HEAP_GUARD_ACTION
+  prompt "Heap guard action on repeated critical condition"
+  default APP_HEAP_GUARD_ACTION_NONE
+  depends on APP_HEAP_MONITOR_ENABLE
+
+config APP_HEAP_GUARD_ACTION_NONE
+  bool "None (monitor only)"
+
+config APP_HEAP_GUARD_ACTION_RUN_STOP
+  bool "Request run stop (enter diagnostics safely)"
+
+config APP_HEAP_GUARD_ACTION_RESTART
+  bool "Restart device"
+
+endchoice
+
+config APP_HEAP_GUARD_CRIT_CONSECUTIVE_SAMPLES
+  int "Critical samples required before guard action"
+  range 1 20
+  default 3
+  depends on APP_HEAP_MONITOR_ENABLE && (APP_HEAP_GUARD_ACTION_RUN_STOP || APP_HEAP_GUARD_ACTION_RESTART)
 
 endmenu
 

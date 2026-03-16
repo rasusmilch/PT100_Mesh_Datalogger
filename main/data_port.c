@@ -76,11 +76,11 @@ DataPortInit(void)
 
   if (kBackend == DATA_PORT_BACKEND_USB_SERIAL_JTAG) {
 #if defined(SOC_USB_SERIAL_JTAG_SUPPORTED) && SOC_USB_SERIAL_JTAG_SUPPORTED
-    const usb_serial_jtag_driver_config_t cfg = {
+    usb_serial_jtag_driver_config_t usb_jtag_config = {
       .tx_buffer_size = kTxBufferLen,
       .rx_buffer_size = kRxBufferLen,
     };
-    esp_err_t result = usb_serial_jtag_driver_install(&cfg);
+    esp_err_t result = usb_serial_jtag_driver_install(&usb_jtag_config);
     if (result != ESP_OK) {
       ESP_LOGE(kTag,
                "usb_serial_jtag_driver_install failed: %s",
