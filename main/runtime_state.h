@@ -290,9 +290,16 @@ extern "C"
     uint32_t fram_log_mutex_hold_max_ms_observed;
     uint32_t fram_log_mutex_timeouts;
     const char* i2c_mutex_holder;
+    TaskHandle_t i2c_mutex_owner_task;
     TickType_t i2c_mutex_hold_start_ticks;
     uint32_t i2c_mutex_hold_max_ms_observed;
     uint32_t i2c_mutex_timeouts;
+    uint32_t i2c_mutex_same_task_reentry_count;
+    uint32_t i2c_mutex_timeout_suppressed_count;
+    uint32_t i2c_mutex_reentry_suppressed_count;
+    TickType_t last_i2c_lock_dump_ticks;
+    uint32_t last_i2c_timeout_warn_ms;
+    uint32_t last_i2c_reentry_warn_ms;
     const char* sd_io_mutex_holder;
     TickType_t sd_io_mutex_hold_start_ticks;
     uint32_t sd_io_mutex_hold_max_ms_observed;
