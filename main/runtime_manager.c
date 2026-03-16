@@ -220,6 +220,11 @@ RuntimeResetStorageStallTracking(runtime_state_t* state, int64_t now_ms);
 static bool
 RuntimeComputeStorageStallCondition(runtime_state_t* state, int64_t now_ms);
 
+static bool
+RuntimeRecoverI2cBus(runtime_state_t* state,
+                     const char* reason,
+                     esp_err_t last_error);
+
 /**
  * @brief Compute effective sensor polling period for sampling/display updates.
  * @param settings Current app settings snapshot.
@@ -305,7 +310,8 @@ RuntimePerformSingleMax31865Read(runtime_state_t* state,
                                  max31865_one_shot_state_t* one_shot_out);
 
 /**
- * @brief Perform MAX31865 one-shot read with immediate fault confirmation retry.
+ * @brief Perform MAX31865 one-shot read with immediate fault confirmation
+ * retry.
  * @param state Runtime state owning counters and MAX31865 reader.
  * @param sample_out Authoritative sample for this sensor loop.
  * @param used_retry_out True when a same-loop retry was attempted.
@@ -2719,7 +2725,8 @@ RuntimeI2cLock(TickType_t timeout_ticks)
     } else {
       g_state.i2c_mutex_reentry_suppressed_count++;
     }
-    const TickType_t dump_elapsed = now_ticks - g_state.last_i2c_lock_dump_ticks;
+    const TickType_t dump_elapsed =
+      now_ticks - g_state.last_i2c_lock_dump_ticks;
     if (g_state.last_i2c_lock_dump_ticks == 0 ||
         pdTICKS_TO_MS(dump_elapsed) >= kI2cLockDumpIntervalMs) {
       g_state.last_i2c_lock_dump_ticks = now_ticks;
@@ -2754,7 +2761,8 @@ RuntimeI2cLock(TickType_t timeout_ticks)
     } else {
       g_state.i2c_mutex_timeout_suppressed_count++;
     }
-    const TickType_t dump_elapsed = now_ticks - g_state.last_i2c_lock_dump_ticks;
+    const TickType_t dump_elapsed =
+      now_ticks - g_state.last_i2c_lock_dump_ticks;
     if (g_state.last_i2c_lock_dump_ticks == 0 ||
         pdTICKS_TO_MS(dump_elapsed) >= kI2cLockDumpIntervalMs) {
       g_state.last_i2c_lock_dump_ticks = now_ticks;
@@ -3868,7 +3876,8 @@ FramI2cReadAdapter(void* context, uint32_t addr, void* out, size_t len)
   if (state->i2c_bus.initialized && !I2cBusLooksIdle(&state->i2c_bus)) {
     RuntimeI2cOpEnd();
     RuntimeI2cUnlock();
-    (void)RuntimeRecoverI2cBus(state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
+    (void)RuntimeRecoverI2cBus(
+      state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
     if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
       return ESP_ERR_TIMEOUT;
     }
@@ -3917,7 +3926,8 @@ FramI2cWriteAdapter(void* context, uint32_t addr, const void* data, size_t len)
   if (state->i2c_bus.initialized && !I2cBusLooksIdle(&state->i2c_bus)) {
     RuntimeI2cOpEnd();
     RuntimeI2cUnlock();
-    (void)RuntimeRecoverI2cBus(state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
+    (void)RuntimeRecoverI2cBus(
+      state, "fram preflight bus busy", ESP_ERR_TIMEOUT);
     if (!RuntimeI2cLock(kI2cIoLockTimeoutTicks)) {
       return ESP_ERR_TIMEOUT;
     }
@@ -6790,7 +6800,8 @@ RuntimePerformSingleMax31865Read(runtime_state_t* state,
 }
 
 /**
- * @brief Perform MAX31865 one-shot read with immediate fault confirmation retry.
+ * @brief Perform MAX31865 one-shot read with immediate fault confirmation
+ * retry.
  * @param state Runtime state owning counters and MAX31865 reader.
  * @param sample_out Authoritative sample for this sensor loop.
  * @param used_retry_out True when a same-loop retry was attempted.
@@ -6829,7 +6840,8 @@ RuntimePerformMax31865ReadWithFaultRetry(runtime_state_t* state,
     *retry_result_out = ESP_OK;
   }
 
-  esp_err_t first_result = RuntimePerformSingleMax31865Read(state, sample_out, NULL);
+  esp_err_t first_result =
+    RuntimePerformSingleMax31865Read(state, sample_out, NULL);
   if (first_result != ESP_OK || !sample_out->fault_present) {
     return first_result;
   }
@@ -6845,7 +6857,8 @@ RuntimePerformMax31865ReadWithFaultRetry(runtime_state_t* state,
   }
 
   max31865_sample_t retry_sample = { 0 };
-  esp_err_t retry_result = RuntimePerformSingleMax31865Read(state, &retry_sample, NULL);
+  esp_err_t retry_result =
+    RuntimePerformSingleMax31865Read(state, &retry_sample, NULL);
   state->rtd_fault_last_retry_err = retry_result;
   if (retry_result_out != NULL) {
     *retry_result_out = retry_result;
@@ -6873,8 +6886,6 @@ RuntimePerformMax31865ReadWithFaultRetry(runtime_state_t* state,
   *sample_out = retry_sample;
   return ESP_OK;
 }
-
-
 
 /**
  * @brief Accumulate RTD retry diagnostics for rate-limited ntfy summary jobs.
@@ -6953,31 +6964,41 @@ RuntimeBuildRtdFaultSummaryNtfyJob(runtime_state_t* state,
                                    int64_t now_ms,
                                    alert_ntfy_job_t* out_job)
 {
-  if (state == NULL || out_job == NULL || !AlertManagerIsConfigured(&state->alert_manager)) {
+  if (state == NULL || out_job == NULL ||
+      !AlertManagerIsConfigured(&state->alert_manager)) {
     return false;
   }
 
   memset(out_job, 0, sizeof(*out_job));
-  snprintf(out_job->url, sizeof(out_job->url), "%s", state->alert_manager.config.ntfy_url);
-  snprintf(out_job->topic, sizeof(out_job->topic), "%s", state->alert_manager.config.ntfy_topic);
-  snprintf(out_job->token, sizeof(out_job->token), "%s", state->alert_manager.config.ntfy_token);
-  snprintf(out_job->root_id, sizeof(out_job->root_id), "%s", state->node_id_string);
+  snprintf(out_job->url,
+           sizeof(out_job->url),
+           "%s",
+           state->alert_manager.config.ntfy_url);
+  snprintf(out_job->topic,
+           sizeof(out_job->topic),
+           "%s",
+           state->alert_manager.config.ntfy_topic);
+  snprintf(out_job->token,
+           sizeof(out_job->token),
+           "%s",
+           state->alert_manager.config.ntfy_token);
+  snprintf(
+    out_job->root_id, sizeof(out_job->root_id), "%s", state->node_id_string);
   snprintf(out_job->sequence_id,
            sizeof(out_job->sequence_id),
            "rtd-summary-%" PRId64 "-%" PRIu32,
            now_ms,
            state->rtd_fault_first_read_count);
-  snprintf(out_job->title, sizeof(out_job->title), "RTD transient faults summary");
+  snprintf(
+    out_job->title, sizeof(out_job->title), "RTD transient faults summary");
   out_job->http_timeout_ms = 1500;
 
   char first_desc[128] = { 0 };
   char retry_desc[128] = { 0 };
-  Max31865FormatFault(state->rtd_fault_ntfy_last_first_status,
-                      first_desc,
-                      sizeof(first_desc));
-  Max31865FormatFault(state->rtd_fault_ntfy_last_retry_status,
-                      retry_desc,
-                      sizeof(retry_desc));
+  Max31865FormatFault(
+    state->rtd_fault_ntfy_last_first_status, first_desc, sizeof(first_desc));
+  Max31865FormatFault(
+    state->rtd_fault_ntfy_last_retry_status, retry_desc, sizeof(retry_desc));
 
   const int64_t batch_start_ms = state->rtd_fault_ntfy_first_pending_ms;
   const bool has_retry_status = state->rtd_fault_ntfy_last_retry_status != 0u;
@@ -7044,8 +7065,6 @@ RuntimeMaybeSendRtdFaultSummaryNtfy(runtime_state_t* state, int64_t now_ms)
   state->rtd_fault_ntfy_first_pending_ms = 0;
   state->rtd_fault_ntfy_last_sent_ms = now_ms;
 }
-
-
 
 /**
  * @brief Execute SensorTask.
@@ -7200,16 +7219,18 @@ SensorTask(void* context)
 
       if (calibration_applied) {
         if (state->settings.calibration_domain == CAL_DOMAIN_RESISTANCE_OHM) {
-          const double corrected_raw_res_ohm = CalibrationModelEvaluateWithPoints(
-            &state->settings.calibration,
-            raw_res_ohm,
-            state->settings.calibration_points,
-            state->settings.calibration_points_count);
-          const double corrected_disp_res_ohm = CalibrationModelEvaluateWithPoints(
-            &state->settings.calibration,
-            disp_raw_res_ohm,
-            state->settings.calibration_points,
-            state->settings.calibration_points_count);
+          const double corrected_raw_res_ohm =
+            CalibrationModelEvaluateWithPoints(
+              &state->settings.calibration,
+              raw_res_ohm,
+              state->settings.calibration_points,
+              state->settings.calibration_points_count);
+          const double corrected_disp_res_ohm =
+            CalibrationModelEvaluateWithPoints(
+              &state->settings.calibration,
+              disp_raw_res_ohm,
+              state->settings.calibration_points,
+              state->settings.calibration_points_count);
           const double raw_cal_c = Max31865ResistanceToTemperature(
             &state->sensor, corrected_raw_res_ohm);
           const double disp_cal_c = Max31865ResistanceToTemperature(
@@ -7253,15 +7274,14 @@ SensorTask(void* context)
          5000u);
       if (retry_rate_ok) {
         char first_desc[128] = { 0 };
-        Max31865FormatFault(
-          first_fault_status, first_desc, sizeof(first_desc));
-        ESP_LOGW(
-          kTag,
-          "MAX31865 transient fault recovered by retry: first=0x%02X (%s) first_count=%" PRIu32 " retry_clean_count=%" PRIu32,
-          first_fault_status,
-          first_desc,
-          state->rtd_fault_first_read_count,
-          state->rtd_fault_retry_clean_count);
+        Max31865FormatFault(first_fault_status, first_desc, sizeof(first_desc));
+        ESP_LOGW(kTag,
+                 "MAX31865 transient fault recovered by retry: first=0x%02X "
+                 "(%s) first_count=%" PRIu32 " retry_clean_count=%" PRIu32,
+                 first_fault_status,
+                 first_desc,
+                 state->rtd_fault_first_read_count,
+                 state->rtd_fault_retry_clean_count);
         state->last_sensor_fault_log_ticks = now_ticks;
       }
     }
