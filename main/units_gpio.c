@@ -1,8 +1,5 @@
 #include "units_gpio.h"
 
-#include <string.h>
-#include <strings.h>
-
 #include "driver/gpio.h"
 #include "esp_err.h"
 #include "gpio_buttons.h"
@@ -25,7 +22,7 @@ static bool UnitsGpioIsRtcOverrideValid(void);
 static app_display_units_t UnitsGpioGetRtcOverrideUnits(void);
 static void UnitsGpioSetRtcOverride(app_display_units_t units);
 static void UnitsGpioClearRtcOverrideLocked(void);
-static app_display_units_t UnitsGpioGetSavedUnitsLocked(void);
+static app_display_units_t UnitsGpioGetBootUnitsLocked(void);
 static app_display_units_t UnitsGpioGetEffectiveUnitsLocked(void);
 static void UnitsGpioUpdateState(int32_t pin,
                                  app_units_gpio_pull_t pull,
@@ -111,7 +108,7 @@ UnitsGpioGetRtcOverrideUnits(void)
   if (UnitsGpioIsRtcOverrideValid()) {
     return (app_display_units_t)g_units_gpio_rtc.units;
   }
-  return APP_DISPLAY_UNITS_F;
+  return APP_DISPLAY_UNITS_C;
 }
 
 static void
@@ -127,34 +124,34 @@ UnitsGpioClearRtcOverrideLocked(void)
   g_units_gpio_rtc.magic = 0;
   g_units_gpio_rtc.units = 0;
   g_units_gpio.rtc_override_valid = false;
-  g_units_gpio.rtc_override_units = APP_DISPLAY_UNITS_F;
+  g_units_gpio.rtc_override_units = APP_DISPLAY_UNITS_C;
 }
 
 static app_display_units_t
-UnitsGpioGetSavedUnitsLocked(void)
+UnitsGpioGetBootUnitsLocked(void)
 {
   return (g_units_gpio.settings != NULL) ? g_units_gpio.settings->display_units
-                                         : APP_DISPLAY_UNITS_F;
+                                         : APP_DISPLAY_UNITS_C;
 }
 
 static app_display_units_t
 UnitsGpioGetEffectiveUnitsLocked(void)
 {
-  const app_display_units_t saved_units = UnitsGpioGetSavedUnitsLocked();
+  const app_display_units_t boot_units = UnitsGpioGetBootUnitsLocked();
 
   if (!g_units_gpio.enabled) {
-    return saved_units;
+    return boot_units;
   }
 
   if (g_units_gpio.toggle_on_press) {
     if (g_units_gpio.rtc_override_valid) {
       return g_units_gpio.rtc_override_units;
     }
-    return saved_units;
+    return boot_units;
   }
 
   if (!g_units_gpio.pin_valid) {
-    return saved_units;
+    return boot_units;
   }
 
   return UnitsGpioComputeUnits(g_units_gpio.last_level_high,
@@ -257,9 +254,14 @@ UnitsGpioApplySettings(const app_settings_t* settings)
   }
 
   const bool enabled = (CONFIG_APP_UNITS_GPIO_ENABLE != 0);
-  const int32_t pin = settings->units_gpio_pin;
-  const app_units_gpio_pull_t pull = settings->units_gpio_pull;
-  const bool c_level_high = settings->units_gpio_c_level_high;
+  const int32_t pin = (int32_t)CONFIG_APP_UNITS_GPIO_DEFAULT_PIN;
+  const app_units_gpio_pull_t pull =
+    (app_units_gpio_pull_t)CONFIG_APP_UNITS_GPIO_DEFAULT_PULL;
+#if CONFIG_APP_UNITS_GPIO_DEFAULT_LEVEL_FOR_C
+  const bool c_level_high = true;
+#else
+  const bool c_level_high = false;
+#endif
   bool pin_valid = enabled && UnitsGpioIsValidPin(pin);
 
   g_units_gpio.enabled = enabled;
@@ -291,37 +293,20 @@ UnitsGpioHandleButtonPress(void)
   portEXIT_CRITICAL(&g_units_gpio.lock);
 }
 
-void
-UnitsGpioGetStatus(units_gpio_status_t* status_out)
+bool
+UnitsGpioSetTemporaryUnits(app_display_units_t units)
 {
-  if (status_out == NULL) {
-    return;
+  if (units != APP_DISPLAY_UNITS_C && units != APP_DISPLAY_UNITS_F) {
+    return false;
   }
 
   portENTER_CRITICAL(&g_units_gpio.lock);
-  if (g_units_gpio.pin_valid) {
-    g_units_gpio.last_level_high = (gpio_get_level((gpio_num_t)g_units_gpio.pin) != 0);
-    g_units_gpio.pressed =
-      (g_units_gpio.last_level_high == g_units_gpio.pressed_level_high);
-  }
-  g_units_gpio.effective_units = UnitsGpioGetEffectiveUnitsLocked();
-
-  *status_out = (units_gpio_status_t){
-    .enabled = g_units_gpio.enabled,
-    .toggle_on_press = g_units_gpio.toggle_on_press,
-    .pin = g_units_gpio.pin,
-    .pull = g_units_gpio.pull,
-    .c_level_high = g_units_gpio.c_level_high,
-    .pin_valid = g_units_gpio.pin_valid,
-    .last_level_high = g_units_gpio.last_level_high,
-    .pressed_level_high = g_units_gpio.pressed_level_high,
-    .pressed = g_units_gpio.pressed,
-    .rtc_override_valid = g_units_gpio.rtc_override_valid,
-    .rtc_override_units = g_units_gpio.rtc_override_units,
-    .effective_units = g_units_gpio.effective_units,
-    .saved_units = UnitsGpioGetSavedUnitsLocked(),
-  };
+  UnitsGpioSetRtcOverride(units);
+  g_units_gpio.rtc_override_valid = true;
+  g_units_gpio.rtc_override_units = units;
+  g_units_gpio.effective_units = units;
   portEXIT_CRITICAL(&g_units_gpio.lock);
+  return true;
 }
 
 void
@@ -336,7 +321,7 @@ UnitsGpioClearRtcOverride(void)
 app_display_units_t
 AppDisplayUnitsGetEffective(void)
 {
-  app_display_units_t units = APP_DISPLAY_UNITS_F;
+  app_display_units_t units = APP_DISPLAY_UNITS_C;
   portENTER_CRITICAL(&g_units_gpio.lock);
   if (!g_units_gpio.toggle_on_press && g_units_gpio.pin_valid) {
     g_units_gpio.last_level_high = (gpio_get_level((gpio_num_t)g_units_gpio.pin) != 0);
@@ -345,63 +330,4 @@ AppDisplayUnitsGetEffective(void)
   g_units_gpio.effective_units = units;
   portEXIT_CRITICAL(&g_units_gpio.lock);
   return units;
-}
-
-const char*
-UnitsGpioPullToString(app_units_gpio_pull_t pull)
-{
-  switch (pull) {
-    case APP_UNITS_GPIO_PULL_NONE:
-      return "none";
-    case APP_UNITS_GPIO_PULL_UP:
-      return "up";
-    case APP_UNITS_GPIO_PULL_DOWN:
-      return "down";
-    default:
-      return "unknown";
-  }
-}
-
-bool
-UnitsGpioParsePull(const char* value, app_units_gpio_pull_t* pull_out)
-{
-  if (value == NULL || pull_out == NULL) {
-    return false;
-  }
-  if (strcasecmp(value, "none") == 0) {
-    *pull_out = APP_UNITS_GPIO_PULL_NONE;
-    return true;
-  }
-  if (strcasecmp(value, "up") == 0) {
-    *pull_out = APP_UNITS_GPIO_PULL_UP;
-    return true;
-  }
-  if (strcasecmp(value, "down") == 0) {
-    *pull_out = APP_UNITS_GPIO_PULL_DOWN;
-    return true;
-  }
-  return false;
-}
-
-const char*
-UnitsGpioLevelToString(bool level_high)
-{
-  return level_high ? "high" : "low";
-}
-
-bool
-UnitsGpioParseLevel(const char* value, bool* level_high_out)
-{
-  if (value == NULL || level_high_out == NULL) {
-    return false;
-  }
-  if (strcasecmp(value, "high") == 0) {
-    *level_high_out = true;
-    return true;
-  }
-  if (strcasecmp(value, "low") == 0) {
-    *level_high_out = false;
-    return true;
-  }
-  return false;
 }

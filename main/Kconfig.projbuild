@@ -425,6 +425,18 @@ endmenu
 
 menu "MAX7219 Display"
 
+choice APP_DISPLAY_UNITS_DEFAULT
+  prompt "Default display units at boot"
+  default APP_DISPLAY_UNITS_DEFAULT_F
+
+config APP_DISPLAY_UNITS_DEFAULT_C
+  bool "Celsius"
+
+config APP_DISPLAY_UNITS_DEFAULT_F
+  bool "Fahrenheit"
+
+endchoice
+
 config APP_MAX7219_ENABLE
   bool "Enable MAX7219 32x8 display"
   default y
