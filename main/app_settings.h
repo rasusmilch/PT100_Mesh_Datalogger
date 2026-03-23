@@ -107,9 +107,6 @@ extern "C"
     bool allow_children;
     bool allow_children_set;
     app_display_units_t display_units;
-    int32_t units_gpio_pin;
-    app_units_gpio_pull_t units_gpio_pull;
-    bool units_gpio_c_level_high;
     uint32_t display_attention_policy;
     display_attention_mask_t display_attention_mask;
     app_net_mode_t net_mode;
@@ -347,38 +344,6 @@ extern "C"
  */
   bool AppSettingsParseMqttBridgeMode(const char* value,
                                       mqtt_bridge_mode_t* mode_out);
-
-  // Persists updated display units.
-/**
- * @brief Execute AppSettingsSaveDisplayUnits.
- * @param units Parameter units.
- * @return Return the function result.
- */
-  esp_err_t AppSettingsSaveDisplayUnits(app_display_units_t units);
-
-  // Persists updated units GPIO pin override.
-/**
- * @brief Execute AppSettingsSaveUnitsGpioPin.
- * @param pin Parameter pin.
- * @return Return the function result.
- */
-  esp_err_t AppSettingsSaveUnitsGpioPin(int32_t pin);
-
-  // Persists updated units GPIO pull override.
-/**
- * @brief Execute AppSettingsSaveUnitsGpioPull.
- * @param pull Parameter pull.
- * @return Return the function result.
- */
-  esp_err_t AppSettingsSaveUnitsGpioPull(app_units_gpio_pull_t pull);
-
-  // Persists updated units GPIO level mapping for Celsius.
-/**
- * @brief Execute AppSettingsSaveUnitsGpioCLevel.
- * @param c_level_high Parameter c_level_high.
- * @return Return the function result.
- */
-  esp_err_t AppSettingsSaveUnitsGpioCLevel(bool c_level_high);
 
   // Persists updated network mode.
 /**

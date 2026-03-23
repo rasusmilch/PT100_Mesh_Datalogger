@@ -1450,15 +1450,12 @@ CommandDisplay(int argc, char** argv)
       printf("usage: disp units C|F\n");
       return 1;
     }
-    g_runtime->settings->display_units = units;
-    esp_err_t result = AppSettingsSaveDisplayUnits(units);
-    if (result != ESP_OK) {
-      printf("save failed: %s\n", esp_err_to_name(result));
+    if (!UnitsGpioSetTemporaryUnits(units)) {
+      printf("failed to set temporary units\n");
       return 1;
     }
-    UnitsGpioClearRtcOverride();
-    UnitsGpioApplySettings(g_runtime->settings);
-    printf("display_units set to %s\n", AppSettingsDisplayUnitsToString(units));
+    printf("display_units temporary override set to %s\n",
+           AppSettingsDisplayUnitsToString(units));
     return 0;
   }
 
@@ -1565,9 +1562,7 @@ CommandDisplay(int argc, char** argv)
 static void
 PrintUnitsUsage(void)
 {
-  printf(
-    "usage: units set C|F | units gpio show | units gpio set pin <n> | "
-    "units gpio set pull <up|down|none> | units gpio set c_level <high|low>\n");
+  printf("usage: units set C|F\n");
 }
 
 /**
@@ -1598,116 +1593,13 @@ CommandUnits(int argc, char** argv)
       PrintUnitsUsage();
       return 1;
     }
-    g_runtime->settings->display_units = units;
-    esp_err_t result = AppSettingsSaveDisplayUnits(units);
-    if (result != ESP_OK) {
-      printf("save failed: %s\n", esp_err_to_name(result));
+    if (!UnitsGpioSetTemporaryUnits(units)) {
+      printf("failed to set temporary units\n");
       return 1;
     }
-    UnitsGpioClearRtcOverride();
-    UnitsGpioApplySettings(g_runtime->settings);
-    printf("display_units set to %s\n", AppSettingsDisplayUnitsToString(units));
+    printf("display_units temporary override set to %s\n",
+           AppSettingsDisplayUnitsToString(units));
     return 0;
-  }
-
-  if (strcmp(action, "gpio") == 0) {
-    if (argc < 3) {
-      PrintUnitsUsage();
-      return 1;
-    }
-    const char* gpio_action = argv[2];
-    if (strcmp(gpio_action, "show") == 0) {
-      units_gpio_status_t status = { 0 };
-      UnitsGpioGetStatus(&status);
-      printf("units_gpio_enabled: %s\n", status.enabled ? "yes" : "no");
-      printf("units_gpio_mode: %s\n",
-             status.toggle_on_press ? "toggle" : "level");
-      printf("units_gpio_pin: %ld%s\n",
-             (long)status.pin,
-             status.pin_valid ? "" : " (invalid)");
-      printf("units_gpio_pull: %s\n", UnitsGpioPullToString(status.pull));
-      printf("units_gpio_c_level: %s\n",
-             UnitsGpioLevelToString(status.c_level_high));
-      printf("units_gpio_level: %s\n",
-             status.pin_valid ? UnitsGpioLevelToString(status.last_level_high)
-                              : "n/a");
-      printf("units_gpio_pressed_level: %s\n",
-             status.pin_valid
-               ? UnitsGpioLevelToString(status.pressed_level_high)
-               : "n/a");
-      printf("units_gpio_pressed: %s\n",
-             status.pin_valid ? (status.pressed ? "yes" : "no") : "n/a");
-      printf("units_rtc_override: %s\n",
-             status.rtc_override_valid
-               ? AppSettingsDisplayUnitsToString(status.rtc_override_units)
-               : "none");
-      printf("units_effective: %s\n",
-             AppSettingsDisplayUnitsToString(status.effective_units));
-      printf("units_saved: %s\n",
-             AppSettingsDisplayUnitsToString(status.saved_units));
-      return 0;
-    }
-    if (strcmp(gpio_action, "set") == 0) {
-      if (argc < 5) {
-        PrintUnitsUsage();
-        return 1;
-      }
-      const char* field = argv[3];
-      if (strcmp(field, "pin") == 0) {
-        char* end = NULL;
-        long pin = strtol(argv[4], &end, 10);
-        if (end == argv[4] || *end != '\0') {
-          PrintUnitsUsage();
-          return 1;
-        }
-        esp_err_t result = AppSettingsSaveUnitsGpioPin((int32_t)pin);
-        if (result != ESP_OK) {
-          printf("save failed: %s\n", esp_err_to_name(result));
-          return 1;
-        }
-        g_runtime->settings->units_gpio_pin = (int32_t)pin;
-        UnitsGpioApplySettings(g_runtime->settings);
-        printf("units_gpio_pin set to %ld\n", pin);
-        return 0;
-      }
-      if (strcmp(field, "pull") == 0) {
-        app_units_gpio_pull_t pull = APP_UNITS_GPIO_PULL_NONE;
-        if (!UnitsGpioParsePull(argv[4], &pull)) {
-          PrintUnitsUsage();
-          return 1;
-        }
-        esp_err_t result = AppSettingsSaveUnitsGpioPull(pull);
-        if (result != ESP_OK) {
-          printf("save failed: %s\n", esp_err_to_name(result));
-          return 1;
-        }
-        g_runtime->settings->units_gpio_pull = pull;
-        UnitsGpioApplySettings(g_runtime->settings);
-        printf("units_gpio_pull set to %s\n", UnitsGpioPullToString(pull));
-        return 0;
-      }
-      if (strcmp(field, "c_level") == 0) {
-        bool level_high = false;
-        if (!UnitsGpioParseLevel(argv[4], &level_high)) {
-          PrintUnitsUsage();
-          return 1;
-        }
-        esp_err_t result = AppSettingsSaveUnitsGpioCLevel(level_high);
-        if (result != ESP_OK) {
-          printf("save failed: %s\n", esp_err_to_name(result));
-          return 1;
-        }
-        g_runtime->settings->units_gpio_c_level_high = level_high;
-        UnitsGpioApplySettings(g_runtime->settings);
-        printf("units_gpio_c_level set to %s\n",
-               UnitsGpioLevelToString(level_high));
-        return 0;
-      }
-      PrintUnitsUsage();
-      return 1;
-    }
-    PrintUnitsUsage();
-    return 1;
   }
 
   PrintUnitsUsage();
@@ -6869,8 +6761,8 @@ RegisterCommands(void)
 
   static const console_registry_entry_t units_cmd = {
     .command = "units",
-    .summary = "Configure units and unit-toggle GPIO",
-    .synopsis = "units set C|F | units gpio ...",
+    .summary = "Set temporary display units override",
+    .synopsis = "units set C|F",
     .func = &CommandUnits,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&units_cmd));
