@@ -13,6 +13,14 @@
 #define APP_SETTINGS_TZ_POSIX_MAX_LEN 64
 #define APP_SETTINGS_UNIT_SERIAL_MAX_LEN 48
 #define APP_SETTINGS_CAL_METHOD_MAX_LEN 96
+#define APP_SETTINGS_CAL_METAR_RAW_MAX_LEN 192
+#define APP_SETTINGS_CAL_METAR_STATION_MAX_LEN 8
+#define APP_SETTINGS_CAL_METAR_OBS_TOKEN_MAX_LEN 16
+#define APP_SETTINGS_CAL_METAR_TEMP_TOKEN_MAX_LEN 16
+#define APP_SETTINGS_CAL_METAR_FLAGS_MAX_LEN 16
+#define APP_SETTINGS_CAL_METAR_REMARKS_MAX_LEN 80
+#define APP_SETTINGS_CAL_METAR_OBS_ISO_MAX_LEN 32
+#define APP_SETTINGS_CAL_METAR_METHOD_NOTE_MAX_LEN 96
 #define APP_SETTINGS_TZ_DEFAULT_POSIX "CST6CDT,M3.2.0/2,M11.1.0/2"
 #define APP_SETTINGS_TZ_DEFAULT_STD "CST6"
 #define APP_SETTINGS_MQTT_BROKER_URI_DEFAULT "mqtt://192.168.1.50"
@@ -68,6 +76,26 @@ extern "C"
     uint32_t table_version;
   } calibration_context_t;
 
+  typedef struct
+  {
+    uint8_t valid;
+    char source_type[8];
+    char raw_metar[APP_SETTINGS_CAL_METAR_RAW_MAX_LEN];
+    char station_id[APP_SETTINGS_CAL_METAR_STATION_MAX_LEN];
+    char observation_token[APP_SETTINGS_CAL_METAR_OBS_TOKEN_MAX_LEN];
+    char observation_iso_utc[APP_SETTINGS_CAL_METAR_OBS_ISO_MAX_LEN];
+    uint8_t observation_resolved;
+    uint16_t elevation_ft;
+    float altimeter_inhg;
+    float station_pressure_inhg;
+    float satpt_c;
+    char auto_or_cor[APP_SETTINGS_CAL_METAR_FLAGS_MAX_LEN];
+    char temp_dew_token[APP_SETTINGS_CAL_METAR_TEMP_TOKEN_MAX_LEN];
+    char remarks[APP_SETTINGS_CAL_METAR_REMARKS_MAX_LEN];
+    int64_t stored_at_utc_epoch;
+    char method_note[APP_SETTINGS_CAL_METAR_METHOD_NOTE_MAX_LEN];
+  } calibration_metar_reference_t;
+
   // Deployment guidance:
   // - Dense plant/fixed power: enable children on RELAY nodes; selectively enable
   //   on SENSOR nodes only where needed.
@@ -95,6 +123,7 @@ extern "C"
     uint8_t cal_due_unit;
     uint16_t cal_due_override_count;
     uint8_t cal_due_override_unit;
+    calibration_metar_reference_t cal_metar;
     bool rtd_ema_enabled;
     uint16_t rtd_ema_alpha_permille;
     uint32_t rtd_fault_assert_ms;
@@ -258,6 +287,14 @@ extern "C"
  * @return Return the function result.
  */
   esp_err_t AppSettingsSaveCalibrationMethod(const char* method);
+
+/**
+ * @brief Persist the calibration METAR steam-reference metadata block.
+ * @param metar METAR reference metadata to store.
+ * @return Return the function result.
+ */
+  esp_err_t
+  AppSettingsSaveCalibrationMetar(const calibration_metar_reference_t* metar);
 
   // Persists updated node role.
 /**

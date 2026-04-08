@@ -73,7 +73,7 @@ static const char* kKeySettingsBlob0 = "cfg0";
 static const char* kKeySettingsBlob1 = "cfg1";
 
 #define APP_SETTINGS_BLOB_MAGIC 0x53455454u // 'SETT'
-#define APP_SETTINGS_BLOB_VERSION 3u
+#define APP_SETTINGS_BLOB_VERSION 4u
 
 #pragma pack(push, 1)
 typedef struct
@@ -125,7 +125,6 @@ typedef struct
   uint8_t node_role;
   uint8_t allow_children;
   uint8_t allow_children_set;
-  uint8_t display_units;
   uint32_t display_attention_policy;
   uint8_t net_mode;
   uint8_t mqtt_enabled;
@@ -161,6 +160,53 @@ typedef struct
   uint8_t cal_due_unit;
   uint16_t cal_due_override_count;
   uint8_t cal_due_override_unit;
+  uint8_t rtd_ema_enabled;
+  uint16_t rtd_ema_alpha_permille;
+  uint32_t rtd_fault_assert_ms;
+  uint32_t rtd_fault_clear_ms;
+  char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
+  char unit_serial[APP_SETTINGS_UNIT_SERIAL_MAX_LEN];
+  char cal_method[APP_SETTINGS_CAL_METHOD_MAX_LEN];
+  uint8_t dst_enabled;
+  uint8_t node_role;
+  uint8_t allow_children;
+  uint8_t allow_children_set;
+  uint32_t display_attention_policy;
+  uint8_t net_mode;
+  uint8_t mqtt_enabled;
+  char mqtt_broker_uri[128];
+  char mqtt_topic_prefix[64];
+  uint8_t mqtt_qos;
+  uint8_t mqtt_retain;
+  uint8_t mqtt_bridge_mode;
+} app_settings_persist_payload_v3_t;
+
+typedef struct
+{
+  app_settings_blob_header_t header;
+  app_settings_persist_payload_v3_t payload;
+} app_settings_blob_v3_t;
+
+typedef struct
+{
+  uint32_t log_period_ms;
+  uint32_t fram_flush_watermark_records;
+  uint32_t sd_flush_period_ms;
+  uint32_t sd_batch_bytes_target;
+  uint32_t rtc_resync_period_ms;
+  calibration_model_t calibration;
+  calibration_context_t calibration_context;
+  uint8_t calibration_context_valid;
+  calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
+  uint8_t calibration_points_count;
+  uint8_t calibration_domain;
+  int64_t cal_last_utc;
+  int64_t cal_last_override_utc;
+  uint16_t cal_due_count;
+  uint8_t cal_due_unit;
+  uint16_t cal_due_override_count;
+  uint8_t cal_due_override_unit;
+  calibration_metar_reference_t cal_metar;
   uint8_t rtd_ema_enabled;
   uint16_t rtd_ema_alpha_permille;
   uint32_t rtd_fault_assert_ms;
@@ -461,6 +507,7 @@ ApplyDefaults(app_settings_t* settings)
   settings->cal_due_unit = 0;
   settings->cal_due_override_count = 0;
   settings->cal_due_override_unit = 0;
+  memset(&settings->cal_metar, 0, sizeof(settings->cal_metar));
   settings->rtd_ema_enabled = false;
   settings->rtd_ema_alpha_permille = 200;
   settings->rtd_fault_assert_ms = 2000u;
@@ -656,6 +703,10 @@ SettingsBlobLooksValid(const app_settings_blob_t* blob)
     if (blob->header.size != sizeof(app_settings_persist_payload_t)) {
       return false;
     }
+  } else if (blob->header.version == 3u) {
+    if (blob->header.size != sizeof(app_settings_persist_payload_v3_t)) {
+      return false;
+    }
   } else if (blob->header.version == 1u) {
     if (blob->header.size != sizeof(app_settings_persist_payload_v1_t)) {
       return false;
@@ -669,6 +720,13 @@ SettingsBlobLooksValid(const app_settings_blob_t* blob)
     memcpy(&temp, blob, sizeof(temp));
     temp.header.crc32_le = 0;
     return esp_rom_crc32_le(0, (const uint8_t*)&temp, sizeof(temp)) == crc_saved;
+  }
+  if (blob->header.version == 3u) {
+    app_settings_blob_v3_t temp_v3;
+    memcpy(&temp_v3, blob, sizeof(temp_v3));
+    temp_v3.header.crc32_le = 0;
+    return esp_rom_crc32_le(0, (const uint8_t*)&temp_v3, sizeof(temp_v3)) ==
+           crc_saved;
   }
   app_settings_blob_v1_t temp_v1;
   memcpy(&temp_v1, blob, sizeof(temp_v1));
@@ -706,6 +764,68 @@ ReadSettingsBlob(nvs_handle_t handle,
       blob_size == sizeof(app_settings_blob_t)) {
     memcpy(blob_out, raw, sizeof(app_settings_blob_t));
     return SettingsBlobLooksValid(blob_out);
+  }
+  if (header->version == 3u && blob_size == sizeof(app_settings_blob_v3_t)) {
+    const app_settings_blob_v3_t* old_blob = (const app_settings_blob_v3_t*)raw;
+    app_settings_blob_v3_t crc_blob = *old_blob;
+    const uint32_t crc_saved = crc_blob.header.crc32_le;
+    crc_blob.header.crc32_le = 0;
+    const uint32_t crc =
+      esp_rom_crc32_le(0, (const uint8_t*)&crc_blob, sizeof(crc_blob));
+    if (crc != crc_saved) {
+      return false;
+    }
+    memset(blob_out, 0, sizeof(*blob_out));
+    blob_out->header.magic = old_blob->header.magic;
+    blob_out->header.version = APP_SETTINGS_BLOB_VERSION;
+    blob_out->header.size = sizeof(app_settings_persist_payload_t);
+    blob_out->header.generation = old_blob->header.generation;
+    const app_settings_persist_payload_v3_t* old = &old_blob->payload;
+    app_settings_persist_payload_t* now = &blob_out->payload;
+    now->log_period_ms = old->log_period_ms;
+    now->fram_flush_watermark_records = old->fram_flush_watermark_records;
+    now->sd_flush_period_ms = old->sd_flush_period_ms;
+    now->sd_batch_bytes_target = old->sd_batch_bytes_target;
+    now->rtc_resync_period_ms = old->rtc_resync_period_ms;
+    now->calibration = old->calibration;
+    now->calibration_context = old->calibration_context;
+    now->calibration_context_valid = old->calibration_context_valid;
+    memcpy(now->calibration_points,
+           old->calibration_points,
+           sizeof(now->calibration_points));
+    now->calibration_points_count = old->calibration_points_count;
+    now->calibration_domain = old->calibration_domain;
+    now->cal_last_utc = old->cal_last_utc;
+    now->cal_last_override_utc = old->cal_last_override_utc;
+    now->cal_due_count = old->cal_due_count;
+    now->cal_due_unit = old->cal_due_unit;
+    now->cal_due_override_count = old->cal_due_override_count;
+    now->cal_due_override_unit = old->cal_due_override_unit;
+    memset(&now->cal_metar, 0, sizeof(now->cal_metar));
+    now->rtd_ema_enabled = old->rtd_ema_enabled;
+    now->rtd_ema_alpha_permille = old->rtd_ema_alpha_permille;
+    now->rtd_fault_assert_ms = old->rtd_fault_assert_ms;
+    now->rtd_fault_clear_ms = old->rtd_fault_clear_ms;
+    memcpy(now->tz_posix, old->tz_posix, sizeof(now->tz_posix));
+    memcpy(now->unit_serial, old->unit_serial, sizeof(now->unit_serial));
+    memcpy(now->cal_method, old->cal_method, sizeof(now->cal_method));
+    now->dst_enabled = old->dst_enabled;
+    now->node_role = old->node_role;
+    now->allow_children = old->allow_children;
+    now->allow_children_set = old->allow_children_set;
+    now->display_attention_policy = old->display_attention_policy;
+    now->net_mode = old->net_mode;
+    now->mqtt_enabled = old->mqtt_enabled;
+    memcpy(
+      now->mqtt_broker_uri, old->mqtt_broker_uri, sizeof(now->mqtt_broker_uri));
+    memcpy(now->mqtt_topic_prefix,
+           old->mqtt_topic_prefix,
+           sizeof(now->mqtt_topic_prefix));
+    now->mqtt_qos = old->mqtt_qos;
+    now->mqtt_retain = old->mqtt_retain;
+    now->mqtt_bridge_mode = old->mqtt_bridge_mode;
+    blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+    return true;
   }
   if (header->version == 1u && blob_size == sizeof(app_settings_blob_v1_t)) {
     const app_settings_blob_v1_t* old_blob = (const app_settings_blob_v1_t*)raw;
@@ -749,6 +869,7 @@ ReadSettingsBlob(nvs_handle_t handle,
     now->cal_due_unit = old->cal_due_unit;
     now->cal_due_override_count = old->cal_due_override_count;
     now->cal_due_override_unit = old->cal_due_override_unit;
+    memset(&now->cal_metar, 0, sizeof(now->cal_metar));
     now->rtd_ema_enabled = old->rtd_ema_enabled;
     now->rtd_ema_alpha_permille = old->rtd_ema_alpha_permille;
     now->rtd_fault_assert_ms = old->rtd_fault_assert_ms;
@@ -820,6 +941,7 @@ SettingsPayloadFromSettings(const app_settings_t* settings,
   payload->cal_due_unit = settings->cal_due_unit;
   payload->cal_due_override_count = settings->cal_due_override_count;
   payload->cal_due_override_unit = settings->cal_due_override_unit;
+  payload->cal_metar = settings->cal_metar;
   payload->rtd_ema_enabled = settings->rtd_ema_enabled ? 1u : 0u;
   payload->rtd_ema_alpha_permille = settings->rtd_ema_alpha_permille;
   payload->rtd_fault_assert_ms = settings->rtd_fault_assert_ms;
@@ -945,6 +1067,32 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
   settings_out->cal_due_override_unit = payload->cal_due_override_unit;
   ValidateCalibrationDueSettings(&settings_out->cal_due_override_count,
                                  &settings_out->cal_due_override_unit);
+  settings_out->cal_metar = payload->cal_metar;
+  if (settings_out->cal_metar.valid > 1u) {
+    memset(&settings_out->cal_metar, 0, sizeof(settings_out->cal_metar));
+  } else {
+    settings_out->cal_metar.source_type[sizeof(settings_out->cal_metar.source_type) - 1] =
+      '\0';
+    settings_out->cal_metar
+      .raw_metar[sizeof(settings_out->cal_metar.raw_metar) - 1] = '\0';
+    settings_out->cal_metar
+      .station_id[sizeof(settings_out->cal_metar.station_id) - 1] = '\0';
+    settings_out->cal_metar.observation_token
+      [sizeof(settings_out->cal_metar.observation_token) - 1] = '\0';
+    settings_out->cal_metar.observation_iso_utc
+      [sizeof(settings_out->cal_metar.observation_iso_utc) - 1] = '\0';
+    settings_out->cal_metar.auto_or_cor
+      [sizeof(settings_out->cal_metar.auto_or_cor) - 1] = '\0';
+    settings_out->cal_metar.temp_dew_token
+      [sizeof(settings_out->cal_metar.temp_dew_token) - 1] = '\0';
+    settings_out->cal_metar
+      .remarks[sizeof(settings_out->cal_metar.remarks) - 1] = '\0';
+    settings_out->cal_metar
+      .method_note[sizeof(settings_out->cal_metar.method_note) - 1] = '\0';
+    if (settings_out->cal_metar.observation_resolved > 1u) {
+      settings_out->cal_metar.observation_resolved = 0u;
+    }
+  }
 
   if (payload->rtd_ema_enabled <= 1) {
     settings_out->rtd_ema_enabled = (payload->rtd_ema_enabled == 1);
@@ -1994,6 +2142,37 @@ AppSettingsSaveCalibrationMethod(const char* method)
   app_settings_t settings;
   InitSettingsSnapshot(&settings);
   snprintf(settings.cal_method, sizeof(settings.cal_method), "%s", method);
+  return PersistSettingsSnapshot(&settings);
+}
+
+esp_err_t
+AppSettingsSaveCalibrationMetar(const calibration_metar_reference_t* metar)
+{
+  if (metar == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.cal_metar = *metar;
+  settings.cal_metar.source_type[sizeof(settings.cal_metar.source_type) - 1] =
+    '\0';
+  settings.cal_metar.raw_metar[sizeof(settings.cal_metar.raw_metar) - 1] = '\0';
+  settings.cal_metar.station_id[sizeof(settings.cal_metar.station_id) - 1] =
+    '\0';
+  settings.cal_metar
+    .observation_token[sizeof(settings.cal_metar.observation_token) - 1] = '\0';
+  settings.cal_metar.observation_iso_utc
+    [sizeof(settings.cal_metar.observation_iso_utc) - 1] = '\0';
+  settings.cal_metar.auto_or_cor[sizeof(settings.cal_metar.auto_or_cor) - 1] =
+    '\0';
+  settings.cal_metar
+    .temp_dew_token[sizeof(settings.cal_metar.temp_dew_token) - 1] = '\0';
+  settings.cal_metar.remarks[sizeof(settings.cal_metar.remarks) - 1] = '\0';
+  settings.cal_metar
+    .method_note[sizeof(settings.cal_metar.method_note) - 1] = '\0';
+  settings.cal_metar.valid = (settings.cal_metar.valid != 0u) ? 1u : 0u;
+  settings.cal_metar.observation_resolved =
+    (settings.cal_metar.observation_resolved != 0u) ? 1u : 0u;
   return PersistSettingsSnapshot(&settings);
 }
 

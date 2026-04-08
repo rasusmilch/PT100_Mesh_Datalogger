@@ -17,6 +17,7 @@
 #include <time.h>
 
 #include "app_net_config.h"
+#include "app_settings.h"
 #include "argtable3/argtable3.h"
 #include "boot_mode.h"
 #include "calibration.h"
@@ -209,6 +210,30 @@ static bool
 ParseCalDueUnit(const char* value, uint8_t* unit_out);
 static bool
 ParseMetarAltimeterInHg(const char* token, float* altimeter_inHg_out);
+static bool
+MetarTokenLooksLikeObservation_(const char* token);
+static bool
+MetarTokenLooksLikeStation_(const char* token);
+static bool
+MetarTokenLooksLikeTempDew_(const char* token);
+static bool
+ResolveMetarObservationIsoUtc_(const char* token,
+                               bool system_time_valid,
+                               int64_t now_epoch_utc,
+                               char* iso_out,
+                               size_t iso_out_size,
+                               bool* resolved_out);
+static bool
+ParseMetarLine_(const char* metar_line,
+                calibration_metar_reference_t* metar_out,
+                char* error_out,
+                size_t error_out_size);
+static void
+PrintCalibrationMetarBlock_(const calibration_metar_reference_t* metar,
+                            const char* heading,
+                            bool include_report_block);
+static bool
+ParseElevationFt_(const char* token, uint16_t* elevation_ft_out);
 static float
 SaturationTempCFromStationInHg(float station_inHg);
 static void
@@ -3449,6 +3474,98 @@ CommandCal(int argc, char** argv)
       PrintCalibrationStatusUnified(settings, RuntimeGetState());
       return 0;
     }
+    if (strcmp(action, "metar") == 0) {
+      if (argc < 3) {
+        printf("usage: cal metar set <elevation_ft> \"<raw METAR>\" | "
+               "cal metar show | cal metar clear\n");
+        return 1;
+      }
+      const char* metar_action = argv[2];
+      if (strcmp(metar_action, "show") == 0) {
+        PrintCalibrationMetarBlock_(&settings->cal_metar, "Calibration Steam Reference", false);
+        return 0;
+      }
+      if (strcmp(metar_action, "clear") == 0) {
+        calibration_metar_reference_t cleared = { 0 };
+        esp_err_t save_result = AppSettingsSaveCalibrationMetar(&cleared);
+        if (save_result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(save_result));
+          return 1;
+        }
+        memset(&settings->cal_metar, 0, sizeof(settings->cal_metar));
+        printf("cal metar cleared\n");
+        return 0;
+      }
+      if (strcmp(metar_action, "set") == 0) {
+        if (argc != 5) {
+          printf("usage: cal metar set <elevation_ft> \"<raw METAR>\"\n");
+          return 1;
+        }
+        uint16_t elevation_ft = 0;
+        if (!ParseElevationFt_(argv[3], &elevation_ft)) {
+          printf("ERR invalid elevation_ft (expected 0..20000)\n");
+          return 1;
+        }
+        calibration_metar_reference_t metar = { 0 };
+        char parse_error[96] = { 0 };
+        if (!ParseMetarLine_(argv[4], &metar, parse_error, sizeof(parse_error))) {
+          printf("ERR %s\n", parse_error[0] != '\0' ? parse_error
+                                                   : "unable to parse METAR");
+          return 1;
+        }
+        metar.elevation_ft = elevation_ft;
+        metar.station_pressure_inhg =
+          StationPressureFromSlpInHg(metar.altimeter_inhg, (float)elevation_ft);
+        if (!isfinite(metar.station_pressure_inhg) || metar.station_pressure_inhg <= 0.0f) {
+          printf("ERR invalid station pressure from altimeter/elevation\n");
+          return 1;
+        }
+        metar.satpt_c = SaturationTempCFromStationInHg(metar.station_pressure_inhg);
+        if (!isfinite(metar.satpt_c)) {
+          printf("ERR invalid saturation-point result\n");
+          return 1;
+        }
+        const bool time_valid = TimeSyncIsSystemTimeValid();
+        const int64_t now_epoch = time_valid ? (int64_t)time(NULL) : 0;
+        metar.stored_at_utc_epoch = now_epoch;
+        bool obs_resolved = false;
+        (void)ResolveMetarObservationIsoUtc_(metar.observation_token,
+                                             time_valid,
+                                             now_epoch,
+                                             metar.observation_iso_utc,
+                                             sizeof(metar.observation_iso_utc),
+                                             &obs_resolved);
+        metar.observation_resolved = obs_resolved ? 1u : 0u;
+        snprintf(metar.method_note,
+                 sizeof(metar.method_note),
+                 "%s",
+                 "steam column attached above beaker; vented system");
+        metar.valid = 1u;
+        esp_err_t save_result = AppSettingsSaveCalibrationMetar(&metar);
+        if (save_result != ESP_OK) {
+          printf("save failed: %s\n", esp_err_to_name(save_result));
+          return 1;
+        }
+        settings->cal_metar = metar;
+        printf("cal metar set: station=%s obs=%s altimeter=%.2f inHg "
+               "station=%.2f inHg satpt=%.3f C\n",
+               metar.station_id,
+               metar.observation_token,
+               (double)metar.altimeter_inhg,
+               (double)metar.station_pressure_inhg,
+               (double)metar.satpt_c);
+        if (metar.observation_resolved == 0u) {
+          printf("note: observation token retained as %s (absolute UTC unresolved)\n",
+                 metar.observation_token);
+        }
+        printf("Use this for steam-point capture: cal capture %.3f\n",
+               (double)metar.satpt_c);
+        return 0;
+      }
+      printf("usage: cal metar set <elevation_ft> \"<raw METAR>\" | "
+             "cal metar show | cal metar clear\n");
+      return 1;
+    }
     if (strcmp(action, "set") == 0) {
       if (argc < 4) {
         printf("usage: cal set date <YYYY-MM-DD> | cal set due <count> "
@@ -4149,6 +4266,8 @@ CommandCal(int argc, char** argv)
          "cal clear due | cal set due_override <count> <days|months|years> | "
          "cal clear due_override | cal set method <string...> | "
          "cal clear method | cal clear | cal add <raw_c> <actual_c> | "
+         "cal metar set <elevation_ft> \"<raw METAR>\" | cal metar show | "
+         "cal metar clear | "
          "cal import <raw_ohm> <actual_c> [--raw_c <value>] "
          "[--stddev_c <value>] | cal restore ... | "
          "cal del <index> | cal remove <index> | "
@@ -4790,6 +4909,305 @@ ParseMetarAltimeterInHg(const char* token, float* altimeter_inHg_out)
     return false;
   }
   *altimeter_inHg_out = parsed_inHg;
+  return true;
+}
+
+static bool
+MetarTokenLooksLikeStation_(const char* token)
+{
+  if (token == NULL) {
+    return false;
+  }
+  const size_t len = strlen(token);
+  if (len < 4 || len > 7) {
+    return false;
+  }
+  for (size_t i = 0; i < len; ++i) {
+    if (!isalnum((unsigned char)token[i])) {
+      return false;
+    }
+    if (isalpha((unsigned char)token[i]) &&
+        !isupper((unsigned char)token[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool
+MetarTokenLooksLikeObservation_(const char* token)
+{
+  if (token == NULL || strlen(token) != 7U || token[6] != 'Z') {
+    return false;
+  }
+  for (size_t i = 0; i < 6; ++i) {
+    if (!isdigit((unsigned char)token[i])) {
+      return false;
+    }
+  }
+  const int day = (token[0] - '0') * 10 + (token[1] - '0');
+  const int hour = (token[2] - '0') * 10 + (token[3] - '0');
+  const int minute = (token[4] - '0') * 10 + (token[5] - '0');
+  return day >= 1 && day <= 31 && hour >= 0 && hour <= 23 && minute >= 0 &&
+         minute <= 59;
+}
+
+static bool
+MetarTokenLooksLikeTempDew_(const char* token)
+{
+  if (token == NULL) {
+    return false;
+  }
+  const char* slash = strchr(token, '/');
+  if (slash == NULL || slash == token || slash[1] == '\0') {
+    return false;
+  }
+  return true;
+}
+
+static bool
+ResolveMetarObservationIsoUtc_(const char* token,
+                               bool system_time_valid,
+                               int64_t now_epoch_utc,
+                               char* iso_out,
+                               size_t iso_out_size,
+                               bool* resolved_out)
+{
+  if (iso_out == NULL || iso_out_size == 0 || resolved_out == NULL) {
+    return false;
+  }
+  *resolved_out = false;
+  iso_out[0] = '\0';
+  if (!system_time_valid || now_epoch_utc <= 0 || !MetarTokenLooksLikeObservation_(token)) {
+    return true;
+  }
+
+  struct tm now_tm = { 0 };
+  time_t now_time = (time_t)now_epoch_utc;
+  if (gmtime_r(&now_time, &now_tm) == NULL) {
+    return true;
+  }
+
+  const int obs_day = (token[0] - '0') * 10 + (token[1] - '0');
+  const int obs_hour = (token[2] - '0') * 10 + (token[3] - '0');
+  const int obs_minute = (token[4] - '0') * 10 + (token[5] - '0');
+  int64_t best_delta_seconds = INT64_MAX;
+  int64_t best_epoch = 0;
+
+  for (int month_offset = -1; month_offset <= 1; ++month_offset) {
+    int year = now_tm.tm_year + 1900;
+    int month = (now_tm.tm_mon + 1) + month_offset;
+    while (month < 1) {
+      month += 12;
+      --year;
+    }
+    while (month > 12) {
+      month -= 12;
+      ++year;
+    }
+    int64_t day_epoch = 0;
+    if (!TimeCivilUtcEpochFromDate(year, month, obs_day, &day_epoch)) {
+      continue;
+    }
+    const int64_t candidate =
+      day_epoch + (int64_t)obs_hour * 3600LL + (int64_t)obs_minute * 60LL;
+    const int64_t delta = llabs(candidate - now_epoch_utc);
+    if (delta < best_delta_seconds) {
+      best_delta_seconds = delta;
+      best_epoch = candidate;
+    }
+  }
+
+  if (best_epoch <= 0) {
+    return true;
+  }
+  FormatUtcEpochIso8601(best_epoch, iso_out, iso_out_size);
+  *resolved_out = true;
+  return true;
+}
+
+static bool
+ParseMetarLine_(const char* metar_line,
+                calibration_metar_reference_t* metar_out,
+                char* error_out,
+                size_t error_out_size)
+{
+  if (error_out != NULL && error_out_size > 0) {
+    error_out[0] = '\0';
+  }
+  if (metar_line == NULL || metar_out == NULL) {
+    return false;
+  }
+  if (strlen(metar_line) >= APP_SETTINGS_CAL_METAR_RAW_MAX_LEN) {
+    if (error_out != NULL && error_out_size > 0) {
+      snprintf(error_out,
+               error_out_size,
+               "METAR line too long (max %u chars)",
+               (unsigned)(APP_SETTINGS_CAL_METAR_RAW_MAX_LEN - 1));
+    }
+    return false;
+  }
+
+  memset(metar_out, 0, sizeof(*metar_out));
+  snprintf(metar_out->source_type, sizeof(metar_out->source_type), "METAR");
+  snprintf(metar_out->raw_metar, sizeof(metar_out->raw_metar), "%s", metar_line);
+
+  char working[APP_SETTINGS_CAL_METAR_RAW_MAX_LEN] = { 0 };
+  snprintf(working, sizeof(working), "%s", metar_line);
+
+  char* saveptr = NULL;
+  char* token = strtok_r(working, " \t", &saveptr);
+  bool have_station = false;
+  bool have_obs = false;
+  bool have_altimeter = false;
+  bool in_remarks = false;
+  while (token != NULL) {
+    if (strcmp(token, "METAR") == 0 || strcmp(token, "SPECI") == 0) {
+      token = strtok_r(NULL, " \t", &saveptr);
+      continue;
+    }
+    if (!have_station && MetarTokenLooksLikeStation_(token)) {
+      snprintf(
+        metar_out->station_id, sizeof(metar_out->station_id), "%s", token);
+      have_station = true;
+      token = strtok_r(NULL, " \t", &saveptr);
+      continue;
+    }
+    if (!have_obs && MetarTokenLooksLikeObservation_(token)) {
+      snprintf(metar_out->observation_token,
+               sizeof(metar_out->observation_token),
+               "%s",
+               token);
+      have_obs = true;
+      token = strtok_r(NULL, " \t", &saveptr);
+      continue;
+    }
+    if (!have_altimeter) {
+      float parsed_altimeter = NAN;
+      if (ParseMetarAltimeterInHg(token, &parsed_altimeter)) {
+        metar_out->altimeter_inhg = parsed_altimeter;
+        have_altimeter = true;
+      }
+    }
+    if ((strcmp(token, "AUTO") == 0 || strcmp(token, "COR") == 0) &&
+        metar_out->auto_or_cor[0] == '\0') {
+      snprintf(
+        metar_out->auto_or_cor, sizeof(metar_out->auto_or_cor), "%s", token);
+    }
+    if (metar_out->temp_dew_token[0] == '\0' && MetarTokenLooksLikeTempDew_(token)) {
+      snprintf(metar_out->temp_dew_token,
+               sizeof(metar_out->temp_dew_token),
+               "%s",
+               token);
+    }
+    if (strcmp(token, "RMK") == 0) {
+      in_remarks = true;
+      token = strtok_r(NULL, " \t", &saveptr);
+      continue;
+    }
+    if (in_remarks) {
+      if (metar_out->remarks[0] != '\0') {
+        strncat(metar_out->remarks,
+                " ",
+                sizeof(metar_out->remarks) - strlen(metar_out->remarks) - 1);
+      }
+      strncat(metar_out->remarks,
+              token,
+              sizeof(metar_out->remarks) - strlen(metar_out->remarks) - 1);
+    }
+    token = strtok_r(NULL, " \t", &saveptr);
+  }
+
+  if (!have_station) {
+    if (error_out != NULL && error_out_size > 0) {
+      snprintf(error_out, error_out_size, "METAR station ID missing/malformed");
+    }
+    return false;
+  }
+  if (!have_obs) {
+    if (error_out != NULL && error_out_size > 0) {
+      snprintf(error_out, error_out_size, "METAR observation token missing");
+    }
+    return false;
+  }
+  if (!have_altimeter || !(metar_out->altimeter_inhg > 0.0f)) {
+    if (error_out != NULL && error_out_size > 0) {
+      snprintf(error_out, error_out_size, "METAR altimeter token missing");
+    }
+    return false;
+  }
+  return true;
+}
+
+static void
+PrintCalibrationMetarBlock_(const calibration_metar_reference_t* metar,
+                            const char* heading,
+                            bool include_report_block)
+{
+  if (metar == NULL || metar->valid == 0u) {
+    printf("%s:\n  none stored\n", (heading != NULL) ? heading : "METAR");
+    return;
+  }
+  char stored_at[32] = { 0 };
+  FormatUtcEpochIso8601(metar->stored_at_utc_epoch, stored_at, sizeof(stored_at));
+  printf("%s:\n", (heading != NULL) ? heading : "Calibration Steam Reference");
+  printf("  Source type:         %s\n", metar->source_type);
+  printf("  Raw METAR:           %s\n", metar->raw_metar);
+  printf("  Station:             %s\n", metar->station_id);
+  if (metar->observation_resolved != 0u && metar->observation_iso_utc[0] != '\0') {
+    printf("  Observation UTC:     %s\n", metar->observation_iso_utc);
+  } else {
+    printf("  Observation token:   %s (unresolved)\n", metar->observation_token);
+  }
+  printf("  Elevation used_ft:   %u\n", (unsigned)metar->elevation_ft);
+  printf("  Altimeter inHg:      %.2f\n", (double)metar->altimeter_inhg);
+  printf("  Station pressure:    %.2f inHg\n", (double)metar->station_pressure_inhg);
+  printf("  Calculated satpt_C:  %.3f\n", (double)metar->satpt_c);
+  printf("  Stored at UTC:       %s\n", stored_at);
+  printf("  Method note:         %s\n", metar->method_note);
+  if (metar->auto_or_cor[0] != '\0') {
+    printf("  Flag:                %s\n", metar->auto_or_cor);
+  }
+  if (metar->temp_dew_token[0] != '\0') {
+    printf("  Temp/Dew token:      %s\n", metar->temp_dew_token);
+  }
+  if (metar->remarks[0] != '\0') {
+    printf("  Remarks:             %s\n", metar->remarks);
+  }
+
+  if (!include_report_block) {
+    return;
+  }
+
+  printf("Calibration Report Block:\n");
+  printf("  Pressure source type: %s\n", metar->source_type);
+  printf("  METAR station: %s\n", metar->station_id);
+  printf("  Raw METAR: %s\n", metar->raw_metar);
+  if (metar->observation_resolved != 0u && metar->observation_iso_utc[0] != '\0') {
+    printf("  Observation time UTC: %s\n", metar->observation_iso_utc);
+  } else {
+    printf("  Observation time UTC: unresolved (%s)\n", metar->observation_token);
+  }
+  printf("  Elevation used: %u ft\n", (unsigned)metar->elevation_ft);
+  printf("  Altimeter setting: %.2f inHg\n", (double)metar->altimeter_inhg);
+  printf("  Estimated station pressure: %.2f inHg\n",
+         (double)metar->station_pressure_inhg);
+  printf("  Calculated steam temperature: %.3f C\n", (double)metar->satpt_c);
+  printf("  Method note: %s\n", metar->method_note);
+}
+
+static bool
+ParseElevationFt_(const char* token, uint16_t* elevation_ft_out)
+{
+  if (token == NULL || elevation_ft_out == NULL || token[0] == '\0') {
+    return false;
+  }
+  char* endptr = NULL;
+  long parsed = strtol(token, &endptr, 10);
+  if (endptr == token || *endptr != '\0' || parsed < 0 || parsed > 20000) {
+    return false;
+  }
+  *elevation_ft_out = (uint16_t)parsed;
   return true;
 }
 
@@ -6233,6 +6651,15 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
   printf("  Time stable:         %s\n", time_stable ? "yes" : "no");
   printf("  Due check:           %s\n",
          check_suspended ? "suspended" : "active");
+  if (settings->cal_metar.valid != 0u) {
+    PrintCalibrationMetarBlock_(
+      &settings->cal_metar, "Calibration Steam Reference", true);
+  } else {
+    printf("Calibration Steam Reference:\n");
+    printf("  none stored (use: cal metar set <elevation_ft> \"<raw METAR>\")\n");
+    printf("Calibration Report Block:\n");
+    printf("  Pressure source type: <none>\n");
+  }
 }
 
 static void
@@ -6988,9 +7415,32 @@ static const console_help_topic_t kCalTopics[] = {
     .synopsis = "cal status",
     .details = "Prints window statistics, model/point state, residuals, and "
                "calibration schedule metadata (last/due/method/time status) in "
-               "one deduplicated output.",
+               "one deduplicated output. Also prints the stored calibration "
+               "steam-reference METAR block and a copy/paste-friendly "
+               "calibration report block when available.",
     .options = NULL,
     .examples = "  cal status",
+  },
+  {
+    .name = "metar",
+    .summary = "Parse/store calibration steam-reference data from a raw METAR",
+    .synopsis = "cal metar set <elevation_ft> \"<raw METAR line>\"\n"
+                "cal metar show\n"
+                "cal metar clear",
+    .details =
+      "Parses METAR station/observation/altimeter fields, computes station "
+      "pressure from altimeter + elevation (same path used by satpt), computes "
+      "steam-point saturation temperature, and persists the block in the "
+      "authoritative calibration metadata stored in NVS. cal status then emits "
+      "both diagnostics and report-ready steam-reference fields from this "
+      "stored metadata.",
+    .options =
+      "  set <elevation_ft> \"<raw METAR>\"  Parse, compute, and persist.\n"
+      "  show                              Show currently stored METAR block.\n"
+      "  clear                             Remove stored METAR block.",
+    .examples = "  cal metar set 1391 \"METAR KBJI 081955Z AUTO 26010KT 10SM CLR 05/M02 A2969 RMK AO2 T00501022\"\n"
+                "  cal metar show\n"
+                "  cal metar clear",
   },
   {
     .name = "set",
@@ -7195,19 +7645,21 @@ PrintCalHelpBody(void)
   printf("  2) cal set method \"slushy ice bath + satpt steam space\"\n");
   printf("  3) cal live   (confirm stable readings first)\n");
   printf("  4) cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8\n");
-  printf("  5) satpt A2922 1315\n");
-  printf("  6) cal capture 98.7 --stable_stddev_c 0.05 --min_seconds 8\n");
-  printf("  7) cal apply\n");
+  printf("  5) cal metar set 1391 \"METAR KBJI 081955Z AUTO ... A2969 ...\"\n");
+  printf("  6) cal status   (copy steam-reference report block)\n");
+  printf("  7) cal capture <satpt from cal metar> --stable_stddev_c 0.05 --min_seconds 8\n");
+  printf("  8) cal apply\n");
   printf("  Manual restore option: use 'cal import' (or alias 'cal restore')\n");
   printf("  when raw resistance/reference values are already known.\n");
   printf("  'cal add' is legacy temp-domain only.\n");
-  printf("  Note: For steam-point work, run satpt first and capture using the\n");
-  printf("        computed Celsius value. Do not assume 100.0 C unless local\n");
-  printf("        pressure justifies it. Prefer steam-space over immersion.\n");
+  printf("  Note: satpt is an ad hoc calculator; cal metar parses+stores report\n");
+  printf("        metadata for audit use and uses the same pressure->satpt path.\n");
   printf("  Note: 'cal stop' aborts an active cal live/cal capture operation.\n\n");
   printf("EXAMPLES\n");
   printf("  cal status\n");
   printf("  cal set method \"ice + satpt steam\"\n");
+  printf("  cal metar set 1391 \"METAR KBJI 081955Z AUTO 26010KT 10SM CLR 05/M02 A2969 RMK AO2 T00501022\"\n");
+  printf("  cal metar show\n");
   printf("  cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8\n");
   printf("  cal import 99.970 0.0 --raw_c -0.078 --stddev_c 0.019\n");
   printf("  satpt A2922 1315\n");
@@ -7457,7 +7909,7 @@ RegisterCommands(void)
   static const console_registry_entry_t cal_cmd = {
     .command = "cal",
     .summary = "Manage calibration metadata, live/import point capture, and model fitting",
-    .synopsis = "cal <status|set|list|add|import|restore|del|remove|clear|apply|live|capture|stop> ...",
+    .synopsis = "cal <status|metar|set|list|add|import|restore|del|remove|clear|apply|live|capture|stop> ...",
     .print_body = PrintCalHelpBody,
     .topic_help = &CalTopicHelp,
     .func = &CommandCal,
@@ -7573,7 +8025,9 @@ RegisterCommands(void)
       "station-pressure value.\n"
       "Traceability disclaimer: estimate only (Antoine + ISA approximation). "
       "For traceable calibration, use a calibrated barometer at the bath and "
-      "a proper fixed-point/steam-point apparatus.",
+      "a proper fixed-point/steam-point apparatus.\n"
+      "Use 'cal metar set <elevation_ft> \"<raw METAR>\"' when you need the same "
+      "math path plus persisted calibration-report metadata.",
     .func = &CommandSatPt,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&satpt_cmd));
