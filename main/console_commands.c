@@ -107,6 +107,20 @@ ParseOptionDouble_(int argc, char** argv, const char* name, double* value_out);
 static bool
 ParseTempC_(const char* text, double* value_out);
 static bool
+ParseCalAddPositionalArgs_(int argc,
+                           char** argv,
+                           double* raw_c_out,
+                           double* actual_c_out);
+static int
+FindCalibrationPointIndexByActualMc_(const app_settings_t* settings,
+                                     int32_t actual_mC);
+static esp_err_t
+SaveCalibrationPointsAndDomain_(app_settings_t* settings);
+static esp_err_t
+DeleteCalibrationPointByDisplayIndex_(app_settings_t* settings,
+                                      size_t display_index,
+                                      calibration_point_t* deleted_point_out);
+static bool
 JoinArgsWithSpaces(int argc,
                    char** argv,
                    int start_index,
@@ -2960,6 +2974,134 @@ ParseTempC_(const char* text, double* value_out)
   return false;
 }
 
+/**
+ * @brief Parse positional arguments for `cal add <raw_c> <actual_c>`.
+ * @param argc Command argument count.
+ * @param argv Command argument values.
+ * @param raw_c_out Parsed raw Celsius value.
+ * @param actual_c_out Parsed actual/reference Celsius value.
+ * @return true when exactly two valid positional Celsius values are present.
+ */
+static bool
+ParseCalAddPositionalArgs_(int argc,
+                           char** argv,
+                           double* raw_c_out,
+                           double* actual_c_out)
+{
+  if (argv == NULL || raw_c_out == NULL || actual_c_out == NULL) {
+    return false;
+  }
+
+  const char* raw_text = NULL;
+  const char* actual_text = NULL;
+  for (int i = 2; i < argc; ++i) {
+    const char* arg = argv[i];
+    if (arg == NULL) {
+      continue;
+    }
+    if (strncmp(arg, "--", 2) == 0) {
+      return false;
+    }
+    if (raw_text == NULL) {
+      raw_text = arg;
+      continue;
+    }
+    if (actual_text == NULL) {
+      actual_text = arg;
+      continue;
+    }
+    return false;
+  }
+
+  if (raw_text == NULL || actual_text == NULL) {
+    return false;
+  }
+
+  double raw_c = 0.0;
+  double actual_c = 0.0;
+  if (!ParseTempC_(raw_text, &raw_c) || !ParseTempC_(actual_text, &actual_c)) {
+    return false;
+  }
+
+  *raw_c_out = raw_c;
+  *actual_c_out = actual_c;
+  return true;
+}
+
+/**
+ * @brief Find point index by exact millidegree actual/reference temperature.
+ * @param settings Active settings with calibration points.
+ * @param actual_mC Reference temperature in millidegrees Celsius.
+ * @return Zero-based index when found; -1 when not found/invalid input.
+ */
+static int
+FindCalibrationPointIndexByActualMc_(const app_settings_t* settings,
+                                     int32_t actual_mC)
+{
+  if (settings == NULL) {
+    return -1;
+  }
+  for (size_t i = 0; i < settings->calibration_points_count; ++i) {
+    if (settings->calibration_points[i].actual_mC == actual_mC) {
+      return (int)i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * @brief Save calibration points and domain to NVS.
+ * @param settings Active settings.
+ * @return ESP_OK on success or error from underlying save routine.
+ */
+static esp_err_t
+SaveCalibrationPointsAndDomain_(app_settings_t* settings)
+{
+  if (settings == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  esp_err_t result = AppSettingsSaveCalibrationPoints(
+    settings->calibration_points, settings->calibration_points_count);
+  if (result != ESP_OK) {
+    return result;
+  }
+  return AppSettingsSaveCalibrationDomain(settings->calibration_domain);
+}
+
+/**
+ * @brief Delete one calibration point by 1-based display index and compact.
+ * @param settings Active settings.
+ * @param display_index 1-based point index shown in cal list/status.
+ * @param deleted_point_out Optional removed point snapshot.
+ * @return ESP_OK on success; ESP_ERR_NOT_FOUND for out-of-range index.
+ */
+static esp_err_t
+DeleteCalibrationPointByDisplayIndex_(app_settings_t* settings,
+                                      size_t display_index,
+                                      calibration_point_t* deleted_point_out)
+{
+  if (settings == NULL || display_index == 0u) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (display_index > settings->calibration_points_count) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  const size_t index = display_index - 1u;
+  if (deleted_point_out != NULL) {
+    *deleted_point_out = settings->calibration_points[index];
+  }
+
+  for (size_t i = index; (i + 1u) < settings->calibration_points_count; ++i) {
+    settings->calibration_points[i] = settings->calibration_points[i + 1u];
+  }
+  settings->calibration_points_count--;
+  memset(&settings->calibration_points[settings->calibration_points_count],
+         0,
+         sizeof(settings->calibration_points[settings->calibration_points_count]));
+  return ESP_OK;
+}
+
 static bool
 JoinArgsWithSpaces(int argc,
                    char** argv,
@@ -3092,15 +3234,29 @@ CalConsoleOpTask(void* task_arg)
           break;
         }
         app_settings_t* settings = g_runtime->settings;
-        if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
+        if (settings->calibration_domain == CAL_DOMAIN_TEMP_C &&
+            settings->calibration_points_count > 0u) {
+          printf("cal capture failed: existing temp-domain points detected; "
+                 "run 'cal clear' first\n");
+          break;
+        }
+        const int32_t actual_mC = (int32_t)llround(actual_temp_c * 1000.0);
+        int point_index =
+          FindCalibrationPointIndexByActualMc_(settings, actual_mC);
+        const bool updating_existing = (point_index >= 0);
+        if (!updating_existing &&
+            settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
           printf("cal capture failed: already have %u points\n",
                  (unsigned)settings->calibration_points_count);
           break;
         }
-        calibration_point_t* point =
-          &settings->calibration_points[settings->calibration_points_count];
+        if (!updating_existing) {
+          point_index = (int)settings->calibration_points_count;
+          settings->calibration_points_count++;
+        }
+        calibration_point_t* point = &settings->calibration_points[point_index];
         point->raw_avg_mC = mean_raw_mC;
-        point->actual_mC = (int32_t)llround(actual_temp_c * 1000.0);
+        point->actual_mC = actual_mC;
         point->raw_stddev_mC = stddev_mC;
         point->raw_avg_mOhm = mean_raw_mOhm;
         point->raw_stddev_mOhm = stddev_mOhm;
@@ -3108,26 +3264,29 @@ CalConsoleOpTask(void* task_arg)
         point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
         point->timestamp_epoch_sec =
           point->time_valid ? (int64_t)time(NULL) : 0;
-        settings->calibration_points_count++;
         settings->calibration_domain = CAL_DOMAIN_RESISTANCE_OHM;
-        esp_err_t save_result = AppSettingsSaveCalibrationPoints(
-          settings->calibration_points, settings->calibration_points_count);
-        if (save_result == ESP_OK) {
-          save_result = AppSettingsSaveCalibrationDomain(
-            settings->calibration_domain);
-        }
+        esp_err_t save_result = SaveCalibrationPointsAndDomain_(settings);
         if (save_result != ESP_OK) {
           printf("save failed: %s\n", esp_err_to_name(save_result));
           break;
         }
-        printf(
-          "cal capture OK: point=#%u actual=%.3fC mean_raw=%.3fC std=%.3fC "
-          "mean_raw_ohm=%.6f saved\n",
-          (unsigned)settings->calibration_points_count,
-          actual_temp_c,
-          mean_raw_mC / 1000.0,
-          stddev_c,
-          mean_raw_mOhm / 1000.0);
+        if (updating_existing) {
+          printf("cal capture OK: updated point #%u actual=%.3fC mean_raw=%.3fC "
+                 "std=%.3fC mean_raw_ohm=%.6f saved\n",
+                 (unsigned)(point_index + 1),
+                 actual_temp_c,
+                 mean_raw_mC / 1000.0,
+                 stddev_c,
+                 mean_raw_mOhm / 1000.0);
+        } else {
+          printf("cal capture OK: added point #%u actual=%.3fC mean_raw=%.3fC "
+                 "std=%.3fC mean_raw_ohm=%.6f saved\n",
+                 (unsigned)(point_index + 1),
+                 actual_temp_c,
+                 mean_raw_mC / 1000.0,
+                 stddev_c,
+                 mean_raw_mOhm / 1000.0);
+        }
         break;
       }
 
@@ -3440,10 +3599,10 @@ CommandCal(int argc, char** argv)
         }
         return 1;
       }
-
-      if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
-        printf("already have %u points; run 'cal apply' or 'cal clear'\n",
-               (unsigned)settings->calibration_points_count);
+      if (settings->calibration_domain == CAL_DOMAIN_TEMP_C &&
+          settings->calibration_points_count > 0u) {
+        printf("cal capture failed: existing temp-domain points detected; run "
+               "'cal clear' first\n");
         return 1;
       }
 
@@ -3501,6 +3660,100 @@ CommandCal(int argc, char** argv)
       printf("cal capture started (use 'cal stop' to abort)\n");
       return 0;
     }
+
+    if (strcmp(action, "add") == 0) {
+      double raw_c = 0.0;
+      double actual_c = 0.0;
+      if (!ParseCalAddPositionalArgs_(argc, argv, &raw_c, &actual_c)) {
+        printf("usage: cal add <raw_c> <actual_c>\n");
+        return 1;
+      }
+      if (settings->calibration_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+        printf("cal add is legacy temp-domain only; use 'cal capture <actual_c>'\n");
+        return 1;
+      }
+
+      const int32_t actual_mC = (int32_t)llround(actual_c * 1000.0);
+      int point_index =
+        FindCalibrationPointIndexByActualMc_(settings, actual_mC);
+      const bool updating_existing = (point_index >= 0);
+      if (!updating_existing &&
+          settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
+        printf("already have %u points; run 'cal apply' or 'cal clear'\n",
+               (unsigned)settings->calibration_points_count);
+        return 1;
+      }
+
+      if (!updating_existing) {
+        point_index = (int)settings->calibration_points_count;
+        settings->calibration_points_count++;
+      }
+      calibration_point_t* point = &settings->calibration_points[point_index];
+      point->raw_avg_mC = (int32_t)llround(raw_c * 1000.0);
+      point->actual_mC = actual_mC;
+      point->raw_stddev_mC = 0;
+      point->raw_avg_mOhm = 0;
+      point->raw_stddev_mOhm = 0;
+      point->sample_count = 0;
+      point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
+      point->timestamp_epoch_sec = point->time_valid ? (int64_t)time(NULL) : 0;
+      settings->calibration_domain = CAL_DOMAIN_TEMP_C;
+      esp_err_t result = SaveCalibrationPointsAndDomain_(settings);
+      if (result != ESP_OK) {
+        printf("save failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+      if (updating_existing) {
+        printf("updated point %u: raw=%.6f actual=%.6f\n",
+               (unsigned)(point_index + 1),
+               raw_c,
+               actual_c);
+      } else {
+        printf("added point %u: raw=%.6f actual=%.6f\n",
+               (unsigned)(point_index + 1),
+               raw_c,
+               actual_c);
+      }
+      return 0;
+    }
+
+    if (strcmp(action, "del") == 0 || strcmp(action, "remove") == 0) {
+      if (argc != 3) {
+        printf("usage: cal del <index>\n");
+        return 1;
+      }
+      char* end = NULL;
+      long display_index_long = strtol(argv[2], &end, 10);
+      if (end == argv[2] || *end != '\0' || display_index_long <= 0 ||
+          display_index_long > INT_MAX) {
+        printf("usage: cal del <index>\n");
+        return 1;
+      }
+      calibration_point_t deleted_point = { 0 };
+      esp_err_t delete_result = DeleteCalibrationPointByDisplayIndex_(
+        settings, (size_t)display_index_long, &deleted_point);
+      if (delete_result == ESP_ERR_NOT_FOUND) {
+        printf("cal del failed: index %ld out of range (1..%u)\n",
+               display_index_long,
+               (unsigned)settings->calibration_points_count);
+        return 1;
+      }
+      if (delete_result != ESP_OK) {
+        printf("cal del failed: %s\n", esp_err_to_name(delete_result));
+        return 1;
+      }
+      esp_err_t save_result = SaveCalibrationPointsAndDomain_(settings);
+      if (save_result != ESP_OK) {
+        printf("save failed: %s\n", esp_err_to_name(save_result));
+        return 1;
+      }
+      printf("deleted point %ld: raw=%.6f actual=%.6f; %u point(s) remain\n",
+             display_index_long,
+             deleted_point.raw_avg_mC / 1000.0,
+             deleted_point.actual_mC / 1000.0,
+             (unsigned)settings->calibration_points_count);
+      return 0;
+    }
   }
 
   int errors = arg_parse(argc, argv, (void**)&g_cal_args);
@@ -3531,45 +3784,6 @@ CommandCal(int argc, char** argv)
       return 1;
     }
     printf("calibration reset to identity (y=x)\n");
-    return 0;
-  }
-
-  if (strcmp(action, "add") == 0) {
-    if (g_cal_args.raw_c->count != 1 || g_cal_args.actual_c->count != 1) {
-      printf("usage: cal add <raw_c> <actual_c>\n");
-      return 1;
-    }
-    if (settings->calibration_domain == CAL_DOMAIN_RESISTANCE_OHM) {
-      printf("cal add is legacy temp-domain only; use 'cal capture <actual_c>'\n");
-      return 1;
-    }
-    if (settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
-      printf("already have %u points; run 'cal apply' or 'cal clear'\n",
-             (unsigned)settings->calibration_points_count);
-      return 1;
-    }
-
-    calibration_point_t* point =
-      &settings->calibration_points[settings->calibration_points_count];
-    point->raw_avg_mC = (int32_t)llround(g_cal_args.raw_c->dval[0] * 1000.0);
-    point->actual_mC = (int32_t)llround(g_cal_args.actual_c->dval[0] * 1000.0);
-    point->raw_stddev_mC = 0;
-    point->raw_avg_mOhm = 0;
-    point->raw_stddev_mOhm = 0;
-    point->sample_count = 0;
-    point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
-    point->timestamp_epoch_sec = point->time_valid ? (int64_t)time(NULL) : 0;
-    settings->calibration_points_count++;
-    printf("added point %u: raw=%.6f actual=%.6f\n",
-           (unsigned)settings->calibration_points_count,
-           g_cal_args.raw_c->dval[0],
-           g_cal_args.actual_c->dval[0]);
-    esp_err_t result = AppSettingsSaveCalibrationPoints(
-      settings->calibration_points, settings->calibration_points_count);
-    if (result != ESP_OK) {
-      printf("save failed: %s\n", esp_err_to_name(result));
-      return 1;
-    }
     return 0;
   }
 
@@ -3719,6 +3933,7 @@ CommandCal(int argc, char** argv)
          "cal clear due | cal set due_override <count> <days|months|years> | "
          "cal clear due_override | cal set method <string...> | "
          "cal clear method | cal clear | cal add <raw_c> <actual_c> | "
+         "cal del <index> | cal remove <index> | "
          "cal list | cal apply | cal live [seconds] "
          "[--every_ms 1000] | cal capture <actual_temp_c> "
          "[--stable_stddev_c 0.05] [--min_seconds 5] "
@@ -6477,11 +6692,26 @@ static const console_help_topic_t kCalTopics[] = {
       "Adds one calibration point to the in-memory list and saves the points "
       "to NVS. This command is legacy/manual temp-domain only. Preferred "
       "modern workflow is 'cal capture <actual_temp_c>' so the point includes "
-      "captured raw temperature and raw resistance statistics.",
-    .options = "  <raw_c>    Raw sensor temperature in Celsius.\n"
+      "captured raw temperature and raw resistance statistics. If a point "
+      "already exists with the same reference temperature (exact mC match), "
+      "the existing point is overwritten in place instead of appending a "
+      "duplicate.",
+    .options = "  <raw_c>    Raw sensor temperature in Celsius (supports negatives).\n"
                "  <C>        Reference (actual) temperature in Celsius.",
     .examples = "  cal add 24.81 25.00\n"
                 "  cal add -10.12 -10.00",
+  },
+  {
+    .name = "del",
+    .summary = "Delete one calibration point by 1-based index (remove alias)",
+    .synopsis = "cal del <index>\ncal remove <index>",
+    .details =
+      "Deletes one saved calibration point by its displayed 1-based index, "
+      "compacts remaining points, and saves changes to NVS.",
+    .options = "  <index>    1-based index shown by cal list/cal status.",
+    .examples = "  cal list\n"
+                "  cal del 1\n"
+                "  cal remove 2",
   },
   {
     .name = "apply",
@@ -6551,8 +6781,11 @@ static const console_help_topic_t kCalTopics[] = {
     .details =
       "Starts a background capture operation (preferred modern calibration "
       "command). When the raw window stays within the stability threshold for "
-      "the minimum duration, firmware appends and saves one point (if room "
-      "remains).\n"
+      "the minimum duration, firmware saves one resistance-domain point. If a "
+      "point with the same entered reference temperature already exists "
+      "(exact mC match), it is updated in place instead of appending.\n"
+      "Domain guardrail: if any temp-domain points exist, capture is refused "
+      "until 'cal clear' is used.\n"
       "Each captured point stores:\n"
       "  - entered reference temperature (C)\n"
       "  - captured raw temperature average/stddev\n"
@@ -6707,6 +6940,7 @@ PrintCalHelpBody(void)
   printf("  cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8\n");
   printf("  satpt A2922 1315\n");
   printf("  cal capture 98.7 --stable_stddev_c 0.05 --min_seconds 8\n");
+  printf("  cal del 1\n");
   printf("  cal apply\n");
 }
 
@@ -6718,7 +6952,9 @@ CalTopicHelp(const char* topic)
   }
 
   for (size_t i = 0; kCalTopics[i].name != NULL; ++i) {
-    if (strcmp(kCalTopics[i].name, topic) == 0) {
+    if (strcmp(kCalTopics[i].name, topic) == 0 ||
+        ((strcmp(topic, "remove") == 0) &&
+         (strcmp(kCalTopics[i].name, "del") == 0))) {
       ConsoleHelpPrintTopicManpage("cal", &kCalTopics[i]);
       return 0;
     }
@@ -6921,7 +7157,7 @@ RegisterCommands(void)
     NULL,
     NULL,
     "<action>",
-    "status|set|clear|add|list|apply|live|capture|stop");
+    "status|set|clear|add|del|remove|list|apply|live|capture|stop");
   g_cal_args.raw_c =
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw Celsius sample (use with 'add')");
   g_cal_args.actual_c =
@@ -6947,7 +7183,7 @@ RegisterCommands(void)
   static const console_registry_entry_t cal_cmd = {
     .command = "cal",
     .summary = "Manage calibration metadata, live capture, and model fitting (preferred: cal capture + cal apply)",
-    .synopsis = "cal <status|set|list|add|clear|apply|live|capture|stop> ...",
+    .synopsis = "cal <status|set|list|add|del|remove|clear|apply|live|capture|stop> ...",
     .print_body = PrintCalHelpBody,
     .topic_help = &CalTopicHelp,
     .func = &CommandCal,
