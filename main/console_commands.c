@@ -5696,10 +5696,9 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
          CalibrationModeToString(settings->calibration.mode));
   printf("calibration_domain: %s\n",
          (settings->calibration_domain == CAL_DOMAIN_RESISTANCE_OHM)
-           ? "resistance"
-           : "legacy_temp");
-  printf("cal_points: %u (raw_avg_C uses window average)\n",
-         (unsigned)settings->calibration_points_count);
+           ? "resistance_ohm (fit uses raw/corrected ohms)"
+           : "legacy_temp_c (fit uses raw/corrected Celsius)");
+  printf("cal_points: %u\n", (unsigned)settings->calibration_points_count);
   const char* applied_reason = NULL;
   const bool applied = ConsoleCalibrationIsApplied(settings, state, &applied_reason);
   printf("cal_model_valid: %s\n", settings->calibration.is_valid ? "yes" : "no");
@@ -5707,18 +5706,20 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
   if (!applied) {
     printf("cal_applied_reason: %s\n", applied_reason);
   }
+  if (settings->calibration_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+    printf("cal_runtime_path: raw measured ohms -> corrected ohms -> corrected temperature\n");
+  }
   for (size_t index = 0; index < settings->calibration_points_count; ++index) {
     const calibration_point_t* point = &settings->calibration_points[index];
-    const double raw_avg_c = point->raw_avg_mC / 1000.0;
-    const double actual_c = point->actual_mC / 1000.0;
-    const double residual_c = actual_c - raw_avg_c;
-    printf("  %u: raw_avg_C=%.3f actual_C=%.3f raw_avg_Ohm=%.3f residual_C=%.3f stddev_C=%.3f\n",
+    const double captured_raw_avg_c = point->raw_avg_mC / 1000.0;
+    const double reference_c = point->actual_mC / 1000.0;
+    printf("  %u: reference_temp_C=%.3f captured_raw_temp_avg_C=%.3f captured_raw_temp_stddev_C=%.3f captured_raw_res_avg_Ohm=%.3f captured_raw_res_stddev_Ohm=%.3f\n",
            (unsigned)(index + 1),
-           raw_avg_c,
-           actual_c,
+           reference_c,
+           captured_raw_avg_c,
+           point->raw_stddev_mC / 1000.0,
            point->raw_avg_mOhm / 1000.0,
-           residual_c,
-           point->raw_stddev_mC / 1000.0);
+           point->raw_stddev_mOhm / 1000.0);
   }
 
   char base_last[32];
@@ -6470,11 +6471,13 @@ PrintDiagHelpBody(void)
 static const console_help_topic_t kCalTopics[] = {
   {
     .name = "add",
-    .summary = "Add a manual calibration point (raw vs actual Celsius)",
+    .summary = "Add a manual legacy temp-domain point (raw vs actual Celsius)",
     .synopsis = "cal add <raw_c> <C>",
-    .details = "Adds one calibration point to the in-memory list and saves the "
-               "points to NVS. Use this when you already know both the raw "
-               "reading and the reference temperature.",
+    .details =
+      "Adds one calibration point to the in-memory list and saves the points "
+      "to NVS. This command is legacy/manual temp-domain only. Preferred "
+      "modern workflow is 'cal capture <actual_temp_c>' so the point includes "
+      "captured raw temperature and raw resistance statistics.",
     .options = "  <raw_c>    Raw sensor temperature in Celsius.\n"
                "  <C>        Reference (actual) temperature in Celsius.",
     .examples = "  cal add 24.81 25.00\n"
@@ -6485,10 +6488,23 @@ static const console_help_topic_t kCalTopics[] = {
     .summary = "Fit and persist a calibration model from saved points",
     .synopsis =
       "cal apply [--mode linear|piecewise|polyN] [--allow_wide_slope]",
-    .details = "Builds a model from saved points, writes it to NVS, and "
-               "updates calibration metadata (including last calibration time "
-               "when system time is valid). This changes runtime calibration "
-               "immediately and persists across reboot.",
+    .details =
+      "Builds a model from saved points, writes it to NVS, and updates "
+      "calibration metadata (including last calibration time when system time "
+      "is valid). This changes runtime calibration immediately and persists "
+      "across reboot.\n"
+      "Point-set domain behavior:\n"
+      "  - Temp-domain set (legacy): fit raw temperature -> reference "
+      "temperature.\n"
+      "  - Resistance-domain set (preferred): if captured points include raw "
+      "resistance, each entered reference temperature is converted to ideal "
+      "PT100 resistance using the existing CVD helper, then fit is performed "
+      "in ohms.\n"
+      "  - Mixed temp-only and resistance points are rejected.\n"
+      "Runtime path when resistance-domain calibration is active:\n"
+      "  raw measured ohms -> corrected ohms -> corrected temperature.\n"
+      "Operator note: cal apply warns when calibration method text is unset; "
+      "set it with 'cal set method \"...\"' for traceable records.",
     .options =
       "  --mode <linear|piecewise|polyN>  Fit mode (polyN supports N up to "
       "firmware limit).\n"
@@ -6533,9 +6549,28 @@ static const console_help_topic_t kCalTopics[] = {
     .synopsis = "cal capture <actual_temp_c> [--stable_stddev_c 0.05] "
                 "[--min_seconds 5] [--timeout_seconds 120]",
     .details =
-      "Starts a background capture operation. When the raw window stays within "
-      "the stability threshold for the minimum duration, the firmware "
-      "automatically appends and saves a calibration point (if room remains).",
+      "Starts a background capture operation (preferred modern calibration "
+      "command). When the raw window stays within the stability threshold for "
+      "the minimum duration, firmware appends and saves one point (if room "
+      "remains).\n"
+      "Each captured point stores:\n"
+      "  - entered reference temperature (C)\n"
+      "  - captured raw temperature average/stddev\n"
+      "  - captured raw resistance average/stddev\n"
+      "Recommended fixed-point workflow (ice + steam):\n"
+      "  1) cal clear\n"
+      "  2) cal set method \"slushy ice bath + satpt steam space\"\n"
+      "  3) cal live (confirm stability before capture)\n"
+      "  4) Build slushy ice bath (well-packed crushed ice + small amount of "
+      "water), equilibrate, then capture near 0 C.\n"
+      "  5) For steam-point work, run satpt first and use the computed "
+      "Celsius result in cal capture.\n"
+      "  6) Prefer steam-space above boiling water (not probe immersion in "
+      "boiling liquid).\n"
+      "  7) Do not assume 100.0 C unless local pressure conditions justify "
+      "that value.\n"
+      "  8) cal apply.\n"
+      "Use 'cal stop' to abort an active live/capture operation.",
     .options =
       "  <actual_temp_c>             Reference temperature in Celsius (C "
       "suffix allowed).\n"
@@ -6543,8 +6578,14 @@ static const console_help_topic_t kCalTopics[] = {
       "stddev.\n"
       "  --min_seconds <seconds>     Required stable duration before saving.\n"
       "  --timeout_seconds <seconds> Max capture time before abort.",
-    .examples = "  cal capture 100.0\n"
-                "  cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8",
+    .examples = "  cal clear\n"
+                "  cal set method \"slushy ice bath + satpt steam space\"\n"
+                "  cal live\n"
+                "  cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8\n"
+                "  satpt A2922 1315\n"
+                "  cal capture 98.7 --stable_stddev_c 0.05 --min_seconds 8\n"
+                "  cal apply\n"
+                "  cal stop",
   },
   {
     .name = "clear",
@@ -6648,11 +6689,25 @@ PrintCalHelpBody(void)
 {
   ConsoleHelpPrintTopicList(kCalTopics);
   printf("Use: help cal <subcommand>\n\n");
+  printf("RECOMMENDED WORKFLOW\n");
+  printf("  1) cal clear\n");
+  printf("  2) cal set method \"slushy ice bath + satpt steam space\"\n");
+  printf("  3) cal live   (confirm stable readings first)\n");
+  printf("  4) cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8\n");
+  printf("  5) satpt A2922 1315\n");
+  printf("  6) cal capture 98.7 --stable_stddev_c 0.05 --min_seconds 8\n");
+  printf("  7) cal apply\n");
+  printf("  Note: For steam-point work, run satpt first and capture using the\n");
+  printf("        computed Celsius value. Do not assume 100.0 C unless local\n");
+  printf("        pressure justifies it. Prefer steam-space over immersion.\n");
+  printf("  Note: 'cal stop' aborts an active cal live/cal capture operation.\n\n");
   printf("EXAMPLES\n");
   printf("  cal status\n");
   printf("  cal set method \"ice + satpt steam\"\n");
-  printf("  cal add 24.81 25.00\n");
-  printf("  cal capture 100.0 --stable_stddev_c 0.05\n");
+  printf("  cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8\n");
+  printf("  satpt A2922 1315\n");
+  printf("  cal capture 98.7 --stable_stddev_c 0.05 --min_seconds 8\n");
+  printf("  cal apply\n");
 }
 
 static int
@@ -6891,7 +6946,7 @@ RegisterCommands(void)
   g_cal_args.end = arg_end(16);
   static const console_registry_entry_t cal_cmd = {
     .command = "cal",
-    .summary = "Manage calibration points and live capture",
+    .summary = "Manage calibration metadata, live capture, and model fitting (preferred: cal capture + cal apply)",
     .synopsis = "cal <status|set|list|add|clear|apply|live|capture|stop> ...",
     .print_body = PrintCalHelpBody,
     .topic_help = &CalTopicHelp,
@@ -6980,7 +7035,7 @@ RegisterCommands(void)
   static const console_registry_entry_t satpt_cmd = {
     .command = "satpt",
     .summary =
-      "Water saturation temperature at local pressure (boiling/steam point)",
+      "Compute steam-point reference temperature from local pressure (for calibration)",
     .synopsis = "satpt <station_inHg> | satpt <A_inHg|A####> <elev_ft>",
     .description =
       "Calculate water saturation temperature at local pressure "
