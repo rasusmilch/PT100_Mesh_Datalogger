@@ -98,3 +98,4 @@ main/console
 host_tools/*.txt
 host_tools/*.log
 host_tools/logs/*
+~$*
