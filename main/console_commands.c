@@ -111,6 +111,15 @@ ParseCalAddPositionalArgs_(int argc,
                            char** argv,
                            double* raw_c_out,
                            double* actual_c_out);
+static bool
+ParseCalImportArgs_(int argc,
+                    char** argv,
+                    double* raw_ohm_out,
+                    double* actual_c_out,
+                    bool* raw_c_supplied_out,
+                    double* raw_c_out,
+                    bool* stddev_c_supplied_out,
+                    double* stddev_c_out);
 static int
 FindCalibrationPointIndexByActualMc_(const app_settings_t* settings,
                                      int32_t actual_mC);
@@ -3029,6 +3038,113 @@ ParseCalAddPositionalArgs_(int argc,
 }
 
 /**
+ * @brief Parse arguments for `cal import <raw_ohm> <actual_c> [options]`.
+ * @param argc Command argument count.
+ * @param argv Command argument values.
+ * @param raw_ohm_out Parsed raw resistance value in ohms.
+ * @param actual_c_out Parsed actual/reference Celsius value.
+ * @param raw_c_supplied_out True when --raw_c is provided.
+ * @param raw_c_out Parsed optional captured raw Celsius average.
+ * @param stddev_c_supplied_out True when --stddev_c is provided.
+ * @param stddev_c_out Parsed optional captured raw Celsius stddev.
+ * @return true when all required/optional values are valid.
+ */
+static bool
+ParseCalImportArgs_(int argc,
+                    char** argv,
+                    double* raw_ohm_out,
+                    double* actual_c_out,
+                    bool* raw_c_supplied_out,
+                    double* raw_c_out,
+                    bool* stddev_c_supplied_out,
+                    double* stddev_c_out)
+{
+  if (argv == NULL || raw_ohm_out == NULL || actual_c_out == NULL ||
+      raw_c_supplied_out == NULL || raw_c_out == NULL ||
+      stddev_c_supplied_out == NULL || stddev_c_out == NULL) {
+    return false;
+  }
+
+  const char* positional_args[2] = { 0 };
+  size_t positional_count = 0;
+  for (int i = 2; i < argc; ++i) {
+    const char* arg = argv[i];
+    if (arg == NULL) {
+      continue;
+    }
+    if (strncmp(arg, "--", 2) == 0) {
+      const char* option = arg + 2;
+      const char* option_value = strchr(option, '=');
+      const size_t option_name_len =
+        (option_value == NULL) ? strlen(option) : (size_t)(option_value - option);
+      const bool is_raw_c =
+        (option_name_len == strlen("raw_c")) &&
+        (strncmp(option, "raw_c", option_name_len) == 0);
+      const bool is_stddev_c =
+        (option_name_len == strlen("stddev_c")) &&
+        (strncmp(option, "stddev_c", option_name_len) == 0);
+      if (!is_raw_c && !is_stddev_c) {
+        return false;
+      }
+      if (option_value == NULL) {
+        if ((i + 1) >= argc) {
+          return false;
+        }
+        ++i;
+      }
+      continue;
+    }
+
+    if (positional_count >= 2u) {
+      return false;
+    }
+    positional_args[positional_count++] = arg;
+  }
+
+  if (positional_count != 2u) {
+    return false;
+  }
+
+  char* end = NULL;
+  double parsed_raw_ohm = strtod(positional_args[0], &end);
+  if (end == positional_args[0] || *end != '\0' || parsed_raw_ohm <= 0.0) {
+    return false;
+  }
+  double parsed_actual_c = 0.0;
+  if (!ParseTempC_(positional_args[1], &parsed_actual_c)) {
+    return false;
+  }
+
+  bool raw_c_supplied = false;
+  bool stddev_c_supplied = false;
+  double parsed_raw_c = 0.0;
+  double parsed_stddev_c = 0.0;
+
+  if (ParseOptionDouble_(argc, argv, "raw_c", &parsed_raw_c)) {
+    raw_c_supplied = true;
+  } else if (OptionPresent_(argc, argv, "raw_c")) {
+    return false;
+  }
+
+  if (ParseOptionDouble_(argc, argv, "stddev_c", &parsed_stddev_c)) {
+    if (parsed_stddev_c < 0.0) {
+      return false;
+    }
+    stddev_c_supplied = true;
+  } else if (OptionPresent_(argc, argv, "stddev_c")) {
+    return false;
+  }
+
+  *raw_ohm_out = parsed_raw_ohm;
+  *actual_c_out = parsed_actual_c;
+  *raw_c_supplied_out = raw_c_supplied;
+  *raw_c_out = parsed_raw_c;
+  *stddev_c_supplied_out = stddev_c_supplied;
+  *stddev_c_out = parsed_stddev_c;
+  return true;
+}
+
+/**
  * @brief Find point index by exact millidegree actual/reference temperature.
  * @param settings Active settings with calibration points.
  * @param actual_mC Reference temperature in millidegrees Celsius.
@@ -3717,6 +3833,86 @@ CommandCal(int argc, char** argv)
       return 0;
     }
 
+    if (strcmp(action, "import") == 0 || strcmp(action, "restore") == 0) {
+      double raw_ohm = 0.0;
+      double actual_c = 0.0;
+      bool raw_c_supplied = false;
+      bool stddev_c_supplied = false;
+      double raw_c = 0.0;
+      double stddev_c = 0.0;
+      if (!ParseCalImportArgs_(argc,
+                               argv,
+                               &raw_ohm,
+                               &actual_c,
+                               &raw_c_supplied,
+                               &raw_c,
+                               &stddev_c_supplied,
+                               &stddev_c)) {
+        printf("usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
+               "[--stddev_c <value>]\n");
+        return 1;
+      }
+
+      if (settings->calibration_domain == CAL_DOMAIN_TEMP_C &&
+          settings->calibration_points_count > 0u) {
+        printf("cal import failed: existing temp-domain points detected; run "
+               "'cal clear' first\n");
+        return 1;
+      }
+
+      const int32_t actual_mC = (int32_t)llround(actual_c * 1000.0);
+      int point_index =
+        FindCalibrationPointIndexByActualMc_(settings, actual_mC);
+      const bool updating_existing = (point_index >= 0);
+      if (!updating_existing &&
+          settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
+        printf("cal import failed: already have %u points\n",
+               (unsigned)settings->calibration_points_count);
+        return 1;
+      }
+
+      if (!updating_existing) {
+        point_index = (int)settings->calibration_points_count;
+        settings->calibration_points_count++;
+      }
+      calibration_point_t* point = &settings->calibration_points[point_index];
+      point->raw_avg_mC =
+        raw_c_supplied ? (int32_t)llround(raw_c * 1000.0) : INT32_MIN;
+      point->actual_mC = actual_mC;
+      point->raw_stddev_mC =
+        stddev_c_supplied ? (int32_t)llround(stddev_c * 1000.0) : -1;
+      point->raw_avg_mOhm = (int32_t)llround(raw_ohm * 1000.0);
+      point->raw_stddev_mOhm = -1;
+      point->sample_count = 0;
+      point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
+      point->timestamp_epoch_sec = point->time_valid ? (int64_t)time(NULL) : 0;
+      settings->calibration_domain = CAL_DOMAIN_RESISTANCE_OHM;
+      esp_err_t result = SaveCalibrationPointsAndDomain_(settings);
+      if (result != ESP_OK) {
+        printf("save failed: %s\n", esp_err_to_name(result));
+        return 1;
+      }
+
+      if (updating_existing) {
+        printf("cal import OK: updated point #%u actual=%.3fC raw_avg_Ohm=%.3f\n",
+               (unsigned)(point_index + 1),
+               actual_c,
+               raw_ohm);
+      } else {
+        printf("cal import OK: added point #%u actual=%.3fC raw_avg_Ohm=%.3f\n",
+               (unsigned)(point_index + 1),
+               actual_c,
+               raw_ohm);
+      }
+      if (!raw_c_supplied) {
+        printf("cal import note: --raw_c not supplied (stored as n/a)\n");
+      }
+      if (!stddev_c_supplied) {
+        printf("cal import note: --stddev_c not supplied (stored as n/a)\n");
+      }
+      return 0;
+    }
+
     if (strcmp(action, "del") == 0 || strcmp(action, "remove") == 0) {
       if (argc != 3) {
         printf("usage: cal del <index>\n");
@@ -3793,11 +3989,30 @@ CommandCal(int argc, char** argv)
     for (size_t index = 0; index < settings->calibration_points_count;
          ++index) {
       const calibration_point_t* point = &settings->calibration_points[index];
-      printf("  %u: raw_avg_C=%.6f actual_C=%.6f stddev_C=%.6f raw_avg_Ohm=%.6f stddev_Ohm=%.6f samples=%u\n",
+      char raw_avg_c_buf[24] = { 0 };
+      char stddev_c_buf[24] = { 0 };
+      if (point->raw_avg_mC == INT32_MIN) {
+        snprintf(raw_avg_c_buf, sizeof(raw_avg_c_buf), "n/a");
+      } else {
+        snprintf(raw_avg_c_buf,
+                 sizeof(raw_avg_c_buf),
+                 "%.6f",
+                 point->raw_avg_mC / 1000.0);
+      }
+      if (point->raw_stddev_mC < 0) {
+        snprintf(stddev_c_buf, sizeof(stddev_c_buf), "n/a");
+      } else {
+        snprintf(stddev_c_buf,
+                 sizeof(stddev_c_buf),
+                 "%.6f",
+                 point->raw_stddev_mC / 1000.0);
+      }
+      printf("  %u: raw_avg_C=%s actual_C=%.6f stddev_C=%s raw_avg_Ohm=%.6f "
+             "stddev_Ohm=%.6f samples=%u\n",
              (unsigned)(index + 1),
-             point->raw_avg_mC / 1000.0,
+             raw_avg_c_buf,
              point->actual_mC / 1000.0,
-             point->raw_stddev_mC / 1000.0,
+             stddev_c_buf,
              point->raw_avg_mOhm / 1000.0,
              point->raw_stddev_mOhm / 1000.0,
              (unsigned)point->sample_count);
@@ -3807,7 +4022,8 @@ CommandCal(int argc, char** argv)
 
   if (strcmp(action, "apply") == 0) {
     if (settings->calibration_points_count < 1) {
-      printf("no points; use 'cal add <raw_c> <actual_c>' first\n");
+      printf("no points; use 'cal capture <actual_c>' or "
+             "'cal import <raw_ohm> <actual_c>' first\n");
       return 1;
     }
     if (settings->cal_method[0] == '\0') {
@@ -3933,6 +4149,8 @@ CommandCal(int argc, char** argv)
          "cal clear due | cal set due_override <count> <days|months|years> | "
          "cal clear due_override | cal set method <string...> | "
          "cal clear method | cal clear | cal add <raw_c> <actual_c> | "
+         "cal import <raw_ohm> <actual_c> [--raw_c <value>] "
+         "[--stddev_c <value>] | cal restore ... | "
          "cal del <index> | cal remove <index> | "
          "cal list | cal apply | cal live [seconds] "
          "[--every_ms 1000] | cal capture <actual_temp_c> "
@@ -5926,13 +6144,34 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
   }
   for (size_t index = 0; index < settings->calibration_points_count; ++index) {
     const calibration_point_t* point = &settings->calibration_points[index];
-    const double captured_raw_avg_c = point->raw_avg_mC / 1000.0;
     const double reference_c = point->actual_mC / 1000.0;
-    printf("  %u: reference_temp_C=%.3f captured_raw_temp_avg_C=%.3f captured_raw_temp_stddev_C=%.3f captured_raw_res_avg_Ohm=%.3f captured_raw_res_stddev_Ohm=%.3f\n",
+    char captured_raw_avg_c_buf[24] = { 0 };
+    char captured_raw_stddev_c_buf[24] = { 0 };
+    if (point->raw_avg_mC == INT32_MIN) {
+      snprintf(captured_raw_avg_c_buf, sizeof(captured_raw_avg_c_buf), "n/a");
+    } else {
+      snprintf(captured_raw_avg_c_buf,
+               sizeof(captured_raw_avg_c_buf),
+               "%.3f",
+               point->raw_avg_mC / 1000.0);
+    }
+    if (point->raw_stddev_mC < 0) {
+      snprintf(captured_raw_stddev_c_buf,
+               sizeof(captured_raw_stddev_c_buf),
+               "n/a");
+    } else {
+      snprintf(captured_raw_stddev_c_buf,
+               sizeof(captured_raw_stddev_c_buf),
+               "%.3f",
+               point->raw_stddev_mC / 1000.0);
+    }
+    printf("  %u: reference_temp_C=%.3f captured_raw_temp_avg_C=%s "
+           "captured_raw_temp_stddev_C=%s captured_raw_res_avg_Ohm=%.3f "
+           "captured_raw_res_stddev_Ohm=%.3f\n",
            (unsigned)(index + 1),
            reference_c,
-           captured_raw_avg_c,
-           point->raw_stddev_mC / 1000.0,
+           captured_raw_avg_c_buf,
+           captured_raw_stddev_c_buf,
            point->raw_avg_mOhm / 1000.0,
            point->raw_stddev_mOhm / 1000.0);
   }
@@ -6821,6 +7060,32 @@ static const console_help_topic_t kCalTopics[] = {
                 "  cal stop",
   },
   {
+    .name = "import",
+    .summary = "Manually import/restore a resistance-domain calibration point",
+    .synopsis = "cal import <raw_ohm> <actual_c> [--raw_c <value>] "
+                "[--stddev_c <value>]\n"
+                "cal restore <raw_ohm> <actual_c> [--raw_c <value>] "
+                "[--stddev_c <value>]",
+    .details =
+      "Adds or updates one captured-style resistance-domain calibration "
+      "point from known values, without live capture. Required fields are raw "
+      "resistance in ohms and reference temperature in Celsius. Optional "
+      "captured raw temperature average/stddev may also be provided.\n"
+      "Domain guardrail: if temp-domain legacy points exist, import is "
+      "refused until 'cal clear' is used.\n"
+      "Overwrite behavior: if a point already exists with the same reference "
+      "temperature (exact mC match), that point is updated in place.",
+    .options =
+      "  <raw_ohm>                  Measured raw resistance in ohms (>0).\n"
+      "  <actual_c>                 Reference temperature in Celsius.\n"
+      "  --raw_c <value>            Optional captured raw average Celsius.\n"
+      "  --stddev_c <value>         Optional captured raw stddev Celsius "
+      "(>=0).",
+    .examples = "  cal import 99.970 0.0 --raw_c -0.078 --stddev_c 0.019\n"
+                "  cal import 135.650 98.388 --raw_c 92.475 --stddev_c 0.036\n"
+                "  cal restore 99.970 0.0",
+  },
+  {
     .name = "clear",
     .summary = "Clear calibration model/points or schedule metadata",
     .synopsis = "cal clear | cal clear <date|due|due_override|method>",
@@ -6842,7 +7107,10 @@ static const console_help_topic_t kCalTopics[] = {
     .summary = "List all currently saved calibration points",
     .synopsis = "cal list",
     .details = "Prints each saved point index with raw average, actual "
-               "temperature, standard deviation, and sample count.",
+               "temperature, standard deviation, resistance fields, and sample "
+               "count. For imported resistance points where optional raw "
+               "temperature values were omitted, those fields are shown as "
+               "n/a.",
     .options = NULL,
     .examples = "  cal list",
   },
@@ -6930,6 +7198,9 @@ PrintCalHelpBody(void)
   printf("  5) satpt A2922 1315\n");
   printf("  6) cal capture 98.7 --stable_stddev_c 0.05 --min_seconds 8\n");
   printf("  7) cal apply\n");
+  printf("  Manual restore option: use 'cal import' (or alias 'cal restore')\n");
+  printf("  when raw resistance/reference values are already known.\n");
+  printf("  'cal add' is legacy temp-domain only.\n");
   printf("  Note: For steam-point work, run satpt first and capture using the\n");
   printf("        computed Celsius value. Do not assume 100.0 C unless local\n");
   printf("        pressure justifies it. Prefer steam-space over immersion.\n");
@@ -6938,8 +7209,9 @@ PrintCalHelpBody(void)
   printf("  cal status\n");
   printf("  cal set method \"ice + satpt steam\"\n");
   printf("  cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8\n");
+  printf("  cal import 99.970 0.0 --raw_c -0.078 --stddev_c 0.019\n");
   printf("  satpt A2922 1315\n");
-  printf("  cal capture 98.7 --stable_stddev_c 0.05 --min_seconds 8\n");
+  printf("  cal import 135.650 98.388 --raw_c 92.475 --stddev_c 0.036\n");
   printf("  cal del 1\n");
   printf("  cal apply\n");
 }
@@ -6953,6 +7225,8 @@ CalTopicHelp(const char* topic)
 
   for (size_t i = 0; kCalTopics[i].name != NULL; ++i) {
     if (strcmp(kCalTopics[i].name, topic) == 0 ||
+        ((strcmp(topic, "restore") == 0) &&
+         (strcmp(kCalTopics[i].name, "import") == 0)) ||
         ((strcmp(topic, "remove") == 0) &&
          (strcmp(kCalTopics[i].name, "del") == 0))) {
       ConsoleHelpPrintTopicManpage("cal", &kCalTopics[i]);
@@ -7157,7 +7431,7 @@ RegisterCommands(void)
     NULL,
     NULL,
     "<action>",
-    "status|set|clear|add|del|remove|list|apply|live|capture|stop");
+    "status|set|clear|add|import|restore|del|remove|list|apply|live|capture|stop");
   g_cal_args.raw_c =
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw Celsius sample (use with 'add')");
   g_cal_args.actual_c =
@@ -7182,8 +7456,8 @@ RegisterCommands(void)
   g_cal_args.end = arg_end(16);
   static const console_registry_entry_t cal_cmd = {
     .command = "cal",
-    .summary = "Manage calibration metadata, live capture, and model fitting (preferred: cal capture + cal apply)",
-    .synopsis = "cal <status|set|list|add|del|remove|clear|apply|live|capture|stop> ...",
+    .summary = "Manage calibration metadata, live/import point capture, and model fitting",
+    .synopsis = "cal <status|set|list|add|import|restore|del|remove|clear|apply|live|capture|stop> ...",
     .print_body = PrintCalHelpBody,
     .topic_help = &CalTopicHelp,
     .func = &CommandCal,
