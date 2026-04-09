@@ -97,6 +97,17 @@ PrintCalWindowLine_(const char* prefix,
                     int32_t last_raw_mC,
                     int32_t mean_raw_mC,
                     int32_t stddev_mC);
+static void
+PrintCalCaptureWindowLine_(double elapsed_s,
+                           size_t sample_count,
+                           int32_t last_raw_mC,
+                           int32_t last_raw_mOhm,
+                           int32_t mean_raw_mC,
+                           double stddev_c,
+                           double stable_elapsed_s,
+                           int min_seconds,
+                           double stable_stddev_c,
+                           double actual_temp_c);
 static const char*
 FindOptionValue_(int argc, char** argv, const char* name);
 static bool
@@ -2967,6 +2978,46 @@ PrintCalWindowLine_(const char* prefix,
          stddev_mC / 1000.0);
 }
 
+static void
+PrintCalCaptureWindowLine_(double elapsed_s,
+                           size_t sample_count,
+                           int32_t last_raw_mC,
+                           int32_t last_raw_mOhm,
+                           int32_t mean_raw_mC,
+                           double stddev_c,
+                           double stable_elapsed_s,
+                           int min_seconds,
+                           double stable_stddev_c,
+                           double actual_temp_c)
+{
+  if (sample_count == 0u) {
+    printf("cal capture: t=%.1fs n=%u last=n/a last_ohm=n/a mean=%.3fC "
+           "std=%.3fC stable=%.1f/%ds thr=%.3fC actual=%.3fC\n",
+           elapsed_s,
+           (unsigned)sample_count,
+           mean_raw_mC / 1000.0,
+           stddev_c,
+           stable_elapsed_s,
+           min_seconds,
+           stable_stddev_c,
+           actual_temp_c);
+    return;
+  }
+
+  printf("cal capture: t=%.1fs n=%u last=%.3fC last_ohm=%.3f mean=%.3fC "
+         "std=%.3fC stable=%.1f/%ds thr=%.3fC actual=%.3fC\n",
+         elapsed_s,
+         (unsigned)sample_count,
+         last_raw_mC / 1000.0,
+         last_raw_mOhm / 1000.0,
+         mean_raw_mC / 1000.0,
+         stddev_c,
+         stable_elapsed_s,
+         min_seconds,
+         stable_stddev_c,
+         actual_temp_c);
+}
+
 static const char*
 FindOptionValue_(int argc, char** argv, const char* name)
 {
@@ -3389,10 +3440,11 @@ CalConsoleOpTask(void* task_arg)
     int32_t last_raw_mC = 0;
     int32_t mean_raw_mC = 0;
     int32_t stddev_mC = 0;
+    int32_t last_raw_mOhm = 0;
     int32_t mean_raw_mOhm = 0;
     int32_t stddev_mOhm = 0;
     CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
-    CalWindowGetResistanceStats(NULL, &mean_raw_mOhm, &stddev_mOhm);
+    CalWindowGetResistanceStats(&last_raw_mOhm, &mean_raw_mOhm, &stddev_mOhm);
     const size_t sample_count = CalWindowGetSampleCount();
     const int64_t now_us = esp_timer_get_time();
     const bool print_due =
@@ -3427,16 +3479,16 @@ CalConsoleOpTask(void* task_arg)
         (stable_start_us >= 0) ? (now_us - stable_start_us) / 1000000.0 : 0.0;
 
       if (print_due) {
-        printf("cal capture: t=%.1fs n=%u mean=%.3fC std=%.3fC stable=%.1f/%ds "
-               "thr=%.3fC actual=%.3fC\n",
-               elapsed_s,
-               (unsigned)sample_count,
-               mean_raw_mC / 1000.0,
-               stddev_c,
-               stable_elapsed_s,
-               min_seconds,
-               stable_stddev_c,
-               actual_temp_c);
+        PrintCalCaptureWindowLine_(elapsed_s,
+                                   sample_count,
+                                   last_raw_mC,
+                                   last_raw_mOhm,
+                                   mean_raw_mC,
+                                   stddev_c,
+                                   stable_elapsed_s,
+                                   min_seconds,
+                                   stable_stddev_c,
+                                   actual_temp_c);
         last_print_us = now_us;
         last_sample_count = sample_count;
       }
@@ -7796,6 +7848,8 @@ static const console_help_topic_t kCalTopics[] = {
       "  - entered reference temperature (C)\n"
       "  - captured raw temperature average/stddev\n"
       "  - captured raw resistance average/stddev\n"
+      "During capture, status lines display the instantaneous last sample "
+      "(temperature and resistance) along with running statistics.\n"
       "Recommended fixed-point workflow (ice + steam):\n"
       "  1) cal clear\n"
       "  2) cal set method \"slushy ice bath + satpt steam space\"\n"
