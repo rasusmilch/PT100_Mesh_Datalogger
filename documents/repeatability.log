@@ -235,3 +235,84 @@ Calibration Report Block:
   Estimated station pressure: 28.66 inHg
   Calculated steam temperature: 98.795 C
   Method note: steam column attached above beaker; vented system
+
+---
+
+cal status
+cal_window_raw_last_c: 99.356
+cal_window_raw_avg_c: 99.341
+cal_window_raw_stddev_c: 0.012
+cal_window_raw_last_ohm: 138.265
+cal_window_raw_avg_ohm: 138.260
+cal_window_raw_stddev_ohm: 0.005
+cal_window_samples: 32
+cal_window_ready: yes
+calibration_mode: linear
+calibration_domain: resistance_ohm (fit uses raw/corrected ohms)
+cal_points: 2
+cal_model_valid: yes
+cal_applied: yes
+cal_runtime_path: raw measured ohms -> corrected ohms -> corrected temperature
+  1: reference_temp_C=0.000 ideal_ref_res_Ohm=100.000 captured_raw_temp_avg_C=-0.082 captured_raw_temp_stddev_C=0.003 captured_raw_res_avg_Ohm=99.968 captured_raw_res_stddev_Ohm=0.001 residual_res_Ohm=0.032 residual_C=0.082
+  2: reference_temp_C=98.795 ideal_ref_res_Ohm=138.048 captured_raw_temp_avg_C=99.346 captured_raw_temp_stddev_C=0.016 captured_raw_res_avg_Ohm=138.262 captured_raw_res_stddev_Ohm=0.006 residual_res_Ohm=-0.214 residual_C=-0.551
+Calibration Points Report Block:
+  Point 1:
+    Point domain: resistance
+    Reference temperature: 0.000 C
+    Ideal reference resistance: 100.000 ohm
+    Captured raw average temperature: -0.082 C
+    Captured raw average resistance: 99.968 ohm
+    Residual temperature: 0.082 C
+    Residual resistance: 0.032 ohm
+    Captured raw temp stddev: 0.003 C
+    Captured raw resistance stddev: 0.001 ohm
+
+  Point 2:
+    Point domain: resistance
+    Reference temperature: 98.795 C
+    Ideal reference resistance: 138.048 ohm
+    Captured raw average temperature: 99.346 C
+    Captured raw average resistance: 138.262 ohm
+    Residual temperature: -0.551 C
+    Residual resistance: -0.214 ohm
+    Captured raw temp stddev: 0.016 C
+    Captured raw resistance stddev: 0.006 ohm
+
+Calibration:
+  Last UTC (base):     2026-04-09T18:32:24Z
+  Last UTC (override): n/a
+  Due every (base):    1 year
+  Due every (override): disabled
+  Method:             ice bath + satpt
+  Effective last UTC:  2026-04-09T18:32:24Z
+  Effective due:       1 year
+  Due date:            2027-04-09T00:00:00Z
+  Overdue:             no
+  Time valid:          yes
+  Time stable:         yes
+  Due check:           active
+Calibration Steam Reference:
+  Source type:         METAR
+  Raw METAR:           METAR KBJI 091815Z AUTO 32003KT 10SM OVC023 00/M06 A3014 RMK AO2 T10031056
+  Station:             KBJI
+  Observation UTC:     2026-04-09T18:15:00Z
+  Elevation used_ft:   1391
+  Altimeter inHg:      30.14
+  Station pressure:    28.66 inHg
+  Calculated satpt_C:  98.795
+  Stored at UTC:       2026-04-09T18:36:59Z
+  Method note:         steam column attached above beaker; vented system
+  Flag:                AUTO
+  Temp/Dew token:      00/M06
+  Remarks:             AO2 T10031056
+Calibration Report Block:
+  Pressure source type: METAR
+  METAR station: KBJI
+  Raw METAR: METAR KBJI 091815Z AUTO 32003KT 10SM OVC023 00/M06 A3014 RMK AO2 T10031056
+  Observation time UTC: 2026-04-09T18:15:00Z
+  Elevation used: 1391 ft
+  Altimeter setting: 30.14 inHg
+  Estimated station pressure: 28.66 inHg
+  Calculated steam temperature: 98.795 C
+  Method note: steam column attached above beaker; vented system
+pt100>
