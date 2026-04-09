@@ -159,6 +159,75 @@ ConsoleEffectiveSensorPollPeriodMs(const app_settings_t* settings);
 static void
 PrintCalibrationStatusUnified(const app_settings_t* settings,
                               const runtime_state_t* state);
+/**
+ * @brief Summary values for rendering one calibration point in status/report
+ * output.
+ */
+typedef struct
+{
+  bool ideal_ref_res_available;
+  bool captured_raw_res_available;
+  bool captured_raw_temp_avg_available;
+  bool captured_raw_temp_stddev_available;
+  bool captured_raw_res_stddev_available;
+  bool residual_res_available;
+  bool residual_temp_available;
+  double ideal_ref_res_ohm;
+  double captured_raw_res_avg_ohm;
+  double captured_raw_temp_avg_c;
+  double captured_raw_temp_stddev_c;
+  double captured_raw_res_stddev_ohm;
+  double residual_res_ohm;
+  double residual_temp_c;
+} cal_point_print_summary_t;
+
+/**
+ * @brief Convert reference temperature to ideal PT100 resistance using the
+ * shared CVD helper used by calibration apply.
+ * @param reference_temp_c Reference temperature in Celsius.
+ * @param out_ideal_ref_res_ohm Output ideal resistance in ohms.
+ * @return true when conversion succeeds.
+ */
+static bool
+ComputeIdealReferenceResistanceOhm_(double reference_temp_c,
+                                    double* out_ideal_ref_res_ohm);
+
+/**
+ * @brief Build printable summary values for one calibration point.
+ * @param point Calibration point.
+ * @param summary_out Receives derived/availability fields for output.
+ */
+static void
+BuildCalibrationPointPrintSummary_(const calibration_point_t* point,
+                                   cal_point_print_summary_t* summary_out);
+
+/**
+ * @brief Print one concise calibration-point status line.
+ * @param point Calibration point.
+ * @param summary Precomputed printable summary values.
+ * @param display_index 1-based display index.
+ * @param point_is_resistance_domain True for captured/imported resistance
+ * domain points.
+ */
+static void
+PrintCalibrationPointStatusLine_(const calibration_point_t* point,
+                                 const cal_point_print_summary_t* summary,
+                                 uint32_t display_index,
+                                 bool point_is_resistance_domain);
+
+/**
+ * @brief Print one report-friendly calibration-point block.
+ * @param point Calibration point.
+ * @param summary Precomputed printable summary values.
+ * @param display_index 1-based display index.
+ * @param point_is_resistance_domain True for captured/imported resistance
+ * domain points.
+ */
+static void
+PrintCalibrationPointReportBlock_(const calibration_point_t* point,
+                                  const cal_point_print_summary_t* summary,
+                                  uint32_t display_index,
+                                  bool point_is_resistance_domain);
 
 /**
  * @brief Force PTLOG daily file re-evaluation after calibration metadata
@@ -6546,6 +6615,225 @@ PrintCalibrationStatusBlock(const app_settings_t* settings,
   printf("  Check: %s\n", check_suspended ? "suspended" : "active");
 }
 
+static bool
+ComputeIdealReferenceResistanceOhm_(double reference_temp_c,
+                                    double* out_ideal_ref_res_ohm)
+{
+  if (out_ideal_ref_res_ohm == NULL || g_runtime == NULL ||
+      g_runtime->sensor == NULL) {
+    return false;
+  }
+  const double ideal_ohm = Max31865TemperatureToResistanceCvd(
+    reference_temp_c, g_runtime->sensor->rtd_nominal_ohm);
+  if (!isfinite(ideal_ohm)) {
+    return false;
+  }
+  *out_ideal_ref_res_ohm = ideal_ohm;
+  return true;
+}
+
+static void
+BuildCalibrationPointPrintSummary_(const calibration_point_t* point,
+                                   cal_point_print_summary_t* summary_out)
+{
+  if (point == NULL || summary_out == NULL) {
+    return;
+  }
+  memset(summary_out, 0, sizeof(*summary_out));
+  const double reference_c = point->actual_mC / 1000.0;
+  summary_out->captured_raw_res_available = (point->raw_avg_mOhm > 0);
+  if (summary_out->captured_raw_res_available) {
+    summary_out->captured_raw_res_avg_ohm = point->raw_avg_mOhm / 1000.0;
+  }
+  summary_out->captured_raw_temp_avg_available =
+    (point->raw_avg_mC != INT32_MIN);
+  if (summary_out->captured_raw_temp_avg_available) {
+    summary_out->captured_raw_temp_avg_c = point->raw_avg_mC / 1000.0;
+  }
+  summary_out->captured_raw_temp_stddev_available = (point->raw_stddev_mC >= 0);
+  if (summary_out->captured_raw_temp_stddev_available) {
+    summary_out->captured_raw_temp_stddev_c = point->raw_stddev_mC / 1000.0;
+  }
+  summary_out->captured_raw_res_stddev_available =
+    (point->raw_stddev_mOhm >= 0);
+  if (summary_out->captured_raw_res_stddev_available) {
+    summary_out->captured_raw_res_stddev_ohm = point->raw_stddev_mOhm / 1000.0;
+  }
+  summary_out->ideal_ref_res_available = ComputeIdealReferenceResistanceOhm_(
+    reference_c, &summary_out->ideal_ref_res_ohm);
+  if (summary_out->ideal_ref_res_available &&
+      summary_out->captured_raw_res_available) {
+    summary_out->residual_res_ohm =
+      summary_out->ideal_ref_res_ohm - summary_out->captured_raw_res_avg_ohm;
+    summary_out->residual_res_available = true;
+  }
+  if (summary_out->captured_raw_temp_avg_available) {
+    summary_out->residual_temp_c =
+      reference_c - summary_out->captured_raw_temp_avg_c;
+    summary_out->residual_temp_available = true;
+  }
+}
+
+static void
+PrintCalibrationPointStatusLine_(const calibration_point_t* point,
+                                 const cal_point_print_summary_t* summary,
+                                 uint32_t display_index,
+                                 bool point_is_resistance_domain)
+{
+  if (point == NULL || summary == NULL) {
+    return;
+  }
+  const double reference_c = point->actual_mC / 1000.0;
+  char ideal_res_buf[24] = { 0 };
+  char raw_temp_avg_buf[24] = { 0 };
+  char raw_temp_stddev_buf[24] = { 0 };
+  char raw_res_avg_buf[24] = { 0 };
+  char raw_res_stddev_buf[24] = { 0 };
+  char residual_res_buf[24] = { 0 };
+  char residual_temp_buf[24] = { 0 };
+
+  snprintf(ideal_res_buf,
+           sizeof(ideal_res_buf),
+           "%s",
+           summary->ideal_ref_res_available ? "" : "n/a");
+  if (summary->ideal_ref_res_available) {
+    snprintf(
+      ideal_res_buf, sizeof(ideal_res_buf), "%.3f", summary->ideal_ref_res_ohm);
+  }
+  snprintf(raw_temp_avg_buf,
+           sizeof(raw_temp_avg_buf),
+           "%s",
+           summary->captured_raw_temp_avg_available ? "" : "n/a");
+  if (summary->captured_raw_temp_avg_available) {
+    snprintf(raw_temp_avg_buf,
+             sizeof(raw_temp_avg_buf),
+             "%.3f",
+             summary->captured_raw_temp_avg_c);
+  }
+  snprintf(raw_temp_stddev_buf,
+           sizeof(raw_temp_stddev_buf),
+           "%s",
+           summary->captured_raw_temp_stddev_available ? "" : "n/a");
+  if (summary->captured_raw_temp_stddev_available) {
+    snprintf(raw_temp_stddev_buf,
+             sizeof(raw_temp_stddev_buf),
+             "%.3f",
+             summary->captured_raw_temp_stddev_c);
+  }
+  snprintf(raw_res_avg_buf,
+           sizeof(raw_res_avg_buf),
+           "%s",
+           summary->captured_raw_res_available ? "" : "n/a");
+  if (summary->captured_raw_res_available) {
+    snprintf(raw_res_avg_buf,
+             sizeof(raw_res_avg_buf),
+             "%.3f",
+             summary->captured_raw_res_avg_ohm);
+  }
+  snprintf(raw_res_stddev_buf,
+           sizeof(raw_res_stddev_buf),
+           "%s",
+           summary->captured_raw_res_stddev_available ? "" : "n/a");
+  if (summary->captured_raw_res_stddev_available) {
+    snprintf(raw_res_stddev_buf,
+             sizeof(raw_res_stddev_buf),
+             "%.3f",
+             summary->captured_raw_res_stddev_ohm);
+  }
+  snprintf(residual_res_buf,
+           sizeof(residual_res_buf),
+           "%s",
+           summary->residual_res_available ? "" : "n/a");
+  if (summary->residual_res_available) {
+    snprintf(residual_res_buf,
+             sizeof(residual_res_buf),
+             "%.3f",
+             summary->residual_res_ohm);
+  }
+  snprintf(residual_temp_buf,
+           sizeof(residual_temp_buf),
+           "%s",
+           summary->residual_temp_available ? "" : "n/a");
+  if (summary->residual_temp_available) {
+    snprintf(residual_temp_buf,
+             sizeof(residual_temp_buf),
+             "%.3f",
+             summary->residual_temp_c);
+  }
+
+  printf("  %u: reference_temp_C=%.3f ideal_ref_res_Ohm=%s "
+         "captured_raw_temp_avg_C=%s captured_raw_temp_stddev_C=%s "
+         "captured_raw_res_avg_Ohm=%s captured_raw_res_stddev_Ohm=%s "
+         "residual_res_Ohm=%s residual_C=%s%s\n",
+         (unsigned)display_index,
+         reference_c,
+         ideal_res_buf,
+         raw_temp_avg_buf,
+         raw_temp_stddev_buf,
+         raw_res_avg_buf,
+         raw_res_stddev_buf,
+         residual_res_buf,
+         residual_temp_buf,
+         point_is_resistance_domain ? "" : " point_domain=temp/manual");
+}
+
+static void
+PrintCalibrationPointReportBlock_(const calibration_point_t* point,
+                                  const cal_point_print_summary_t* summary,
+                                  uint32_t display_index,
+                                  bool point_is_resistance_domain)
+{
+  if (point == NULL || summary == NULL) {
+    return;
+  }
+  const double reference_c = point->actual_mC / 1000.0;
+  printf("  Point %u:\n", (unsigned)display_index);
+  printf("    Point domain: %s\n",
+         point_is_resistance_domain ? "resistance" : "temp/manual");
+  printf("    Reference temperature: %.3f C\n", reference_c);
+  if (summary->ideal_ref_res_available) {
+    printf("    Ideal reference resistance: %.3f ohm\n",
+           summary->ideal_ref_res_ohm);
+  } else {
+    printf("    Ideal reference resistance: n/a\n");
+  }
+  if (summary->captured_raw_temp_avg_available) {
+    printf("    Captured raw average temperature: %.3f C\n",
+           summary->captured_raw_temp_avg_c);
+  } else {
+    printf("    Captured raw average temperature: n/a\n");
+  }
+  if (summary->captured_raw_res_available) {
+    printf("    Captured raw average resistance: %.3f ohm\n",
+           summary->captured_raw_res_avg_ohm);
+  } else {
+    printf("    Captured raw average resistance: n/a\n");
+  }
+  if (summary->residual_temp_available) {
+    printf("    Residual temperature: %.3f C\n", summary->residual_temp_c);
+  } else {
+    printf("    Residual temperature: n/a\n");
+  }
+  if (summary->residual_res_available) {
+    printf("    Residual resistance: %.3f ohm\n", summary->residual_res_ohm);
+  } else {
+    printf("    Residual resistance: n/a\n");
+  }
+  if (summary->captured_raw_temp_stddev_available) {
+    printf("    Captured raw temp stddev: %.3f C\n",
+           summary->captured_raw_temp_stddev_c);
+  } else {
+    printf("    Captured raw temp stddev: n/a\n");
+  }
+  if (summary->captured_raw_res_stddev_available) {
+    printf("    Captured raw resistance stddev: %.3f ohm\n",
+           summary->captured_raw_res_stddev_ohm);
+  } else {
+    printf("    Captured raw resistance stddev: n/a\n");
+  }
+  printf("\n");
+}
+
 static void
 PrintCalibrationStatusUnified(const app_settings_t* settings,
                               const runtime_state_t* state)
@@ -6591,35 +6879,25 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
   }
   for (size_t index = 0; index < settings->calibration_points_count; ++index) {
     const calibration_point_t* point = &settings->calibration_points[index];
-    const double reference_c = point->actual_mC / 1000.0;
-    char captured_raw_avg_c_buf[24] = { 0 };
-    char captured_raw_stddev_c_buf[24] = { 0 };
-    if (point->raw_avg_mC == INT32_MIN) {
-      snprintf(captured_raw_avg_c_buf, sizeof(captured_raw_avg_c_buf), "n/a");
-    } else {
-      snprintf(captured_raw_avg_c_buf,
-               sizeof(captured_raw_avg_c_buf),
-               "%.3f",
-               point->raw_avg_mC / 1000.0);
+    cal_point_print_summary_t summary;
+    BuildCalibrationPointPrintSummary_(point, &summary);
+    const bool point_is_resistance_domain = (point->raw_avg_mOhm > 0);
+    PrintCalibrationPointStatusLine_(
+      point, &summary, (uint32_t)(index + 1), point_is_resistance_domain);
+  }
+  printf("Calibration Points Report Block:\n");
+  if (settings->calibration_points_count == 0u) {
+    printf("  none stored\n");
+  } else {
+    for (size_t index = 0; index < settings->calibration_points_count;
+         ++index) {
+      const calibration_point_t* point = &settings->calibration_points[index];
+      cal_point_print_summary_t summary;
+      BuildCalibrationPointPrintSummary_(point, &summary);
+      const bool point_is_resistance_domain = (point->raw_avg_mOhm > 0);
+      PrintCalibrationPointReportBlock_(
+        point, &summary, (uint32_t)(index + 1), point_is_resistance_domain);
     }
-    if (point->raw_stddev_mC < 0) {
-      snprintf(
-        captured_raw_stddev_c_buf, sizeof(captured_raw_stddev_c_buf), "n/a");
-    } else {
-      snprintf(captured_raw_stddev_c_buf,
-               sizeof(captured_raw_stddev_c_buf),
-               "%.3f",
-               point->raw_stddev_mC / 1000.0);
-    }
-    printf("  %u: reference_temp_C=%.3f captured_raw_temp_avg_C=%s "
-           "captured_raw_temp_stddev_C=%s captured_raw_res_avg_Ohm=%.3f "
-           "captured_raw_res_stddev_Ohm=%.3f\n",
-           (unsigned)(index + 1),
-           reference_c,
-           captured_raw_avg_c_buf,
-           captured_raw_stddev_c_buf,
-           point->raw_avg_mOhm / 1000.0,
-           point->raw_stddev_mOhm / 1000.0);
   }
 
   char base_last[32];
@@ -7450,8 +7728,9 @@ static const console_help_topic_t kCalTopics[] = {
     .details = "Prints window statistics, model/point state, residuals, and "
                "calibration schedule metadata (last/due/method/time status) in "
                "one deduplicated output. Also prints the stored calibration "
-               "steam-reference METAR block and a copy/paste-friendly "
-               "calibration report block when available.",
+               "steam-reference METAR block, per-point ideal reference "
+               "resistance + residuals (C and ohms), and copy/paste-friendly "
+               "report blocks for both steam-reference and calibration points.",
     .options = NULL,
     .examples = "  cal status",
   },
@@ -7684,7 +7963,7 @@ PrintCalHelpBody(void)
   printf("  3) cal live   (confirm stable readings first)\n");
   printf("  4) cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8\n");
   printf("  5) cal metar set 1391 \"METAR KBJI 081955Z AUTO ... A2969 ...\"\n");
-  printf("  6) cal status   (copy steam-reference report block)\n");
+  printf("  6) cal status   (copy point + steam-reference report blocks)\n");
   printf("  7) cal capture <satpt from cal metar> --stable_stddev_c 0.05 "
          "--min_seconds 8\n");
   printf("  8) cal apply\n");
