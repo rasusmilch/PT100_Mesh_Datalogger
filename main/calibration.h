@@ -14,7 +14,7 @@ extern "C"
 
 #define CALIBRATION_MAX_POINTS 4
 #define CALIBRATION_MAX_DEGREE 3
-#define CAL_WINDOW_SIZE 32
+#define CAL_WINDOW_SIZE 30
 #define CALIBRATION_MIN_SLOPE 0.8
 #define CALIBRATION_MAX_SLOPE 1.2
 #define CALIBRATION_GUARD_MIN_C -50.0
@@ -167,13 +167,13 @@ extern "C"
                          int32_t* out_mean_raw_mC,
                          int32_t* out_stddev_mC);
 
-/**
- * @brief Read latest/mean/stddev resistance statistics from the calibration
- * capture window.
- * @param out_last_raw_mOhm Receives the most recent sample in milli-ohms.
- * @param out_mean_raw_mOhm Receives the mean sample in milli-ohms.
- * @param out_stddev_mOhm Receives the stddev in milli-ohms.
- */
+  /**
+   * @brief Read latest/mean/stddev resistance statistics from the calibration
+   * capture window.
+   * @param out_last_raw_mOhm Receives the most recent sample in milli-ohms.
+   * @param out_mean_raw_mOhm Receives the mean sample in milli-ohms.
+   * @param out_stddev_mOhm Receives the stddev in milli-ohms.
+   */
   void CalWindowGetResistanceStats(int32_t* out_last_raw_mOhm,
                                    int32_t* out_mean_raw_mOhm,
                                    int32_t* out_stddev_mOhm);
