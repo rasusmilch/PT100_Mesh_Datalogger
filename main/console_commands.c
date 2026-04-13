@@ -8096,8 +8096,10 @@ static const console_help_topic_t kCalTopics[] = {
       "  - captured raw temperature average/stddev\n"
       "  - captured raw resistance average/stddev\n"
       "  - captured window drift (C/min) and window delta (C)\n"
-      "Drift uses window begin/end segment means over elapsed window time, and "
-      "capture drift gating uses absolute drift value.\n"
+      "Drift is computed as a least-squares regression slope of temperature "
+      "vs time across the full active window. Delta is end-window mean minus "
+      "begin-window mean; drift and delta are different metrics. Capture "
+      "drift gating uses |regression drift|.\n"
       "During capture, status lines display the instantaneous last sample "
       "(temperature and resistance) along with running statistics.\n"
       "Recommended fixed-point workflow (ice + steam):\n"
@@ -8192,9 +8194,12 @@ static const console_help_topic_t kCalTopics[] = {
     .name = "live",
     .summary = "Stream live calibration-window statistics",
     .synopsis = "cal live [seconds] [--every_ms 1000] [--seconds N]",
-    .details = "Starts a background live print loop of window stats. The run "
-               "can be bounded by seconds (positional or --seconds) and can be "
-               "canceled with 'cal stop'.",
+    .details =
+      "Starts a background live print loop of window stats. Drift is "
+      "least-squares regression slope over full window samples (C/min), while "
+      "delta is end-window mean minus begin-window mean (C). The run can be "
+      "bounded by seconds (positional or --seconds) and can be canceled with "
+      "'cal stop'.",
     .options =
       "  [seconds]          Optional positional duration in seconds.\n"
       "  --every_ms <ms>    Print period in milliseconds (default 1000).\n"
@@ -8283,6 +8288,8 @@ PrintCalHelpBody(void)
     "  Note: satpt is an ad hoc calculator; cal metar parses+stores report\n");
   printf(
     "        metadata for audit use and uses the same pressure->satpt path.\n");
+  printf("  Note: drift is full-window regression slope (C/min); delta is\n");
+  printf("        end-window mean minus begin-window mean (C).\n");
   printf(
     "  Note: 'cal stop' aborts an active cal live/cal capture operation.\n\n");
   printf("EXAMPLES\n");

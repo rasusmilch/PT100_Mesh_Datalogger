@@ -27,6 +27,40 @@ typedef struct
 static cal_window_state_t g_cal_window;
 
 /**
+ * @brief Compute beginning/ending segment means for active calibration window.
+ * @param count Number of active samples in window.
+ * @param oldest_index Ring-buffer index of oldest active sample.
+ * @param segment_count Number of samples to include in each segment mean.
+ * @param out_begin_mean_mC Receives beginning segment mean (milli-Celsius).
+ * @param out_end_mean_mC Receives ending segment mean (milli-Celsius).
+ */
+static void
+ComputeCalibrationWindowSegmentMeans(size_t count,
+                                     size_t oldest_index,
+                                     size_t segment_count,
+                                     double* out_begin_mean_mC,
+                                     double* out_end_mean_mC);
+
+/**
+ * @brief Compute begin/end segment delta for calibration window.
+ * @param begin_mean_mC Beginning segment mean in milli-Celsius.
+ * @param end_mean_mC Ending segment mean in milli-Celsius.
+ * @return End-minus-begin delta in Celsius.
+ */
+static double ComputeCalibrationWindowDeltaC(double begin_mean_mC,
+                                             double end_mean_mC);
+
+/**
+ * @brief Compute least-squares drift slope across full calibration window.
+ * @param count Number of active samples in window.
+ * @param oldest_index Ring-buffer index of oldest active sample.
+ * @return Signed regression drift in Celsius per minute.
+ */
+static double
+ComputeCalibrationWindowRegressionDriftCPerMin(size_t count,
+                                               size_t oldest_index);
+
+/**
  * @brief Execute InterpolateResidual.
  * @param points Parameter points.
  * @param num_points Parameter num_points.
@@ -720,18 +754,12 @@ CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
 
   const size_t oldest_index =
     (count < CAL_WINDOW_SIZE) ? 0u : g_cal_window.index;
-  double begin_sum_mC = 0.0;
-  double end_sum_mC = 0.0;
-  for (size_t i = 0; i < segment_count; ++i) {
-    const size_t begin_idx = (oldest_index + i) % CAL_WINDOW_SIZE;
-    begin_sum_mC += g_cal_window.samples_milli_c[begin_idx];
-    const size_t end_offset = count - segment_count + i;
-    const size_t end_idx = (oldest_index + end_offset) % CAL_WINDOW_SIZE;
-    end_sum_mC += g_cal_window.samples_milli_c[end_idx];
-  }
-  const double begin_mean_mC = begin_sum_mC / (double)segment_count;
-  const double end_mean_mC = end_sum_mC / (double)segment_count;
-  const double delta_mC = end_mean_mC - begin_mean_mC;
+  double begin_mean_mC = 0.0;
+  double end_mean_mC = 0.0;
+  ComputeCalibrationWindowSegmentMeans(
+    count, oldest_index, segment_count, &begin_mean_mC, &end_mean_mC);
+  const double delta_c = ComputeCalibrationWindowDeltaC(begin_mean_mC, end_mean_mC);
+  const double delta_mC = delta_c * 1000.0;
 
   const size_t newest_index = (oldest_index + count - 1u) % CAL_WINDOW_SIZE;
   const int64_t oldest_time_us = g_cal_window.samples_time_us[oldest_index];
@@ -741,7 +769,7 @@ CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
       ? ((double)(newest_time_us - oldest_time_us) / 1000000.0)
       : 0.0;
   const double drift_c_per_min =
-    (elapsed_s > 0.0) ? ((delta_mC / 1000.0) / elapsed_s) * 60.0 : 0.0;
+    ComputeCalibrationWindowRegressionDriftCPerMin(count, oldest_index);
 
   if (out_begin_mean_raw_mC != NULL) {
     *out_begin_mean_raw_mC = (int32_t)llround(begin_mean_mC);
@@ -761,4 +789,91 @@ CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
   if (out_abs_drift_c_per_min != NULL) {
     *out_abs_drift_c_per_min = fabs(drift_c_per_min);
   }
+}
+
+static void
+ComputeCalibrationWindowSegmentMeans(size_t count,
+                                     size_t oldest_index,
+                                     size_t segment_count,
+                                     double* out_begin_mean_mC,
+                                     double* out_end_mean_mC)
+{
+  double begin_sum_mC = 0.0;
+  double end_sum_mC = 0.0;
+
+  if (count < segment_count || segment_count == 0u) {
+    if (out_begin_mean_mC != NULL) {
+      *out_begin_mean_mC = 0.0;
+    }
+    if (out_end_mean_mC != NULL) {
+      *out_end_mean_mC = 0.0;
+    }
+    return;
+  }
+
+  for (size_t i = 0; i < segment_count; ++i) {
+    const size_t begin_idx = (oldest_index + i) % CAL_WINDOW_SIZE;
+    begin_sum_mC += g_cal_window.samples_milli_c[begin_idx];
+    const size_t end_offset = count - segment_count + i;
+    const size_t end_idx = (oldest_index + end_offset) % CAL_WINDOW_SIZE;
+    end_sum_mC += g_cal_window.samples_milli_c[end_idx];
+  }
+
+  if (out_begin_mean_mC != NULL) {
+    *out_begin_mean_mC = begin_sum_mC / (double)segment_count;
+  }
+  if (out_end_mean_mC != NULL) {
+    *out_end_mean_mC = end_sum_mC / (double)segment_count;
+  }
+}
+
+static double
+ComputeCalibrationWindowDeltaC(double begin_mean_mC, double end_mean_mC)
+{
+  return (end_mean_mC - begin_mean_mC) / 1000.0;
+}
+
+static double
+ComputeCalibrationWindowRegressionDriftCPerMin(size_t count, size_t oldest_index)
+{
+  if (count < 3u) {
+    return 0.0;
+  }
+
+  const int64_t first_time_us = g_cal_window.samples_time_us[oldest_index];
+  double sum_t_s = 0.0;
+  double sum_y_c = 0.0;
+  for (size_t i = 0; i < count; ++i) {
+    const size_t idx = (oldest_index + i) % CAL_WINDOW_SIZE;
+    const double t_s =
+      ((double)(g_cal_window.samples_time_us[idx] - first_time_us)) / 1000000.0;
+    const double y_c = g_cal_window.samples_milli_c[idx] / 1000.0;
+    sum_t_s += t_s;
+    sum_y_c += y_c;
+  }
+
+  const double mean_t_s = sum_t_s / (double)count;
+  const double mean_y_c = sum_y_c / (double)count;
+  double numerator = 0.0;
+  double denominator = 0.0;
+  for (size_t i = 0; i < count; ++i) {
+    const size_t idx = (oldest_index + i) % CAL_WINDOW_SIZE;
+    const double t_s =
+      ((double)(g_cal_window.samples_time_us[idx] - first_time_us)) / 1000000.0;
+    const double y_c = g_cal_window.samples_milli_c[idx] / 1000.0;
+    const double dt = t_s - mean_t_s;
+    const double dy = y_c - mean_y_c;
+    numerator += dt * dy;
+    denominator += dt * dt;
+  }
+
+  if (denominator <= 0.0) {
+    return 0.0;
+  }
+
+  const double slope_c_per_s = numerator / denominator;
+  if (!isfinite(slope_c_per_s)) {
+    return 0.0;
+  }
+  return slope_c_per_s * 60.0;
 }

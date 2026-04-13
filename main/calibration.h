@@ -194,14 +194,14 @@ extern "C"
                                    int32_t* out_stddev_mOhm);
 
   /**
-   * @brief Read beginning/end segment means and derived drift from calibration
-   * window samples.
+   * @brief Read beginning/end segment means, delta, and regression drift from
+   * calibration window samples.
    * @param out_begin_mean_raw_mC Receives beginning-segment mean (milli-C).
    * @param out_end_mean_raw_mC Receives ending-segment mean (milli-C).
    * @param out_delta_raw_mC Receives end-begin delta (milli-C).
    * @param out_elapsed_s Receives elapsed seconds between oldest/newest
    * samples in the current window.
-   * @param out_drift_c_per_min Receives signed drift in C/min.
+   * @param out_drift_c_per_min Receives signed regression drift in C/min.
    * @param out_abs_drift_c_per_min Receives absolute drift in C/min.
    */
   void CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
