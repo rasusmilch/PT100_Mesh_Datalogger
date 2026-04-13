@@ -20,12 +20,23 @@ extern "C"
 #define CALIBRATION_GUARD_MIN_C -50.0
 #define CALIBRATION_GUARD_MAX_C 200.0
 #define CALIBRATION_MAX_CORRECTION_C 20.0
+#define CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN INT32_MIN
+#define CAL_CAPTURE_DELTA_UNAVAILABLE_MC INT32_MIN
+#define CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN INT32_MIN
 
   typedef enum
   {
     CAL_DOMAIN_TEMP_C = 0,
     CAL_DOMAIN_RESISTANCE_OHM = 1,
   } calibration_domain_t;
+
+  typedef enum
+  {
+    CAL_DRIFT_LIMIT_SOURCE_DEFAULT = 0,
+    CAL_DRIFT_LIMIT_SOURCE_USER = 1,
+    CAL_DRIFT_LIMIT_SOURCE_DISABLED = 2,
+    CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE = 3,
+  } calibration_drift_limit_source_t;
 
   typedef struct
   {
@@ -37,6 +48,10 @@ extern "C"
     uint16_t sample_count;
     uint8_t time_valid;
     int64_t timestamp_epoch_sec;
+    int32_t captured_drift_mC_per_min;
+    int32_t captured_delta_mC;
+    int32_t capture_drift_limit_mC_per_min;
+    uint8_t drift_limit_source;
   } calibration_point_t;
 
   typedef enum
@@ -177,6 +192,24 @@ extern "C"
   void CalWindowGetResistanceStats(int32_t* out_last_raw_mOhm,
                                    int32_t* out_mean_raw_mOhm,
                                    int32_t* out_stddev_mOhm);
+
+  /**
+   * @brief Read beginning/end segment means and derived drift from calibration
+   * window samples.
+   * @param out_begin_mean_raw_mC Receives beginning-segment mean (milli-C).
+   * @param out_end_mean_raw_mC Receives ending-segment mean (milli-C).
+   * @param out_delta_raw_mC Receives end-begin delta (milli-C).
+   * @param out_elapsed_s Receives elapsed seconds between oldest/newest
+   * samples in the current window.
+   * @param out_drift_c_per_min Receives signed drift in C/min.
+   * @param out_abs_drift_c_per_min Receives absolute drift in C/min.
+   */
+  void CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
+                              int32_t* out_end_mean_raw_mC,
+                              int32_t* out_delta_raw_mC,
+                              double* out_elapsed_s,
+                              double* out_drift_c_per_min,
+                              double* out_abs_drift_c_per_min);
 
 #ifdef __cplusplus
 }

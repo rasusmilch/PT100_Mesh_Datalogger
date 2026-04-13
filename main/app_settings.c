@@ -73,7 +73,7 @@ static const char* kKeySettingsBlob0 = "cfg0";
 static const char* kKeySettingsBlob1 = "cfg1";
 
 #define APP_SETTINGS_BLOB_MAGIC 0x53455454u // 'SETT'
-#define APP_SETTINGS_BLOB_VERSION 4u
+#define APP_SETTINGS_BLOB_VERSION 5u
 
 #pragma pack(push, 1)
 typedef struct
@@ -85,6 +85,18 @@ typedef struct
   uint32_t generation;
   uint32_t crc32_le;
 } app_settings_blob_header_t;
+
+typedef struct
+{
+  int32_t raw_avg_mC;
+  int32_t actual_mC;
+  int32_t raw_stddev_mC;
+  int32_t raw_avg_mOhm;
+  int32_t raw_stddev_mOhm;
+  uint16_t sample_count;
+  uint8_t time_valid;
+  int64_t timestamp_epoch_sec;
+} legacy_calibration_point_v2_t;
 
 typedef struct
 {
@@ -197,6 +209,53 @@ typedef struct
   calibration_model_t calibration;
   calibration_context_t calibration_context;
   uint8_t calibration_context_valid;
+  legacy_calibration_point_v2_t calibration_points[CALIBRATION_MAX_POINTS];
+  uint8_t calibration_points_count;
+  uint8_t calibration_domain;
+  int64_t cal_last_utc;
+  int64_t cal_last_override_utc;
+  uint16_t cal_due_count;
+  uint8_t cal_due_unit;
+  uint16_t cal_due_override_count;
+  uint8_t cal_due_override_unit;
+  calibration_metar_reference_t cal_metar;
+  uint8_t rtd_ema_enabled;
+  uint16_t rtd_ema_alpha_permille;
+  uint32_t rtd_fault_assert_ms;
+  uint32_t rtd_fault_clear_ms;
+  char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
+  char unit_serial[APP_SETTINGS_UNIT_SERIAL_MAX_LEN];
+  char cal_method[APP_SETTINGS_CAL_METHOD_MAX_LEN];
+  uint8_t dst_enabled;
+  uint8_t node_role;
+  uint8_t allow_children;
+  uint8_t allow_children_set;
+  uint32_t display_attention_policy;
+  uint8_t net_mode;
+  uint8_t mqtt_enabled;
+  char mqtt_broker_uri[128];
+  char mqtt_topic_prefix[64];
+  uint8_t mqtt_qos;
+  uint8_t mqtt_retain;
+  uint8_t mqtt_bridge_mode;
+} app_settings_persist_payload_v4_t;
+
+typedef struct
+{
+  app_settings_blob_header_t header;
+  app_settings_persist_payload_v4_t payload;
+} app_settings_blob_v4_t;
+
+typedef struct
+{
+  uint32_t log_period_ms;
+  uint32_t fram_flush_watermark_records;
+  uint32_t sd_flush_period_ms;
+  uint32_t sd_batch_bytes_target;
+  uint32_t rtc_resync_period_ms;
+  calibration_model_t calibration;
+  calibration_context_t calibration_context;
+  uint8_t calibration_context_valid;
   calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
   uint8_t calibration_points_count;
   uint8_t calibration_domain;
@@ -244,6 +303,8 @@ AppSettingsSaveBlob(const app_settings_t* settings);
 
 static esp_err_t
 OpenNvs(nvs_handle_t* handle_out);
+static void
+MarkCalibrationPointDriftLegacyUnavailable_(calibration_point_t* point);
 /**
  * @brief Load optional display/sample period from standalone NVS key.
  * @param handle Open NVS handle.
@@ -479,6 +540,19 @@ AppSettingsParseMqttBridgeMode(const char* value, mqtt_bridge_mode_t* mode_out)
   return false;
 }
 
+static void
+MarkCalibrationPointDriftLegacyUnavailable_(calibration_point_t* point)
+{
+  if (point == NULL) {
+    return;
+  }
+  point->captured_drift_mC_per_min = CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN;
+  point->captured_delta_mC = CAL_CAPTURE_DELTA_UNAVAILABLE_MC;
+  point->capture_drift_limit_mC_per_min =
+    CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
+  point->drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+}
+
 /**
  * @brief Execute ApplyDefaults.
  * @param settings Parameter settings.
@@ -501,6 +575,9 @@ ApplyDefaults(app_settings_t* settings)
   settings->calibration_points_count = 0;
   settings->calibration_domain = CAL_DOMAIN_TEMP_C;
   memset(settings->calibration_points, 0, sizeof(settings->calibration_points));
+  for (size_t i = 0; i < CALIBRATION_MAX_POINTS; ++i) {
+    MarkCalibrationPointDriftLegacyUnavailable_(&settings->calibration_points[i]);
+  }
   settings->cal_last_utc = 0;
   settings->cal_last_override_utc = 0;
   settings->cal_due_count = 0;
@@ -707,6 +784,10 @@ SettingsBlobLooksValid(const app_settings_blob_t* blob)
     if (blob->header.size != sizeof(app_settings_persist_payload_v3_t)) {
       return false;
     }
+  } else if (blob->header.version == 4u) {
+    if (blob->header.size != sizeof(app_settings_persist_payload_v4_t)) {
+      return false;
+    }
   } else if (blob->header.version == 1u) {
     if (blob->header.size != sizeof(app_settings_persist_payload_v1_t)) {
       return false;
@@ -726,6 +807,13 @@ SettingsBlobLooksValid(const app_settings_blob_t* blob)
     memcpy(&temp_v3, blob, sizeof(temp_v3));
     temp_v3.header.crc32_le = 0;
     return esp_rom_crc32_le(0, (const uint8_t*)&temp_v3, sizeof(temp_v3)) ==
+           crc_saved;
+  }
+  if (blob->header.version == 4u) {
+    app_settings_blob_v4_t temp_v4;
+    memcpy(&temp_v4, blob, sizeof(temp_v4));
+    temp_v4.header.crc32_le = 0;
+    return esp_rom_crc32_le(0, (const uint8_t*)&temp_v4, sizeof(temp_v4)) ==
            crc_saved;
   }
   app_settings_blob_v1_t temp_v1;
@@ -827,6 +915,73 @@ ReadSettingsBlob(nvs_handle_t handle,
     blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
     return true;
   }
+  if (header->version == 4u && blob_size == sizeof(app_settings_blob_v4_t)) {
+    const app_settings_blob_v4_t* old_blob = (const app_settings_blob_v4_t*)raw;
+    app_settings_blob_v4_t crc_blob = *old_blob;
+    const uint32_t crc_saved = crc_blob.header.crc32_le;
+    crc_blob.header.crc32_le = 0;
+    const uint32_t crc =
+      esp_rom_crc32_le(0, (const uint8_t*)&crc_blob, sizeof(crc_blob));
+    if (crc != crc_saved) {
+      return false;
+    }
+    memset(blob_out, 0, sizeof(*blob_out));
+    blob_out->header.magic = old_blob->header.magic;
+    blob_out->header.version = APP_SETTINGS_BLOB_VERSION;
+    blob_out->header.size = sizeof(app_settings_persist_payload_t);
+    blob_out->header.generation = old_blob->header.generation;
+    const app_settings_persist_payload_v4_t* old = &old_blob->payload;
+    app_settings_persist_payload_t* now = &blob_out->payload;
+    now->log_period_ms = old->log_period_ms;
+    now->fram_flush_watermark_records = old->fram_flush_watermark_records;
+    now->sd_flush_period_ms = old->sd_flush_period_ms;
+    now->sd_batch_bytes_target = old->sd_batch_bytes_target;
+    now->rtc_resync_period_ms = old->rtc_resync_period_ms;
+    now->calibration = old->calibration;
+    now->calibration_context = old->calibration_context;
+    now->calibration_context_valid = old->calibration_context_valid;
+    now->calibration_points_count = old->calibration_points_count;
+    now->calibration_domain = old->calibration_domain;
+    for (size_t i = 0; i < CALIBRATION_MAX_POINTS; ++i) {
+      now->calibration_points[i].raw_avg_mC = old->calibration_points[i].raw_avg_mC;
+      now->calibration_points[i].actual_mC = old->calibration_points[i].actual_mC;
+      now->calibration_points[i].raw_stddev_mC = old->calibration_points[i].raw_stddev_mC;
+      now->calibration_points[i].raw_avg_mOhm = old->calibration_points[i].raw_avg_mOhm;
+      now->calibration_points[i].raw_stddev_mOhm = old->calibration_points[i].raw_stddev_mOhm;
+      now->calibration_points[i].sample_count = old->calibration_points[i].sample_count;
+      now->calibration_points[i].time_valid = old->calibration_points[i].time_valid;
+      now->calibration_points[i].timestamp_epoch_sec = old->calibration_points[i].timestamp_epoch_sec;
+      MarkCalibrationPointDriftLegacyUnavailable_(&now->calibration_points[i]);
+    }
+    now->cal_last_utc = old->cal_last_utc;
+    now->cal_last_override_utc = old->cal_last_override_utc;
+    now->cal_due_count = old->cal_due_count;
+    now->cal_due_unit = old->cal_due_unit;
+    now->cal_due_override_count = old->cal_due_override_count;
+    now->cal_due_override_unit = old->cal_due_override_unit;
+    now->cal_metar = old->cal_metar;
+    now->rtd_ema_enabled = old->rtd_ema_enabled;
+    now->rtd_ema_alpha_permille = old->rtd_ema_alpha_permille;
+    now->rtd_fault_assert_ms = old->rtd_fault_assert_ms;
+    now->rtd_fault_clear_ms = old->rtd_fault_clear_ms;
+    memcpy(now->tz_posix, old->tz_posix, sizeof(now->tz_posix));
+    memcpy(now->unit_serial, old->unit_serial, sizeof(now->unit_serial));
+    memcpy(now->cal_method, old->cal_method, sizeof(now->cal_method));
+    now->dst_enabled = old->dst_enabled;
+    now->node_role = old->node_role;
+    now->allow_children = old->allow_children;
+    now->allow_children_set = old->allow_children_set;
+    now->display_attention_policy = old->display_attention_policy;
+    now->net_mode = old->net_mode;
+    now->mqtt_enabled = old->mqtt_enabled;
+    memcpy(now->mqtt_broker_uri, old->mqtt_broker_uri, sizeof(now->mqtt_broker_uri));
+    memcpy(now->mqtt_topic_prefix, old->mqtt_topic_prefix, sizeof(now->mqtt_topic_prefix));
+    now->mqtt_qos = old->mqtt_qos;
+    now->mqtt_retain = old->mqtt_retain;
+    now->mqtt_bridge_mode = old->mqtt_bridge_mode;
+    blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+    return true;
+  }
   if (header->version == 1u && blob_size == sizeof(app_settings_blob_v1_t)) {
     const app_settings_blob_v1_t* old_blob = (const app_settings_blob_v1_t*)raw;
     app_settings_blob_v1_t crc_blob = *old_blob;
@@ -862,6 +1017,7 @@ ReadSettingsBlob(nvs_handle_t handle,
       now->calibration_points[i].sample_count = old->calibration_points[i].sample_count;
       now->calibration_points[i].time_valid = old->calibration_points[i].time_valid;
       now->calibration_points[i].timestamp_epoch_sec = old->calibration_points[i].timestamp_epoch_sec;
+      MarkCalibrationPointDriftLegacyUnavailable_(&now->calibration_points[i]);
     }
     now->cal_last_utc = old->cal_last_utc;
     now->cal_last_override_utc = old->cal_last_override_utc;
@@ -1025,6 +1181,13 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
     memcpy(settings_out->calibration_points,
            payload->calibration_points,
            sizeof(settings_out->calibration_points));
+    for (size_t i = 0; i < CALIBRATION_MAX_POINTS; ++i) {
+      if (settings_out->calibration_points[i].drift_limit_source >
+          (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE) {
+        MarkCalibrationPointDriftLegacyUnavailable_(
+          &settings_out->calibration_points[i]);
+      }
+    }
   } else {
     settings_out->calibration_points_count = 0;
     memset(settings_out->calibration_points,
@@ -1368,6 +1531,40 @@ AppSettingsLoadLegacy(nvs_handle_t handle,
       if (points_result == ESP_OK && points_bytes_copy == points_bytes) {
         settings_out->calibration_points_count = cal_points_count;
       } else {
+        legacy_calibration_point_v2_t legacy_points_v2[CALIBRATION_MAX_POINTS] =
+          { 0 };
+        size_t legacy_v2_bytes =
+          sizeof(legacy_calibration_point_v2_t) * (size_t)cal_points_count;
+        points_result = nvs_get_blob(
+          handle, kKeyCalPoints, legacy_points_v2, &legacy_v2_bytes);
+        if (points_result == ESP_OK &&
+            legacy_v2_bytes ==
+              sizeof(legacy_calibration_point_v2_t) *
+                (size_t)cal_points_count) {
+          settings_out->calibration_points_count = cal_points_count;
+          for (size_t i = 0; i < cal_points_count; ++i) {
+            settings_out->calibration_points[i].raw_avg_mC =
+              legacy_points_v2[i].raw_avg_mC;
+            settings_out->calibration_points[i].actual_mC =
+              legacy_points_v2[i].actual_mC;
+            settings_out->calibration_points[i].raw_stddev_mC =
+              legacy_points_v2[i].raw_stddev_mC;
+            settings_out->calibration_points[i].raw_avg_mOhm =
+              legacy_points_v2[i].raw_avg_mOhm;
+            settings_out->calibration_points[i].raw_stddev_mOhm =
+              legacy_points_v2[i].raw_stddev_mOhm;
+            settings_out->calibration_points[i].sample_count =
+              legacy_points_v2[i].sample_count;
+            settings_out->calibration_points[i].time_valid =
+              legacy_points_v2[i].time_valid;
+            settings_out->calibration_points[i].timestamp_epoch_sec =
+              legacy_points_v2[i].timestamp_epoch_sec;
+            MarkCalibrationPointDriftLegacyUnavailable_(
+              &settings_out->calibration_points[i]);
+          }
+          goto load_points_done;
+        }
+
         legacy_calibration_point_v1_t legacy_points[CALIBRATION_MAX_POINTS] =
           { 0 };
         size_t legacy_bytes =
@@ -1394,17 +1591,24 @@ AppSettingsLoadLegacy(nvs_handle_t handle,
               legacy_points[i].time_valid;
             settings_out->calibration_points[i].timestamp_epoch_sec =
               legacy_points[i].timestamp_epoch_sec;
+            MarkCalibrationPointDriftLegacyUnavailable_(
+              &settings_out->calibration_points[i]);
           }
         } else {
           settings_out->calibration_points_count = 0;
           memset(settings_out->calibration_points,
                  0,
                  sizeof(settings_out->calibration_points));
+          for (size_t i = 0; i < CALIBRATION_MAX_POINTS; ++i) {
+            MarkCalibrationPointDriftLegacyUnavailable_(
+              &settings_out->calibration_points[i]);
+          }
         }
       }
     } else {
       settings_out->calibration_points_count = 0;
     }
+load_points_done:
   } else {
     settings_out->calibration_points_count = 0;
   }
