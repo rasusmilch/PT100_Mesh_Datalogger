@@ -116,6 +116,8 @@ extern "C"
     calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
     uint8_t calibration_points_count;
     calibration_domain_t calibration_domain;
+    uint16_t cal_window_duration_s;
+    uint16_t cal_trend_ema_alpha_permille;
     // Calibration tracking (UTC-based)
     int64_t cal_last_utc;
     int64_t cal_last_override_utc;
@@ -245,6 +247,8 @@ extern "C"
  * @return ESP_OK on success; otherwise an ESP-IDF error code.
  */
   esp_err_t AppSettingsSaveCalibrationDomain(calibration_domain_t domain);
+  esp_err_t AppSettingsSaveCalibrationConfig(uint16_t window_s,
+                                             uint16_t ema_alpha_permille);
 
   // Persists updated RTD EMA enabled flag.
 /**

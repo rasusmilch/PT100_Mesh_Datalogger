@@ -14,7 +14,11 @@ extern "C"
 
 #define CALIBRATION_MAX_POINTS 4
 #define CALIBRATION_MAX_DEGREE 3
-#define CAL_WINDOW_SIZE 30
+#define CAL_WINDOW_MAX_SAMPLES 720
+#define CAL_WINDOW_DURATION_DEFAULT_S 60u
+#define CAL_WINDOW_DURATION_MIN_S 10u
+#define CAL_WINDOW_DURATION_MAX_S 600u
+#define CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE 200u
 #define CALIBRATION_MIN_SLOPE 0.8
 #define CALIBRATION_MAX_SLOPE 1.2
 #define CALIBRATION_GUARD_MIN_C -50.0
@@ -23,6 +27,8 @@ extern "C"
 #define CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN INT32_MIN
 #define CAL_CAPTURE_DELTA_UNAVAILABLE_MC INT32_MIN
 #define CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN INT32_MIN
+#define CAL_CAPTURE_WINDOW_S_UNAVAILABLE INT16_MIN
+#define CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE INT16_MIN
 
   typedef enum
   {
@@ -52,6 +58,8 @@ extern "C"
     int32_t captured_delta_mC;
     int32_t capture_drift_limit_mC_per_min;
     uint8_t drift_limit_source;
+    int16_t captured_window_s;
+    int16_t captured_ema_alpha_permille;
   } calibration_point_t;
 
   typedef enum
@@ -210,6 +218,14 @@ extern "C"
                               double* out_elapsed_s,
                               double* out_drift_c_per_min,
                               double* out_abs_drift_c_per_min);
+  void CalWindowSetDurationSeconds(uint16_t window_s);
+  uint16_t CalWindowGetDurationSeconds(void);
+  void CalWindowSetTrendEmaAlphaPermille(uint16_t alpha_permille);
+  uint16_t CalWindowGetTrendEmaAlphaPermille(void);
+  void CalWindowResetTrendEma(void);
+  void CalWindowGetTrendEmaStats(double* out_delta_c_ema,
+                                 double* out_drift_c_per_min_ema,
+                                 bool* out_initialized);
 
 #ifdef __cplusplus
 }
