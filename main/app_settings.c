@@ -73,7 +73,7 @@ static const char* kKeySettingsBlob0 = "cfg0";
 static const char* kKeySettingsBlob1 = "cfg1";
 
 #define APP_SETTINGS_BLOB_MAGIC 0x53455454u // 'SETT'
-#define APP_SETTINGS_BLOB_VERSION 5u
+#define APP_SETTINGS_BLOB_VERSION 6u
 
 #pragma pack(push, 1)
 typedef struct
@@ -259,6 +259,8 @@ typedef struct
   calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
   uint8_t calibration_points_count;
   uint8_t calibration_domain;
+  uint16_t cal_window_duration_s;
+  uint16_t cal_trend_ema_alpha_permille;
   int64_t cal_last_utc;
   int64_t cal_last_override_utc;
   uint16_t cal_due_count;
@@ -286,6 +288,49 @@ typedef struct
   uint8_t mqtt_retain;
   uint8_t mqtt_bridge_mode;
 } app_settings_persist_payload_t;
+
+typedef struct
+{
+  uint32_t log_period_ms;
+  uint32_t fram_flush_watermark_records;
+  uint32_t sd_flush_period_ms;
+  uint32_t sd_batch_bytes_target;
+  uint32_t rtc_resync_period_ms;
+  calibration_model_t calibration;
+  calibration_context_t calibration_context;
+  uint8_t calibration_context_valid;
+  calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
+  uint8_t calibration_points_count;
+  uint8_t calibration_domain;
+  uint16_t cal_window_duration_s;
+  uint16_t cal_trend_ema_alpha_permille;
+  int64_t cal_last_utc;
+  int64_t cal_last_override_utc;
+  uint16_t cal_due_count;
+  uint8_t cal_due_unit;
+  uint16_t cal_due_override_count;
+  uint8_t cal_due_override_unit;
+  calibration_metar_reference_t cal_metar;
+  uint8_t rtd_ema_enabled;
+  uint16_t rtd_ema_alpha_permille;
+  uint32_t rtd_fault_assert_ms;
+  uint32_t rtd_fault_clear_ms;
+  char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
+  char unit_serial[APP_SETTINGS_UNIT_SERIAL_MAX_LEN];
+  char cal_method[APP_SETTINGS_CAL_METHOD_MAX_LEN];
+  uint8_t dst_enabled;
+  uint8_t node_role;
+  uint8_t allow_children;
+  uint8_t allow_children_set;
+  uint32_t display_attention_policy;
+  uint8_t net_mode;
+  uint8_t mqtt_enabled;
+  char mqtt_broker_uri[128];
+  char mqtt_topic_prefix[64];
+  uint8_t mqtt_qos;
+  uint8_t mqtt_retain;
+  uint8_t mqtt_bridge_mode;
+} app_settings_persist_payload_v5_t;
 
 typedef struct
 {
@@ -551,6 +596,8 @@ MarkCalibrationPointDriftLegacyUnavailable_(calibration_point_t* point)
   point->capture_drift_limit_mC_per_min =
     CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
   point->drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+  point->captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
+  point->captured_ema_alpha_permille = CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
 }
 
 /**
@@ -574,6 +621,8 @@ ApplyDefaults(app_settings_t* settings)
   settings->calibration_context_valid = false;
   settings->calibration_points_count = 0;
   settings->calibration_domain = CAL_DOMAIN_TEMP_C;
+  settings->cal_window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S;
+  settings->cal_trend_ema_alpha_permille = CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE;
   memset(settings->calibration_points, 0, sizeof(settings->calibration_points));
   for (size_t i = 0; i < CALIBRATION_MAX_POINTS; ++i) {
     MarkCalibrationPointDriftLegacyUnavailable_(&settings->calibration_points[i]);
@@ -788,6 +837,10 @@ SettingsBlobLooksValid(const app_settings_blob_t* blob)
     if (blob->header.size != sizeof(app_settings_persist_payload_v4_t)) {
       return false;
     }
+  } else if (blob->header.version == 5u) {
+    if (blob->header.size != sizeof(app_settings_persist_payload_v5_t)) {
+      return false;
+    }
   } else if (blob->header.version == 1u) {
     if (blob->header.size != sizeof(app_settings_persist_payload_v1_t)) {
       return false;
@@ -814,6 +867,20 @@ SettingsBlobLooksValid(const app_settings_blob_t* blob)
     memcpy(&temp_v4, blob, sizeof(temp_v4));
     temp_v4.header.crc32_le = 0;
     return esp_rom_crc32_le(0, (const uint8_t*)&temp_v4, sizeof(temp_v4)) ==
+           crc_saved;
+  }
+  if (blob->header.version == 5u) {
+    app_settings_blob_header_t header = blob->header;
+    app_settings_persist_payload_v5_t payload_v5;
+    memcpy(&payload_v5, &blob->payload, sizeof(payload_v5));
+    header.crc32_le = 0;
+    typedef struct
+    {
+      app_settings_blob_header_t header;
+      app_settings_persist_payload_v5_t payload;
+    } app_settings_blob_v5_t;
+    app_settings_blob_v5_t temp_v5 = { .header = header, .payload = payload_v5 };
+    return esp_rom_crc32_le(0, (const uint8_t*)&temp_v5, sizeof(temp_v5)) ==
            crc_saved;
   }
   app_settings_blob_v1_t temp_v1;
@@ -883,6 +950,8 @@ ReadSettingsBlob(nvs_handle_t handle,
            sizeof(now->calibration_points));
     now->calibration_points_count = old->calibration_points_count;
     now->calibration_domain = old->calibration_domain;
+    now->cal_window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S;
+    now->cal_trend_ema_alpha_permille = CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE;
     now->cal_last_utc = old->cal_last_utc;
     now->cal_last_override_utc = old->cal_last_override_utc;
     now->cal_due_count = old->cal_due_count;
@@ -942,6 +1011,8 @@ ReadSettingsBlob(nvs_handle_t handle,
     now->calibration_context_valid = old->calibration_context_valid;
     now->calibration_points_count = old->calibration_points_count;
     now->calibration_domain = old->calibration_domain;
+    now->cal_window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S;
+    now->cal_trend_ema_alpha_permille = CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE;
     for (size_t i = 0; i < CALIBRATION_MAX_POINTS; ++i) {
       now->calibration_points[i].raw_avg_mC = old->calibration_points[i].raw_avg_mC;
       now->calibration_points[i].actual_mC = old->calibration_points[i].actual_mC;
@@ -982,6 +1053,35 @@ ReadSettingsBlob(nvs_handle_t handle,
     blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
     return true;
   }
+  if (header->version == 5u) {
+    typedef struct
+    {
+      app_settings_blob_header_t header;
+      app_settings_persist_payload_v5_t payload;
+    } app_settings_blob_v5_t;
+    if (blob_size == sizeof(app_settings_blob_v5_t)) {
+      const app_settings_blob_v5_t* old_blob =
+        (const app_settings_blob_v5_t*)raw;
+      app_settings_blob_v5_t crc_blob = *old_blob;
+      const uint32_t crc_saved = crc_blob.header.crc32_le;
+      crc_blob.header.crc32_le = 0;
+      const uint32_t crc =
+        esp_rom_crc32_le(0, (const uint8_t*)&crc_blob, sizeof(crc_blob));
+      if (crc != crc_saved) {
+        return false;
+      }
+      memset(blob_out, 0, sizeof(*blob_out));
+      blob_out->header = old_blob->header;
+      blob_out->header.version = APP_SETTINGS_BLOB_VERSION;
+      blob_out->header.size = sizeof(app_settings_persist_payload_t);
+      memcpy(&blob_out->payload, &old_blob->payload, sizeof(old_blob->payload));
+      blob_out->payload.cal_window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S;
+      blob_out->payload.cal_trend_ema_alpha_permille =
+        CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE;
+      blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+      return true;
+    }
+  }
   if (header->version == 1u && blob_size == sizeof(app_settings_blob_v1_t)) {
     const app_settings_blob_v1_t* old_blob = (const app_settings_blob_v1_t*)raw;
     app_settings_blob_v1_t crc_blob = *old_blob;
@@ -1008,6 +1108,8 @@ ReadSettingsBlob(nvs_handle_t handle,
     now->calibration_context_valid = old->calibration_context_valid;
     now->calibration_points_count = old->calibration_points_count;
     now->calibration_domain = (uint8_t)CAL_DOMAIN_TEMP_C;
+    now->cal_window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S;
+    now->cal_trend_ema_alpha_permille = CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE;
     for (size_t i = 0; i < CALIBRATION_MAX_POINTS; ++i) {
       now->calibration_points[i].raw_avg_mC = old->calibration_points[i].raw_avg_mC;
       now->calibration_points[i].actual_mC = old->calibration_points[i].actual_mC;
@@ -1091,6 +1193,8 @@ SettingsPayloadFromSettings(const app_settings_t* settings,
          sizeof(payload->calibration_points));
   payload->calibration_points_count = settings->calibration_points_count;
   payload->calibration_domain = (uint8_t)settings->calibration_domain;
+  payload->cal_window_duration_s = settings->cal_window_duration_s;
+  payload->cal_trend_ema_alpha_permille = settings->cal_trend_ema_alpha_permille;
   payload->cal_last_utc = settings->cal_last_utc;
   payload->cal_last_override_utc = settings->cal_last_override_utc;
   payload->cal_due_count = settings->cal_due_count;
@@ -1200,6 +1304,15 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
       (calibration_domain_t)payload->calibration_domain;
   } else {
     settings_out->calibration_domain = CAL_DOMAIN_TEMP_C;
+  }
+  if (payload->cal_window_duration_s >= CAL_WINDOW_DURATION_MIN_S &&
+      payload->cal_window_duration_s <= CAL_WINDOW_DURATION_MAX_S) {
+    settings_out->cal_window_duration_s = payload->cal_window_duration_s;
+  }
+  if (payload->cal_trend_ema_alpha_permille >= 1u &&
+      payload->cal_trend_ema_alpha_permille <= 1000u) {
+    settings_out->cal_trend_ema_alpha_permille =
+      payload->cal_trend_ema_alpha_permille;
   }
 
   if (payload->calibration_context_valid <= 1) {
@@ -2267,6 +2380,22 @@ AppSettingsSaveCalibrationDomain(calibration_domain_t domain)
   settings.calibration_domain = domain;
   return PersistSettingsSnapshot(&settings);
 }
+
+esp_err_t
+AppSettingsSaveCalibrationConfig(uint16_t window_s, uint16_t ema_alpha_permille)
+{
+  if (window_s < CAL_WINDOW_DURATION_MIN_S ||
+      window_s > CAL_WINDOW_DURATION_MAX_S || ema_alpha_permille == 0u ||
+      ema_alpha_permille > 1000u) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  app_settings_t settings;
+  InitSettingsSnapshot(&settings);
+  settings.cal_window_duration_s = window_s;
+  settings.cal_trend_ema_alpha_permille = ema_alpha_permille;
+  return PersistSettingsSnapshot(&settings);
+}
+
 esp_err_t
 AppSettingsSaveRtdEmaEnabled(bool enabled)
 {

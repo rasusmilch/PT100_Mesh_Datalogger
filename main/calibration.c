@@ -11,11 +11,17 @@ static const char* kTag = "calibration";
 
 typedef struct
 {
-  int32_t samples_milli_c[CAL_WINDOW_SIZE];
-  int32_t samples_milli_ohm[CAL_WINDOW_SIZE];
-  int64_t samples_time_us[CAL_WINDOW_SIZE];
+  int32_t samples_milli_c[CAL_WINDOW_MAX_SAMPLES];
+  int32_t samples_milli_ohm[CAL_WINDOW_MAX_SAMPLES];
+  int64_t samples_time_us[CAL_WINDOW_MAX_SAMPLES];
   size_t count;
-  size_t index;
+  size_t head;
+  size_t write_index;
+  uint16_t window_duration_s;
+  uint16_t trend_ema_alpha_permille;
+  bool trend_ema_initialized;
+  double trend_ema_delta_c;
+  double trend_ema_drift_c_per_min;
   int32_t last_raw_milli_c;
   int32_t mean_raw_milli_c;
   int32_t stddev_raw_milli_c;
@@ -24,7 +30,10 @@ typedef struct
   int32_t stddev_raw_milli_ohm;
 } cal_window_state_t;
 
-static cal_window_state_t g_cal_window;
+static cal_window_state_t g_cal_window = {
+  .window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S,
+  .trend_ema_alpha_permille = CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE,
+};
 
 /**
  * @brief Compute beginning/ending segment means for active calibration window.
@@ -47,8 +56,8 @@ ComputeCalibrationWindowSegmentMeans(size_t count,
  * @param end_mean_mC Ending segment mean in milli-Celsius.
  * @return End-minus-begin delta in Celsius.
  */
-static double ComputeCalibrationWindowDeltaC(double begin_mean_mC,
-                                             double end_mean_mC);
+static double ComputeCalibrationWindowDeltaCRaw(double begin_mean_mC,
+                                                double end_mean_mC);
 
 /**
  * @brief Compute least-squares drift slope across full calibration window.
@@ -57,8 +66,14 @@ static double ComputeCalibrationWindowDeltaC(double begin_mean_mC,
  * @return Signed regression drift in Celsius per minute.
  */
 static double
-ComputeCalibrationWindowRegressionDriftCPerMin(size_t count,
-                                               size_t oldest_index);
+ComputeCalibrationWindowRegressionDriftCPerMinRaw(size_t count,
+                                                  size_t oldest_index);
+static void ResetCalibrationTrendEma(void);
+static void UpdateCalibrationTrendEma(double delta_c_raw,
+                                      double drift_c_per_min_raw);
+static void ResolveActiveWindow_(size_t* out_count,
+                                 size_t* out_oldest_index,
+                                 double* out_elapsed_s);
 
 /**
  * @brief Execute InterpolateResidual.
@@ -199,6 +214,88 @@ SolveLinearSystemGauss(
     vector_x_out[index] = vector_b[index];
   }
   return ESP_OK;
+}
+
+static void
+ResolveActiveWindow_(size_t* out_count,
+                     size_t* out_oldest_index,
+                     double* out_elapsed_s)
+{
+  if (out_count != NULL) {
+    *out_count = 0u;
+  }
+  if (out_oldest_index != NULL) {
+    *out_oldest_index = 0u;
+  }
+  if (out_elapsed_s != NULL) {
+    *out_elapsed_s = 0.0;
+  }
+
+  if (g_cal_window.count == 0u) {
+    return;
+  }
+
+  const size_t newest_index =
+    (g_cal_window.write_index + CAL_WINDOW_MAX_SAMPLES - 1u) %
+    CAL_WINDOW_MAX_SAMPLES;
+  const int64_t newest_time_us = g_cal_window.samples_time_us[newest_index];
+  const int64_t min_time_us = newest_time_us -
+                              (int64_t)g_cal_window.window_duration_s * 1000000LL;
+
+  size_t oldest_index = g_cal_window.head;
+  size_t active_count = g_cal_window.count;
+  while (active_count > 1u) {
+    const int64_t oldest_time_us = g_cal_window.samples_time_us[oldest_index];
+    if (oldest_time_us >= min_time_us) {
+      break;
+    }
+    oldest_index = (oldest_index + 1u) % CAL_WINDOW_MAX_SAMPLES;
+    --active_count;
+  }
+
+  if (out_count != NULL) {
+    *out_count = active_count;
+  }
+  if (out_oldest_index != NULL) {
+    *out_oldest_index = oldest_index;
+  }
+  if (out_elapsed_s != NULL && active_count > 1u) {
+    const size_t active_newest_index =
+      (oldest_index + active_count - 1u) % CAL_WINDOW_MAX_SAMPLES;
+    const int64_t oldest_time_us = g_cal_window.samples_time_us[oldest_index];
+    const int64_t active_newest_time_us =
+      g_cal_window.samples_time_us[active_newest_index];
+    if (active_newest_time_us > oldest_time_us) {
+      *out_elapsed_s =
+        (double)(active_newest_time_us - oldest_time_us) / 1000000.0;
+    }
+  }
+}
+
+static void
+ResetCalibrationTrendEma(void)
+{
+  g_cal_window.trend_ema_initialized = false;
+  g_cal_window.trend_ema_delta_c = 0.0;
+  g_cal_window.trend_ema_drift_c_per_min = 0.0;
+}
+
+static void
+UpdateCalibrationTrendEma(double delta_c_raw, double drift_c_per_min_raw)
+{
+  const double alpha = g_cal_window.trend_ema_alpha_permille / 1000.0;
+  if (!g_cal_window.trend_ema_initialized) {
+    g_cal_window.trend_ema_delta_c = delta_c_raw;
+    g_cal_window.trend_ema_drift_c_per_min = drift_c_per_min_raw;
+    g_cal_window.trend_ema_initialized = true;
+    return;
+  }
+
+  g_cal_window.trend_ema_delta_c =
+    (alpha * delta_c_raw) + ((1.0 - alpha) * g_cal_window.trend_ema_delta_c);
+  g_cal_window.trend_ema_drift_c_per_min =
+    (alpha * drift_c_per_min_raw) +
+    ((1.0 - alpha) * g_cal_window.trend_ema_drift_c_per_min);
 }
 
 /**
@@ -597,54 +694,74 @@ void
 CalWindowPushRawSample(int32_t raw_milli_c, int32_t raw_milli_ohm)
 {
   const int64_t now_us = esp_timer_get_time();
-  g_cal_window.samples_milli_c[g_cal_window.index] = raw_milli_c;
-  g_cal_window.samples_milli_ohm[g_cal_window.index] = raw_milli_ohm;
-  g_cal_window.samples_time_us[g_cal_window.index] = now_us;
-  g_cal_window.index = (g_cal_window.index + 1) % CAL_WINDOW_SIZE;
-  if (g_cal_window.count < CAL_WINDOW_SIZE) {
+  g_cal_window.samples_milli_c[g_cal_window.write_index] = raw_milli_c;
+  g_cal_window.samples_milli_ohm[g_cal_window.write_index] = raw_milli_ohm;
+  g_cal_window.samples_time_us[g_cal_window.write_index] = now_us;
+  g_cal_window.write_index =
+    (g_cal_window.write_index + 1u) % CAL_WINDOW_MAX_SAMPLES;
+  if (g_cal_window.count < CAL_WINDOW_MAX_SAMPLES) {
     g_cal_window.count++;
+  } else {
+    g_cal_window.head = (g_cal_window.head + 1u) % CAL_WINDOW_MAX_SAMPLES;
   }
 
   g_cal_window.last_raw_milli_c = raw_milli_c;
   g_cal_window.last_raw_milli_ohm = raw_milli_ohm;
 
-  double sum = 0.0;
-  for (size_t i = 0; i < g_cal_window.count; ++i) {
-    sum += g_cal_window.samples_milli_c[i];
+  size_t active_count = 0u;
+  size_t oldest_index = 0u;
+  ResolveActiveWindow_(&active_count, &oldest_index, NULL);
+  if (active_count == 0u) {
+    return;
   }
-  const double mean = sum / (double)g_cal_window.count;
+
+  double sum = 0.0;
+  for (size_t i = 0; i < active_count; ++i) {
+    const size_t idx = (oldest_index + i) % CAL_WINDOW_MAX_SAMPLES;
+    sum += g_cal_window.samples_milli_c[idx];
+  }
+  const double mean = sum / (double)active_count;
 
   double variance_sum = 0.0;
-  for (size_t i = 0; i < g_cal_window.count; ++i) {
-    const double delta =
-      (double)g_cal_window.samples_milli_c[i] - mean;
+  for (size_t i = 0; i < active_count; ++i) {
+    const size_t idx = (oldest_index + i) % CAL_WINDOW_MAX_SAMPLES;
+    const double delta = (double)g_cal_window.samples_milli_c[idx] - mean;
     variance_sum += delta * delta;
   }
-  const double variance =
-    (g_cal_window.count > 0) ? (variance_sum / g_cal_window.count) : 0.0;
+  const double variance = variance_sum / (double)active_count;
   const double stddev = sqrt(variance);
 
   g_cal_window.mean_raw_milli_c = (int32_t)llround(mean);
   g_cal_window.stddev_raw_milli_c = (int32_t)llround(stddev);
 
   sum = 0.0;
-  for (size_t i = 0; i < g_cal_window.count; ++i) {
-    sum += g_cal_window.samples_milli_ohm[i];
+  for (size_t i = 0; i < active_count; ++i) {
+    const size_t idx = (oldest_index + i) % CAL_WINDOW_MAX_SAMPLES;
+    sum += g_cal_window.samples_milli_ohm[idx];
   }
-  const double mean_ohm = sum / (double)g_cal_window.count;
+  const double mean_ohm = sum / (double)active_count;
 
   variance_sum = 0.0;
-  for (size_t i = 0; i < g_cal_window.count; ++i) {
-    const double delta =
-      (double)g_cal_window.samples_milli_ohm[i] - mean_ohm;
+  for (size_t i = 0; i < active_count; ++i) {
+    const size_t idx = (oldest_index + i) % CAL_WINDOW_MAX_SAMPLES;
+    const double delta = (double)g_cal_window.samples_milli_ohm[idx] - mean_ohm;
     variance_sum += delta * delta;
   }
-  const double variance_ohm =
-    (g_cal_window.count > 0) ? (variance_sum / g_cal_window.count) : 0.0;
+  const double variance_ohm = variance_sum / (double)active_count;
   const double stddev_ohm = sqrt(variance_ohm);
 
   g_cal_window.mean_raw_milli_ohm = (int32_t)llround(mean_ohm);
   g_cal_window.stddev_raw_milli_ohm = (int32_t)llround(stddev_ohm);
+
+  int32_t delta_raw_mC = 0;
+  double drift_raw_c_per_min = 0.0;
+  CalWindowGetTrendStats(NULL,
+                         NULL,
+                         &delta_raw_mC,
+                         NULL,
+                         &drift_raw_c_per_min,
+                         NULL);
+  UpdateCalibrationTrendEma(delta_raw_mC / 1000.0, drift_raw_c_per_min);
 }
 
 /**
@@ -654,6 +771,9 @@ void
 CalWindowClear(void)
 {
   memset(&g_cal_window, 0, sizeof(g_cal_window));
+  g_cal_window.window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S;
+  g_cal_window.trend_ema_alpha_permille = CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE;
+  ResetCalibrationTrendEma();
 }
 
 /**
@@ -663,7 +783,10 @@ CalWindowClear(void)
 bool
 CalWindowIsReady(void)
 {
-  return g_cal_window.count >= CAL_WINDOW_SIZE;
+  size_t active_count = 0u;
+  double elapsed_s = 0.0;
+  ResolveActiveWindow_(&active_count, NULL, &elapsed_s);
+  return active_count >= 3u && elapsed_s >= (double)g_cal_window.window_duration_s;
 }
 
 /**
@@ -673,7 +796,9 @@ CalWindowIsReady(void)
 size_t
 CalWindowGetSampleCount(void)
 {
-  return g_cal_window.count;
+  size_t active_count = 0u;
+  ResolveActiveWindow_(&active_count, NULL, NULL);
+  return active_count;
 }
 
 /**
@@ -728,7 +853,9 @@ CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
                        double* out_drift_c_per_min,
                        double* out_abs_drift_c_per_min)
 {
-  const size_t count = g_cal_window.count;
+  size_t count = 0u;
+  size_t oldest_index = 0u;
+  ResolveActiveWindow_(&count, &oldest_index, NULL);
   const size_t segment_count = (count / 4u >= 3u) ? (count / 4u) : 3u;
   if (count < segment_count || segment_count == 0u) {
     if (out_begin_mean_raw_mC != NULL) {
@@ -752,16 +879,16 @@ CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
     return;
   }
 
-  const size_t oldest_index =
-    (count < CAL_WINDOW_SIZE) ? 0u : g_cal_window.index;
   double begin_mean_mC = 0.0;
   double end_mean_mC = 0.0;
   ComputeCalibrationWindowSegmentMeans(
     count, oldest_index, segment_count, &begin_mean_mC, &end_mean_mC);
-  const double delta_c = ComputeCalibrationWindowDeltaC(begin_mean_mC, end_mean_mC);
+  const double delta_c =
+    ComputeCalibrationWindowDeltaCRaw(begin_mean_mC, end_mean_mC);
   const double delta_mC = delta_c * 1000.0;
 
-  const size_t newest_index = (oldest_index + count - 1u) % CAL_WINDOW_SIZE;
+  const size_t newest_index =
+    (oldest_index + count - 1u) % CAL_WINDOW_MAX_SAMPLES;
   const int64_t oldest_time_us = g_cal_window.samples_time_us[oldest_index];
   const int64_t newest_time_us = g_cal_window.samples_time_us[newest_index];
   const double elapsed_s =
@@ -769,7 +896,7 @@ CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
       ? ((double)(newest_time_us - oldest_time_us) / 1000000.0)
       : 0.0;
   const double drift_c_per_min =
-    ComputeCalibrationWindowRegressionDriftCPerMin(count, oldest_index);
+    ComputeCalibrationWindowRegressionDriftCPerMinRaw(count, oldest_index);
 
   if (out_begin_mean_raw_mC != NULL) {
     *out_begin_mean_raw_mC = (int32_t)llround(begin_mean_mC);
@@ -812,10 +939,10 @@ ComputeCalibrationWindowSegmentMeans(size_t count,
   }
 
   for (size_t i = 0; i < segment_count; ++i) {
-    const size_t begin_idx = (oldest_index + i) % CAL_WINDOW_SIZE;
+    const size_t begin_idx = (oldest_index + i) % CAL_WINDOW_MAX_SAMPLES;
     begin_sum_mC += g_cal_window.samples_milli_c[begin_idx];
     const size_t end_offset = count - segment_count + i;
-    const size_t end_idx = (oldest_index + end_offset) % CAL_WINDOW_SIZE;
+    const size_t end_idx = (oldest_index + end_offset) % CAL_WINDOW_MAX_SAMPLES;
     end_sum_mC += g_cal_window.samples_milli_c[end_idx];
   }
 
@@ -828,13 +955,14 @@ ComputeCalibrationWindowSegmentMeans(size_t count,
 }
 
 static double
-ComputeCalibrationWindowDeltaC(double begin_mean_mC, double end_mean_mC)
+ComputeCalibrationWindowDeltaCRaw(double begin_mean_mC, double end_mean_mC)
 {
   return (end_mean_mC - begin_mean_mC) / 1000.0;
 }
 
 static double
-ComputeCalibrationWindowRegressionDriftCPerMin(size_t count, size_t oldest_index)
+ComputeCalibrationWindowRegressionDriftCPerMinRaw(size_t count,
+                                                  size_t oldest_index)
 {
   if (count < 3u) {
     return 0.0;
@@ -844,7 +972,7 @@ ComputeCalibrationWindowRegressionDriftCPerMin(size_t count, size_t oldest_index
   double sum_t_s = 0.0;
   double sum_y_c = 0.0;
   for (size_t i = 0; i < count; ++i) {
-    const size_t idx = (oldest_index + i) % CAL_WINDOW_SIZE;
+    const size_t idx = (oldest_index + i) % CAL_WINDOW_MAX_SAMPLES;
     const double t_s =
       ((double)(g_cal_window.samples_time_us[idx] - first_time_us)) / 1000000.0;
     const double y_c = g_cal_window.samples_milli_c[idx] / 1000.0;
@@ -857,7 +985,7 @@ ComputeCalibrationWindowRegressionDriftCPerMin(size_t count, size_t oldest_index
   double numerator = 0.0;
   double denominator = 0.0;
   for (size_t i = 0; i < count; ++i) {
-    const size_t idx = (oldest_index + i) % CAL_WINDOW_SIZE;
+    const size_t idx = (oldest_index + i) % CAL_WINDOW_MAX_SAMPLES;
     const double t_s =
       ((double)(g_cal_window.samples_time_us[idx] - first_time_us)) / 1000000.0;
     const double y_c = g_cal_window.samples_milli_c[idx] / 1000.0;
@@ -876,4 +1004,57 @@ ComputeCalibrationWindowRegressionDriftCPerMin(size_t count, size_t oldest_index
     return 0.0;
   }
   return slope_c_per_s * 60.0;
+}
+
+void
+CalWindowSetDurationSeconds(uint16_t window_s)
+{
+  if (window_s < CAL_WINDOW_DURATION_MIN_S ||
+      window_s > CAL_WINDOW_DURATION_MAX_S) {
+    return;
+  }
+  g_cal_window.window_duration_s = window_s;
+}
+
+uint16_t
+CalWindowGetDurationSeconds(void)
+{
+  return g_cal_window.window_duration_s;
+}
+
+void
+CalWindowSetTrendEmaAlphaPermille(uint16_t alpha_permille)
+{
+  if (alpha_permille == 0u || alpha_permille > 1000u) {
+    return;
+  }
+  g_cal_window.trend_ema_alpha_permille = alpha_permille;
+}
+
+uint16_t
+CalWindowGetTrendEmaAlphaPermille(void)
+{
+  return g_cal_window.trend_ema_alpha_permille;
+}
+
+void
+CalWindowResetTrendEma(void)
+{
+  ResetCalibrationTrendEma();
+}
+
+void
+CalWindowGetTrendEmaStats(double* out_delta_c_ema,
+                          double* out_drift_c_per_min_ema,
+                          bool* out_initialized)
+{
+  if (out_delta_c_ema != NULL) {
+    *out_delta_c_ema = g_cal_window.trend_ema_delta_c;
+  }
+  if (out_drift_c_per_min_ema != NULL) {
+    *out_drift_c_per_min_ema = g_cal_window.trend_ema_drift_c_per_min;
+  }
+  if (out_initialized != NULL) {
+    *out_initialized = g_cal_window.trend_ema_initialized;
+  }
 }

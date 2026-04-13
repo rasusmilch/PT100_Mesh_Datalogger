@@ -70,7 +70,7 @@
 static const char* kTag = "console";
 static const TickType_t kConsoleFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kFlushTimeoutDefaultMs = 15000;
-static const double kDefaultCaptureDriftLimitCPerMin = 0.010;
+static const double kDefaultCaptureDriftLimitCPerMin = 0.020;
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
 static void
@@ -146,6 +146,9 @@ ParseCalImportArgs_(int argc,
                     double* raw_c_out,
                     bool* stddev_c_supplied_out,
                     double* stddev_c_out);
+static bool
+ParseCalibrationImportStatusLine_(const char* line,
+                                  calibration_point_t* point_out);
 static int
 FindCalibrationPointIndexByActualMc_(const app_settings_t* settings,
                                      int32_t actual_mC);
@@ -198,6 +201,8 @@ typedef struct
   bool captured_drift_available;
   bool captured_delta_available;
   bool drift_limit_available;
+  bool captured_window_available;
+  bool captured_ema_alpha_available;
   bool residual_res_available;
   bool residual_temp_available;
   double ideal_ref_res_ohm;
@@ -208,6 +213,8 @@ typedef struct
   double captured_drift_c_per_min;
   double captured_delta_c;
   double drift_limit_c_per_min;
+  double captured_ema_alpha;
+  int captured_window_s;
   calibration_drift_limit_source_t drift_limit_source;
   double residual_res_ohm;
   double residual_temp_c;
@@ -3173,6 +3180,76 @@ ParseOptionInt_(int argc, char** argv, const char* name, int* value_out)
 }
 
 static bool
+ParseCalibrationImportStatusLine_(const char* line, calibration_point_t* point_out)
+{
+  if (line == NULL || point_out == NULL) {
+    return false;
+  }
+  calibration_point_t point = { 0 };
+  point.raw_avg_mC = INT32_MIN;
+  point.raw_stddev_mC = -1;
+  point.raw_stddev_mOhm = -1;
+  point.captured_drift_mC_per_min = CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN;
+  point.captured_delta_mC = CAL_CAPTURE_DELTA_UNAVAILABLE_MC;
+  point.capture_drift_limit_mC_per_min = CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
+  point.drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+  point.captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
+  point.captured_ema_alpha_permille = CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
+
+  char buf[768];
+  snprintf(buf, sizeof(buf), "%s", line);
+  const char* delimiters = " \t";
+  char* saveptr = NULL;
+  bool have_actual = false;
+  bool have_raw_ohm = false;
+  for (char* token = strtok_r(buf, delimiters, &saveptr); token != NULL;
+       token = strtok_r(NULL, delimiters, &saveptr)) {
+    char* equals = strchr(token, '=');
+    if (equals == NULL) {
+      continue;
+    }
+    *equals = '\0';
+    const char* key = token;
+    const char* value = equals + 1;
+    char* end = NULL;
+    const double parsed = strtod(value, &end);
+    if (end == value || *end != '\0') {
+      continue;
+    }
+    if (strcmp(key, "reference_temp_C") == 0) {
+      point.actual_mC = (int32_t)llround(parsed * 1000.0);
+      have_actual = true;
+    } else if (strcmp(key, "captured_raw_res_avg_Ohm") == 0) {
+      point.raw_avg_mOhm = (int32_t)llround(parsed * 1000.0);
+      have_raw_ohm = true;
+    } else if (strcmp(key, "captured_raw_temp_avg_C") == 0) {
+      point.raw_avg_mC = (int32_t)llround(parsed * 1000.0);
+    } else if (strcmp(key, "captured_raw_temp_stddev_C") == 0) {
+      point.raw_stddev_mC = (int32_t)llround(parsed * 1000.0);
+    } else if (strcmp(key, "captured_raw_res_stddev_Ohm") == 0) {
+      point.raw_stddev_mOhm = (int32_t)llround(parsed * 1000.0);
+    } else if (strcmp(key, "captured_drift_C_per_min") == 0) {
+      point.captured_drift_mC_per_min = (int32_t)llround(parsed * 1000.0);
+    } else if (strcmp(key, "captured_delta_C") == 0) {
+      point.captured_delta_mC = (int32_t)llround(parsed * 1000.0);
+    } else if (strcmp(key, "drift_limit_C_per_min") == 0) {
+      point.capture_drift_limit_mC_per_min = (int32_t)llround(parsed * 1000.0);
+      point.drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_USER;
+    } else if (strcmp(key, "captured_window_s") == 0) {
+      point.captured_window_s = (int16_t)llround(parsed);
+    } else if (strcmp(key, "captured_ema_alpha") == 0) {
+      point.captured_ema_alpha_permille = (int16_t)llround(parsed * 1000.0);
+    }
+  }
+
+  if (!have_actual || !have_raw_ohm) {
+    return false;
+  }
+  *point_out = point;
+  return true;
+}
+
+static bool
 ParseOptionDouble_(int argc, char** argv, const char* name, double* value_out)
 {
   if (value_out == NULL) {
@@ -3505,8 +3582,13 @@ CalConsoleOpTask(void* task_arg)
   const int timeout_seconds = g_cal_console_op.capture_timeout_seconds;
   CalConsoleOpUnlock_();
 
-  if (mode == CAL_CONSOLE_OP_CAPTURE) {
+  if (mode == CAL_CONSOLE_OP_CAPTURE || mode == CAL_CONSOLE_OP_LIVE) {
     CalWindowClear();
+    if (g_runtime != NULL && g_runtime->settings != NULL) {
+      CalWindowSetDurationSeconds(g_runtime->settings->cal_window_duration_s);
+      CalWindowSetTrendEmaAlphaPermille(
+        g_runtime->settings->cal_trend_ema_alpha_permille);
+    }
   }
 
   const int64_t start_us = esp_timer_get_time();
@@ -3532,12 +3614,16 @@ CalConsoleOpTask(void* task_arg)
     int32_t mean_raw_mOhm = 0;
     int32_t stddev_mOhm = 0;
     int32_t delta_mC = 0;
-    double drift_c_per_min = 0.0;
-    double abs_drift_c_per_min = 0.0;
+    double drift_c_per_min_raw = 0.0;
+    double drift_c_per_min_ema = 0.0;
+    double delta_c_ema = 0.0;
+    bool trend_ema_initialized = false;
     CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
     CalWindowGetResistanceStats(&last_raw_mOhm, &mean_raw_mOhm, &stddev_mOhm);
     CalWindowGetTrendStats(
-      NULL, NULL, &delta_mC, NULL, &drift_c_per_min, &abs_drift_c_per_min);
+      NULL, NULL, &delta_mC, NULL, &drift_c_per_min_raw, NULL);
+    CalWindowGetTrendEmaStats(
+      &delta_c_ema, &drift_c_per_min_ema, &trend_ema_initialized);
     const size_t sample_count = CalWindowGetSampleCount();
     const int64_t now_us = esp_timer_get_time();
     const bool print_due =
@@ -3553,8 +3639,8 @@ CalConsoleOpTask(void* task_arg)
           last_raw_mOhm,
           mean_raw_mC,
           stddev_mC,
-          drift_c_per_min,
-          delta_mC / 1000.0);
+          trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw,
+          trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0));
         last_print_us = now_us;
         last_sample_count = sample_count;
       }
@@ -3567,7 +3653,9 @@ CalConsoleOpTask(void* task_arg)
       const double stddev_c = stddev_mC / 1000.0;
       const bool stddev_ok = CalWindowIsReady() && (stddev_c <= stable_stddev_c);
       const bool drift_ok =
-        !drift_limit_enabled || (abs_drift_c_per_min <= drift_limit_c_per_min);
+        !drift_limit_enabled ||
+        (fabs(trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw) <=
+         drift_limit_c_per_min);
       const bool stable = stddev_ok && drift_ok;
       if (stable) {
         if (stable_start_us < 0) {
@@ -3588,8 +3676,10 @@ CalConsoleOpTask(void* task_arg)
                                    last_raw_mOhm,
                                    mean_raw_mC,
                                    stddev_c,
-                                   drift_c_per_min,
-                                   delta_mC / 1000.0,
+                                   trend_ema_initialized ? drift_c_per_min_ema
+                                                         : drift_c_per_min_raw,
+                                   trend_ema_initialized ? delta_c_ema
+                                                         : (delta_mC / 1000.0),
                                    stable_elapsed_s,
                                    min_seconds,
                                    stable_stddev_c,
@@ -3638,8 +3728,11 @@ CalConsoleOpTask(void* task_arg)
         point->timestamp_epoch_sec =
           point->time_valid ? (int64_t)time(NULL) : 0;
         point->captured_drift_mC_per_min =
-          (int32_t)llround(drift_c_per_min * 1000.0);
-        point->captured_delta_mC = delta_mC;
+          (int32_t)llround((trend_ema_initialized ? drift_c_per_min_ema
+                                                  : drift_c_per_min_raw) *
+                           1000.0);
+        point->captured_delta_mC = (int32_t)llround(
+          (trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0)) * 1000.0);
         point->capture_drift_limit_mC_per_min = drift_limit_enabled
                                                   ? (int32_t)llround(
                                                       drift_limit_c_per_min *
@@ -3648,6 +3741,10 @@ CalConsoleOpTask(void* task_arg)
         point->drift_limit_source = (uint8_t)(drift_limit_enabled
                                                 ? drift_limit_source
                                                 : CAL_DRIFT_LIMIT_SOURCE_DISABLED);
+        point->captured_window_s =
+          (int16_t)CalWindowGetDurationSeconds();
+        point->captured_ema_alpha_permille =
+          (int16_t)CalWindowGetTrendEmaAlphaPermille();
         settings->calibration_domain = CAL_DOMAIN_RESISTANCE_OHM;
         esp_err_t save_result = SaveCalibrationPointsAndDomain_(settings);
         if (save_result != ESP_OK) {
@@ -3662,8 +3759,8 @@ CalConsoleOpTask(void* task_arg)
             actual_temp_c,
             mean_raw_mC / 1000.0,
             stddev_c,
-            drift_c_per_min,
-            delta_mC / 1000.0,
+            trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw,
+            trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0),
             mean_raw_mOhm / 1000.0);
         } else {
           printf("cal capture OK: added point #%u actual=%.3fC mean_raw=%.3fC "
@@ -3672,8 +3769,8 @@ CalConsoleOpTask(void* task_arg)
                  actual_temp_c,
                  mean_raw_mC / 1000.0,
                  stddev_c,
-                 drift_c_per_min,
-                 delta_mC / 1000.0,
+                 trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw,
+                 trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0),
                  mean_raw_mOhm / 1000.0);
         }
         break;
@@ -3725,6 +3822,62 @@ CommandCal(int argc, char** argv)
     if (strcmp(action, "status") == 0) {
       PrintCalibrationStatusUnified(settings, RuntimeGetState());
       return 0;
+    }
+    if (strcmp(action, "cfg") == 0) {
+      if (argc == 3 && strcmp(argv[2], "show") == 0) {
+        printf("cal_cfg_window_s: %u\n", (unsigned)settings->cal_window_duration_s);
+        printf("cal_cfg_ema_alpha: %.3f\n",
+               settings->cal_trend_ema_alpha_permille / 1000.0);
+        printf("cal_cfg_drift_limit_default_c_per_min: %.3f\n",
+               kDefaultCaptureDriftLimitCPerMin);
+        return 0;
+      }
+      if (argc == 5 && strcmp(argv[2], "set") == 0) {
+        if (strcmp(argv[3], "ema_alpha") == 0) {
+          char* end = NULL;
+          const double alpha = strtod(argv[4], &end);
+          if (end == argv[4] || *end != '\0' || alpha <= 0.0 || alpha > 1.0) {
+            printf("invalid ema_alpha; expected >0 and <=1.0\n");
+            return 1;
+          }
+          const uint16_t alpha_permille = (uint16_t)llround(alpha * 1000.0);
+          esp_err_t result = AppSettingsSaveCalibrationConfig(
+            settings->cal_window_duration_s, alpha_permille);
+          if (result != ESP_OK) {
+            printf("save failed: %s\n", esp_err_to_name(result));
+            return 1;
+          }
+          settings->cal_trend_ema_alpha_permille = alpha_permille;
+          CalWindowSetTrendEmaAlphaPermille(alpha_permille);
+          printf("cal cfg set ema_alpha: %.3f\n", alpha_permille / 1000.0);
+          return 0;
+        }
+        if (strcmp(argv[3], "window_s") == 0) {
+          char* end = NULL;
+          long window_s = strtol(argv[4], &end, 10);
+          if (end == argv[4] || *end != '\0' ||
+              window_s < CAL_WINDOW_DURATION_MIN_S ||
+              window_s > CAL_WINDOW_DURATION_MAX_S) {
+            printf("invalid window_s; expected %u..%u\n",
+                   (unsigned)CAL_WINDOW_DURATION_MIN_S,
+                   (unsigned)CAL_WINDOW_DURATION_MAX_S);
+            return 1;
+          }
+          esp_err_t result = AppSettingsSaveCalibrationConfig(
+            (uint16_t)window_s, settings->cal_trend_ema_alpha_permille);
+          if (result != ESP_OK) {
+            printf("save failed: %s\n", esp_err_to_name(result));
+            return 1;
+          }
+          settings->cal_window_duration_s = (uint16_t)window_s;
+          CalWindowSetDurationSeconds((uint16_t)window_s);
+          printf("cal cfg set window_s: %ld\n", window_s);
+          return 0;
+        }
+      }
+      printf("usage: cal cfg show | cal cfg set ema_alpha <value> | "
+             "cal cfg set window_s <seconds>\n");
+      return 1;
     }
     if (strcmp(action, "metar") == 0) {
       if (argc < 3) {
@@ -4070,7 +4223,7 @@ CommandCal(int argc, char** argv)
         if (temp_arg != NULL) {
           printf("usage: cal capture <actual_temp_c> "
                  "[--stable_stddev_c 0.05] [--min_seconds 5] "
-                 "[--timeout_seconds 120] [--drift_c_per_min 0.010] "
+                 "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
                  "[--no-drift-limit]\n");
           return 1;
         }
@@ -4080,7 +4233,7 @@ CommandCal(int argc, char** argv)
       if (temp_arg == NULL) {
         printf("usage: cal capture <actual_temp_c> "
                "[--stable_stddev_c 0.05] [--min_seconds 5] "
-               "[--timeout_seconds 120] [--drift_c_per_min 0.010] "
+               "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
                "[--no-drift-limit]\n");
         return 1;
       }
@@ -4118,7 +4271,7 @@ CommandCal(int argc, char** argv)
       } else if (OptionPresent_(argc, argv, "stable_stddev_c")) {
         printf("usage: cal capture <actual_temp_c> "
                "[--stable_stddev_c 0.05] [--min_seconds 5] "
-               "[--timeout_seconds 120] [--drift_c_per_min 0.010] "
+               "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
                "[--no-drift-limit]\n");
         return 1;
       }
@@ -4128,7 +4281,7 @@ CommandCal(int argc, char** argv)
       } else if (OptionPresent_(argc, argv, "min_seconds")) {
         printf("usage: cal capture <actual_temp_c> "
                "[--stable_stddev_c 0.05] [--min_seconds 5] "
-               "[--timeout_seconds 120] [--drift_c_per_min 0.010] "
+               "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
                "[--no-drift-limit]\n");
         return 1;
       }
@@ -4138,7 +4291,7 @@ CommandCal(int argc, char** argv)
       } else if (OptionPresent_(argc, argv, "timeout_seconds")) {
         printf("usage: cal capture <actual_temp_c> "
                "[--stable_stddev_c 0.05] [--min_seconds 5] "
-               "[--timeout_seconds 120] [--drift_c_per_min 0.010] "
+               "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
                "[--no-drift-limit]\n");
         return 1;
       }
@@ -4149,7 +4302,7 @@ CommandCal(int argc, char** argv)
       } else if (OptionPresent_(argc, argv, "drift_c_per_min")) {
         printf("usage: cal capture <actual_temp_c> "
                "[--stable_stddev_c 0.05] [--min_seconds 5] "
-               "[--timeout_seconds 120] [--drift_c_per_min 0.010] "
+               "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
                "[--no-drift-limit]\n");
         return 1;
       }
@@ -4164,7 +4317,7 @@ CommandCal(int argc, char** argv)
           (drift_limit_enabled && drift_limit_c_per_min <= 0.0)) {
         printf("usage: cal capture <actual_temp_c> "
                "[--stable_stddev_c 0.05] [--min_seconds 5] "
-               "[--timeout_seconds 120] [--drift_c_per_min 0.010] "
+               "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
                "[--no-drift-limit]\n");
         return 1;
       }
@@ -4231,6 +4384,8 @@ CommandCal(int argc, char** argv)
       point->capture_drift_limit_mC_per_min =
         CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
       point->drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+      point->captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
+      point->captured_ema_alpha_permille = CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
       settings->calibration_domain = CAL_DOMAIN_TEMP_C;
       esp_err_t result = SaveCalibrationPointsAndDomain_(settings);
       if (result != ESP_OK) {
@@ -4258,6 +4413,8 @@ CommandCal(int argc, char** argv)
       bool stddev_c_supplied = false;
       double raw_c = 0.0;
       double stddev_c = 0.0;
+      calibration_point_t imported_point = { 0 };
+      bool parsed_status_line = false;
       if (!ParseCalImportArgs_(argc,
                                argv,
                                &raw_ohm,
@@ -4266,9 +4423,22 @@ CommandCal(int argc, char** argv)
                                &raw_c,
                                &stddev_c_supplied,
                                &stddev_c)) {
-        printf("usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
-               "[--stddev_c <value>]\n");
-        return 1;
+        char pasted_line[768] = { 0 };
+        if (JoinArgsWithSpaces(argc, argv, 2, pasted_line, sizeof(pasted_line)) &&
+            ParseCalibrationImportStatusLine_(pasted_line, &imported_point)) {
+          parsed_status_line = true;
+          raw_ohm = imported_point.raw_avg_mOhm / 1000.0;
+          actual_c = imported_point.actual_mC / 1000.0;
+          raw_c_supplied = (imported_point.raw_avg_mC != INT32_MIN);
+          stddev_c_supplied = (imported_point.raw_stddev_mC >= 0);
+          raw_c = raw_c_supplied ? (imported_point.raw_avg_mC / 1000.0) : 0.0;
+          stddev_c =
+            stddev_c_supplied ? (imported_point.raw_stddev_mC / 1000.0) : 0.0;
+        } else {
+          printf("usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
+                 "[--stddev_c <value>] OR cal import \"<cal status point line>\"\n");
+          return 1;
+        }
       }
 
       if (settings->calibration_domain == CAL_DOMAIN_TEMP_C &&
@@ -4309,6 +4479,18 @@ CommandCal(int argc, char** argv)
       point->capture_drift_limit_mC_per_min =
         CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
       point->drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+      point->captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
+      point->captured_ema_alpha_permille = CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
+      if (parsed_status_line) {
+        point->captured_drift_mC_per_min = imported_point.captured_drift_mC_per_min;
+        point->captured_delta_mC = imported_point.captured_delta_mC;
+        point->capture_drift_limit_mC_per_min =
+          imported_point.capture_drift_limit_mC_per_min;
+        point->drift_limit_source = imported_point.drift_limit_source;
+        point->captured_window_s = imported_point.captured_window_s;
+        point->captured_ema_alpha_permille =
+          imported_point.captured_ema_alpha_permille;
+      }
       settings->calibration_domain = CAL_DOMAIN_RESISTANCE_OHM;
       esp_err_t result = SaveCalibrationPointsAndDomain_(settings);
       if (result != ESP_OK) {
@@ -4570,7 +4752,9 @@ CommandCal(int argc, char** argv)
     return 0;
   }
 
-  printf("unknown action. usage: cal status | cal set date <YYYY-MM-DD> | "
+  printf("unknown action. usage: cal status | cal cfg show | cal cfg set "
+         "ema_alpha <value> | cal cfg set window_s <seconds> | "
+         "cal set date <YYYY-MM-DD> | "
          "cal clear date | cal set due <count> <days|months|years> | "
          "cal clear due | cal set due_override <count> <days|months|years> | "
          "cal clear due_override | cal set method <string...> | "
@@ -4583,7 +4767,7 @@ CommandCal(int argc, char** argv)
          "cal list | cal apply | cal live [seconds] "
          "[--every_ms 1000] | cal capture <actual_temp_c> "
          "[--stable_stddev_c 0.05] [--min_seconds 5] "
-         "[--timeout_seconds 120] [--drift_c_per_min 0.010] "
+         "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
          "[--no-drift-limit] | cal stop\n");
   return 1;
 }
@@ -6904,6 +7088,16 @@ BuildCalibrationPointPrintSummary_(const calibration_point_t* point,
   }
   summary_out->drift_limit_source =
     (calibration_drift_limit_source_t)point->drift_limit_source;
+  summary_out->captured_window_available =
+    (point->captured_window_s != CAL_CAPTURE_WINDOW_S_UNAVAILABLE);
+  if (summary_out->captured_window_available) {
+    summary_out->captured_window_s = point->captured_window_s;
+  }
+  summary_out->captured_ema_alpha_available =
+    (point->captured_ema_alpha_permille != CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE);
+  if (summary_out->captured_ema_alpha_available) {
+    summary_out->captured_ema_alpha = point->captured_ema_alpha_permille / 1000.0;
+  }
   summary_out->ideal_ref_res_available = ComputeIdealReferenceResistanceOhm_(
     reference_c, &summary_out->ideal_ref_res_ohm);
   if (summary_out->ideal_ref_res_available &&
@@ -6939,6 +7133,8 @@ PrintCalibrationPointStatusLine_(const calibration_point_t* point,
   char drift_buf[24] = { 0 };
   char delta_buf[24] = { 0 };
   char drift_limit_buf[24] = { 0 };
+  char window_buf[24] = { 0 };
+  char ema_alpha_buf[24] = { 0 };
   char drift_source_buf[28] = { 0 };
 
   snprintf(ideal_res_buf,
@@ -7026,12 +7222,21 @@ PrintCalibrationPointStatusLine_(const calibration_point_t* point,
            sizeof(drift_source_buf),
            "%s",
            DriftLimitSourceToString_(summary->drift_limit_source));
+  snprintf(window_buf, sizeof(window_buf), "%s", "n/a");
+  if (summary->captured_window_available) {
+    snprintf(window_buf, sizeof(window_buf), "%d", summary->captured_window_s);
+  }
+  snprintf(ema_alpha_buf, sizeof(ema_alpha_buf), "%s", "n/a");
+  if (summary->captured_ema_alpha_available) {
+    snprintf(ema_alpha_buf, sizeof(ema_alpha_buf), "%.3f", summary->captured_ema_alpha);
+  }
 
   printf("  %u: reference_temp_C=%.3f ideal_ref_res_Ohm=%s "
          "captured_raw_temp_avg_C=%s captured_raw_temp_stddev_C=%s "
          "captured_raw_res_avg_Ohm=%s captured_raw_res_stddev_Ohm=%s "
          "residual_res_Ohm=%s residual_C=%s captured_drift_C_per_min=%s "
-         "captured_delta_C=%s drift_limit_C_per_min=%s drift_limit_source=%s%s\n",
+         "captured_delta_C=%s drift_limit_C_per_min=%s drift_limit_source=%s "
+         "captured_window_s=%s captured_ema_alpha=%s%s\n",
          (unsigned)display_index,
          reference_c,
          ideal_res_buf,
@@ -7045,6 +7250,8 @@ PrintCalibrationPointStatusLine_(const calibration_point_t* point,
          delta_buf,
          drift_limit_buf,
          drift_source_buf,
+         window_buf,
+         ema_alpha_buf,
          point_is_resistance_domain ? "" : " point_domain=temp/manual");
 }
 
@@ -7119,6 +7326,16 @@ PrintCalibrationPointReportBlock_(const calibration_point_t* point,
   }
   printf("    Drift limit source: %s\n",
          DriftLimitSourceToString_(summary->drift_limit_source));
+  if (summary->captured_window_available) {
+    printf("    Captured window duration: %d s\n", summary->captured_window_s);
+  } else {
+    printf("    Captured window duration: n/a\n");
+  }
+  if (summary->captured_ema_alpha_available) {
+    printf("    Captured EMA alpha: %.3f\n", summary->captured_ema_alpha);
+  } else {
+    printf("    Captured EMA alpha: n/a\n");
+  }
   printf("\n");
 }
 
@@ -7136,12 +7353,17 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
   int32_t end_mean_mC = 0;
   int32_t delta_mC = 0;
   double drift_c_per_min = 0.0;
+  double delta_c_ema = 0.0;
+  double drift_c_per_min_ema = 0.0;
+  bool trend_ema_initialized = false;
   MaybePushCalRawSampleFromSensor();
 
   CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
   CalWindowGetResistanceStats(&last_raw_mOhm, &mean_raw_mOhm, &stddev_mOhm);
   CalWindowGetTrendStats(
     &begin_mean_mC, &end_mean_mC, &delta_mC, NULL, &drift_c_per_min, NULL);
+  CalWindowGetTrendEmaStats(
+    &delta_c_ema, &drift_c_per_min_ema, &trend_ema_initialized);
   const size_t sample_count = CalWindowGetSampleCount();
   printf("cal_window_raw_last_c: %.3f\n", last_raw_mC / 1000.0);
   printf("cal_window_raw_avg_c: %.3f\n", mean_raw_mC / 1000.0);
@@ -7151,8 +7373,19 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
   printf("cal_window_raw_stddev_ohm: %.3f\n", stddev_mOhm / 1000.0);
   printf("cal_window_begin_mean_c: %.3f\n", begin_mean_mC / 1000.0);
   printf("cal_window_end_mean_c: %.3f\n", end_mean_mC / 1000.0);
-  printf("cal_window_delta_c: %.3f\n", delta_mC / 1000.0);
-  printf("cal_window_drift_c_per_min: %.3f\n", drift_c_per_min);
+  printf("cal_window_delta_c_raw: %.3f\n", delta_mC / 1000.0);
+  printf("cal_window_drift_c_per_min_raw: %.3f\n", drift_c_per_min);
+  printf("cal_window_delta_c_ema: %s%.3f\n",
+         trend_ema_initialized ? "" : "seed_pending ",
+         delta_c_ema);
+  printf("cal_window_drift_c_per_min_ema: %s%.3f\n",
+         trend_ema_initialized ? "" : "seed_pending ",
+         drift_c_per_min_ema);
+  printf("cal_cfg_window_s: %u\n", (unsigned)settings->cal_window_duration_s);
+  printf("cal_cfg_ema_alpha: %.3f\n",
+         settings->cal_trend_ema_alpha_permille / 1000.0);
+  printf("cal_cfg_drift_limit_default_c_per_min: %.3f\n",
+         kDefaultCaptureDriftLimitCPerMin);
   printf("cal_window_samples: %u\n", (unsigned)sample_count);
   printf("cal_window_ready: %s\n", CalWindowIsReady() ? "yes" : "no");
   printf("calibration_mode: %s\n",
@@ -7960,6 +8193,21 @@ PrintDiagHelpBody(void)
 
 static const console_help_topic_t kCalTopics[] = {
   {
+    .name = "cfg",
+    .summary = "Show/set calibration window duration and EMA smoothing",
+    .synopsis = "cal cfg show\n"
+                "cal cfg set ema_alpha <0.0..1.0>\n"
+                "cal cfg set window_s <seconds>",
+    .details =
+      "Displayed drift and delta are EMA-smoothed for operator readability; "
+      "capture gating uses |smoothed drift|. Window duration controls the "
+      "analysis span for mean/stddev/delta/regression drift. Values are "
+      "persisted in NVS and applied to future cal live/cal capture sessions.",
+    .examples = "  cal cfg show\n"
+                "  cal cfg set ema_alpha 0.200\n"
+                "  cal cfg set window_s 60",
+  },
+  {
     .name = "add",
     .summary = "Add a manual legacy temp-domain point (raw vs actual Celsius)",
     .synopsis = "cal add <raw_c> <C>",
@@ -8082,7 +8330,7 @@ static const console_help_topic_t kCalTopics[] = {
     .summary = "Capture a stable point from live sensor data and save it",
     .synopsis = "cal capture <actual_temp_c> [--stable_stddev_c 0.05] "
                 "[--min_seconds 5] [--timeout_seconds 120] "
-                "[--drift_c_per_min 0.010] [--no-drift-limit]",
+                "[--drift_c_per_min 0.020] [--no-drift-limit]",
     .details =
       "Starts a background capture operation (preferred modern calibration "
       "command). When the raw window stays within the stability threshold for "
@@ -8098,8 +8346,9 @@ static const console_help_topic_t kCalTopics[] = {
       "  - captured window drift (C/min) and window delta (C)\n"
       "Drift is computed as a least-squares regression slope of temperature "
       "vs time across the full active window. Delta is end-window mean minus "
-      "begin-window mean; drift and delta are different metrics. Capture "
-      "drift gating uses |regression drift|.\n"
+      "begin-window mean; drift and delta are different metrics. Displayed "
+      "drift/delta are EMA-smoothed; capture drift gating uses |smoothed "
+      "drift|.\n"
       "During capture, status lines display the instantaneous last sample "
       "(temperature and resistance) along with running statistics.\n"
       "Recommended fixed-point workflow (ice + steam):\n"
@@ -8123,8 +8372,8 @@ static const console_help_topic_t kCalTopics[] = {
       "stddev.\n"
       "  --min_seconds <seconds>     Required stable duration before saving.\n"
       "  --timeout_seconds <seconds> Max capture time before abort.\n"
-      "  --drift_c_per_min <C/min>   Require |drift| <= value (default "
-      "0.010 C/min).\n"
+      "  --drift_c_per_min <C/min>   Require |smoothed drift| <= value "
+      "(default 0.020 C/min).\n"
       "  --no-drift-limit            Disable drift gating.",
     .examples = "  cal clear\n"
                 "  cal set method \"slushy ice bath + satpt steam space\"\n"
@@ -8147,6 +8396,8 @@ static const console_help_topic_t kCalTopics[] = {
       "point from known values, without live capture. Required fields are raw "
       "resistance in ohms and reference temperature in Celsius. Optional "
       "captured raw temperature average/stddev may also be provided.\n"
+      "The command also accepts a pasted point line copied directly from "
+      "'cal status'.\n"
       "Domain guardrail: if temp-domain legacy points exist, import is "
       "refused until 'cal clear' is used.\n"
       "Overwrite behavior: if a point already exists with the same reference "
@@ -8156,10 +8407,13 @@ static const console_help_topic_t kCalTopics[] = {
       "  <actual_c>                 Reference temperature in Celsius.\n"
       "  --raw_c <value>            Optional captured raw average Celsius.\n"
       "  --stddev_c <value>         Optional captured raw stddev Celsius "
-      "(>=0).",
+      "(>=0).\n"
+      "  \"<status line>\"          Pasted line from cal status/report.",
     .examples = "  cal import 99.970 0.0 --raw_c -0.078 --stddev_c 0.019\n"
                 "  cal import 135.650 98.388 --raw_c 92.475 --stddev_c 0.036\n"
-                "  cal restore 99.970 0.0",
+                "  cal restore 99.970 0.0\n"
+                "  cal import \"1: reference_temp_C=98.795 "
+                "captured_raw_res_avg_Ohm=138.132 ...\"",
   },
   {
     .name = "clear",
@@ -8197,7 +8451,8 @@ static const console_help_topic_t kCalTopics[] = {
     .details =
       "Starts a background live print loop of window stats. Drift is "
       "least-squares regression slope over full window samples (C/min), while "
-      "delta is end-window mean minus begin-window mean (C). The run can be "
+      "delta is end-window mean minus begin-window mean (C). Displayed drift "
+      "and delta values are EMA-smoothed. The run can be "
       "bounded by seconds (positional or --seconds) and can be canceled with "
       "'cal stop'.",
     .options =
@@ -8274,11 +8529,11 @@ PrintCalHelpBody(void)
   printf("  2) cal set method \"slushy ice bath + satpt steam space\"\n");
   printf("  3) cal live   (confirm stable readings first)\n");
   printf("  4) cal capture 0.0 --stable_stddev_c 0.02 --min_seconds 8 "
-         "--drift_c_per_min 0.010\n");
+         "--drift_c_per_min 0.020\n");
   printf("  5) cal metar set 1391 \"METAR KBJI 081955Z AUTO ... A2969 ...\"\n");
   printf("  6) cal status   (copy point + steam-reference report blocks)\n");
   printf("  7) cal capture <satpt from cal metar> --stable_stddev_c 0.05 "
-         "--min_seconds 8 --drift_c_per_min 0.010\n");
+         "--min_seconds 8 --drift_c_per_min 0.020\n");
   printf("  8) cal apply\n");
   printf(
     "  Manual restore option: use 'cal import' (or alias 'cal restore')\n");
@@ -8521,7 +8776,7 @@ RegisterCommands(void)
   g_cal_args.action = arg_str1(NULL,
                                NULL,
                                "<action>",
-                               "status|set|clear|add|import|restore|del|remove|"
+                               "status|cfg|set|clear|add|import|restore|del|remove|"
                                "list|apply|live|capture|stop");
   g_cal_args.raw_c =
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw Celsius sample (use with 'add')");
@@ -8554,7 +8809,7 @@ RegisterCommands(void)
     .summary = "Manage calibration metadata, live/import point capture, and "
                "model fitting",
     .synopsis = "cal "
-                "<status|metar|set|list|add|import|restore|del|remove|clear|"
+                "<status|cfg|metar|set|list|add|import|restore|del|remove|clear|"
                 "apply|live|capture|stop> ...",
     .print_body = PrintCalHelpBody,
     .topic_help = &CalTopicHelp,
@@ -8814,6 +9069,11 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   }
   g_runtime = runtime;
   g_boot_mode = boot_mode;
+  if (runtime->settings != NULL) {
+    CalWindowSetDurationSeconds(runtime->settings->cal_window_duration_s);
+    CalWindowSetTrendEmaAlphaPermille(
+      runtime->settings->cal_trend_ema_alpha_permille);
+  }
   if (g_cal_console_op_mutex == NULL) {
     g_cal_console_op_mutex = xSemaphoreCreateMutex();
     if (g_cal_console_op_mutex == NULL) {
