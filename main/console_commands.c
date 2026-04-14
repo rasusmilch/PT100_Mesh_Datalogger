@@ -438,12 +438,13 @@ typedef struct
   calibration_drift_limit_source_t capture_drift_limit_source;
   int capture_min_seconds;
   int capture_timeout_seconds;
+  bool capture_armed;
+  int64_t capture_armed_start_us;
   bool live_drift_notify_armed;
   double live_drift_notify_threshold_c_per_min;
   int64_t live_drift_under_start_us;
   bool live_drift_notify_sent;
   int64_t start_us;
-  int64_t stable_start_us;
   size_t last_sample_count;
 } cal_console_op_state_t;
 
@@ -2953,13 +2954,14 @@ CalConsoleOpStartLive(uint32_t every_ms,
   g_cal_console_op.capture_drift_limit_source = CAL_DRIFT_LIMIT_SOURCE_DEFAULT;
   g_cal_console_op.capture_min_seconds = 0;
   g_cal_console_op.capture_timeout_seconds = 0;
+  g_cal_console_op.capture_armed = false;
+  g_cal_console_op.capture_armed_start_us = 0;
   g_cal_console_op.live_drift_notify_armed = drift_notify_armed;
   g_cal_console_op.live_drift_notify_threshold_c_per_min =
     drift_notify_threshold_c_per_min;
   g_cal_console_op.live_drift_under_start_us = -1;
   g_cal_console_op.live_drift_notify_sent = false;
   g_cal_console_op.start_us = esp_timer_get_time();
-  g_cal_console_op.stable_start_us = -1;
   g_cal_console_op.last_sample_count = 0;
   BaseType_t created = xTaskCreate(
     &CalConsoleOpTask, "cal_op", 6144, NULL, 2, &g_cal_console_op.task_handle);
@@ -2969,6 +2971,42 @@ CalConsoleOpStartLive(uint32_t every_ms,
     CalConsoleOpUnlock_();
     return ESP_ERR_NO_MEM;
   }
+  CalConsoleOpUnlock_();
+  return ESP_OK;
+}
+
+static esp_err_t
+CalConsoleOpArmCaptureWhileLive(double actual_temp_c,
+                                double stable_stddev_c,
+                                bool drift_limit_enabled,
+                                double drift_limit_c_per_min,
+                                calibration_drift_limit_source_t drift_limit_source,
+                                int min_seconds,
+                                int timeout_seconds,
+                                bool* replaced_out)
+{
+  if (replaced_out != NULL) {
+    *replaced_out = false;
+  }
+  if (!CalConsoleOpLock_(pdMS_TO_TICKS(100))) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (g_cal_console_op.mode != CAL_CONSOLE_OP_LIVE) {
+    CalConsoleOpUnlock_();
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (replaced_out != NULL) {
+    *replaced_out = g_cal_console_op.capture_armed;
+  }
+  g_cal_console_op.capture_actual_temp_c = actual_temp_c;
+  g_cal_console_op.capture_stable_stddev_c = stable_stddev_c;
+  g_cal_console_op.capture_drift_limit_enabled = drift_limit_enabled;
+  g_cal_console_op.capture_drift_limit_c_per_min = drift_limit_c_per_min;
+  g_cal_console_op.capture_drift_limit_source = drift_limit_source;
+  g_cal_console_op.capture_min_seconds = min_seconds;
+  g_cal_console_op.capture_timeout_seconds = timeout_seconds;
+  g_cal_console_op.capture_armed = true;
+  g_cal_console_op.capture_armed_start_us = esp_timer_get_time();
   CalConsoleOpUnlock_();
   return ESP_OK;
 }
@@ -3001,12 +3039,13 @@ CalConsoleOpStartCapture(double actual_temp_c,
   g_cal_console_op.capture_drift_limit_source = drift_limit_source;
   g_cal_console_op.capture_min_seconds = min_seconds;
   g_cal_console_op.capture_timeout_seconds = timeout_seconds;
+  g_cal_console_op.capture_armed = true;
+  g_cal_console_op.capture_armed_start_us = esp_timer_get_time();
   g_cal_console_op.live_drift_notify_armed = false;
   g_cal_console_op.live_drift_notify_threshold_c_per_min = 0.0;
   g_cal_console_op.live_drift_under_start_us = -1;
   g_cal_console_op.live_drift_notify_sent = false;
   g_cal_console_op.start_us = esp_timer_get_time();
-  g_cal_console_op.stable_start_us = -1;
   g_cal_console_op.last_sample_count = 0;
   BaseType_t created = xTaskCreate(
     &CalConsoleOpTask, "cal_op", 6144, NULL, 2, &g_cal_console_op.task_handle);
@@ -3635,6 +3674,157 @@ QueueCalLiveDriftReadyNtfy_(double drift_c_per_min,
   return AlertNtfyEnqueueJob(&manager->ntfy, &job);
 }
 
+typedef struct
+{
+  int64_t timestamp_us;
+  bool window_ready;
+  double stddev_c;
+  double drift_c_per_min;
+} cal_window_metric_sample_t;
+
+#define CAL_WINDOW_METRIC_HISTORY_CAPACITY 900u
+
+static bool
+CalWindowMetricSampleMeetsCriteria_(const cal_window_metric_sample_t* sample,
+                                    double stable_stddev_c,
+                                    bool drift_limit_enabled,
+                                    double drift_limit_c_per_min)
+{
+  if (sample == NULL || !sample->window_ready) {
+    return false;
+  }
+  if (sample->stddev_c > stable_stddev_c) {
+    return false;
+  }
+  if (drift_limit_enabled &&
+      fabs(sample->drift_c_per_min) > drift_limit_c_per_min) {
+    return false;
+  }
+  return true;
+}
+
+static double
+CalWindowStableSuffixSeconds_(const cal_window_metric_sample_t* history,
+                              size_t history_count,
+                              double stable_stddev_c,
+                              bool drift_limit_enabled,
+                              double drift_limit_c_per_min)
+{
+  if (history == NULL || history_count == 0u) {
+    return 0.0;
+  }
+  const cal_window_metric_sample_t* newest = &history[history_count - 1u];
+  if (!CalWindowMetricSampleMeetsCriteria_(newest,
+                                           stable_stddev_c,
+                                           drift_limit_enabled,
+                                           drift_limit_c_per_min)) {
+    return 0.0;
+  }
+  size_t first_ok_index = history_count - 1u;
+  while (first_ok_index > 0u) {
+    const size_t prev = first_ok_index - 1u;
+    if (!CalWindowMetricSampleMeetsCriteria_(&history[prev],
+                                             stable_stddev_c,
+                                             drift_limit_enabled,
+                                             drift_limit_c_per_min)) {
+      break;
+    }
+    first_ok_index = prev;
+  }
+  const int64_t stable_us = newest->timestamp_us - history[first_ok_index].timestamp_us;
+  if (stable_us <= 0) {
+    return 0.0;
+  }
+  return stable_us / 1000000.0;
+}
+
+static bool
+CalCaptureSavePoint_(double actual_temp_c,
+                     bool drift_limit_enabled,
+                     double drift_limit_c_per_min,
+                     calibration_drift_limit_source_t drift_limit_source,
+                     int32_t mean_raw_mC,
+                     int32_t stddev_mC,
+                     int32_t mean_raw_mOhm,
+                     int32_t stddev_mOhm,
+                     size_t sample_count,
+                     double drift_c_per_min,
+                     double delta_c)
+{
+  if (g_runtime == NULL || g_runtime->settings == NULL) {
+    printf("cal capture failed: runtime unavailable\n");
+    return false;
+  }
+  app_settings_t* settings = g_runtime->settings;
+  if (settings->calibration_domain == CAL_DOMAIN_TEMP_C &&
+      settings->calibration_points_count > 0u) {
+    printf("cal capture failed: existing temp-domain points detected; run "
+           "'cal clear' first\n");
+    return false;
+  }
+  const int32_t actual_mC = (int32_t)llround(actual_temp_c * 1000.0);
+  int point_index = FindCalibrationPointIndexByActualMc_(settings, actual_mC);
+  const bool updating_existing = (point_index >= 0);
+  if (!updating_existing &&
+      settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
+    printf("cal capture failed: already have %u points\n",
+           (unsigned)settings->calibration_points_count);
+    return false;
+  }
+  if (!updating_existing) {
+    point_index = (int)settings->calibration_points_count;
+    settings->calibration_points_count++;
+  }
+  calibration_point_t* point = &settings->calibration_points[point_index];
+  point->raw_avg_mC = mean_raw_mC;
+  point->actual_mC = actual_mC;
+  point->raw_stddev_mC = stddev_mC;
+  point->raw_avg_mOhm = mean_raw_mOhm;
+  point->raw_stddev_mOhm = stddev_mOhm;
+  point->sample_count = (uint16_t)sample_count;
+  point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
+  point->timestamp_epoch_sec = point->time_valid ? (int64_t)time(NULL) : 0;
+  point->captured_drift_mC_per_min = (int32_t)llround(drift_c_per_min * 1000.0);
+  point->captured_delta_mC = (int32_t)llround(delta_c * 1000.0);
+  point->capture_drift_limit_mC_per_min =
+    drift_limit_enabled
+      ? (int32_t)llround(drift_limit_c_per_min * 1000.0)
+      : CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
+  point->drift_limit_source = (uint8_t)(drift_limit_enabled
+                                          ? drift_limit_source
+                                          : CAL_DRIFT_LIMIT_SOURCE_DISABLED);
+  point->captured_window_s = (int16_t)CalWindowGetDurationSeconds();
+  point->captured_ema_alpha_permille = (int16_t)CalWindowGetTrendEmaAlphaPermille();
+  settings->calibration_domain = CAL_DOMAIN_RESISTANCE_OHM;
+  esp_err_t save_result = SaveCalibrationPointsAndDomain_(settings);
+  if (save_result != ESP_OK) {
+    printf("save failed: %s\n", esp_err_to_name(save_result));
+    return false;
+  }
+  if (updating_existing) {
+    printf("cal capture OK: updated point #%u actual=%.3fC mean_raw=%.3fC "
+           "std=%.3fC drift=%.3fC/min delta=%.3fC mean_raw_ohm=%.6f saved\n",
+           (unsigned)(point_index + 1),
+           actual_temp_c,
+           mean_raw_mC / 1000.0,
+           stddev_mC / 1000.0,
+           drift_c_per_min,
+           delta_c,
+           mean_raw_mOhm / 1000.0);
+  } else {
+    printf("cal capture OK: added point #%u actual=%.3fC mean_raw=%.3fC "
+           "std=%.3fC drift=%.3fC/min delta=%.3fC mean_raw_ohm=%.6f saved\n",
+           (unsigned)(point_index + 1),
+           actual_temp_c,
+           mean_raw_mC / 1000.0,
+           stddev_mC / 1000.0,
+           drift_c_per_min,
+           delta_c,
+           mean_raw_mOhm / 1000.0);
+  }
+  return true;
+}
+
 static void
 CalConsoleOpTask(void* task_arg)
 {
@@ -3644,25 +3834,8 @@ CalConsoleOpTask(void* task_arg)
     return;
   }
   g_cal_console_op.start_us = esp_timer_get_time();
-  g_cal_console_op.stable_start_us = -1;
   g_cal_console_op.last_sample_count = 0;
   const cal_console_op_mode_t mode = g_cal_console_op.mode;
-  const uint32_t print_every_ms = g_cal_console_op.print_every_ms;
-  const int live_seconds = g_cal_console_op.live_seconds;
-  const double actual_temp_c = g_cal_console_op.capture_actual_temp_c;
-  const double stable_stddev_c = g_cal_console_op.capture_stable_stddev_c;
-  const bool drift_limit_enabled = g_cal_console_op.capture_drift_limit_enabled;
-  const double drift_limit_c_per_min =
-    g_cal_console_op.capture_drift_limit_c_per_min;
-  const calibration_drift_limit_source_t drift_limit_source =
-    g_cal_console_op.capture_drift_limit_source;
-  const int min_seconds = g_cal_console_op.capture_min_seconds;
-  const int timeout_seconds = g_cal_console_op.capture_timeout_seconds;
-  const bool live_drift_notify_armed = g_cal_console_op.live_drift_notify_armed;
-  const double live_drift_notify_threshold_c_per_min =
-    g_cal_console_op.live_drift_notify_threshold_c_per_min;
-  bool live_drift_notify_sent = g_cal_console_op.live_drift_notify_sent;
-  int64_t live_drift_under_start_us = g_cal_console_op.live_drift_under_start_us;
   CalConsoleOpUnlock_();
 
   if (mode == CAL_CONSOLE_OP_CAPTURE || mode == CAL_CONSOLE_OP_LIVE) {
@@ -3675,14 +3848,54 @@ CalConsoleOpTask(void* task_arg)
   }
 
   const int64_t start_us = esp_timer_get_time();
-  int64_t stable_start_us = -1;
   const uint32_t window_duration_s = CalWindowGetDurationSeconds();
   int64_t last_print_us = 0;
   size_t last_sample_count = 0;
+  cal_window_metric_sample_t history[CAL_WINDOW_METRIC_HISTORY_CAPACITY] = { 0 };
+  size_t history_count = 0u;
 
   while (true) {
-    if (g_cal_console_op.cancel_requested) {
-      if (mode == CAL_CONSOLE_OP_CAPTURE) {
+    bool cancel_requested = false;
+    uint32_t print_every_ms = 1000u;
+    int live_seconds = 0;
+    bool live_drift_notify_armed = false;
+    double live_drift_notify_threshold_c_per_min = 0.0;
+    bool live_drift_notify_sent = false;
+    int64_t live_drift_under_start_us = -1;
+    bool capture_armed = false;
+    int64_t capture_armed_start_us = 0;
+    double actual_temp_c = 0.0;
+    double stable_stddev_c = 0.0;
+    bool drift_limit_enabled = true;
+    double drift_limit_c_per_min = 0.0;
+    calibration_drift_limit_source_t drift_limit_source =
+      CAL_DRIFT_LIMIT_SOURCE_DEFAULT;
+    int min_seconds = 0;
+    int timeout_seconds = 0;
+
+    if (CalConsoleOpLock_(pdMS_TO_TICKS(50))) {
+      cancel_requested = g_cal_console_op.cancel_requested;
+      print_every_ms = g_cal_console_op.print_every_ms;
+      live_seconds = g_cal_console_op.live_seconds;
+      live_drift_notify_armed = g_cal_console_op.live_drift_notify_armed;
+      live_drift_notify_threshold_c_per_min =
+        g_cal_console_op.live_drift_notify_threshold_c_per_min;
+      live_drift_notify_sent = g_cal_console_op.live_drift_notify_sent;
+      live_drift_under_start_us = g_cal_console_op.live_drift_under_start_us;
+      capture_armed = g_cal_console_op.capture_armed;
+      capture_armed_start_us = g_cal_console_op.capture_armed_start_us;
+      actual_temp_c = g_cal_console_op.capture_actual_temp_c;
+      stable_stddev_c = g_cal_console_op.capture_stable_stddev_c;
+      drift_limit_enabled = g_cal_console_op.capture_drift_limit_enabled;
+      drift_limit_c_per_min = g_cal_console_op.capture_drift_limit_c_per_min;
+      drift_limit_source = g_cal_console_op.capture_drift_limit_source;
+      min_seconds = g_cal_console_op.capture_min_seconds;
+      timeout_seconds = g_cal_console_op.capture_timeout_seconds;
+      CalConsoleOpUnlock_();
+    }
+
+    if (cancel_requested) {
+      if (capture_armed || mode == CAL_CONSOLE_OP_CAPTURE) {
         printf("cal capture aborted\n");
       }
       printf("cal: stopped\n");
@@ -3710,13 +3923,31 @@ CalConsoleOpTask(void* task_arg)
       &delta_c_ema, &drift_c_per_min_ema, &trend_ema_initialized);
     const size_t sample_count = CalWindowGetSampleCount();
     const int64_t now_us = esp_timer_get_time();
+    const bool window_ready = CalWindowIsReady();
+    const double gated_drift_c_per_min =
+      trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw;
+    const double stddev_c = stddev_mC / 1000.0;
+    const double delta_c = trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0);
+    if (history_count < CAL_WINDOW_METRIC_HISTORY_CAPACITY) {
+      history[history_count++] = (cal_window_metric_sample_t){ .timestamp_us = now_us,
+                                                                .window_ready = window_ready,
+                                                                .stddev_c = stddev_c,
+                                                                .drift_c_per_min = gated_drift_c_per_min };
+    } else {
+      memmove(&history[0],
+              &history[1],
+              sizeof(history[0]) * (CAL_WINDOW_METRIC_HISTORY_CAPACITY - 1u));
+      history[CAL_WINDOW_METRIC_HISTORY_CAPACITY - 1u] =
+        (cal_window_metric_sample_t){ .timestamp_us = now_us,
+                                      .window_ready = window_ready,
+                                      .stddev_c = stddev_c,
+                                      .drift_c_per_min = gated_drift_c_per_min };
+    }
     const bool print_due =
       (sample_count != last_sample_count) || (last_print_us == 0) ||
       (now_us - last_print_us >= (int64_t)print_every_ms * 1000LL);
 
     if (mode == CAL_CONSOLE_OP_LIVE) {
-      const double gated_drift_c_per_min =
-        trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw;
       if (print_due) {
         PrintCalWindowLine_(
           "cal live",
@@ -3726,13 +3957,13 @@ CalConsoleOpTask(void* task_arg)
           mean_raw_mC,
           stddev_mC,
           gated_drift_c_per_min,
-          trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0));
+          delta_c);
         last_print_us = now_us;
         last_sample_count = sample_count;
       }
       if (live_drift_notify_armed && !live_drift_notify_sent) {
         const bool drift_under_threshold =
-          CalWindowIsReady() &&
+          window_ready &&
           (fabs(gated_drift_c_per_min) <= live_drift_notify_threshold_c_per_min);
         if (drift_under_threshold) {
           if (live_drift_under_start_us < 0) {
@@ -3751,9 +3982,17 @@ CalConsoleOpTask(void* task_arg)
                      "(not configured or queue unavailable)\n");
             }
             live_drift_notify_sent = true;
+            if (CalConsoleOpLock_(pdMS_TO_TICKS(20))) {
+              g_cal_console_op.live_drift_notify_sent = true;
+              CalConsoleOpUnlock_();
+            }
           }
         } else {
           live_drift_under_start_us = -1;
+        }
+        if (CalConsoleOpLock_(pdMS_TO_TICKS(20))) {
+          g_cal_console_op.live_drift_under_start_us = live_drift_under_start_us;
+          CalConsoleOpUnlock_();
         }
       }
       if (live_seconds > 0 &&
@@ -3761,37 +4000,25 @@ CalConsoleOpTask(void* task_arg)
         printf("cal live complete\n");
         break;
       }
-    } else if (mode == CAL_CONSOLE_OP_CAPTURE) {
-      const double stddev_c = stddev_mC / 1000.0;
-      const bool stddev_ok = CalWindowIsReady() && (stddev_c <= stable_stddev_c);
-      const bool drift_ok =
-        !drift_limit_enabled ||
-        (fabs(trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw) <=
-         drift_limit_c_per_min);
-      const bool stable = stddev_ok && drift_ok;
-      if (stable) {
-        if (stable_start_us < 0) {
-          stable_start_us = now_us;
-        }
-      } else {
-        stable_start_us = -1;
-      }
+    }
 
-      const double elapsed_s = (now_us - start_us) / 1000000.0;
+    if (capture_armed || mode == CAL_CONSOLE_OP_CAPTURE) {
       const double stable_elapsed_s =
-        (stable_start_us >= 0) ? (now_us - stable_start_us) / 1000000.0 : 0.0;
-
-      if (print_due) {
+        CalWindowStableSuffixSeconds_(history,
+                                      history_count,
+                                      stable_stddev_c,
+                                      drift_limit_enabled,
+                                      drift_limit_c_per_min);
+      const double elapsed_s = (now_us - capture_armed_start_us) / 1000000.0;
+      if (print_due && mode != CAL_CONSOLE_OP_LIVE) {
         PrintCalCaptureWindowLine_(elapsed_s,
                                    sample_count,
                                    last_raw_mC,
                                    last_raw_mOhm,
                                    mean_raw_mC,
                                    stddev_c,
-                                   trend_ema_initialized ? drift_c_per_min_ema
-                                                         : drift_c_per_min_raw,
-                                   trend_ema_initialized ? delta_c_ema
-                                                         : (delta_mC / 1000.0),
+                                   gated_drift_c_per_min,
+                                   delta_c,
                                    stable_elapsed_s,
                                    min_seconds,
                                    stable_stddev_c,
@@ -3804,94 +4031,42 @@ CalConsoleOpTask(void* task_arg)
       }
 
       if (stable_elapsed_s >= (double)min_seconds) {
-        if (g_runtime == NULL || g_runtime->settings == NULL) {
-          printf("cal capture failed: runtime unavailable\n");
+        if (mode == CAL_CONSOLE_OP_LIVE) {
+          printf("cal capture: capture criteria already satisfied; capturing "
+                 "immediately from live buffer\n");
+        }
+        const bool saved = CalCaptureSavePoint_(actual_temp_c,
+                                                drift_limit_enabled,
+                                                drift_limit_c_per_min,
+                                                drift_limit_source,
+                                                mean_raw_mC,
+                                                stddev_mC,
+                                                mean_raw_mOhm,
+                                                stddev_mOhm,
+                                                sample_count,
+                                                gated_drift_c_per_min,
+                                                delta_c);
+        if (mode == CAL_CONSOLE_OP_CAPTURE) {
           break;
         }
-        app_settings_t* settings = g_runtime->settings;
-        if (settings->calibration_domain == CAL_DOMAIN_TEMP_C &&
-            settings->calibration_points_count > 0u) {
-          printf("cal capture failed: existing temp-domain points detected; "
-                 "run 'cal clear' first\n");
+        if (CalConsoleOpLock_(pdMS_TO_TICKS(50))) {
+          g_cal_console_op.capture_armed = false;
+          g_cal_console_op.capture_armed_start_us = 0;
+          CalConsoleOpUnlock_();
+        }
+        if (!saved) {
+          printf("cal capture: disarmed after failure; cal live continues\n");
+        }
+      } else if (elapsed_s >= (double)timeout_seconds) {
+        printf("cal capture failed: timeout after %d seconds\n", timeout_seconds);
+        if (mode == CAL_CONSOLE_OP_CAPTURE) {
           break;
         }
-        const int32_t actual_mC = (int32_t)llround(actual_temp_c * 1000.0);
-        int point_index =
-          FindCalibrationPointIndexByActualMc_(settings, actual_mC);
-        const bool updating_existing = (point_index >= 0);
-        if (!updating_existing &&
-            settings->calibration_points_count >= CALIBRATION_MAX_POINTS) {
-          printf("cal capture failed: already have %u points\n",
-                 (unsigned)settings->calibration_points_count);
-          break;
+        if (CalConsoleOpLock_(pdMS_TO_TICKS(50))) {
+          g_cal_console_op.capture_armed = false;
+          g_cal_console_op.capture_armed_start_us = 0;
+          CalConsoleOpUnlock_();
         }
-        if (!updating_existing) {
-          point_index = (int)settings->calibration_points_count;
-          settings->calibration_points_count++;
-        }
-        calibration_point_t* point = &settings->calibration_points[point_index];
-        point->raw_avg_mC = mean_raw_mC;
-        point->actual_mC = actual_mC;
-        point->raw_stddev_mC = stddev_mC;
-        point->raw_avg_mOhm = mean_raw_mOhm;
-        point->raw_stddev_mOhm = stddev_mOhm;
-        point->sample_count = (uint16_t)sample_count;
-        point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
-        point->timestamp_epoch_sec =
-          point->time_valid ? (int64_t)time(NULL) : 0;
-        point->captured_drift_mC_per_min =
-          (int32_t)llround((trend_ema_initialized ? drift_c_per_min_ema
-                                                  : drift_c_per_min_raw) *
-                           1000.0);
-        point->captured_delta_mC = (int32_t)llround(
-          (trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0)) * 1000.0);
-        point->capture_drift_limit_mC_per_min = drift_limit_enabled
-                                                  ? (int32_t)llround(
-                                                      drift_limit_c_per_min *
-                                                      1000.0)
-                                                  : CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
-        point->drift_limit_source = (uint8_t)(drift_limit_enabled
-                                                ? drift_limit_source
-                                                : CAL_DRIFT_LIMIT_SOURCE_DISABLED);
-        point->captured_window_s =
-          (int16_t)CalWindowGetDurationSeconds();
-        point->captured_ema_alpha_permille =
-          (int16_t)CalWindowGetTrendEmaAlphaPermille();
-        settings->calibration_domain = CAL_DOMAIN_RESISTANCE_OHM;
-        esp_err_t save_result = SaveCalibrationPointsAndDomain_(settings);
-        if (save_result != ESP_OK) {
-          printf("save failed: %s\n", esp_err_to_name(save_result));
-          break;
-        }
-        if (updating_existing) {
-          printf(
-            "cal capture OK: updated point #%u actual=%.3fC mean_raw=%.3fC "
-            "std=%.3fC drift=%.3fC/min delta=%.3fC mean_raw_ohm=%.6f saved\n",
-            (unsigned)(point_index + 1),
-            actual_temp_c,
-            mean_raw_mC / 1000.0,
-            stddev_c,
-            trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw,
-            trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0),
-            mean_raw_mOhm / 1000.0);
-        } else {
-          printf("cal capture OK: added point #%u actual=%.3fC mean_raw=%.3fC "
-                 "std=%.3fC drift=%.3fC/min delta=%.3fC mean_raw_ohm=%.6f saved\n",
-                 (unsigned)(point_index + 1),
-                 actual_temp_c,
-                 mean_raw_mC / 1000.0,
-                 stddev_c,
-                 trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw,
-                 trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0),
-                 mean_raw_mOhm / 1000.0);
-        }
-        break;
-      }
-
-      if (elapsed_s >= (double)timeout_seconds) {
-        printf("cal capture failed: timeout after %d seconds\n",
-               timeout_seconds);
-        break;
       }
     }
 
@@ -3903,8 +4078,9 @@ CalConsoleOpTask(void* task_arg)
     g_cal_console_op.task_handle = NULL;
     g_cal_console_op.cancel_requested = false;
     g_cal_console_op.start_us = 0;
-    g_cal_console_op.stable_start_us = -1;
     g_cal_console_op.last_sample_count = 0;
+    g_cal_console_op.capture_armed = false;
+    g_cal_console_op.capture_armed_start_us = 0;
     g_cal_console_op.capture_drift_limit_enabled = true;
     g_cal_console_op.capture_drift_limit_c_per_min = 0.0;
     g_cal_console_op.capture_drift_limit_source =
@@ -4472,14 +4648,44 @@ CommandCal(int argc, char** argv)
         return 1;
       }
 
-      esp_err_t result = CalConsoleOpStartCapture(
-        actual_temp_c,
-        stable_stddev_c,
-        drift_limit_enabled,
-        drift_limit_c_per_min,
-        drift_limit_source,
-        min_seconds,
-        timeout_seconds);
+      esp_err_t result = ESP_ERR_INVALID_STATE;
+      if (CalConsoleOpLock_(pdMS_TO_TICKS(50))) {
+        const cal_console_op_mode_t active_mode = g_cal_console_op.mode;
+        CalConsoleOpUnlock_();
+        if (active_mode == CAL_CONSOLE_OP_LIVE) {
+          bool replaced = false;
+          result = CalConsoleOpArmCaptureWhileLive(actual_temp_c,
+                                                   stable_stddev_c,
+                                                   drift_limit_enabled,
+                                                   drift_limit_c_per_min,
+                                                   drift_limit_source,
+                                                   min_seconds,
+                                                   timeout_seconds,
+                                                   &replaced);
+          if (result == ESP_OK) {
+            if (replaced) {
+              printf("cal capture replaced existing armed request\n");
+            }
+            printf("cal capture attached to running cal live session\n");
+            printf("cal capture: evaluating existing buffered live data\n");
+            printf("cal capture: if criteria are already satisfied, capture "
+                   "will complete immediately\n");
+            printf("cal capture: otherwise waiting continues using live "
+                   "session data\n");
+            return 0;
+          }
+        } else if (active_mode == CAL_CONSOLE_OP_NONE) {
+          result = CalConsoleOpStartCapture(actual_temp_c,
+                                            stable_stddev_c,
+                                            drift_limit_enabled,
+                                            drift_limit_c_per_min,
+                                            drift_limit_source,
+                                            min_seconds,
+                                            timeout_seconds);
+        } else {
+          result = ESP_ERR_INVALID_STATE;
+        }
+      }
       if (result == ESP_ERR_INVALID_STATE) {
         printf("cal: operation already active\n");
         return 1;
@@ -8487,6 +8693,10 @@ static const console_help_topic_t kCalTopics[] = {
       "the minimum duration, firmware saves one resistance-domain point. If a "
       "point with the same entered reference temperature already exists "
       "(exact mC match), it is updated in place instead of appending.\n"
+      "When cal live is already running, cal capture attaches to that shared "
+      "session, reuses the current buffered live data, and can capture "
+      "immediately if existing buffered data already satisfies the requested "
+      "criteria.\n"
       "Domain guardrail: if any temp-domain points exist, capture is refused "
       "until 'cal clear' is used.\n"
       "Each captured point stores:\n"
@@ -8609,7 +8819,8 @@ static const console_help_topic_t kCalTopics[] = {
       "the configured calibration window duration. Notification state resets "
       "when 'cal stop' is run or a new cal live session starts. The run can "
       "be bounded by seconds (positional or --seconds) and can be canceled "
-      "with 'cal stop'.",
+      "with 'cal stop'. cal capture may be invoked while cal live is running; "
+      "capture reuses this same live session buffer/state.",
     .options =
       "  [seconds]          Optional positional duration in seconds.\n"
       "  --every_ms <ms>    Print period in milliseconds (default 1000).\n"
@@ -8628,7 +8839,9 @@ static const console_help_topic_t kCalTopics[] = {
     .synopsis = "cal stop",
     .details =
       "If a calibration background operation is running, requests cancellation "
-      "and returns immediately. If none is active, reports that state.",
+      "of the shared calibration session and returns immediately. This clears "
+      "live streaming, any armed capture request, and associated stability "
+      "tracking state. If none is active, reports that state.",
     .options = NULL,
     .examples = "  cal stop",
   },
@@ -8706,6 +8919,8 @@ PrintCalHelpBody(void)
   printf("  Note: cal live supports --drift_c_per_min X (absolute value) to\n");
   printf("        send one ntfy when |drift| stays under threshold for the\n");
   printf("        configured calibration window duration.\n");
+  printf("  Note: during cal live, cal capture attaches to the same session,\n");
+  printf("        reuses buffered live data, and may capture immediately.\n");
   printf(
     "  Note: 'cal stop' aborts an active cal live/cal capture operation.\n\n");
   printf("EXAMPLES\n");
