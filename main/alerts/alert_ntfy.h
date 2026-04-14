@@ -142,6 +142,11 @@ extern "C"
     const char* token;
     const char* root_id;
     uint32_t http_timeout_ms;
+    uint32_t attempt;
+    bool is_retry;
+    uint32_t queue_depth;
+    uint32_t task_stack_free_bytes;
+    const char* task_name;
   } alert_ntfy_config_t;
 
   /**
