@@ -1,0 +1,115 @@
+cal status
+cal_window_raw_last_c: 81.756
+cal_window_raw_avg_c: 81.738
+cal_window_raw_stddev_c: 0.018
+cal_window_raw_last_ohm: 131.567
+cal_window_raw_avg_ohm: 131.560
+cal_window_raw_stddev_ohm: 0.007
+cal_window_begin_mean_c: 81.740
+cal_window_end_mean_c: 81.736
+cal_window_delta_c_raw: -0.005
+cal_window_drift_c_per_min_raw: -0.007
+cal_window_delta_c_ema: -0.009
+cal_window_drift_c_per_min_ema: -0.011
+cal_cfg_window_s: 60
+cal_cfg_ema_alpha: 0.200
+cal_cfg_drift_limit_default_c_per_min: 0.020
+cal_window_samples: 61
+cal_window_ready: yes
+calibration_mode: poly
+calibration_domain: resistance_ohm (fit uses raw/corrected ohms)
+cal_points: 4
+cal_model_valid: yes
+cal_applied: yes
+cal_runtime_path: raw measured ohms -> corrected ohms -> corrected temperature
+  1: reference_temp_C=-48.900 ideal_ref_res_Ohm=80.743 captured_raw_temp_avg_C=-49.455 captured_raw_temp_stddev_C=0.018 captured_raw_res_avg_Ohm=80.523 captured_raw_res_stddev_Ohm=0.007 residual_res_Ohm=0.220 residual_C=0.555 captured_drift_C_per_min=-0.018 captured_delta_C=-0.011 drift_limit_C_per_min=0.020 drift_limit_source=DEFAULT captured_window_s=60 captured_ema_alpha=0.200
+  2: reference_temp_C=-13.300 ideal_ref_res_Ohm=94.792 captured_raw_temp_avg_C=-13.467 captured_raw_temp_stddev_C=0.019 captured_raw_res_avg_Ohm=94.728 captured_raw_res_stddev_Ohm=0.007 residual_res_Ohm=0.064 residual_C=0.167 captured_drift_C_per_min=0.007 captured_delta_C=0.006 drift_limit_C_per_min=0.020 drift_limit_source=DEFAULT captured_window_s=60 captured_ema_alpha=0.200
+  3: reference_temp_C=24.700 ideal_ref_res_Ohm=109.618 captured_raw_temp_avg_C=24.718 captured_raw_temp_stddev_C=0.019 captured_raw_res_avg_Ohm=109.625 captured_raw_res_stddev_Ohm=0.007 residual_res_Ohm=-0.007 residual_C=-0.018 captured_drift_C_per_min=-0.003 captured_delta_C=-0.003 drift_limit_C_per_min=0.020 drift_limit_source=DEFAULT captured_window_s=60 captured_ema_alpha=0.200
+  4: reference_temp_C=81.600 ideal_ref_res_Ohm=131.507 captured_raw_temp_avg_C=81.742 captured_raw_temp_stddev_C=0.017 captured_raw_res_avg_Ohm=131.562 captured_raw_res_stddev_Ohm=0.006 residual_res_Ohm=-0.055 residual_C=-0.142 captured_drift_C_per_min=0.002 captured_delta_C=0.002 drift_limit_C_per_min=0.020 drift_limit_source=DEFAULT captured_window_s=60 captured_ema_alpha=0.200
+Calibration Points Report Block:
+  Point 1:
+    Point domain: resistance
+    Reference temperature: -48.900 C
+    Ideal reference resistance: 80.743 ohm
+    Captured raw average temperature: -49.455 C
+    Captured raw average resistance: 80.523 ohm
+    Residual temperature: 0.555 C
+    Residual resistance: 0.220 ohm
+    Captured raw temp stddev: 0.018 C
+    Captured raw resistance stddev: 0.007 ohm
+    Captured drift: -0.018 C/min
+    Captured delta: -0.011 C
+    Drift limit used: 0.020 C/min
+    Drift limit source: DEFAULT
+    Captured window duration: 60 s
+    Captured EMA alpha: 0.200
+
+  Point 2:
+    Point domain: resistance
+    Reference temperature: -13.300 C
+    Ideal reference resistance: 94.792 ohm
+    Captured raw average temperature: -13.467 C
+    Captured raw average resistance: 94.728 ohm
+    Residual temperature: 0.167 C
+    Residual resistance: 0.064 ohm
+    Captured raw temp stddev: 0.019 C
+    Captured raw resistance stddev: 0.007 ohm
+    Captured drift: 0.007 C/min
+    Captured delta: 0.006 C
+    Drift limit used: 0.020 C/min
+    Drift limit source: DEFAULT
+    Captured window duration: 60 s
+    Captured EMA alpha: 0.200
+
+  Point 3:
+    Point domain: resistance
+    Reference temperature: 24.700 C
+    Ideal reference resistance: 109.618 ohm
+    Captured raw average temperature: 24.718 C
+    Captured raw average resistance: 109.625 ohm
+    Residual temperature: -0.018 C
+    Residual resistance: -0.007 ohm
+    Captured raw temp stddev: 0.019 C
+    Captured raw resistance stddev: 0.007 ohm
+    Captured drift: -0.003 C/min
+    Captured delta: -0.003 C
+    Drift limit used: 0.020 C/min
+    Drift limit source: DEFAULT
+    Captured window duration: 60 s
+    Captured EMA alpha: 0.200
+
+  Point 4:
+    Point domain: resistance
+    Reference temperature: 81.600 C
+    Ideal reference resistance: 131.507 ohm
+    Captured raw average temperature: 81.742 C
+    Captured raw average resistance: 131.562 ohm
+    Residual temperature: -0.142 C
+    Residual resistance: -0.055 ohm
+    Captured raw temp stddev: 0.017 C
+    Captured raw resistance stddev: 0.006 ohm
+    Captured drift: 0.002 C/min
+    Captured delta: 0.002 C
+    Drift limit used: 0.020 C/min
+    Drift limit source: DEFAULT
+    Captured window duration: 60 s
+    Captured EMA alpha: 0.200
+
+Calibration:
+  Last UTC (base):     2026-04-14T19:46:06Z
+  Last UTC (override): n/a
+  Due every (base):    1 year
+  Due every (override): disabled
+  Method:             Reference transfer from Fluke 51 II N1052
+  Effective last UTC:  2026-04-14T19:46:06Z
+  Effective due:       1 year
+  Due date:            2027-04-14T00:00:00Z
+  Overdue:             no
+  Time valid:          yes
+  Time stable:         yes
+  Due check:           active
+Calibration Steam Reference:
+  none stored (use: cal metar set <elevation_ft> "<raw METAR>")
+Calibration Report Block:
+  Pressure source type: <none>
+pt100> 
