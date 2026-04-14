@@ -8212,6 +8212,14 @@ AlertHttpTask(void* context)
       .token = job.token,
       .root_id = job.root_id,
       .http_timeout_ms = job.http_timeout_ms,
+      .attempt = job.attempt + 1u,
+      .is_retry = (job.attempt > 0u),
+      .queue_depth =
+        (state->alert_manager.ntfy.job_queue != NULL)
+          ? (uint32_t)uxQueueMessagesWaiting(state->alert_manager.ntfy.job_queue)
+          : 0u,
+      .task_stack_free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL),
+      .task_name = pcTaskGetName(NULL),
     };
 
     int status = 0;

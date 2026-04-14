@@ -57,6 +57,22 @@ static void
 AppendTimeLine(const alert_notification_payload_t* payload,
                char* body,
                size_t body_size);
+static uint8_t
+AlertNtfyComputeFragPercent(const multi_heap_info_t* info);
+static void
+AlertNtfySnapshotResources(uint32_t* out_internal_free,
+                           uint32_t* out_internal_largest,
+                           uint8_t* out_internal_frag,
+                           uint32_t* out_psram_free,
+                           uint32_t* out_psram_largest,
+                           uint8_t* out_psram_frag);
+static void
+AlertNtfyLogAttemptResources(const char* phase,
+                             const alert_ntfy_config_t* cfg,
+                             esp_err_t err,
+                             int status,
+                             bool cleanup_performed,
+                             bool will_retry);
 /**
  * @brief Convert URL sanitize result code to a printable string.
  * @param reason Sanitizer result code.
@@ -527,6 +543,100 @@ AppendTimeLine(const alert_notification_payload_t* payload,
   }
 }
 
+static uint8_t
+AlertNtfyComputeFragPercent(const multi_heap_info_t* info)
+{
+  if (info == NULL || info->total_free_bytes == 0u) {
+    return 0u;
+  }
+  const uint32_t free_bytes = info->total_free_bytes;
+  const uint32_t largest = info->largest_free_block;
+  if (largest >= free_bytes) {
+    return 0u;
+  }
+  const uint32_t frag = ((free_bytes - largest) * 100u) / free_bytes;
+  return (frag > 100u) ? 100u : (uint8_t)frag;
+}
+
+static void
+AlertNtfySnapshotResources(uint32_t* out_internal_free,
+                           uint32_t* out_internal_largest,
+                           uint8_t* out_internal_frag,
+                           uint32_t* out_psram_free,
+                           uint32_t* out_psram_largest,
+                           uint8_t* out_psram_frag)
+{
+  multi_heap_info_t internal_info = { 0 };
+  heap_caps_get_info(&internal_info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+  if (out_internal_free != NULL) {
+    *out_internal_free = internal_info.total_free_bytes;
+  }
+  if (out_internal_largest != NULL) {
+    *out_internal_largest = internal_info.largest_free_block;
+  }
+  if (out_internal_frag != NULL) {
+    *out_internal_frag = AlertNtfyComputeFragPercent(&internal_info);
+  }
+
+  multi_heap_info_t psram_info = { 0 };
+  heap_caps_get_info(&psram_info, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (out_psram_free != NULL) {
+    *out_psram_free = psram_info.total_free_bytes;
+  }
+  if (out_psram_largest != NULL) {
+    *out_psram_largest = psram_info.largest_free_block;
+  }
+  if (out_psram_frag != NULL) {
+    *out_psram_frag = AlertNtfyComputeFragPercent(&psram_info);
+  }
+}
+
+static void
+AlertNtfyLogAttemptResources(const char* phase,
+                             const alert_ntfy_config_t* cfg,
+                             esp_err_t err,
+                             int status,
+                             bool cleanup_performed,
+                             bool will_retry)
+{
+  uint32_t internal_free = 0;
+  uint32_t internal_largest = 0;
+  uint8_t internal_frag = 0;
+  uint32_t psram_free = 0;
+  uint32_t psram_largest = 0;
+  uint8_t psram_frag = 0;
+  AlertNtfySnapshotResources(&internal_free,
+                             &internal_largest,
+                             &internal_frag,
+                             &psram_free,
+                             &psram_largest,
+                             &psram_frag);
+  ESP_LOGI(kTag,
+           "ntfy diag[%s] attempt=%" PRIu32 " retry=%u qdepth=%" PRIu32
+           " task=%s stack_free=%" PRIu32
+           " int_free=%" PRIu32 " int_largest=%" PRIu32 " int_frag=%u%%"
+           " psram_free=%" PRIu32 " psram_largest=%" PRIu32 " psram_frag=%u%%"
+           " status=%d err=%s (%d) cleanup=%u will_retry=%u",
+           (phase != NULL) ? phase : "unknown",
+           (cfg != NULL) ? cfg->attempt : 0u,
+           (cfg != NULL && cfg->is_retry) ? 1u : 0u,
+           (cfg != NULL) ? cfg->queue_depth : 0u,
+           (cfg != NULL && cfg->task_name != NULL) ? cfg->task_name : "unknown",
+           (cfg != NULL) ? cfg->task_stack_free_bytes : 0u,
+           internal_free,
+           internal_largest,
+           (unsigned)internal_frag,
+           psram_free,
+           psram_largest,
+           (unsigned)psram_frag,
+           status,
+           esp_err_to_name(err),
+           (int)err,
+           cleanup_performed ? 1u : 0u,
+           will_retry ? 1u : 0u);
+}
+
 static alert_ntfy_result_t
 AlertNtfySendHttp(alert_ntfy_t* ntfy,
                   const alert_ntfy_config_t* cfg,
@@ -547,10 +657,13 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
   if (out_err != NULL) {
     *out_err = ESP_OK;
   }
+  AlertNtfyLogAttemptResources("pre", cfg, ESP_OK, 0, false, false);
   if (cfg == NULL || ntfy == NULL || title == NULL || body == NULL) {
     if (out_err != NULL) {
       *out_err = ESP_ERR_INVALID_ARG;
     }
+    AlertNtfyLogAttemptResources(
+      "post", cfg, ESP_ERR_INVALID_ARG, 0, false, true);
     return ALERT_NTFY_FAILED;
   }
   if (cfg->url == NULL || cfg->url[0] == '\0' || cfg->topic == NULL ||
@@ -558,6 +671,8 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
     if (out_err != NULL) {
       *out_err = ESP_ERR_INVALID_STATE;
     }
+    AlertNtfyLogAttemptResources(
+      "post", cfg, ESP_ERR_INVALID_STATE, 0, false, false);
     return ALERT_NTFY_SKIPPED;
   }
 
@@ -573,6 +688,8 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
     if (out_err != NULL) {
       *out_err = ESP_ERR_INVALID_ARG;
     }
+    AlertNtfyLogAttemptResources(
+      "post", cfg, ESP_ERR_INVALID_ARG, 0, false, true);
     return ALERT_NTFY_FAILED;
   }
 
@@ -597,6 +714,8 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
     if (out_err != NULL) {
       *out_err = ESP_ERR_HTTP_CONNECT;
     }
+    AlertNtfyLogAttemptResources(
+      "post", cfg, ESP_ERR_HTTP_CONNECT, 0, false, true);
     LogNtfyFailure(ntfy, cfg->url, hostname, ESP_ERR_HTTP_CONNECT, 0, timeout_ms,
                    ntfy->send_fail + 1);
     return ALERT_NTFY_FAILED;
@@ -621,11 +740,25 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
 #endif
   };
 
+  ESP_LOGI(kTag,
+           "ntfy http init: url=%s host=%s timeout_ms=%" PRIu32
+           " transport=https cert_bundle=%u",
+           url,
+           hostname,
+           timeout_ms,
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+           1u
+#else
+           0u
+#endif
+  );
+
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (client == NULL) {
     if (out_err != NULL) {
       *out_err = ESP_ERR_NO_MEM;
     }
+    AlertNtfyLogAttemptResources("post", cfg, ESP_ERR_NO_MEM, 0, false, true);
     return ALERT_NTFY_FAILED;
   }
 
@@ -645,9 +778,26 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
 
   esp_http_client_set_post_field(client, body, (int)strlen(body));
 
+  bool cleanup_performed = false;
   esp_err_t err = esp_http_client_perform(client);
   int status = esp_http_client_get_status_code(client);
   esp_http_client_cleanup(client);
+  cleanup_performed = true;
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag,
+             "ntfy perform failed: url=%s host=%s timeout_ms=%" PRIu32
+             " transport=https cert_bundle=%u err=%s (%d)",
+             url,
+             hostname,
+             timeout_ms,
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+             1u,
+#else
+             0u,
+#endif
+             esp_err_to_name(err),
+             (int)err);
+  }
 
   if (out_status != NULL) {
     *out_status = status;
@@ -660,9 +810,11 @@ AlertNtfySendHttp(alert_ntfy_t* ntfy,
   }
 
   if (err == ESP_OK && status >= 200 && status < 300) {
+    AlertNtfyLogAttemptResources("post", cfg, err, status, cleanup_performed, false);
     return ALERT_NTFY_OK;
   }
 
+  AlertNtfyLogAttemptResources("post", cfg, err, status, cleanup_performed, true);
   LogNtfyFailure(
     ntfy, cfg->url, hostname, err, status, timeout_ms, ntfy->send_fail + 1);
   return ALERT_NTFY_FAILED;
