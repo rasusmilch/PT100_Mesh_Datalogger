@@ -3682,7 +3682,22 @@ typedef struct
   double drift_c_per_min;
 } cal_window_metric_sample_t;
 
-#define CAL_WINDOW_METRIC_HISTORY_CAPACITY 900u
+#define CAL_WINDOW_METRIC_HISTORY_CAPACITY 300u
+
+typedef struct
+{
+  cal_window_metric_sample_t buffer[CAL_WINDOW_METRIC_HISTORY_CAPACITY];
+  size_t head;
+  size_t count;
+} cal_window_metric_history_t;
+
+// NOTE:
+// Static ring buffer used intentionally:
+// - Prevents FreeRTOS task stack overflow (~28KB prior)
+// - Eliminates heap allocation / fragmentation risk
+// - Removes O(n) memmove() operations
+// - Provides deterministic memory and timing behavior
+static cal_window_metric_history_t s_cal_history;
 
 static bool
 CalWindowMetricSampleMeetsCriteria_(const cal_window_metric_sample_t* sample,
@@ -3703,27 +3718,50 @@ CalWindowMetricSampleMeetsCriteria_(const cal_window_metric_sample_t* sample,
   return true;
 }
 
+static size_t
+CalHistoryGet(const cal_window_metric_history_t* history,
+              size_t index,
+              cal_window_metric_sample_t* out)
+{
+  if (history == NULL || out == NULL || index >= history->count) {
+    return 0u;
+  }
+
+  const size_t start =
+    (history->head + CAL_WINDOW_METRIC_HISTORY_CAPACITY - history->count) %
+    CAL_WINDOW_METRIC_HISTORY_CAPACITY;
+  const size_t real_index =
+    (start + index) % CAL_WINDOW_METRIC_HISTORY_CAPACITY;
+  *out = history->buffer[real_index];
+  return 1u;
+}
+
 static double
-CalWindowStableSuffixSeconds_(const cal_window_metric_sample_t* history,
-                              size_t history_count,
+CalWindowStableSuffixSeconds_(const cal_window_metric_history_t* history,
                               double stable_stddev_c,
                               bool drift_limit_enabled,
                               double drift_limit_c_per_min)
 {
-  if (history == NULL || history_count == 0u) {
+  if (history == NULL || history->count == 0u) {
     return 0.0;
   }
-  const cal_window_metric_sample_t* newest = &history[history_count - 1u];
-  if (!CalWindowMetricSampleMeetsCriteria_(newest,
+
+  cal_window_metric_sample_t newest = { 0 };
+  if (CalHistoryGet(history, history->count - 1u, &newest) == 0u) {
+    return 0.0;
+  }
+  if (!CalWindowMetricSampleMeetsCriteria_(&newest,
                                            stable_stddev_c,
                                            drift_limit_enabled,
                                            drift_limit_c_per_min)) {
     return 0.0;
   }
-  size_t first_ok_index = history_count - 1u;
+  size_t first_ok_index = history->count - 1u;
   while (first_ok_index > 0u) {
     const size_t prev = first_ok_index - 1u;
-    if (!CalWindowMetricSampleMeetsCriteria_(&history[prev],
+    cal_window_metric_sample_t prev_sample = { 0 };
+    if (CalHistoryGet(history, prev, &prev_sample) == 0u ||
+        !CalWindowMetricSampleMeetsCriteria_(&prev_sample,
                                              stable_stddev_c,
                                              drift_limit_enabled,
                                              drift_limit_c_per_min)) {
@@ -3731,7 +3769,12 @@ CalWindowStableSuffixSeconds_(const cal_window_metric_sample_t* history,
     }
     first_ok_index = prev;
   }
-  const int64_t stable_us = newest->timestamp_us - history[first_ok_index].timestamp_us;
+
+  cal_window_metric_sample_t first_ok_sample = { 0 };
+  if (CalHistoryGet(history, first_ok_index, &first_ok_sample) == 0u) {
+    return 0.0;
+  }
+  const int64_t stable_us = newest.timestamp_us - first_ok_sample.timestamp_us;
   if (stable_us <= 0) {
     return 0.0;
   }
@@ -3851,8 +3894,8 @@ CalConsoleOpTask(void* task_arg)
   const uint32_t window_duration_s = CalWindowGetDurationSeconds();
   int64_t last_print_us = 0;
   size_t last_sample_count = 0;
-  cal_window_metric_sample_t history[CAL_WINDOW_METRIC_HISTORY_CAPACITY] = { 0 };
-  size_t history_count = 0u;
+  s_cal_history.head = 0u;
+  s_cal_history.count = 0u;
 
   while (true) {
     bool cancel_requested = false;
@@ -3928,20 +3971,15 @@ CalConsoleOpTask(void* task_arg)
       trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw;
     const double stddev_c = stddev_mC / 1000.0;
     const double delta_c = trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0);
-    if (history_count < CAL_WINDOW_METRIC_HISTORY_CAPACITY) {
-      history[history_count++] = (cal_window_metric_sample_t){ .timestamp_us = now_us,
-                                                                .window_ready = window_ready,
-                                                                .stddev_c = stddev_c,
-                                                                .drift_c_per_min = gated_drift_c_per_min };
-    } else {
-      memmove(&history[0],
-              &history[1],
-              sizeof(history[0]) * (CAL_WINDOW_METRIC_HISTORY_CAPACITY - 1u));
-      history[CAL_WINDOW_METRIC_HISTORY_CAPACITY - 1u] =
-        (cal_window_metric_sample_t){ .timestamp_us = now_us,
-                                      .window_ready = window_ready,
-                                      .stddev_c = stddev_c,
-                                      .drift_c_per_min = gated_drift_c_per_min };
+    s_cal_history.buffer[s_cal_history.head] =
+      (cal_window_metric_sample_t){ .timestamp_us = now_us,
+                                    .window_ready = window_ready,
+                                    .stddev_c = stddev_c,
+                                    .drift_c_per_min = gated_drift_c_per_min };
+    s_cal_history.head =
+      (s_cal_history.head + 1u) % CAL_WINDOW_METRIC_HISTORY_CAPACITY;
+    if (s_cal_history.count < CAL_WINDOW_METRIC_HISTORY_CAPACITY) {
+      s_cal_history.count++;
     }
     const bool print_due =
       (sample_count != last_sample_count) || (last_print_us == 0) ||
@@ -4004,8 +4042,7 @@ CalConsoleOpTask(void* task_arg)
 
     if (capture_armed || mode == CAL_CONSOLE_OP_CAPTURE) {
       const double stable_elapsed_s =
-        CalWindowStableSuffixSeconds_(history,
-                                      history_count,
+        CalWindowStableSuffixSeconds_(&s_cal_history,
                                       stable_stddev_c,
                                       drift_limit_enabled,
                                       drift_limit_c_per_min);
