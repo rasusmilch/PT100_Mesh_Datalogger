@@ -8,6 +8,8 @@
 #include <strings.h>
 #include <time.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_rom_crc.h"
 #include "max31865_reader.h"
@@ -342,9 +344,74 @@ typedef struct
 static uint32_t g_settings_blob_generation = 0;
 static bool g_saved_settings_valid = false;
 static app_settings_t g_saved_settings;
+// Shared save scratch avoids large app_settings_t stack frames in small RTOS
+// tasks (e.g. cal_op) without introducing heap allocation/fragmentation.
+static app_settings_t s_settings_save_scratch;
+static SemaphoreHandle_t s_settings_save_mutex = NULL;
+static StaticSemaphore_t s_settings_save_mutex_buf;
+static portMUX_TYPE s_settings_save_mutex_init_lock =
+  portMUX_INITIALIZER_UNLOCKED;
+
+typedef void (*app_settings_mutator_fn)(app_settings_t* settings, void* context);
 
 static esp_err_t
 AppSettingsSaveBlob(const app_settings_t* settings);
+static void
+EnsureSettingsSaveMutexInitialized_(void);
+static esp_err_t
+PersistMutatedSettingsSnapshot_(app_settings_mutator_fn mutator, void* context);
+static void
+MutateLogPeriodMs_(app_settings_t* settings, void* context);
+static void
+MutateFramFlushWatermarkRecords_(app_settings_t* settings, void* context);
+static void
+MutateSdFlushPeriodMs_(app_settings_t* settings, void* context);
+static void
+MutateSdBatchBytes_(app_settings_t* settings, void* context);
+static void
+MutateRtcResyncPeriodMs_(app_settings_t* settings, void* context);
+static void
+MutateCalibrationWithContext_(app_settings_t* settings, void* context);
+static void
+MutateCalibrationSchedule_(app_settings_t* settings, void* context);
+static void
+MutateCalibrationPoints_(app_settings_t* settings, void* context);
+static void
+MutateCalibrationDomain_(app_settings_t* settings, void* context);
+static void
+MutateCalibrationConfig_(app_settings_t* settings, void* context);
+static void
+MutateRtdEmaEnabled_(app_settings_t* settings, void* context);
+static void
+MutateRtdEmaAlphaPermille_(app_settings_t* settings, void* context);
+static void
+MutateRtdFaultDebounceMs_(app_settings_t* settings, void* context);
+static void
+MutateTimeZone_(app_settings_t* settings, void* context);
+static void
+MutateCalibrationMethod_(app_settings_t* settings, void* context);
+static void
+MutateCalibrationMetar_(app_settings_t* settings, void* context);
+static void
+MutateNodeRole_(app_settings_t* settings, void* context);
+static void
+MutateAllowChildren_(app_settings_t* settings, void* context);
+static void
+MutateNetMode_(app_settings_t* settings, void* context);
+static void
+MutateMqttEnabled_(app_settings_t* settings, void* context);
+static void
+MutateMqttBrokerUri_(app_settings_t* settings, void* context);
+static void
+MutateMqttTopicPrefix_(app_settings_t* settings, void* context);
+static void
+MutateMqttQos_(app_settings_t* settings, void* context);
+static void
+MutateMqttRetain_(app_settings_t* settings, void* context);
+static void
+MutateMqttBridgeMode_(app_settings_t* settings, void* context);
+static void
+MutateDisplayAttentionPolicy_(app_settings_t* settings, void* context);
 
 static esp_err_t
 OpenNvs(nvs_handle_t* handle_out);
@@ -1514,6 +1581,82 @@ PersistSettingsSnapshot(app_settings_t* settings)
   return result;
 }
 
+typedef struct
+{
+  const calibration_model_t* model;
+  const calibration_context_t* context;
+} save_calibration_with_context_ctx_t;
+
+typedef struct
+{
+  const app_settings_t* source;
+} save_calibration_schedule_ctx_t;
+
+typedef struct
+{
+  const calibration_point_t* points;
+  size_t points_count;
+} save_calibration_points_ctx_t;
+
+typedef struct
+{
+  uint16_t window_s;
+  uint16_t ema_alpha_permille;
+} save_calibration_config_ctx_t;
+
+typedef struct
+{
+  uint32_t assert_ms;
+  uint32_t clear_ms;
+} save_rtd_fault_debounce_ctx_t;
+
+typedef struct
+{
+  const char* tz_posix;
+  bool dst_enabled;
+} save_time_zone_ctx_t;
+
+typedef struct
+{
+  bool allow_children;
+  bool explicit_setting;
+} save_allow_children_ctx_t;
+
+static void
+EnsureSettingsSaveMutexInitialized_(void)
+{
+  if (s_settings_save_mutex != NULL) {
+    return;
+  }
+  taskENTER_CRITICAL(&s_settings_save_mutex_init_lock);
+  if (s_settings_save_mutex == NULL) {
+    s_settings_save_mutex = xSemaphoreCreateMutexStatic(&s_settings_save_mutex_buf);
+  }
+  taskEXIT_CRITICAL(&s_settings_save_mutex_init_lock);
+}
+
+static esp_err_t
+PersistMutatedSettingsSnapshot_(app_settings_mutator_fn mutator, void* context)
+{
+  if (mutator == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  EnsureSettingsSaveMutexInitialized_();
+  if (s_settings_save_mutex == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+  if (xSemaphoreTake(s_settings_save_mutex, portMAX_DELAY) != pdTRUE) {
+    return ESP_FAIL;
+  }
+
+  InitSettingsSnapshot(&s_settings_save_scratch);
+  mutator(&s_settings_save_scratch, context);
+  const esp_err_t result = PersistSettingsSnapshot(&s_settings_save_scratch);
+
+  xSemaphoreGive(s_settings_save_mutex);
+  return result;
+}
+
 /**
  * @brief Save the settings blob with redundant A/B storage.
  * @param settings Parameter settings.
@@ -1554,6 +1697,212 @@ AppSettingsSaveBlob(const app_settings_t* settings)
     g_settings_blob_generation = blob.header.generation;
   }
   return result;
+}
+
+static void
+MutateLogPeriodMs_(app_settings_t* settings, void* context)
+{
+  settings->log_period_ms = *(uint32_t*)context;
+}
+
+static void
+MutateFramFlushWatermarkRecords_(app_settings_t* settings, void* context)
+{
+  settings->fram_flush_watermark_records = *(uint32_t*)context;
+}
+
+static void
+MutateSdFlushPeriodMs_(app_settings_t* settings, void* context)
+{
+  settings->sd_flush_period_ms = *(uint32_t*)context;
+}
+
+static void
+MutateSdBatchBytes_(app_settings_t* settings, void* context)
+{
+  settings->sd_batch_bytes_target = *(uint32_t*)context;
+}
+
+static void
+MutateRtcResyncPeriodMs_(app_settings_t* settings, void* context)
+{
+  settings->rtc_resync_period_ms = *(uint32_t*)context;
+}
+
+static void
+MutateCalibrationWithContext_(app_settings_t* settings, void* context)
+{
+  const save_calibration_with_context_ctx_t* ctx = context;
+  settings->calibration = *ctx->model;
+  settings->calibration_context = *ctx->context;
+  settings->calibration_context_valid = true;
+}
+
+static void
+MutateCalibrationSchedule_(app_settings_t* settings, void* context)
+{
+  const save_calibration_schedule_ctx_t* ctx = context;
+  *settings = *ctx->source;
+  ValidateCalibrationDueSettings(&settings->cal_due_count, &settings->cal_due_unit);
+  ValidateCalibrationDueSettings(&settings->cal_due_override_count,
+                                 &settings->cal_due_override_unit);
+}
+
+static void
+MutateCalibrationPoints_(app_settings_t* settings, void* context)
+{
+  const save_calibration_points_ctx_t* ctx = context;
+  memset(settings->calibration_points, 0, sizeof(settings->calibration_points));
+  if (ctx->points_count > 0u) {
+    memcpy(settings->calibration_points,
+           ctx->points,
+           sizeof(calibration_point_t) * ctx->points_count);
+  }
+  settings->calibration_points_count = (uint8_t)ctx->points_count;
+}
+
+static void
+MutateCalibrationDomain_(app_settings_t* settings, void* context)
+{
+  settings->calibration_domain = *(calibration_domain_t*)context;
+}
+
+static void
+MutateCalibrationConfig_(app_settings_t* settings, void* context)
+{
+  const save_calibration_config_ctx_t* ctx = context;
+  settings->cal_window_duration_s = ctx->window_s;
+  settings->cal_trend_ema_alpha_permille = ctx->ema_alpha_permille;
+}
+
+static void
+MutateRtdEmaEnabled_(app_settings_t* settings, void* context)
+{
+  settings->rtd_ema_enabled = *(bool*)context;
+}
+
+static void
+MutateRtdEmaAlphaPermille_(app_settings_t* settings, void* context)
+{
+  settings->rtd_ema_alpha_permille = *(uint16_t*)context;
+}
+
+static void
+MutateRtdFaultDebounceMs_(app_settings_t* settings, void* context)
+{
+  const save_rtd_fault_debounce_ctx_t* ctx = context;
+  settings->rtd_fault_assert_ms = ctx->assert_ms;
+  settings->rtd_fault_clear_ms = ctx->clear_ms;
+}
+
+static void
+MutateTimeZone_(app_settings_t* settings, void* context)
+{
+  const save_time_zone_ctx_t* ctx = context;
+  snprintf(settings->tz_posix, sizeof(settings->tz_posix), "%s", ctx->tz_posix);
+  settings->dst_enabled = ctx->dst_enabled;
+}
+
+static void
+MutateCalibrationMethod_(app_settings_t* settings, void* context)
+{
+  const char* method = context;
+  snprintf(settings->cal_method, sizeof(settings->cal_method), "%s", method);
+}
+
+static void
+MutateCalibrationMetar_(app_settings_t* settings, void* context)
+{
+  const calibration_metar_reference_t* metar = context;
+  settings->cal_metar = *metar;
+  settings->cal_metar.source_type[sizeof(settings->cal_metar.source_type) - 1] =
+    '\0';
+  settings->cal_metar.raw_metar[sizeof(settings->cal_metar.raw_metar) - 1] = '\0';
+  settings->cal_metar.station_id[sizeof(settings->cal_metar.station_id) - 1] =
+    '\0';
+  settings->cal_metar
+    .observation_token[sizeof(settings->cal_metar.observation_token) - 1] = '\0';
+  settings->cal_metar.observation_iso_utc
+    [sizeof(settings->cal_metar.observation_iso_utc) - 1] = '\0';
+  settings->cal_metar.auto_or_cor[sizeof(settings->cal_metar.auto_or_cor) - 1] =
+    '\0';
+  settings->cal_metar
+    .temp_dew_token[sizeof(settings->cal_metar.temp_dew_token) - 1] = '\0';
+  settings->cal_metar.remarks[sizeof(settings->cal_metar.remarks) - 1] = '\0';
+  settings->cal_metar
+    .method_note[sizeof(settings->cal_metar.method_note) - 1] = '\0';
+  settings->cal_metar.valid = (settings->cal_metar.valid != 0u) ? 1u : 0u;
+  settings->cal_metar.observation_resolved =
+    (settings->cal_metar.observation_resolved != 0u) ? 1u : 0u;
+}
+
+static void
+MutateNodeRole_(app_settings_t* settings, void* context)
+{
+  settings->node_role = *(app_node_role_t*)context;
+}
+
+static void
+MutateAllowChildren_(app_settings_t* settings, void* context)
+{
+  const save_allow_children_ctx_t* ctx = context;
+  settings->allow_children = ctx->allow_children;
+  settings->allow_children_set = ctx->explicit_setting;
+}
+
+static void
+MutateNetMode_(app_settings_t* settings, void* context)
+{
+  settings->net_mode = *(app_net_mode_t*)context;
+}
+
+static void
+MutateMqttEnabled_(app_settings_t* settings, void* context)
+{
+  settings->mqtt_enabled = *(bool*)context;
+}
+
+static void
+MutateMqttBrokerUri_(app_settings_t* settings, void* context)
+{
+  const char* uri = context;
+  snprintf(settings->mqtt_broker_uri, sizeof(settings->mqtt_broker_uri), "%s", uri);
+}
+
+static void
+MutateMqttTopicPrefix_(app_settings_t* settings, void* context)
+{
+  const char* prefix = context;
+  snprintf(settings->mqtt_topic_prefix,
+           sizeof(settings->mqtt_topic_prefix),
+           "%s",
+           prefix);
+}
+
+static void
+MutateMqttQos_(app_settings_t* settings, void* context)
+{
+  settings->mqtt_qos = *(uint8_t*)context;
+}
+
+static void
+MutateMqttRetain_(app_settings_t* settings, void* context)
+{
+  settings->mqtt_retain = *(bool*)context;
+}
+
+static void
+MutateMqttBridgeMode_(app_settings_t* settings, void* context)
+{
+  settings->mqtt_bridge_mode = *(mqtt_bridge_mode_t*)context;
+}
+
+static void
+MutateDisplayAttentionPolicy_(app_settings_t* settings, void* context)
+{
+  const uint32_t policy = *(uint32_t*)context;
+  settings->display_attention_policy = policy;
+  settings->display_attention_mask = DisplayAttentionMaskFromPolicy(policy);
 }
 
 /**
@@ -2167,10 +2516,7 @@ AppSettingsLoad(app_settings_t* settings_out)
 esp_err_t
 AppSettingsSaveLogPeriodMs(uint32_t log_period_ms)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.log_period_ms = log_period_ms;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateLogPeriodMs_, &log_period_ms);
 }
 
 /**
@@ -2219,10 +2565,8 @@ AppSettingsSaveDisplaySamplePeriodMs(uint32_t display_sample_period_ms)
 esp_err_t
 AppSettingsSaveFramFlushWatermarkRecords(uint32_t watermark_records)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.fram_flush_watermark_records = watermark_records;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateFramFlushWatermarkRecords_,
+                                         &watermark_records);
 }
 
 /**
@@ -2233,10 +2577,7 @@ AppSettingsSaveFramFlushWatermarkRecords(uint32_t watermark_records)
 esp_err_t
 AppSettingsSaveSdFlushPeriodMs(uint32_t period_ms)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.sd_flush_period_ms = period_ms;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateSdFlushPeriodMs_, &period_ms);
 }
 
 /**
@@ -2247,10 +2588,7 @@ AppSettingsSaveSdFlushPeriodMs(uint32_t period_ms)
 esp_err_t
 AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.sd_batch_bytes_target = batch_bytes;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateSdBatchBytes_, &batch_bytes);
 }
 
 /**
@@ -2261,10 +2599,7 @@ AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
 esp_err_t
 AppSettingsSaveRtcResyncPeriodMs(uint32_t period_ms)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.rtc_resync_period_ms = period_ms;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateRtcResyncPeriodMs_, &period_ms);
 }
 
 /**
@@ -2280,12 +2615,12 @@ AppSettingsSaveCalibrationWithContext(const calibration_model_t* model,
   if (model == NULL || !model->is_valid || context == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.calibration = *model;
-  settings.calibration_context = *context;
-  settings.calibration_context_valid = true;
-  return PersistSettingsSnapshot(&settings);
+  save_calibration_with_context_ctx_t save_ctx = {
+    .model = model,
+    .context = context,
+  };
+  return PersistMutatedSettingsSnapshot_(MutateCalibrationWithContext_,
+                                         &save_ctx);
 }
 
 /**
@@ -2300,12 +2635,10 @@ AppSettingsSaveCalibrationSchedule(const app_settings_t* settings)
     return ESP_ERR_INVALID_ARG;
   }
 
-  app_settings_t snapshot = *settings;
-  ValidateCalibrationDueSettings(&snapshot.cal_due_count,
-                                 &snapshot.cal_due_unit);
-  ValidateCalibrationDueSettings(&snapshot.cal_due_override_count,
-                                 &snapshot.cal_due_override_unit);
-  return PersistSettingsSnapshot(&snapshot);
+  save_calibration_schedule_ctx_t save_ctx = {
+    .source = settings,
+  };
+  return PersistMutatedSettingsSnapshot_(MutateCalibrationSchedule_, &save_ctx);
 }
 
 /**
@@ -2346,16 +2679,11 @@ AppSettingsSaveCalibrationPoints(const calibration_point_t* points,
   if (points_count > 0 && points == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  memset(settings.calibration_points, 0, sizeof(settings.calibration_points));
-  if (points_count > 0) {
-    memcpy(settings.calibration_points,
-           points,
-           sizeof(calibration_point_t) * points_count);
-  }
-  settings.calibration_points_count = (uint8_t)points_count;
-  return PersistSettingsSnapshot(&settings);
+  save_calibration_points_ctx_t save_ctx = {
+    .points = points,
+    .points_count = points_count,
+  };
+  return PersistMutatedSettingsSnapshot_(MutateCalibrationPoints_, &save_ctx);
 }
 
 /**
@@ -2375,10 +2703,7 @@ AppSettingsSaveCalibrationDomain(calibration_domain_t domain)
   if (domain != CAL_DOMAIN_TEMP_C && domain != CAL_DOMAIN_RESISTANCE_OHM) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.calibration_domain = domain;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateCalibrationDomain_, &domain);
 }
 
 esp_err_t
@@ -2389,20 +2714,17 @@ AppSettingsSaveCalibrationConfig(uint16_t window_s, uint16_t ema_alpha_permille)
       ema_alpha_permille > 1000u) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.cal_window_duration_s = window_s;
-  settings.cal_trend_ema_alpha_permille = ema_alpha_permille;
-  return PersistSettingsSnapshot(&settings);
+  save_calibration_config_ctx_t save_ctx = {
+    .window_s = window_s,
+    .ema_alpha_permille = ema_alpha_permille,
+  };
+  return PersistMutatedSettingsSnapshot_(MutateCalibrationConfig_, &save_ctx);
 }
 
 esp_err_t
 AppSettingsSaveRtdEmaEnabled(bool enabled)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.rtd_ema_enabled = enabled;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateRtdEmaEnabled_, &enabled);
 }
 
 /**
@@ -2416,10 +2738,7 @@ AppSettingsSaveRtdEmaAlphaPermille(uint16_t permille)
   if (permille < 1 || permille > 1000) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.rtd_ema_alpha_permille = permille;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateRtdEmaAlphaPermille_, &permille);
 }
 
 /**
@@ -2434,11 +2753,11 @@ AppSettingsSaveRtdFaultDebounceMs(uint32_t assert_ms, uint32_t clear_ms)
   if (assert_ms > kRtdFaultDebounceMaxMs || clear_ms > kRtdFaultDebounceMaxMs) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.rtd_fault_assert_ms = assert_ms;
-  settings.rtd_fault_clear_ms = clear_ms;
-  return PersistSettingsSnapshot(&settings);
+  save_rtd_fault_debounce_ctx_t save_ctx = {
+    .assert_ms = assert_ms,
+    .clear_ms = clear_ms,
+  };
+  return PersistMutatedSettingsSnapshot_(MutateRtdFaultDebounceMs_, &save_ctx);
 }
 
 /**
@@ -2454,11 +2773,11 @@ AppSettingsSaveTimeZone(const char* tz_posix, bool dst_enabled)
       strlen(tz_posix) >= APP_SETTINGS_TZ_POSIX_MAX_LEN) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  snprintf(settings.tz_posix, sizeof(settings.tz_posix), "%s", tz_posix);
-  settings.dst_enabled = dst_enabled;
-  return PersistSettingsSnapshot(&settings);
+  save_time_zone_ctx_t save_ctx = {
+    .tz_posix = tz_posix,
+    .dst_enabled = dst_enabled,
+  };
+  return PersistMutatedSettingsSnapshot_(MutateTimeZone_, &save_ctx);
 }
 
 /**
@@ -2472,10 +2791,8 @@ AppSettingsSaveCalibrationMethod(const char* method)
   if (!IsPrintableSettingString(method, APP_SETTINGS_CAL_METHOD_MAX_LEN)) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  snprintf(settings.cal_method, sizeof(settings.cal_method), "%s", method);
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateCalibrationMethod_,
+                                         (void*)method);
 }
 
 esp_err_t
@@ -2484,38 +2801,13 @@ AppSettingsSaveCalibrationMetar(const calibration_metar_reference_t* metar)
   if (metar == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.cal_metar = *metar;
-  settings.cal_metar.source_type[sizeof(settings.cal_metar.source_type) - 1] =
-    '\0';
-  settings.cal_metar.raw_metar[sizeof(settings.cal_metar.raw_metar) - 1] = '\0';
-  settings.cal_metar.station_id[sizeof(settings.cal_metar.station_id) - 1] =
-    '\0';
-  settings.cal_metar
-    .observation_token[sizeof(settings.cal_metar.observation_token) - 1] = '\0';
-  settings.cal_metar.observation_iso_utc
-    [sizeof(settings.cal_metar.observation_iso_utc) - 1] = '\0';
-  settings.cal_metar.auto_or_cor[sizeof(settings.cal_metar.auto_or_cor) - 1] =
-    '\0';
-  settings.cal_metar
-    .temp_dew_token[sizeof(settings.cal_metar.temp_dew_token) - 1] = '\0';
-  settings.cal_metar.remarks[sizeof(settings.cal_metar.remarks) - 1] = '\0';
-  settings.cal_metar
-    .method_note[sizeof(settings.cal_metar.method_note) - 1] = '\0';
-  settings.cal_metar.valid = (settings.cal_metar.valid != 0u) ? 1u : 0u;
-  settings.cal_metar.observation_resolved =
-    (settings.cal_metar.observation_resolved != 0u) ? 1u : 0u;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateCalibrationMetar_, (void*)metar);
 }
 
 esp_err_t
 AppSettingsSaveNodeRole(app_node_role_t node_role)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.node_role = node_role;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateNodeRole_, &node_role);
 }
 
 /**
@@ -2527,11 +2819,11 @@ AppSettingsSaveNodeRole(app_node_role_t node_role)
 esp_err_t
 AppSettingsSaveAllowChildren(bool allow_children, bool explicit_setting)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.allow_children = allow_children;
-  settings.allow_children_set = explicit_setting;
-  return PersistSettingsSnapshot(&settings);
+  save_allow_children_ctx_t save_ctx = {
+    .allow_children = allow_children,
+    .explicit_setting = explicit_setting,
+  };
+  return PersistMutatedSettingsSnapshot_(MutateAllowChildren_, &save_ctx);
 }
 
 /**
@@ -2546,10 +2838,8 @@ AppSettingsSaveNetMode(app_net_mode_t mode)
       mode != APP_NET_MODE_NONE) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.net_mode = mode;
-  const esp_err_t result = PersistSettingsSnapshot(&settings);
+  const esp_err_t result =
+    PersistMutatedSettingsSnapshot_(MutateNetMode_, &mode);
   if (result == ESP_OK) {
     g_net_mode_revision++;
   }
@@ -2574,10 +2864,7 @@ AppSettingsGetNetModeRevision(void)
 esp_err_t
 AppSettingsSaveMqttEnabled(bool enabled)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.mqtt_enabled = enabled;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateMqttEnabled_, &enabled);
 }
 
 /**
@@ -2592,11 +2879,7 @@ AppSettingsSaveMqttBrokerUri(const char* uri)
       strlen(uri) >= sizeof(((app_settings_t*)0)->mqtt_broker_uri)) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  snprintf(
-    settings.mqtt_broker_uri, sizeof(settings.mqtt_broker_uri), "%s", uri);
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateMqttBrokerUri_, (void*)uri);
 }
 
 /**
@@ -2611,13 +2894,8 @@ AppSettingsSaveMqttTopicPrefix(const char* prefix)
       strlen(prefix) >= sizeof(((app_settings_t*)0)->mqtt_topic_prefix)) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  snprintf(settings.mqtt_topic_prefix,
-           sizeof(settings.mqtt_topic_prefix),
-           "%s",
-           prefix);
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateMqttTopicPrefix_,
+                                         (void*)prefix);
 }
 
 /**
@@ -2631,10 +2909,7 @@ AppSettingsSaveMqttQos(uint8_t qos)
   if (qos > 1) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.mqtt_qos = qos;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateMqttQos_, &qos);
 }
 
 /**
@@ -2645,10 +2920,7 @@ AppSettingsSaveMqttQos(uint8_t qos)
 esp_err_t
 AppSettingsSaveMqttRetain(bool retain)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.mqtt_retain = retain;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateMqttRetain_, &retain);
 }
 
 /**
@@ -2662,10 +2934,7 @@ AppSettingsSaveMqttBridgeMode(mqtt_bridge_mode_t mode)
   if (mode > MQTT_BRIDGE_BOTH) {
     return ESP_ERR_INVALID_ARG;
   }
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.mqtt_bridge_mode = mode;
-  return PersistSettingsSnapshot(&settings);
+  return PersistMutatedSettingsSnapshot_(MutateMqttBridgeMode_, &mode);
 }
 
 /**
@@ -2735,14 +3004,12 @@ AppSettingsDefaultDisplayAttentionPolicy(void)
 esp_err_t
 AppSettingsSaveDisplayAttentionPolicy(uint32_t policy)
 {
-  app_settings_t settings;
-  InitSettingsSnapshot(&settings);
-  settings.display_attention_policy = policy;
-  settings.display_attention_mask = DisplayAttentionMaskFromPolicy(policy);
-  const esp_err_t result = PersistSettingsSnapshot(&settings);
+  const display_attention_mask_t mask = DisplayAttentionMaskFromPolicy(policy);
+  const esp_err_t result =
+    PersistMutatedSettingsSnapshot_(MutateDisplayAttentionPolicy_, &policy);
   if (result == ESP_OK) {
     g_display_attention_policy = policy;
-    g_display_attention_mask = settings.display_attention_mask;
+    g_display_attention_mask = mask;
   }
   return result;
 }
