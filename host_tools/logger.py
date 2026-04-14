@@ -29,6 +29,11 @@ from typing import Optional, Sequence, Tuple
 import serial
 from serial.tools import list_ports
 
+try:
+    import termios
+except Exception:  # pragma: no cover - non-POSIX platforms
+    termios = None  # type: ignore[assignment]
+
 
 @dataclass(frozen=True)
 class SerialConfig:
@@ -169,6 +174,43 @@ def _set_control_lines(ser: serial.Serial, dtr: Optional[bool], rts: Optional[bo
         ser.dtr = dtr
     if rts is not None:
         ser.rts = rts
+
+
+def _is_posix_no_reset_mode(reset_enabled: bool) -> bool:
+    """Return True when no-reset passive serial handling should be used."""
+    return (not reset_enabled) and (os.name == "posix")
+
+
+def _clear_hupcl_best_effort(ser: serial.Serial) -> Tuple[str, str]:
+    """
+    Best-effort clear of HUPCL on POSIX TTYs.
+
+    Returns (status, detail) where status is one of:
+      - "ok": HUPCL cleared or already clear
+      - "unsupported": platform/fd does not support this operation
+      - "error": attempted but failed
+    """
+    if os.name != "posix":
+        return ("unsupported", "non-posix")
+    if termios is None:
+        return ("unsupported", "termios unavailable")
+    if not hasattr(termios, "HUPCL"):
+        return ("unsupported", "termios.HUPCL unavailable")
+    try:
+        fd = ser.fileno()
+    except Exception as exc:
+        return ("unsupported", f"no-fd: {exc}")
+
+    try:
+        attrs = termios.tcgetattr(fd)
+        cflag = attrs[2]
+        if cflag & termios.HUPCL:
+            attrs[2] = cflag & ~termios.HUPCL
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+            return ("ok", "cleared")
+        return ("ok", "already-clear")
+    except Exception as exc:
+        return ("error", str(exc))
 
 
 def _apply_custom_reset_sequence(ser: serial.Serial, sequence: str, log_fn) -> None:
@@ -484,9 +526,8 @@ class SessionLogger:
 
         return ports[0].device
 
-    def _open_serial(self, port: str) -> serial.Serial:
-        # Open the serial port while minimizing unintended DTR/RTS reset pulses.
-        # Create without opening so we can set cached DTR/RTS state first.
+    def _open_serial_reset_enabled(self, port: str) -> serial.Serial:
+        """Open serial in the default reset-aware mode (existing behavior)."""
         ser = serial.Serial()
         ser.port = port
         ser.baudrate = self._serial_config.baudrate
@@ -499,8 +540,7 @@ class SessionLogger:
         ser.rtscts = self._serial_config.rtscts
         ser.dsrdtr = self._serial_config.dsrdtr
 
-        # Pre-set control lines BEFORE opening to avoid the common "assert on open"
-        # behavior that can reset ESP32 boards via auto-reset circuitry.
+        # Pre-set control lines BEFORE opening to avoid the common "assert on open".
         try:
             ser.dtr = False
             ser.rts = False
@@ -518,6 +558,52 @@ class SessionLogger:
                 pass
 
         return ser
+
+    def _open_serial_no_reset_passive(self, port: str) -> serial.Serial:
+        """
+        Open serial port in passive no-reset mode for POSIX.
+
+        POSIX tty open/close semantics and USB-UART modem-control handling can toggle
+        DTR/RTS and reset ESP32 auto-reset circuitry even without explicit reset calls.
+        Keep this path as passive as practical and clear HUPCL best-effort.
+        """
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = self._serial_config.baudrate
+        ser.bytesize = self._serial_config.bytesize
+        ser.parity = self._serial_config.parity
+        ser.stopbits = self._serial_config.stopbits
+        ser.timeout = self._serial_config.read_timeout_sec
+        ser.write_timeout = self._serial_config.write_timeout_sec
+        ser.xonxoff = self._serial_config.xonxoff
+        ser.rtscts = self._serial_config.rtscts
+        ser.dsrdtr = self._serial_config.dsrdtr
+
+        # No explicit DTR/RTS assignments here; let driver defaults stand.
+        ser.open()
+
+        hupcl_status, hupcl_detail = _clear_hupcl_best_effort(ser)
+        self._log_meta(f"logger: no-reset posix hupcl={hupcl_status} detail={hupcl_detail}")
+        return ser
+
+    def _open_serial(self, port: str) -> serial.Serial:
+        if _is_posix_no_reset_mode(self._reset_config.enabled):
+            self._log_meta("logger: open-strategy=passive-no-reset-posix")
+            return self._open_serial_no_reset_passive(port)
+        self._log_meta("logger: open-strategy=reset-aware-default")
+        return self._open_serial_reset_enabled(port)
+
+    def _close_serial(self, ser: serial.Serial) -> None:
+        """
+        Close serial port.
+
+        In POSIX --no-reset mode we avoid deliberate modem-control writes on teardown;
+        HUPCL clearing is expected to reduce close-triggered reset pulses best-effort.
+        """
+        try:
+            ser.close()
+        except Exception as exc:
+            self._log_meta(f"logger: serial-close failed: {exc}")
 
     def _perform_reset_if_enabled(self, ser: serial.Serial) -> None:
         if not self._reset_config.enabled:
@@ -597,7 +683,8 @@ class SessionLogger:
 
                 self._log_meta(f"logger: opening {port} @ {self._serial_config.baudrate}")
                 try:
-                    with self._open_serial(port) as ser:
+                    ser = self._open_serial(port)
+                    try:
                         self._log_meta("logger: connected")
                         self._perform_reset_if_enabled(ser)
 
@@ -611,6 +698,8 @@ class SessionLogger:
 
                             text = raw.decode(self._output_config.decode_encoding, errors=self._output_config.decode_errors)
                             self._write_output_line(text)
+                    finally:
+                        self._close_serial(ser)
 
                 except (serial.SerialException, OSError) as exc:
                     self._log_meta(f"logger: disconnected: {exc}")
