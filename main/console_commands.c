@@ -1528,6 +1528,8 @@ static void
 PrintStackUsage(void)
 {
   printf("usage: stack [show] [--headroom BYTES]\n");
+  printf("       Enumerates all live FreeRTOS tasks; tracked tasks keep\n");
+  printf("       alloc/min_free/peak/recommended history.\n");
 }
 
 /**
@@ -9068,7 +9070,7 @@ RegisterCommands(void)
 
   static const console_registry_entry_t stack_cmd = {
     .command = "stack",
-    .summary = "Show stack usage and headroom",
+    .summary = "Show stack usage for all live FreeRTOS tasks",
     .synopsis = "stack [show] [--headroom BYTES]",
     .func = &CommandStack,
   };
