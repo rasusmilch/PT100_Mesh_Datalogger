@@ -5,6 +5,12 @@
 #include "gpio_buttons.h"
 #include "freertos/FreeRTOS.h"
 
+#if defined(CONFIG_APP_UNITS_GPIO_ENABLE)
+#define APP_UNITS_GPIO_ENABLED_BY_KCONFIG 1
+#else
+#define APP_UNITS_GPIO_ENABLED_BY_KCONFIG 0
+#endif
+
 static const uint32_t kUnitsGpioRtcMagic = 0x55475031;
 
 typedef struct
@@ -242,7 +248,7 @@ UnitsGpioInit(app_settings_t* settings)
 {
   GpioButtonsInit();
   g_units_gpio.settings = settings;
-  g_units_gpio.enabled = (CONFIG_APP_UNITS_GPIO_ENABLE != 0);
+  g_units_gpio.enabled = (APP_UNITS_GPIO_ENABLED_BY_KCONFIG != 0);
   UnitsGpioApplySettings(settings);
 }
 
@@ -253,7 +259,7 @@ UnitsGpioApplySettings(const app_settings_t* settings)
     return;
   }
 
-  const bool enabled = (CONFIG_APP_UNITS_GPIO_ENABLE != 0);
+  const bool enabled = (APP_UNITS_GPIO_ENABLED_BY_KCONFIG != 0);
   const int32_t pin = (int32_t)CONFIG_APP_UNITS_GPIO_DEFAULT_PIN;
   const app_units_gpio_pull_t pull =
     (app_units_gpio_pull_t)CONFIG_APP_UNITS_GPIO_DEFAULT_PULL;
