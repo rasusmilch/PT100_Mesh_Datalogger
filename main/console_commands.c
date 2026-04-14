@@ -106,7 +106,9 @@ PrintCalWindowLine_(const char* prefix,
                     int32_t mean_raw_mC,
                     int32_t stddev_mC,
                     double drift_c_per_min,
-                    double delta_c);
+                    double delta_c,
+                    bool drift_target_enabled,
+                    const char* drift_eta_to_target_text);
 /**
  * @brief Queue a one-shot cal live drift-ready ntfy message via alert queue.
  * @param drift_c_per_min Current gated drift value (C/min).
@@ -3081,11 +3083,29 @@ PrintCalWindowLine_(const char* prefix,
                     int32_t mean_raw_mC,
                     int32_t stddev_mC,
                     double drift_c_per_min,
-                    double delta_c)
+                    double delta_c,
+                    bool drift_target_enabled,
+                    const char* drift_eta_to_target_text)
 {
   if (prefix == NULL) {
     return;
   }
+  const char* eta_text = (drift_eta_to_target_text != NULL) ? drift_eta_to_target_text : "n/a";
+  if (drift_target_enabled) {
+    printf("%s: n=%u last=%.3fC last_ohm=%.3f mean=%.3fC std=%.3fC "
+           "drift=%.3fC/min delta=%.3fC drift_eta_to_target=%s\n",
+           prefix,
+           (unsigned)sample_count,
+           last_raw_mC / 1000.0,
+           last_raw_mOhm / 1000.0,
+           mean_raw_mC / 1000.0,
+           stddev_mC / 1000.0,
+           drift_c_per_min,
+           delta_c,
+           eta_text);
+    return;
+  }
+
   printf("%s: n=%u last=%.3fC last_ohm=%.3f mean=%.3fC std=%.3fC "
          "drift=%.3fC/min delta=%.3fC\n",
          prefix,
@@ -3783,6 +3803,124 @@ CalWindowStableSuffixSeconds_(const cal_window_metric_history_t* history,
   return stable_us / 1000000.0;
 }
 
+/**
+ * @brief Estimate ETA until |gated drift| reaches |target| using linear
+ * regression over ready-history samples.
+ *
+ * Regression model:
+ *   x = elapsed seconds from oldest selected ready sample
+ *   y = fabs(drift_c_per_min) (abs(C/min))
+ *   slope units = abs(C/min) per second
+ */
+static bool
+EstimateCalLiveDriftEtaToTarget_(const cal_window_metric_history_t* history,
+                                 double target_abs_drift_c_per_min,
+                                 double current_abs_drift_c_per_min,
+                                 double* out_eta_seconds)
+{
+  if (out_eta_seconds == NULL || history == NULL || history->count == 0u ||
+      !isfinite(target_abs_drift_c_per_min) ||
+      !isfinite(current_abs_drift_c_per_min)) {
+    return false;
+  }
+  if (current_abs_drift_c_per_min <= target_abs_drift_c_per_min) {
+    *out_eta_seconds = 0.0;
+    return true;
+  }
+
+  static const size_t kMinSamples = 8u;
+  static const double kMinSpanSeconds = 20.0;
+  static const double kMinConvergingSlopeAbsPerSec = 5e-6;
+
+  size_t ready_count = 0u;
+  int64_t oldest_ready_ts_us = 0;
+  int64_t newest_ready_ts_us = 0;
+  double sum_x = 0.0;
+  double sum_y = 0.0;
+  double sum_xx = 0.0;
+  double sum_xy = 0.0;
+
+  for (size_t i = 0u; i < history->count; ++i) {
+    cal_window_metric_sample_t sample = { 0 };
+    if (CalHistoryGet(history, i, &sample) == 0u || !sample.window_ready ||
+        sample.timestamp_us <= 0 || !isfinite(sample.drift_c_per_min)) {
+      continue;
+    }
+
+    if (ready_count == 0u) {
+      oldest_ready_ts_us = sample.timestamp_us;
+    }
+    newest_ready_ts_us = sample.timestamp_us;
+    const double x_seconds =
+      (sample.timestamp_us - oldest_ready_ts_us) / 1000000.0;
+    const double y_abs_drift_c_per_min = fabs(sample.drift_c_per_min);
+
+    sum_x += x_seconds;
+    sum_y += y_abs_drift_c_per_min;
+    sum_xx += (x_seconds * x_seconds);
+    sum_xy += (x_seconds * y_abs_drift_c_per_min);
+    ready_count++;
+  }
+
+  if (ready_count < kMinSamples) {
+    return false;
+  }
+  const double span_seconds = (newest_ready_ts_us - oldest_ready_ts_us) / 1000000.0;
+  if (!isfinite(span_seconds) || span_seconds < kMinSpanSeconds) {
+    return false;
+  }
+
+  const double n = (double)ready_count;
+  const double denom = (n * sum_xx) - (sum_x * sum_x);
+  if (!isfinite(denom) || fabs(denom) < 1e-12) {
+    return false;
+  }
+  const double slope_abs_drift_per_sec = ((n * sum_xy) - (sum_x * sum_y)) / denom;
+  if (!isfinite(slope_abs_drift_per_sec) ||
+      slope_abs_drift_per_sec >= -kMinConvergingSlopeAbsPerSec) {
+    return false;
+  }
+
+  double eta_seconds =
+    (current_abs_drift_c_per_min - target_abs_drift_c_per_min) /
+    (-slope_abs_drift_per_sec);
+  if (!isfinite(eta_seconds)) {
+    return false;
+  }
+  if (eta_seconds < 0.0) {
+    eta_seconds = 0.0;
+  }
+  *out_eta_seconds = eta_seconds;
+  return true;
+}
+
+static void
+FormatCalLiveDriftEta_(double eta_seconds, char* buffer, size_t buffer_size)
+{
+  if (buffer == NULL || buffer_size == 0u || !isfinite(eta_seconds)) {
+    return;
+  }
+
+  if (eta_seconds < 0.0) {
+    eta_seconds = 0.0;
+  }
+  const uint32_t eta_s = (uint32_t)ceil(eta_seconds);
+  if (eta_s < 60u) {
+    (void)snprintf(buffer, buffer_size, "%" PRIu32 "s", eta_s);
+    return;
+  }
+  if (eta_s < 3600u) {
+    const uint32_t minutes = eta_s / 60u;
+    const uint32_t seconds = eta_s % 60u;
+    (void)snprintf(buffer, buffer_size, "%" PRIu32 "m %02" PRIu32 "s", minutes, seconds);
+    return;
+  }
+
+  const uint32_t hours = eta_s / 3600u;
+  const uint32_t minutes = (eta_s % 3600u) / 60u;
+  (void)snprintf(buffer, buffer_size, "%" PRIu32 "h %02" PRIu32 "m", hours, minutes);
+}
+
 static bool
 CalCaptureSavePoint_(double actual_temp_c,
                      bool drift_limit_enabled,
@@ -3989,6 +4127,24 @@ CalConsoleOpTask(void* task_arg)
 
     if (mode == CAL_CONSOLE_OP_LIVE) {
       if (print_due) {
+        char drift_eta_buf[24] = { 0 };
+        const char* drift_eta_text = NULL;
+        if (live_drift_notify_armed) {
+          const double target_abs_drift_c_per_min =
+            fabs(live_drift_notify_threshold_c_per_min);
+          const double current_abs_drift_c_per_min = fabs(gated_drift_c_per_min);
+          double drift_eta_seconds = 0.0;
+          if (EstimateCalLiveDriftEtaToTarget_(&s_cal_history,
+                                               target_abs_drift_c_per_min,
+                                               current_abs_drift_c_per_min,
+                                               &drift_eta_seconds)) {
+            FormatCalLiveDriftEta_(
+              drift_eta_seconds, drift_eta_buf, sizeof(drift_eta_buf));
+            drift_eta_text = drift_eta_buf;
+          } else {
+            drift_eta_text = "n/a";
+          }
+        }
         PrintCalWindowLine_(
           "cal live",
           sample_count,
@@ -3997,7 +4153,9 @@ CalConsoleOpTask(void* task_arg)
           mean_raw_mC,
           stddev_mC,
           gated_drift_c_per_min,
-          delta_c);
+          delta_c,
+          live_drift_notify_armed,
+          drift_eta_text);
         last_print_us = now_us;
         last_sample_count = sample_count;
       }
