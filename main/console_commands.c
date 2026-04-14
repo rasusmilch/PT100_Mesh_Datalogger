@@ -82,7 +82,10 @@ FormatErrlogFlags(uint16_t flags, char* buffer, size_t buffer_size);
 static bool
 CalConsoleOpIsActive(void);
 static esp_err_t
-CalConsoleOpStartLive(uint32_t every_ms, int seconds);
+CalConsoleOpStartLive(uint32_t every_ms,
+                      int seconds,
+                      bool drift_notify_armed,
+                      double drift_notify_threshold_c_per_min);
 static esp_err_t
 CalConsoleOpStartCapture(double actual_temp_c,
                          double stable_stddev_c,
@@ -104,6 +107,17 @@ PrintCalWindowLine_(const char* prefix,
                     int32_t stddev_mC,
                     double drift_c_per_min,
                     double delta_c);
+/**
+ * @brief Queue a one-shot cal live drift-ready ntfy message via alert queue.
+ * @param drift_c_per_min Current gated drift value (C/min).
+ * @param threshold_c_per_min Armed absolute drift threshold (C/min).
+ * @param sustained_seconds Required sustained-under-threshold duration.
+ * @return true when an ntfy job was queued successfully.
+ */
+static bool
+QueueCalLiveDriftReadyNtfy_(double drift_c_per_min,
+                            double threshold_c_per_min,
+                            uint32_t sustained_seconds);
 static void
 PrintCalCaptureWindowLine_(double elapsed_s,
                            size_t sample_count,
@@ -424,6 +438,10 @@ typedef struct
   calibration_drift_limit_source_t capture_drift_limit_source;
   int capture_min_seconds;
   int capture_timeout_seconds;
+  bool live_drift_notify_armed;
+  double live_drift_notify_threshold_c_per_min;
+  int64_t live_drift_under_start_us;
+  bool live_drift_notify_sent;
   int64_t start_us;
   int64_t stable_start_us;
   size_t last_sample_count;
@@ -2911,7 +2929,10 @@ CalConsoleOpIsActive(void)
 }
 
 static esp_err_t
-CalConsoleOpStartLive(uint32_t every_ms, int seconds)
+CalConsoleOpStartLive(uint32_t every_ms,
+                      int seconds,
+                      bool drift_notify_armed,
+                      double drift_notify_threshold_c_per_min)
 {
   if (!CalConsoleOpLock_(pdMS_TO_TICKS(100))) {
     return ESP_ERR_INVALID_STATE;
@@ -2932,6 +2953,11 @@ CalConsoleOpStartLive(uint32_t every_ms, int seconds)
   g_cal_console_op.capture_drift_limit_source = CAL_DRIFT_LIMIT_SOURCE_DEFAULT;
   g_cal_console_op.capture_min_seconds = 0;
   g_cal_console_op.capture_timeout_seconds = 0;
+  g_cal_console_op.live_drift_notify_armed = drift_notify_armed;
+  g_cal_console_op.live_drift_notify_threshold_c_per_min =
+    drift_notify_threshold_c_per_min;
+  g_cal_console_op.live_drift_under_start_us = -1;
+  g_cal_console_op.live_drift_notify_sent = false;
   g_cal_console_op.start_us = esp_timer_get_time();
   g_cal_console_op.stable_start_us = -1;
   g_cal_console_op.last_sample_count = 0;
@@ -2975,6 +3001,10 @@ CalConsoleOpStartCapture(double actual_temp_c,
   g_cal_console_op.capture_drift_limit_source = drift_limit_source;
   g_cal_console_op.capture_min_seconds = min_seconds;
   g_cal_console_op.capture_timeout_seconds = timeout_seconds;
+  g_cal_console_op.live_drift_notify_armed = false;
+  g_cal_console_op.live_drift_notify_threshold_c_per_min = 0.0;
+  g_cal_console_op.live_drift_under_start_us = -1;
+  g_cal_console_op.live_drift_notify_sent = false;
   g_cal_console_op.start_us = esp_timer_get_time();
   g_cal_console_op.stable_start_us = -1;
   g_cal_console_op.last_sample_count = 0;
@@ -3557,6 +3587,54 @@ JoinArgsWithSpaces(int argc,
   return true;
 }
 
+/**
+ * @brief Queue one ntfy message when cal live drift settle criteria are met.
+ * @param drift_c_per_min Current gated drift value in C/min.
+ * @param threshold_c_per_min Armed absolute threshold in C/min.
+ * @param sustained_seconds Required continuous under-threshold duration.
+ * @return true when queued to the existing alert ntfy pipeline.
+ */
+static bool
+QueueCalLiveDriftReadyNtfy_(double drift_c_per_min,
+                            double threshold_c_per_min,
+                            uint32_t sustained_seconds)
+{
+  if (g_runtime == NULL || g_runtime->alert_manager == NULL) {
+    return false;
+  }
+  alert_manager_t* manager = g_runtime->alert_manager;
+  if (!AlertManagerIsConfigured(manager)) {
+    return false;
+  }
+
+  alert_ntfy_job_t job = { 0 };
+  snprintf(job.url, sizeof(job.url), "%s", manager->config.ntfy_url);
+  snprintf(job.topic, sizeof(job.topic), "%s", manager->config.ntfy_topic);
+  snprintf(job.token, sizeof(job.token), "%s", manager->config.ntfy_token);
+  snprintf(job.root_id,
+           sizeof(job.root_id),
+           "%s",
+           manager->root_id_string != NULL ? manager->root_id_string : "");
+  snprintf(job.title, sizeof(job.title), "PT100 Calibration Live Ready");
+  snprintf(job.body,
+           sizeof(job.body),
+           "cal live drift threshold met\n"
+           "Drift: %.3f C/min\n"
+           "Threshold: %.3f C/min\n"
+           "Sustained for: %" PRIu32 " s",
+           drift_c_per_min,
+           threshold_c_per_min,
+           sustained_seconds);
+  snprintf(job.sequence_id,
+           sizeof(job.sequence_id),
+           "cal-live-ready-%" PRId64,
+           esp_timer_get_time() / 1000);
+  job.http_timeout_ms = 15000;
+  job.attempt = 0u;
+  job.next_attempt_ms = esp_timer_get_time() / 1000;
+  return AlertNtfyEnqueueJob(&manager->ntfy, &job);
+}
+
 static void
 CalConsoleOpTask(void* task_arg)
 {
@@ -3580,6 +3658,11 @@ CalConsoleOpTask(void* task_arg)
     g_cal_console_op.capture_drift_limit_source;
   const int min_seconds = g_cal_console_op.capture_min_seconds;
   const int timeout_seconds = g_cal_console_op.capture_timeout_seconds;
+  const bool live_drift_notify_armed = g_cal_console_op.live_drift_notify_armed;
+  const double live_drift_notify_threshold_c_per_min =
+    g_cal_console_op.live_drift_notify_threshold_c_per_min;
+  bool live_drift_notify_sent = g_cal_console_op.live_drift_notify_sent;
+  int64_t live_drift_under_start_us = g_cal_console_op.live_drift_under_start_us;
   CalConsoleOpUnlock_();
 
   if (mode == CAL_CONSOLE_OP_CAPTURE || mode == CAL_CONSOLE_OP_LIVE) {
@@ -3593,6 +3676,7 @@ CalConsoleOpTask(void* task_arg)
 
   const int64_t start_us = esp_timer_get_time();
   int64_t stable_start_us = -1;
+  const uint32_t window_duration_s = CalWindowGetDurationSeconds();
   int64_t last_print_us = 0;
   size_t last_sample_count = 0;
 
@@ -3631,6 +3715,8 @@ CalConsoleOpTask(void* task_arg)
       (now_us - last_print_us >= (int64_t)print_every_ms * 1000LL);
 
     if (mode == CAL_CONSOLE_OP_LIVE) {
+      const double gated_drift_c_per_min =
+        trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw;
       if (print_due) {
         PrintCalWindowLine_(
           "cal live",
@@ -3639,10 +3725,36 @@ CalConsoleOpTask(void* task_arg)
           last_raw_mOhm,
           mean_raw_mC,
           stddev_mC,
-          trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw,
+          gated_drift_c_per_min,
           trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0));
         last_print_us = now_us;
         last_sample_count = sample_count;
+      }
+      if (live_drift_notify_armed && !live_drift_notify_sent) {
+        const bool drift_under_threshold =
+          CalWindowIsReady() &&
+          (fabs(gated_drift_c_per_min) <= live_drift_notify_threshold_c_per_min);
+        if (drift_under_threshold) {
+          if (live_drift_under_start_us < 0) {
+            live_drift_under_start_us = now_us;
+          }
+          const int64_t elapsed_us = now_us - live_drift_under_start_us;
+          if (elapsed_us >= (int64_t)window_duration_s * 1000000LL) {
+            const bool queued = QueueCalLiveDriftReadyNtfy_(
+              gated_drift_c_per_min,
+              live_drift_notify_threshold_c_per_min,
+              window_duration_s);
+            if (queued) {
+              printf("cal live: drift notify sent\n");
+            } else {
+              printf("cal live: drift notify condition met, but ntfy not sent "
+                     "(not configured or queue unavailable)\n");
+            }
+            live_drift_notify_sent = true;
+          }
+        } else {
+          live_drift_under_start_us = -1;
+        }
       }
       if (live_seconds > 0 &&
           now_us - start_us >= (int64_t)live_seconds * 1000000LL) {
@@ -3797,6 +3909,10 @@ CalConsoleOpTask(void* task_arg)
     g_cal_console_op.capture_drift_limit_c_per_min = 0.0;
     g_cal_console_op.capture_drift_limit_source =
       CAL_DRIFT_LIMIT_SOURCE_DEFAULT;
+    g_cal_console_op.live_drift_notify_armed = false;
+    g_cal_console_op.live_drift_notify_threshold_c_per_min = 0.0;
+    g_cal_console_op.live_drift_under_start_us = -1;
+    g_cal_console_op.live_drift_notify_sent = false;
     CalConsoleOpUnlock_();
   }
 
@@ -4126,6 +4242,8 @@ CommandCal(int argc, char** argv)
     if (strcmp(action, "live") == 0) {
       int every_ms = 1000;
       int seconds = 0;
+      bool drift_notify_armed = false;
+      double drift_notify_threshold_c_per_min = 0.0;
       bool seconds_positional_set = false;
       bool seconds_option_set = false;
       for (int i = 2; i < argc; ++i) {
@@ -4137,7 +4255,8 @@ CommandCal(int argc, char** argv)
           const char* option = arg + 2;
           const char* value_eq = strchr(option, '=');
           if (value_eq == NULL && (strncmp(option, "every_ms", 8) == 0 ||
-                                   strncmp(option, "seconds", 7) == 0)) {
+                                   strncmp(option, "seconds", 7) == 0 ||
+                                   strncmp(option, "drift_c_per_min", 15) == 0)) {
             if (i + 1 < argc) {
               ++i;
             }
@@ -4145,14 +4264,16 @@ CommandCal(int argc, char** argv)
           continue;
         }
         if (seconds_positional_set) {
-          printf("usage: cal live [seconds] [--every_ms 1000]\n");
+          printf("usage: cal live [seconds] [--every_ms 1000] "
+                 "[--drift_c_per_min 0.020]\n");
           return 1;
         }
         char* end = NULL;
         long parsed = strtol(arg, &end, 10);
         if (end == arg || *end != '\0' || parsed > INT_MAX ||
             parsed < INT_MIN) {
-          printf("usage: cal live [seconds] [--every_ms 1000]\n");
+          printf("usage: cal live [seconds] [--every_ms 1000] "
+                 "[--drift_c_per_min 0.020]\n");
           return 1;
         }
         seconds = (int)parsed;
@@ -4163,7 +4284,8 @@ CommandCal(int argc, char** argv)
       if (ParseOptionInt_(argc, argv, "every_ms", &option_value)) {
         every_ms = option_value;
       } else if (OptionPresent_(argc, argv, "every_ms")) {
-        printf("usage: cal live [seconds] [--every_ms 1000]\n");
+        printf("usage: cal live [seconds] [--every_ms 1000] "
+               "[--drift_c_per_min 0.020]\n");
         return 1;
       }
 
@@ -4171,22 +4293,42 @@ CommandCal(int argc, char** argv)
         seconds = option_value;
         seconds_option_set = true;
       } else if (OptionPresent_(argc, argv, "seconds")) {
-        printf("usage: cal live [seconds] [--every_ms 1000]\n");
+        printf("usage: cal live [seconds] [--every_ms 1000] "
+               "[--drift_c_per_min 0.020]\n");
+        return 1;
+      }
+      double drift_option = 0.0;
+      if (ParseOptionDouble_(argc, argv, "drift_c_per_min", &drift_option)) {
+        drift_notify_armed = true;
+        drift_notify_threshold_c_per_min = fabs(drift_option);
+      } else if (OptionPresent_(argc, argv, "drift_c_per_min")) {
+        printf("usage: cal live [seconds] [--every_ms 1000] "
+               "[--drift_c_per_min 0.020]\n");
         return 1;
       }
 
       if (seconds_positional_set && seconds_option_set) {
-        printf("usage: cal live [seconds] [--every_ms 1000]\n");
+        printf("usage: cal live [seconds] [--every_ms 1000] "
+               "[--drift_c_per_min 0.020]\n");
         return 1;
       }
 
       if ((every_ms <= 0 || (seconds_positional_set || seconds_option_set)) &&
           (seconds <= 0)) {
-        printf("usage: cal live [seconds] [--every_ms 1000]\n");
+        printf("usage: cal live [seconds] [--every_ms 1000] "
+               "[--drift_c_per_min 0.020]\n");
+        return 1;
+      }
+      if (drift_notify_armed && drift_notify_threshold_c_per_min <= 0.0) {
+        printf("usage: cal live [seconds] [--every_ms 1000] "
+               "[--drift_c_per_min 0.020]\n");
         return 1;
       }
 
-      esp_err_t result = CalConsoleOpStartLive((uint32_t)every_ms, seconds);
+      esp_err_t result = CalConsoleOpStartLive((uint32_t)every_ms,
+                                               seconds,
+                                               drift_notify_armed,
+                                               drift_notify_threshold_c_per_min);
       if (result == ESP_ERR_INVALID_STATE) {
         printf("cal: operation already active\n");
         return 1;
@@ -4196,6 +4338,14 @@ CommandCal(int argc, char** argv)
         return 1;
       }
       printf("cal live started (use 'cal stop' to abort)\n");
+      if (drift_notify_armed) {
+        const uint32_t sustained_s =
+          (settings != NULL) ? settings->cal_window_duration_s
+                             : CAL_WINDOW_DURATION_DEFAULT_S;
+        printf("drift notify armed: |drift| <= %.3f C/min for %" PRIu32 " s\n",
+               drift_notify_threshold_c_per_min,
+               sustained_s);
+      }
       return 0;
     }
 
@@ -4764,8 +4914,8 @@ CommandCal(int argc, char** argv)
          "cal import <raw_ohm> <actual_c> [--raw_c <value>] "
          "[--stddev_c <value>] | cal restore ... | "
          "cal del <index> | cal remove <index> | "
-         "cal list | cal apply | cal live [seconds] "
-         "[--every_ms 1000] | cal capture <actual_temp_c> "
+      "cal list | cal apply | cal live [seconds] "
+      "[--every_ms 1000] [--drift_c_per_min 0.020] | cal capture <actual_temp_c> "
          "[--stable_stddev_c 0.05] [--min_seconds 5] "
          "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
          "[--no-drift-limit] | cal stop\n");
@@ -8447,22 +8597,30 @@ static const console_help_topic_t kCalTopics[] = {
   {
     .name = "live",
     .summary = "Stream live calibration-window statistics",
-    .synopsis = "cal live [seconds] [--every_ms 1000] [--seconds N]",
+    .synopsis = "cal live [seconds] [--every_ms 1000] [--seconds N] "
+                "[--drift_c_per_min X]",
     .details =
       "Starts a background live print loop of window stats. Drift is "
       "least-squares regression slope over full window samples (C/min), while "
       "delta is end-window mean minus begin-window mean (C). Displayed drift "
-      "and delta values are EMA-smoothed. The run can be "
-      "bounded by seconds (positional or --seconds) and can be canceled with "
-      "'cal stop'.",
+      "and delta values are EMA-smoothed. Optional drift notification can be "
+      "armed with --drift_c_per_min; threshold is interpreted as absolute "
+      "value and fires once when |smoothed drift| stays under threshold for "
+      "the configured calibration window duration. Notification state resets "
+      "when 'cal stop' is run or a new cal live session starts. The run can "
+      "be bounded by seconds (positional or --seconds) and can be canceled "
+      "with 'cal stop'.",
     .options =
       "  [seconds]          Optional positional duration in seconds.\n"
       "  --every_ms <ms>    Print period in milliseconds (default 1000).\n"
       "  --seconds <N>      Optional named duration (do not combine with "
-      "positional).",
+      "positional).\n"
+      "  --drift_c_per_min X Send one ntfy notification when |drift| <= |X| "
+      "continuously for the calibration window duration.",
     .examples = "  cal live\n"
                 "  cal live 30 --every_ms 500\n"
-                "  cal live --seconds 20",
+                "  cal live --seconds 20\n"
+                "  cal live --drift_c_per_min -0.020",
   },
   {
     .name = "stop",
@@ -8545,6 +8703,9 @@ PrintCalHelpBody(void)
     "        metadata for audit use and uses the same pressure->satpt path.\n");
   printf("  Note: drift is full-window regression slope (C/min); delta is\n");
   printf("        end-window mean minus begin-window mean (C).\n");
+  printf("  Note: cal live supports --drift_c_per_min X (absolute value) to\n");
+  printf("        send one ntfy when |drift| stays under threshold for the\n");
+  printf("        configured calibration window duration.\n");
   printf(
     "  Note: 'cal stop' aborts an active cal live/cal capture operation.\n\n");
   printf("EXAMPLES\n");
@@ -8795,8 +8956,8 @@ RegisterCommands(void)
     arg_int0(NULL, "min_seconds", "<seconds>", "Min stable duration (capture)");
   g_cal_args.timeout_seconds =
     arg_int0(NULL, "timeout_seconds", "<seconds>", "Capture timeout");
-  g_cal_args.drift_c_per_min =
-    arg_dbl0(NULL, "drift_c_per_min", "<C/min>", "Capture drift limit");
+  g_cal_args.drift_c_per_min = arg_dbl0(
+    NULL, "drift_c_per_min", "<C/min>", "Drift limit (capture/live notify)");
   g_cal_args.no_drift_limit =
     arg_lit0(NULL, "no-drift-limit", "Disable capture drift gating");
   g_cal_args.mode =
