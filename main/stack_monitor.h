@@ -22,8 +22,10 @@ extern "C" {
     const char* task_name;
     TaskHandle_t* task_handle_ptr;
     uint32_t stack_alloc_bytes;
+    uint32_t recommended_free_bytes;
     uint32_t last_free_bytes;
     uint32_t min_free_bytes;
+    bool sample_valid;
   } stack_monitor_entry_t;
 
   typedef struct
@@ -35,30 +37,29 @@ extern "C" {
   } stack_monitor_t;
 
   /**
-  * @brief Initialize a stack monitor instance.
+   * @brief Initialize the deterministic monitored-task registry.
    *
-   * This zero-initializes the monitor object and stores the sampling period
-   * used by StackMonitorMaybeSample().
+   * This zero-initializes the monitor and loads the static monitored-task
+   * table used by StackMonitorPrint().
    *
    * @param monitor Pointer to the monitor to initialize; ignored if NULL.
    * @param sample_period_ms Minimum elapsed time in milliseconds between
    *                         samples.
    */
   void StackMonitorInit(stack_monitor_t* monitor, uint32_t sample_period_ms);
-  
+
   /**
-   * @brief Register or update a task entry for stack sampling.
+   * @brief Bind a monitored task name to its TaskHandle_t storage pointer.
    *
-   * Entries are keyed by the address of @p handle_ptr.
+   * The task name must exist in the built-in monitored-task table.
    *
    * @param monitor Pointer to the monitor that owns the registry.
-   * @param name Task name string used in StackMonitorPrint() output.
+   * @param name Monitored task name.
    * @param handle_ptr Pointer to a TaskHandle_t variable; sampling is skipped
    *                   when *handle_ptr is NULL.
    * @param stack_alloc_bytes Configured stack allocation in bytes for the
-   *                          task.
-   * @return true if the entry was added or updated; false if arguments are
-   *         NULL or the registry is full.
+   *                          task. A value of 0 keeps the table default.
+   * @return true if the monitored task exists and was bound.
    */
   bool StackMonitorRegister(stack_monitor_t* monitor,
                             const char* name,
@@ -66,39 +67,38 @@ extern "C" {
                             uint32_t stack_alloc_bytes);
 
   /**
-   * @brief Sample registered tasks if the sampling period has elapsed.
+   * @brief Sample monitored tasks if the sampling period has elapsed.
    *
-   * Updates each entry's last_free_bytes and min_free_bytes using the FreeRTOS
-   * stack high-water mark API.
+   * Updates each monitored entry's last_free_bytes and min_free_bytes using
+   * the FreeRTOS stack high-water mark API.
    *
    * @param monitor Pointer to the monitor to sample; ignored if NULL.
    */
   void StackMonitorMaybeSample(stack_monitor_t* monitor);
 
   /**
-   * @brief Lookup the minimum free stack bytes for a named task.
+   * @brief Lookup the minimum free stack bytes for a monitored task.
    *
    * @param monitor Pointer to the monitor registry; ignored if NULL.
    * @param name Task name to search for; ignored if NULL.
    * @param out_bytes Output pointer for the minimum free bytes.
-   * @return true if a matching entry was found and @p out_bytes was updated.
+   * @return true if a matching entry has valid sampled data.
    */
   bool StackMonitorGetMinFreeBytes(const stack_monitor_t* monitor,
                                    const char* name,
                                    uint32_t* out_bytes);
 
   /**
-   * @brief Print a tab-separated report for registered tasks.
+   * @brief Print a monitored-task stack report.
    *
    * The report includes configured allocation, last and minimum observed free
-   * bytes, peak used bytes, and a recommended stack size computed as
-   * (peak_used + headroom) rounded up to 256 bytes.
+   * bytes, peak used bytes, and configured recommended minimum free bytes.
    *
    * @param monitor Pointer to the monitor to print; ignored if NULL.
-   * @param headroom_bytes Extra bytes added to peak usage when computing the
-   *                       recommended stack size.
+   * @param headroom_bytes Kept for CLI compatibility; currently unused.
    */
-  void StackMonitorPrint(const stack_monitor_t* monitor, uint32_t headroom_bytes);
+  void StackMonitorPrint(const stack_monitor_t* monitor,
+                         uint32_t headroom_bytes);
 
 #ifdef __cplusplus
 }
