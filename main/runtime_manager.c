@@ -617,7 +617,7 @@ RegisterStackMonitorTask(const char* name,
 {
   if (!StackMonitorRegister(
         &g_stack_monitor, name, handle_ptr, stack_alloc_bytes)) {
-    ESP_LOGW(kTag, "Stack monitor registry full; skipping %s", name);
+    ESP_LOGW(kTag, "Stack monitor registration failed; skipping %s", name);
   }
 }
 
