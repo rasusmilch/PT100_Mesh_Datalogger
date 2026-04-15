@@ -22,7 +22,6 @@ extern "C" {
     const char* task_name;
     TaskHandle_t* task_handle_ptr;
     uint32_t stack_alloc_bytes;
-    uint32_t recommended_free_bytes;
     uint32_t last_free_bytes;
     uint32_t min_free_bytes;
     bool sample_valid;
@@ -92,10 +91,12 @@ extern "C" {
    * @brief Print a monitored-task stack report.
    *
    * The report includes configured allocation, last and minimum observed free
-   * bytes, peak used bytes, and configured recommended minimum free bytes.
+   * bytes, peak used bytes, and recommended allocation based on observed
+   * peak usage plus requested headroom.
    *
    * @param monitor Pointer to the monitor to print; ignored if NULL.
-   * @param headroom_bytes Kept for CLI compatibility; currently unused.
+   * @param headroom_bytes Additional margin applied to observed peak usage
+   *                       before rounding recommendation to 256-byte boundary.
    */
   void StackMonitorPrint(const stack_monitor_t* monitor,
                          uint32_t headroom_bytes);

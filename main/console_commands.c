@@ -1616,6 +1616,7 @@ PrintStackUsage(void)
   printf("usage: stack [show] [--headroom BYTES]\n");
   printf("       Reports monitored tasks from a static registry; includes\n");
   printf("       alloc/min_free/peak/recommended history.\n");
+  printf("       recommended = round_up(peak_used + headroom, 256).\n");
 }
 
 /**

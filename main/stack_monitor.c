@@ -12,7 +12,6 @@ typedef struct
 {
   const char* task_name;
   uint32_t stack_alloc_bytes;
-  uint32_t recommended_free_bytes;
 } stack_monitor_template_entry_t;
 
 static uint32_t RoundUpBytes(uint32_t value, uint32_t alignment);
@@ -24,21 +23,29 @@ static void
 FormatValueOrNa(char* buffer, size_t buffer_size, bool known, uint32_t value);
 
 static const stack_monitor_template_entry_t kStackMonitorEntries[] = {
-  { "display", 4608U, 768U },
-  { "control", 8192U, 1024U },
-  { "sensor", 4608U, 768U },
-  { "storage", 6144U, 1024U },
-  { "sd_flush", 8192U, 1024U },
-  { "export", 3584U, 768U },
-  { "net_tx", 8192U, 1024U },
-  { "alert_http", 11264U, 1536U },
+  { "display", 4608U },
+  { "control", 8192U },
+  { "sensor", 4608U },
+  { "storage", 6144U },
+  { "sd_flush", 8192U },
+  { "export", 3584U },
+  { "net_tx", 8192U },
+  { "alert_http", 11264U },
 };
 
 static uint32_t
 RoundUpBytes(uint32_t value, uint32_t alignment)
 {
+  uint32_t quotient = 0U;
+  uint32_t max_aligned = 0U;
+
   if (alignment == 0U) {
     return value;
+  }
+  quotient = UINT32_MAX / alignment;
+  max_aligned = quotient * alignment;
+  if (value > (UINT32_MAX - (alignment - 1U))) {
+    return max_aligned;
   }
   return ((value + alignment - 1U) / alignment) * alignment;
 }
@@ -111,7 +118,6 @@ StackMonitorInit(stack_monitor_t* monitor, uint32_t sample_period_ms)
     entry->task_name = source->task_name;
     entry->task_handle_ptr = NULL;
     entry->stack_alloc_bytes = source->stack_alloc_bytes;
-    entry->recommended_free_bytes = source->recommended_free_bytes;
     entry->last_free_bytes = source->stack_alloc_bytes;
     entry->min_free_bytes = source->stack_alloc_bytes;
     entry->sample_valid = false;
@@ -219,9 +225,8 @@ StackMonitorPrint(const stack_monitor_t* monitor, uint32_t headroom_bytes)
     return;
   }
 
-  (void)headroom_bytes;
-
   printf("note: reporting monitored tasks only (static registry)\n");
+  printf("note: recommended = round_up(peak_used + headroom, 256)\n");
   printf("%-12s %10s %10s %10s %10s %12s\n",
          "task",
          "alloc",
@@ -250,8 +255,16 @@ StackMonitorPrint(const stack_monitor_t* monitor, uint32_t headroom_bytes)
     const uint32_t peak_used_bytes = has_runtime
                                        ? (entry->stack_alloc_bytes - min_free_bytes)
                                        : 0U;
-    const uint32_t recommended_bytes =
-      RoundUpBytes(entry->recommended_free_bytes, 256U);
+    uint32_t recommended_bytes = 0U;
+    if (has_runtime) {
+      uint32_t recommended_target = peak_used_bytes;
+      if (recommended_target > (UINT32_MAX - headroom_bytes)) {
+        recommended_target = UINT32_MAX;
+      } else {
+        recommended_target += headroom_bytes;
+      }
+      recommended_bytes = RoundUpBytes(recommended_target, 256U);
+    }
 
     FormatValueOrNa(alloc_buf, sizeof(alloc_buf), true, entry->stack_alloc_bytes);
     FormatValueOrNa(
@@ -259,7 +272,7 @@ StackMonitorPrint(const stack_monitor_t* monitor, uint32_t headroom_bytes)
     FormatValueOrNa(min_free_buf, sizeof(min_free_buf), has_runtime, min_free_bytes);
     FormatValueOrNa(peak_buf, sizeof(peak_buf), has_runtime, peak_used_bytes);
     FormatValueOrNa(
-      recommended_buf, sizeof(recommended_buf), true, recommended_bytes);
+      recommended_buf, sizeof(recommended_buf), has_runtime, recommended_bytes);
 
     printf("%-12s %10s %10s %10s %10s %12s\n",
            (entry->task_name != NULL) ? entry->task_name : "",
