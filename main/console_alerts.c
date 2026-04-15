@@ -12,6 +12,7 @@
 #include "console_help.h"
 #include "console_registry.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "runtime_manager.h"
@@ -864,9 +865,19 @@ CommandAlert(int argc, char** argv)
       return ok ? 0 : 1;
     }
     if (strcmp(sub, "test") == 0) {
-      AlertManagerSendTest(manager, esp_timer_get_time() / 1000);
-      printf("alert ntfy test queued\n");
-      return 0;
+      const uint32_t internal_free =
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      const uint32_t internal_largest = heap_caps_get_largest_free_block(
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      printf("alert ntfy test path: standard note enqueue "
+             "(type=root_restart resolved=active)\n");
+      printf("alert ntfy test mem[enqueue]: internal_free=%" PRIu32
+             " internal_largest=%" PRIu32 "\n",
+             internal_free,
+             internal_largest);
+      const bool queued = AlertManagerSendTest(manager, esp_timer_get_time() / 1000);
+      printf("alert ntfy test %s\n", queued ? "queued" : "queue_failed");
+      return queued ? 0 : 1;
     }
     printf("unknown ntfy command\n");
     return 1;

@@ -1602,11 +1602,11 @@ AlertManagerClear(alert_manager_t* manager,
  * @param manager Parameter manager.
  * @param now_ms Parameter now_ms.
  */
-void
+bool
 AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms)
 {
   if (manager == NULL) {
-    return;
+    return false;
   }
   const uint64_t leaf_id = ResolveLeafId(manager, 0);
   alert_notification_payload_t payload = { 0 };
@@ -1620,7 +1620,13 @@ AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms)
     .leaf_id = leaf_id,
     .payload = payload,
   };
-  (void)AlertNtfyEnqueue(&manager->ntfy, &note);
+  const bool queued = AlertNtfyEnqueue(&manager->ntfy, &note);
+  ESP_LOGI(kTag,
+           "ntfy test uses standard note path: type=root_restart "
+           "resolved=0 leaf=%" PRIu64 " queued=%u",
+           leaf_id,
+           queued ? 1u : 0u);
+  return queued;
 }
 
 /**

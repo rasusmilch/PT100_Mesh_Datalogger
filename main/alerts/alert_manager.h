@@ -339,8 +339,9 @@ extern "C"
    * @brief Execute AlertManagerSendTest.
    * @param manager Parameter manager.
    * @param now_ms Parameter now_ms.
+   * @return True when the test note was queued to ntfy note queue.
    */
-  void AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms);
+  bool AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms);
 
   /**
    * @brief Execute AlertManagerEmitRootRestart.

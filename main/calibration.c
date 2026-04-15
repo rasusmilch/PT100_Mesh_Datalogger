@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -11,9 +12,9 @@ static const char* kTag = "calibration";
 
 typedef struct
 {
-  int32_t samples_milli_c[CAL_WINDOW_MAX_SAMPLES];
-  int32_t samples_milli_ohm[CAL_WINDOW_MAX_SAMPLES];
-  int64_t samples_time_us[CAL_WINDOW_MAX_SAMPLES];
+  int32_t* samples_milli_c;
+  int32_t* samples_milli_ohm;
+  int64_t* samples_time_us;
   size_t count;
   size_t head;
   size_t write_index;
@@ -49,6 +50,9 @@ typedef struct
 } calibration_active_window_info_t;
 
 static cal_window_state_t g_cal_window = {
+  .samples_milli_c = g_cal_window_samples_milli_c_fallback,
+  .samples_milli_ohm = g_cal_window_samples_milli_ohm_fallback,
+  .samples_time_us = g_cal_window_samples_time_us_fallback,
   .window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S,
   .trend_ema_alpha_permille = CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE,
 };
@@ -74,6 +78,16 @@ static void UpdateCalibrationTrendEma(double delta_c_raw,
                                       double drift_c_per_min_raw);
 static void RebuildCalibrationWindowState_(void);
 static calibration_active_window_info_t ResolveActiveWindowInfo_(void);
+static bool CalWindowEnsureStorage_(void);
+static bool CalWindowStorageIsPsram_(const void* ptr);
+
+static int32_t g_cal_window_samples_milli_c_fallback[CAL_WINDOW_MAX_SAMPLES];
+static int32_t g_cal_window_samples_milli_ohm_fallback[CAL_WINDOW_MAX_SAMPLES];
+static int64_t g_cal_window_samples_time_us_fallback[CAL_WINDOW_MAX_SAMPLES];
+static bool g_cal_window_storage_initialized = false;
+static bool g_cal_window_samples_milli_c_in_psram = false;
+static bool g_cal_window_samples_milli_ohm_in_psram = false;
+static bool g_cal_window_samples_time_us_in_psram = false;
 
 /**
  * @brief Execute InterpolateResidual.
@@ -230,6 +244,81 @@ ResolveActiveWindowInfo_(void)
     .elapsed_s = g_cal_window.active_elapsed_s,
     .is_ready = g_cal_window.active_is_ready,
   };
+}
+
+static bool
+CalWindowStorageIsPsram_(const void* ptr)
+{
+  if (ptr == NULL) {
+    return false;
+  }
+  return heap_caps_check_addr(ptr, MALLOC_CAP_SPIRAM);
+}
+
+static bool
+CalWindowEnsureStorage_(void)
+{
+  if (g_cal_window_storage_initialized) {
+    return (g_cal_window.samples_milli_c != NULL &&
+            g_cal_window.samples_milli_ohm != NULL &&
+            g_cal_window.samples_time_us != NULL);
+  }
+
+  const size_t milli_c_bytes =
+    sizeof(int32_t) * (size_t)CAL_WINDOW_MAX_SAMPLES;
+  const size_t milli_ohm_bytes =
+    sizeof(int32_t) * (size_t)CAL_WINDOW_MAX_SAMPLES;
+  const size_t time_us_bytes =
+    sizeof(int64_t) * (size_t)CAL_WINDOW_MAX_SAMPLES;
+
+  int32_t* samples_milli_c = (int32_t*)heap_caps_malloc(
+    milli_c_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  int32_t* samples_milli_ohm = (int32_t*)heap_caps_malloc(
+    milli_ohm_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  int64_t* samples_time_us = (int64_t*)heap_caps_malloc(
+    time_us_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+  if (samples_milli_c == NULL || samples_milli_ohm == NULL ||
+      samples_time_us == NULL) {
+    if (samples_milli_c != NULL) {
+      heap_caps_free(samples_milli_c);
+    }
+    if (samples_milli_ohm != NULL) {
+      heap_caps_free(samples_milli_ohm);
+    }
+    if (samples_time_us != NULL) {
+      heap_caps_free(samples_time_us);
+    }
+    g_cal_window.samples_milli_c = g_cal_window_samples_milli_c_fallback;
+    g_cal_window.samples_milli_ohm = g_cal_window_samples_milli_ohm_fallback;
+    g_cal_window.samples_time_us = g_cal_window_samples_time_us_fallback;
+  } else {
+    g_cal_window.samples_milli_c = samples_milli_c;
+    g_cal_window.samples_milli_ohm = samples_milli_ohm;
+    g_cal_window.samples_time_us = samples_time_us;
+  }
+
+  g_cal_window_samples_milli_c_in_psram =
+    CalWindowStorageIsPsram_(g_cal_window.samples_milli_c);
+  g_cal_window_samples_milli_ohm_in_psram =
+    CalWindowStorageIsPsram_(g_cal_window.samples_milli_ohm);
+  g_cal_window_samples_time_us_in_psram =
+    CalWindowStorageIsPsram_(g_cal_window.samples_time_us);
+  g_cal_window_storage_initialized = true;
+
+  ESP_LOGI(kTag,
+           "cal window storage: milli_c=%s bytes=%u milli_ohm=%s bytes=%u "
+           "time=%s bytes=%u",
+           g_cal_window_samples_milli_c_in_psram ? "psram" : "internal",
+           (unsigned)milli_c_bytes,
+           g_cal_window_samples_milli_ohm_in_psram ? "psram" : "internal",
+           (unsigned)milli_ohm_bytes,
+           g_cal_window_samples_time_us_in_psram ? "psram" : "internal",
+           (unsigned)time_us_bytes);
+
+  return (g_cal_window.samples_milli_c != NULL &&
+          g_cal_window.samples_milli_ohm != NULL &&
+          g_cal_window.samples_time_us != NULL);
 }
 
 static void
@@ -744,6 +833,9 @@ CalibrationModelFitFromPointsWithOptions(
 void
 CalWindowPushRawSample(int32_t raw_milli_c, int32_t raw_milli_ohm)
 {
+  if (!CalWindowEnsureStorage_()) {
+    return;
+  }
   const int64_t now_us = esp_timer_get_time();
   const size_t write_index = g_cal_window.write_index;
   const bool buffer_full = (g_cal_window.count == CAL_WINDOW_MAX_SAMPLES);
@@ -879,7 +971,25 @@ CalWindowPushRawSample(int32_t raw_milli_c, int32_t raw_milli_ohm)
 void
 CalWindowClear(void)
 {
+  if (!CalWindowEnsureStorage_()) {
+    return;
+  }
+  int32_t* samples_milli_c = g_cal_window.samples_milli_c;
+  int32_t* samples_milli_ohm = g_cal_window.samples_milli_ohm;
+  int64_t* samples_time_us = g_cal_window.samples_time_us;
   memset(&g_cal_window, 0, sizeof(g_cal_window));
+  g_cal_window.samples_milli_c = samples_milli_c;
+  g_cal_window.samples_milli_ohm = samples_milli_ohm;
+  g_cal_window.samples_time_us = samples_time_us;
+  memset(g_cal_window.samples_milli_c,
+         0,
+         sizeof(int32_t) * (size_t)CAL_WINDOW_MAX_SAMPLES);
+  memset(g_cal_window.samples_milli_ohm,
+         0,
+         sizeof(int32_t) * (size_t)CAL_WINDOW_MAX_SAMPLES);
+  memset(g_cal_window.samples_time_us,
+         0,
+         sizeof(int64_t) * (size_t)CAL_WINDOW_MAX_SAMPLES);
   g_cal_window.window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S;
   g_cal_window.trend_ema_alpha_permille = CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE;
   RebuildCalibrationWindowState_();
@@ -1171,4 +1281,23 @@ CalWindowGetTrendEmaStats(double* out_delta_c_ema,
   if (out_initialized != NULL) {
     *out_initialized = g_cal_window.trend_ema_initialized;
   }
+}
+
+void
+CalWindowGetStorageLayout(cal_window_storage_layout_t* out_layout)
+{
+  if (out_layout == NULL) {
+    return;
+  }
+  (void)CalWindowEnsureStorage_();
+  out_layout->samples_milli_c_bytes =
+    sizeof(int32_t) * (size_t)CAL_WINDOW_MAX_SAMPLES;
+  out_layout->samples_milli_ohm_bytes =
+    sizeof(int32_t) * (size_t)CAL_WINDOW_MAX_SAMPLES;
+  out_layout->samples_time_us_bytes =
+    sizeof(int64_t) * (size_t)CAL_WINDOW_MAX_SAMPLES;
+  out_layout->samples_milli_c_in_psram = g_cal_window_samples_milli_c_in_psram;
+  out_layout->samples_milli_ohm_in_psram =
+    g_cal_window_samples_milli_ohm_in_psram;
+  out_layout->samples_time_us_in_psram = g_cal_window_samples_time_us_in_psram;
 }
