@@ -218,6 +218,18 @@ extern "C"
                               double* out_elapsed_s,
                               double* out_drift_c_per_min,
                               double* out_abs_drift_c_per_min);
+  /**
+   * @brief Read one sample from the active calibration window by age.
+   * @param index_from_oldest Zero-based index in active window order.
+   * @param out_raw_mC Receives raw temperature sample in milli-Celsius.
+   * @param out_raw_mOhm Receives raw resistance sample in milli-ohms.
+   * @param out_time_us Receives sample timestamp in microseconds.
+   * @return true when index is in-range and outputs were populated.
+   */
+  bool CalWindowGetActiveSampleByIndex(size_t index_from_oldest,
+                                       int32_t* out_raw_mC,
+                                       int32_t* out_raw_mOhm,
+                                       int64_t* out_time_us);
   void CalWindowSetDurationSeconds(uint16_t window_s);
   uint16_t CalWindowGetDurationSeconds(void);
   void CalWindowSetTrendEmaAlphaPermille(uint16_t alpha_permille);
