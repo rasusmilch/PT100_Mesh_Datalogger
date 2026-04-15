@@ -344,6 +344,14 @@ extern "C"
   bool AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms);
 
   /**
+   * @brief Queue a lightweight direct ntfy transport/TLS probe message.
+   * @param manager Parameter manager.
+   * @param now_ms Parameter now_ms.
+   * @return True when the direct ntfy job was queued to ntfy job queue.
+   */
+  bool AlertManagerSendDirectNtfyTest(alert_manager_t* manager, int64_t now_ms);
+
+  /**
    * @brief Execute AlertManagerEmitRootRestart.
    * @param manager Parameter manager.
    * @param now_ms Parameter now_ms.

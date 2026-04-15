@@ -112,7 +112,8 @@ static const console_help_topic_t kAlertTopics[] = {
                 "alert ntfy set token <value|clear>\n"
                 "alert ntfy test",
     .details = "Configures ntfy delivery endpoint metadata used by alerts. "
-               "Token is optional and may be cleared.",
+               "Token is optional and may be cleared. Test sends a direct "
+               "lightweight transport probe payload.",
     .options = "  url <value>          Ntfy server URL.\n"
                "  topic <value>        Ntfy topic name.\n"
                "  token <value|clear>  Optional bearer token.\n"
@@ -869,13 +870,14 @@ CommandAlert(int argc, char** argv)
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
       const uint32_t internal_largest = heap_caps_get_largest_free_block(
         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-      printf("alert ntfy test path: standard note enqueue "
-             "(type=root_restart resolved=active)\n");
+      printf("alert ntfy test path: direct transport probe "
+             "(title='PT100 ntfy test' body='ntfy test')\n");
       printf("alert ntfy test mem[enqueue]: internal_free=%" PRIu32
              " internal_largest=%" PRIu32 "\n",
              internal_free,
              internal_largest);
-      const bool queued = AlertManagerSendTest(manager, esp_timer_get_time() / 1000);
+      const bool queued =
+        AlertManagerSendDirectNtfyTest(manager, esp_timer_get_time() / 1000);
       printf("alert ntfy test %s\n", queued ? "queued" : "queue_failed");
       return queued ? 0 : 1;
     }
