@@ -401,7 +401,14 @@ pt100>
 ### Run 1
 
 - BORE A
-
+cal livecal: ts=2026-04-15T13:48:32Z n=122 raw_ohm=80.441 std_ohm=0.007 mean_ohm=80.445 cal_temp=-49.115C std_temp=0.018C mean_temp=-49.105C drift=-0.003C/min delta=-0.004C fault=none (0x00)
 - BORE B
+cal livecal: ts=2026-04-15T15:27:30Z n=122 raw_ohm=80.454 std_ohm=0.007 mean_ohm=80.452 cal_temp=-49.083C std_temp=0.017C mean_temp=-49.088C drift=0.003C/min delta=0.007C fault=none (0x00)
+- BORE A
+cal livecal: ts=2026-04-15T17:10:07Z n=122 raw_ohm=80.454 std_ohm=0.007 mean_ohm=80.448 cal_temp=-49.083C std_temp=0.017C mean_temp=-49.098C drift=-0.002C/min delta=-0.003C fault=none (0x00)
+
+### Run 2
 
 - BORE A
+cal livecal: ts=2026-04-15T17:10:07Z n=122 raw_ohm=80.454 std_ohm=0.007 mean_ohm=80.448 cal_temp=-49.083C std_temp=0.017C mean_temp=-49.098C drift=-0.002C/min delta=-0.003C fault=none (0x00)
+- BORE B

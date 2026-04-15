@@ -1,20 +1,21 @@
 cal status
-cal_window_raw_last_c: 81.756
-cal_window_raw_avg_c: 81.738
-cal_window_raw_stddev_c: 0.018
-cal_window_raw_last_ohm: 131.567
-cal_window_raw_avg_ohm: 131.560
-cal_window_raw_stddev_ohm: 0.007
-cal_window_begin_mean_c: 81.740
-cal_window_end_mean_c: 81.736
-cal_window_delta_c_raw: -0.005
-cal_window_drift_c_per_min_raw: -0.007
-cal_window_delta_c_ema: -0.009
-cal_window_drift_c_per_min_ema: -0.011
-cal_cfg_window_s: 60
+cal status
+cal_window_raw_last_c: -48.338
+cal_window_raw_avg_c: -48.191
+cal_window_raw_stddev_c: 1.539
+cal_window_raw_last_ohm: 80.966
+cal_window_raw_avg_ohm: 81.024
+cal_window_raw_stddev_ohm: 0.611
+cal_window_begin_mean_c: -49.285
+cal_window_end_mean_c: -48.385
+cal_window_delta_c_raw: 0.900
+cal_window_drift_c_per_min_raw: -0.012
+cal_window_delta_c_ema: 1.105
+cal_window_drift_c_per_min_ema: 0.136
+cal_cfg_window_s: 120
 cal_cfg_ema_alpha: 0.200
 cal_cfg_drift_limit_default_c_per_min: 0.020
-cal_window_samples: 61
+cal_window_samples: 122
 cal_window_ready: yes
 calibration_mode: poly
 calibration_domain: resistance_ohm (fit uses raw/corrected ohms)
@@ -96,14 +97,14 @@ Calibration Points Report Block:
     Captured EMA alpha: 0.200
 
 Calibration:
-  Last UTC (base):     2026-04-14T19:46:06Z
+  Last UTC (base):     2026-04-15T13:45:46Z
   Last UTC (override): n/a
   Due every (base):    1 year
   Due every (override): disabled
   Method:             Reference transfer from Fluke 51 II N1052
-  Effective last UTC:  2026-04-14T19:46:06Z
+  Effective last UTC:  2026-04-15T13:45:46Z
   Effective due:       1 year
-  Due date:            2027-04-14T00:00:00Z
+  Due date:            2027-04-15T00:00:00Z
   Overdue:             no
   Time valid:          yes
   Time stable:         yes
