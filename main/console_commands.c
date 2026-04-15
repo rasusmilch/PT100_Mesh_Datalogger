@@ -1063,6 +1063,13 @@ SaveCalibrationWithContext(const calibration_model_t* model)
   }
   calibration_context_t context;
   AppSettingsBuildCalibrationContextFromReader(&context, g_runtime->sensor);
+
+  if (g_runtime->settings != NULL) {
+    g_runtime->settings->calibration = *model;
+    g_runtime->settings->calibration_context = context;
+    g_runtime->settings->calibration_context_valid = true;
+  }
+
   esp_err_t result = AppSettingsSaveCalibrationWithContext(model, &context);
   if (result != ESP_OK) {
     return result;
