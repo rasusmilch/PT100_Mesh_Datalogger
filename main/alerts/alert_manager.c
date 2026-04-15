@@ -1630,6 +1630,46 @@ AlertManagerSendTest(alert_manager_t* manager, int64_t now_ms)
 }
 
 /**
+ * @brief Queue a lightweight direct ntfy transport/TLS probe message.
+ * @param manager Parameter manager.
+ * @param now_ms Parameter now_ms.
+ * @return True when the direct ntfy probe job was queued.
+ */
+bool
+AlertManagerSendDirectNtfyTest(alert_manager_t* manager, int64_t now_ms)
+{
+  if (manager == NULL) {
+    return false;
+  }
+  if (!AlertManagerIsConfigured(manager)) {
+    return false;
+  }
+
+  alert_ntfy_job_t job = { 0 };
+  snprintf(job.url, sizeof(job.url), "%s", manager->config.ntfy_url);
+  snprintf(job.topic, sizeof(job.topic), "%s", manager->config.ntfy_topic);
+  snprintf(job.token, sizeof(job.token), "%s", manager->config.ntfy_token);
+  snprintf(job.root_id,
+           sizeof(job.root_id),
+           "%s",
+           manager->root_id_string != NULL ? manager->root_id_string : "");
+  snprintf(job.title, sizeof(job.title), "%s", "PT100 ntfy test");
+  snprintf(job.body, sizeof(job.body), "%s", "ntfy test");
+  snprintf(
+    job.sequence_id, sizeof(job.sequence_id), "ntfy-test-%" PRId64, now_ms);
+  job.http_timeout_ms = 15000u;
+  job.attempt = 0u;
+  job.next_attempt_ms = now_ms;
+  const bool queued = AlertNtfyEnqueueJob(&manager->ntfy, &job);
+  ESP_LOGI(kTag,
+           "ntfy direct test queued=%u sequence=%s title=%s",
+           queued ? 1u : 0u,
+           job.sequence_id,
+           job.title);
+  return queued;
+}
+
+/**
  * @brief Execute AlertManagerEmitRootRestart.
  * @param manager Parameter manager.
  * @param now_ms Parameter now_ms.
