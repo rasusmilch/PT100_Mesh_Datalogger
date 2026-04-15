@@ -3037,14 +3037,15 @@ CalConsoleOpStartLive(uint32_t every_ms,
 }
 
 static esp_err_t
-CalConsoleOpArmCaptureWhileLive(double actual_temp_c,
-                                double stable_stddev_c,
-                                bool drift_limit_enabled,
-                                double drift_limit_c_per_min,
-                                calibration_drift_limit_source_t drift_limit_source,
-                                int min_seconds,
-                                int timeout_seconds,
-                                bool* replaced_out)
+CalConsoleOpArmCaptureWhileLive(
+  double actual_temp_c,
+  double stable_stddev_c,
+  bool drift_limit_enabled,
+  double drift_limit_c_per_min,
+  calibration_drift_limit_source_t drift_limit_source,
+  int min_seconds,
+  int timeout_seconds,
+  bool* replaced_out)
 {
   if (replaced_out != NULL) {
     *replaced_out = false;
@@ -3150,7 +3151,8 @@ PrintCalWindowLine_(const char* prefix,
     return;
   }
   const char* ts_text = (timestamp_utc != NULL) ? timestamp_utc : "n/a";
-  const char* eta_text = (drift_eta_to_target_text != NULL) ? drift_eta_to_target_text : "n/a";
+  const char* eta_text =
+    (drift_eta_to_target_text != NULL) ? drift_eta_to_target_text : "n/a";
   if (drift_target_enabled) {
     printf("%s: ts=%s n=%u last=%.3fC last_ohm=%.3f mean=%.3fC std=%.3fC "
            "drift=%.3fC/min delta=%.3fC drift_eta_to_target=%s\n",
@@ -3195,22 +3197,21 @@ PrintCalWindowCalibratedLine_(const char* timestamp_utc,
 {
   char fault_desc[64] = { 0 };
   Max31865FormatFault(fault_status, fault_desc, sizeof(fault_desc));
-  printf(
-    "cal livecal: ts=%s n=%u raw_ohm=%.3f mean_ohm=%.3f std_ohm=%.3f "
-    "cal_temp=%.3fC std_temp=%.3fC mean_temp=%.3fC drift=%.3fC/min "
-    "delta=%.3fC fault=%s (0x%02X)\n",
-    (timestamp_utc != NULL) ? timestamp_utc : "n/a",
-    (unsigned)sample_count,
-    last_raw_mOhm / 1000.0,
-    mean_raw_mOhm / 1000.0,
-    stddev_mOhm / 1000.0,
-    calibrated_temp_c,
-    stddev_calibrated_temp_c,
-    mean_calibrated_temp_c,
-    drift_c_per_min,
-    delta_c,
-    fault_desc,
-    (unsigned)fault_status);
+  printf("cal livecal: ts=%s n=%u raw_ohm=%.3f mean_ohm=%.3f std_ohm=%.3f "
+         "cal_temp=%.3fC std_temp=%.3fC mean_temp=%.3fC drift=%.3fC/min "
+         "delta=%.3fC fault=%s (0x%02X)\n",
+         (timestamp_utc != NULL) ? timestamp_utc : "n/a",
+         (unsigned)sample_count,
+         last_raw_mOhm / 1000.0,
+         mean_raw_mOhm / 1000.0,
+         stddev_mOhm / 1000.0,
+         calibrated_temp_c,
+         stddev_calibrated_temp_c,
+         mean_calibrated_temp_c,
+         drift_c_per_min,
+         delta_c,
+         fault_desc,
+         (unsigned)fault_status);
 }
 
 static void
@@ -3366,7 +3367,8 @@ ParseOptionInt_(int argc, char** argv, const char* name, int* value_out)
 }
 
 static bool
-ParseCalibrationImportStatusLine_(const char* line, calibration_point_t* point_out)
+ParseCalibrationImportStatusLine_(const char* line,
+                                  calibration_point_t* point_out)
 {
   if (line == NULL || point_out == NULL) {
     return false;
@@ -3377,10 +3379,12 @@ ParseCalibrationImportStatusLine_(const char* line, calibration_point_t* point_o
   point.raw_stddev_mOhm = -1;
   point.captured_drift_mC_per_min = CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN;
   point.captured_delta_mC = CAL_CAPTURE_DELTA_UNAVAILABLE_MC;
-  point.capture_drift_limit_mC_per_min = CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
+  point.capture_drift_limit_mC_per_min =
+    CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
   point.drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
   point.captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
-  point.captured_ema_alpha_permille = CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
+  point.captured_ema_alpha_permille =
+    CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
 
   char buf[768];
   snprintf(buf, sizeof(buf), "%s", line);
@@ -3460,8 +3464,9 @@ PrintCalLiveUsage_(const char* command_name)
   if (command_name == NULL) {
     command_name = "live";
   }
-  printf("usage: cal %s [seconds] [--every_ms 1000] [--drift_c_per_min 0.020]\n",
-         command_name);
+  printf(
+    "usage: cal %s [seconds] [--every_ms 1000] [--drift_c_per_min 0.020]\n",
+    command_name);
 }
 
 static bool
@@ -3491,10 +3496,9 @@ ParseCalLiveArguments_(int argc,
     if (strncmp(arg, "--", 2) == 0) {
       const char* option = arg + 2;
       const char* value_eq = strchr(option, '=');
-      if (value_eq == NULL &&
-          (strncmp(option, "every_ms", 8) == 0 ||
-           strncmp(option, "seconds", 7) == 0 ||
-           strncmp(option, "drift_c_per_min", 15) == 0)) {
+      if (value_eq == NULL && (strncmp(option, "every_ms", 8) == 0 ||
+                               strncmp(option, "seconds", 7) == 0 ||
+                               strncmp(option, "drift_c_per_min", 15) == 0)) {
         if (i + 1 < argc) {
           ++i;
         }
@@ -3586,20 +3590,20 @@ EvaluateCalibratedTemperature_(double raw_temp_c,
   const app_settings_t* settings = g_runtime->settings;
   const calibration_domain_t domain = settings->calibration_domain;
   if (domain == CAL_DOMAIN_RESISTANCE_OHM) {
-    const double corrected_resistance_ohm = CalibrationModelEvaluateWithPoints(
-      &settings->calibration,
-      raw_resistance_ohm,
-      settings->calibration_points,
-      settings->calibration_points_count);
-    *calibrated_temp_c_out =
-      Max31865ResistanceToTemperature(g_runtime->sensor, corrected_resistance_ohm);
+    const double corrected_resistance_ohm =
+      CalibrationModelEvaluateWithPoints(&settings->calibration,
+                                         raw_resistance_ohm,
+                                         settings->calibration_points,
+                                         settings->calibration_points_count);
+    *calibrated_temp_c_out = Max31865ResistanceToTemperature(
+      g_runtime->sensor, corrected_resistance_ohm);
     return true;
   }
-  *calibrated_temp_c_out = CalibrationModelEvaluateWithPoints(
-    &settings->calibration,
-    raw_temp_c,
-    settings->calibration_points,
-    settings->calibration_points_count);
+  *calibrated_temp_c_out =
+    CalibrationModelEvaluateWithPoints(&settings->calibration,
+                                       raw_temp_c,
+                                       settings->calibration_points,
+                                       settings->calibration_points_count);
   return true;
 }
 
@@ -3610,7 +3614,8 @@ ComputeCalibratedWindowTempStats_(size_t sample_count,
                                   double* mean_calibrated_temp_c_out,
                                   double* stddev_calibrated_temp_c_out)
 {
-  if (mean_calibrated_temp_c_out == NULL || stddev_calibrated_temp_c_out == NULL) {
+  if (mean_calibrated_temp_c_out == NULL ||
+      stddev_calibrated_temp_c_out == NULL) {
     return false;
   }
   *mean_calibrated_temp_c_out = 0.0;
@@ -4067,10 +4072,8 @@ CalWindowStableSuffixSeconds_(const cal_window_metric_history_t* history,
   if (CalHistoryGet(history, history->count - 1u, &newest) == 0u) {
     return 0.0;
   }
-  if (!CalWindowMetricSampleMeetsCriteria_(&newest,
-                                           stable_stddev_c,
-                                           drift_limit_enabled,
-                                           drift_limit_c_per_min)) {
+  if (!CalWindowMetricSampleMeetsCriteria_(
+        &newest, stable_stddev_c, drift_limit_enabled, drift_limit_c_per_min)) {
     return 0.0;
   }
   size_t first_ok_index = history->count - 1u;
@@ -4160,7 +4163,8 @@ EstimateCalLiveDriftEtaToTarget_(const cal_window_metric_history_t* history,
   if (ready_count < kMinSamples) {
     return false;
   }
-  const double span_seconds = (newest_ready_ts_us - oldest_ready_ts_us) / 1000000.0;
+  const double span_seconds =
+    (newest_ready_ts_us - oldest_ready_ts_us) / 1000000.0;
   if (!isfinite(span_seconds) || span_seconds < kMinSpanSeconds) {
     return false;
   }
@@ -4170,7 +4174,8 @@ EstimateCalLiveDriftEtaToTarget_(const cal_window_metric_history_t* history,
   if (!isfinite(denom) || fabs(denom) < 1e-12) {
     return false;
   }
-  const double slope_abs_drift_per_sec = ((n * sum_xy) - (sum_x * sum_y)) / denom;
+  const double slope_abs_drift_per_sec =
+    ((n * sum_xy) - (sum_x * sum_y)) / denom;
   if (!isfinite(slope_abs_drift_per_sec) ||
       slope_abs_drift_per_sec >= -kMinConvergingSlopeAbsPerSec) {
     return false;
@@ -4207,13 +4212,15 @@ FormatCalLiveDriftEta_(double eta_seconds, char* buffer, size_t buffer_size)
   if (eta_s < 3600u) {
     const uint32_t minutes = eta_s / 60u;
     const uint32_t seconds = eta_s % 60u;
-    (void)snprintf(buffer, buffer_size, "%" PRIu32 "m %02" PRIu32 "s", minutes, seconds);
+    (void)snprintf(
+      buffer, buffer_size, "%" PRIu32 "m %02" PRIu32 "s", minutes, seconds);
     return;
   }
 
   const uint32_t hours = eta_s / 3600u;
   const uint32_t minutes = (eta_s % 3600u) / 60u;
-  (void)snprintf(buffer, buffer_size, "%" PRIu32 "h %02" PRIu32 "m", hours, minutes);
+  (void)snprintf(
+    buffer, buffer_size, "%" PRIu32 "h %02" PRIu32 "m", hours, minutes);
 }
 
 static bool
@@ -4265,14 +4272,14 @@ CalCaptureSavePoint_(double actual_temp_c,
   point->captured_drift_mC_per_min = (int32_t)llround(drift_c_per_min * 1000.0);
   point->captured_delta_mC = (int32_t)llround(delta_c * 1000.0);
   point->capture_drift_limit_mC_per_min =
-    drift_limit_enabled
-      ? (int32_t)llround(drift_limit_c_per_min * 1000.0)
-      : CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
-  point->drift_limit_source = (uint8_t)(drift_limit_enabled
-                                          ? drift_limit_source
-                                          : CAL_DRIFT_LIMIT_SOURCE_DISABLED);
+    drift_limit_enabled ? (int32_t)llround(drift_limit_c_per_min * 1000.0)
+                        : CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
+  point->drift_limit_source =
+    (uint8_t)(drift_limit_enabled ? drift_limit_source
+                                  : CAL_DRIFT_LIMIT_SOURCE_DISABLED);
   point->captured_window_s = (int16_t)CalWindowGetDurationSeconds();
-  point->captured_ema_alpha_permille = (int16_t)CalWindowGetTrendEmaAlphaPermille();
+  point->captured_ema_alpha_permille =
+    (int16_t)CalWindowGetTrendEmaAlphaPermille();
   settings->calibration_domain = CAL_DOMAIN_RESISTANCE_OHM;
   esp_err_t save_result = SaveCalibrationPointsAndDomain_(settings);
   if (save_result != ESP_OK) {
@@ -4408,7 +4415,8 @@ CalConsoleOpTask(void* task_arg)
     const double gated_drift_c_per_min =
       trend_ema_initialized ? drift_c_per_min_ema : drift_c_per_min_raw;
     const double stddev_c = stddev_mC / 1000.0;
-    const double delta_c = trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0);
+    const double delta_c =
+      trend_ema_initialized ? delta_c_ema : (delta_mC / 1000.0);
     s_cal_history.buffer[s_cal_history.head] =
       (cal_window_metric_sample_t){ .timestamp_us = now_us,
                                     .window_ready = window_ready,
@@ -4432,7 +4440,8 @@ CalConsoleOpTask(void* task_arg)
         if (live_drift_notify_armed) {
           const double target_abs_drift_c_per_min =
             fabs(live_drift_notify_threshold_c_per_min);
-          const double current_abs_drift_c_per_min = fabs(gated_drift_c_per_min);
+          const double current_abs_drift_c_per_min =
+            fabs(gated_drift_c_per_min);
           double drift_eta_seconds = 0.0;
           if (EstimateCalLiveDriftEtaToTarget_(&s_cal_history,
                                                target_abs_drift_c_per_min,
@@ -4489,18 +4498,18 @@ CalConsoleOpTask(void* task_arg)
       }
       if (live_drift_notify_armed && !live_drift_notify_sent) {
         const bool drift_under_threshold =
-          window_ready &&
-          (fabs(gated_drift_c_per_min) <= live_drift_notify_threshold_c_per_min);
+          window_ready && (fabs(gated_drift_c_per_min) <=
+                           live_drift_notify_threshold_c_per_min);
         if (drift_under_threshold) {
           if (live_drift_under_start_us < 0) {
             live_drift_under_start_us = now_us;
           }
           const int64_t elapsed_us = now_us - live_drift_under_start_us;
           if (elapsed_us >= (int64_t)window_duration_s * 1000000LL) {
-            const bool queued = QueueCalLiveDriftReadyNtfy_(
-              gated_drift_c_per_min,
-              live_drift_notify_threshold_c_per_min,
-              window_duration_s);
+            const bool queued =
+              QueueCalLiveDriftReadyNtfy_(gated_drift_c_per_min,
+                                          live_drift_notify_threshold_c_per_min,
+                                          window_duration_s);
             if (queued) {
               printf("cal live: drift notify sent\n");
             } else {
@@ -4517,7 +4526,8 @@ CalConsoleOpTask(void* task_arg)
           live_drift_under_start_us = -1;
         }
         if (CalConsoleOpLock_(pdMS_TO_TICKS(20))) {
-          g_cal_console_op.live_drift_under_start_us = live_drift_under_start_us;
+          g_cal_console_op.live_drift_under_start_us =
+            live_drift_under_start_us;
           CalConsoleOpUnlock_();
         }
       }
@@ -4586,7 +4596,8 @@ CalConsoleOpTask(void* task_arg)
           printf("cal capture: disarmed after failure; cal live continues\n");
         }
       } else if (elapsed_s >= (double)timeout_seconds) {
-        printf("cal capture failed: timeout after %d seconds\n", timeout_seconds);
+        printf("cal capture failed: timeout after %d seconds\n",
+               timeout_seconds);
         if (mode == CAL_CONSOLE_OP_CAPTURE) {
           break;
         }
@@ -4646,7 +4657,8 @@ CommandCal(int argc, char** argv)
     }
     if (strcmp(action, "cfg") == 0) {
       if (argc == 3 && strcmp(argv[2], "show") == 0) {
-        printf("cal_cfg_window_s: %u\n", (unsigned)settings->cal_window_duration_s);
+        printf("cal_cfg_window_s: %u\n",
+               (unsigned)settings->cal_window_duration_s);
         printf("cal_cfg_ema_alpha: %.3f\n",
                settings->cal_trend_ema_alpha_permille / 1000.0);
         printf("cal_cfg_drift_limit_default_c_per_min: %.3f\n",
@@ -4990,9 +5002,9 @@ CommandCal(int argc, char** argv)
       printf("cal %s started (use 'cal stop' to abort)\n",
              calibrated_live ? "livecal" : "live");
       if (drift_notify_armed) {
-        const uint32_t sustained_s =
-          (settings != NULL) ? settings->cal_window_duration_s
-                             : CAL_WINDOW_DURATION_DEFAULT_S;
+        const uint32_t sustained_s = (settings != NULL)
+                                       ? settings->cal_window_duration_s
+                                       : CAL_WINDOW_DURATION_DEFAULT_S;
         printf("drift notify armed: |drift| <= %.3f C/min for %" PRIu32 " s\n",
                drift_notify_threshold_c_per_min,
                sustained_s);
@@ -5107,7 +5119,8 @@ CommandCal(int argc, char** argv)
                "[--no-drift-limit]\n");
         return 1;
       }
-      if (drift_limit_enabled && drift_limit_source == CAL_DRIFT_LIMIT_SOURCE_DEFAULT) {
+      if (drift_limit_enabled &&
+          drift_limit_source == CAL_DRIFT_LIMIT_SOURCE_DEFAULT) {
         drift_limit_c_per_min = fabs(drift_limit_c_per_min);
       }
       if (!drift_limit_enabled) {
@@ -5210,13 +5223,16 @@ CommandCal(int argc, char** argv)
       point->sample_count = 0;
       point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
       point->timestamp_epoch_sec = point->time_valid ? (int64_t)time(NULL) : 0;
-      point->captured_drift_mC_per_min = CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN;
+      point->captured_drift_mC_per_min =
+        CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN;
       point->captured_delta_mC = CAL_CAPTURE_DELTA_UNAVAILABLE_MC;
       point->capture_drift_limit_mC_per_min =
         CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
-      point->drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+      point->drift_limit_source =
+        (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
       point->captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
-      point->captured_ema_alpha_permille = CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
+      point->captured_ema_alpha_permille =
+        CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
       settings->calibration_domain = CAL_DOMAIN_TEMP_C;
       esp_err_t result = SaveCalibrationPointsAndDomain_(settings);
       if (result != ESP_OK) {
@@ -5255,7 +5271,8 @@ CommandCal(int argc, char** argv)
                                &stddev_c_supplied,
                                &stddev_c)) {
         char pasted_line[768] = { 0 };
-        if (JoinArgsWithSpaces(argc, argv, 2, pasted_line, sizeof(pasted_line)) &&
+        if (JoinArgsWithSpaces(
+              argc, argv, 2, pasted_line, sizeof(pasted_line)) &&
             ParseCalibrationImportStatusLine_(pasted_line, &imported_point)) {
           parsed_status_line = true;
           raw_ohm = imported_point.raw_avg_mOhm / 1000.0;
@@ -5266,8 +5283,9 @@ CommandCal(int argc, char** argv)
           stddev_c =
             stddev_c_supplied ? (imported_point.raw_stddev_mC / 1000.0) : 0.0;
         } else {
-          printf("usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
-                 "[--stddev_c <value>] OR cal import \"<cal status point line>\"\n");
+          printf(
+            "usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
+            "[--stddev_c <value>] OR cal import \"<cal status point line>\"\n");
           return 1;
         }
       }
@@ -5305,15 +5323,19 @@ CommandCal(int argc, char** argv)
       point->sample_count = 0;
       point->time_valid = TimeSyncIsSystemTimeValid() ? 1u : 0u;
       point->timestamp_epoch_sec = point->time_valid ? (int64_t)time(NULL) : 0;
-      point->captured_drift_mC_per_min = CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN;
+      point->captured_drift_mC_per_min =
+        CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN;
       point->captured_delta_mC = CAL_CAPTURE_DELTA_UNAVAILABLE_MC;
       point->capture_drift_limit_mC_per_min =
         CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
-      point->drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+      point->drift_limit_source =
+        (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
       point->captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
-      point->captured_ema_alpha_permille = CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
+      point->captured_ema_alpha_permille =
+        CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
       if (parsed_status_line) {
-        point->captured_drift_mC_per_min = imported_point.captured_drift_mC_per_min;
+        point->captured_drift_mC_per_min =
+          imported_point.captured_drift_mC_per_min;
         point->captured_delta_mC = imported_point.captured_delta_mC;
         point->capture_drift_limit_mC_per_min =
           imported_point.capture_drift_limit_mC_per_min;
@@ -5595,10 +5617,10 @@ CommandCal(int argc, char** argv)
          "cal import <raw_ohm> <actual_c> [--raw_c <value>] "
          "[--stddev_c <value>] | cal restore ... | "
          "cal del <index> | cal remove <index> | "
-      "cal list | cal apply | cal live [seconds] "
-      "[--every_ms 1000] [--drift_c_per_min 0.020] | "
-      "cal livecal [seconds] [--every_ms 1000] [--drift_c_per_min 0.020] | "
-      "cal capture <actual_temp_c> "
+         "cal list | cal apply | cal live [seconds] "
+         "[--every_ms 1000] [--drift_c_per_min 0.020] | "
+         "cal livecal [seconds] [--every_ms 1000] [--drift_c_per_min 0.020] | "
+         "cal capture <actual_temp_c> "
          "[--stable_stddev_c 0.05] [--min_seconds 5] "
          "[--timeout_seconds 120] [--drift_c_per_min 0.020] "
          "[--no-drift-limit] | cal stop\n");
@@ -7902,7 +7924,8 @@ BuildCalibrationPointPrintSummary_(const calibration_point_t* point,
     summary_out->captured_raw_res_stddev_ohm = point->raw_stddev_mOhm / 1000.0;
   }
   summary_out->captured_drift_available =
-    (point->captured_drift_mC_per_min != CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN);
+    (point->captured_drift_mC_per_min !=
+     CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN);
   if (summary_out->captured_drift_available) {
     summary_out->captured_drift_c_per_min =
       point->captured_drift_mC_per_min / 1000.0;
@@ -7927,9 +7950,11 @@ BuildCalibrationPointPrintSummary_(const calibration_point_t* point,
     summary_out->captured_window_s = point->captured_window_s;
   }
   summary_out->captured_ema_alpha_available =
-    (point->captured_ema_alpha_permille != CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE);
+    (point->captured_ema_alpha_permille !=
+     CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE);
   if (summary_out->captured_ema_alpha_available) {
-    summary_out->captured_ema_alpha = point->captured_ema_alpha_permille / 1000.0;
+    summary_out->captured_ema_alpha =
+      point->captured_ema_alpha_permille / 1000.0;
   }
   summary_out->ideal_ref_res_available = ComputeIdealReferenceResistanceOhm_(
     reference_c, &summary_out->ideal_ref_res_ohm);
@@ -8040,7 +8065,8 @@ PrintCalibrationPointStatusLine_(const calibration_point_t* point,
   }
   snprintf(drift_buf, sizeof(drift_buf), "%s", "n/a");
   if (summary->captured_drift_available) {
-    snprintf(drift_buf, sizeof(drift_buf), "%.3f", summary->captured_drift_c_per_min);
+    snprintf(
+      drift_buf, sizeof(drift_buf), "%.3f", summary->captured_drift_c_per_min);
   }
   snprintf(delta_buf, sizeof(delta_buf), "%s", "n/a");
   if (summary->captured_delta_available) {
@@ -8048,8 +8074,10 @@ PrintCalibrationPointStatusLine_(const calibration_point_t* point,
   }
   snprintf(drift_limit_buf, sizeof(drift_limit_buf), "%s", "n/a");
   if (summary->drift_limit_available) {
-    snprintf(
-      drift_limit_buf, sizeof(drift_limit_buf), "%.3f", summary->drift_limit_c_per_min);
+    snprintf(drift_limit_buf,
+             sizeof(drift_limit_buf),
+             "%.3f",
+             summary->drift_limit_c_per_min);
   }
   snprintf(drift_source_buf,
            sizeof(drift_source_buf),
@@ -8061,7 +8089,10 @@ PrintCalibrationPointStatusLine_(const calibration_point_t* point,
   }
   snprintf(ema_alpha_buf, sizeof(ema_alpha_buf), "%s", "n/a");
   if (summary->captured_ema_alpha_available) {
-    snprintf(ema_alpha_buf, sizeof(ema_alpha_buf), "%.3f", summary->captured_ema_alpha);
+    snprintf(ema_alpha_buf,
+             sizeof(ema_alpha_buf),
+             "%.3f",
+             summary->captured_ema_alpha);
   }
 
   printf("  %u: reference_temp_C=%.3f ideal_ref_res_Ohm=%s "
@@ -8143,7 +8174,8 @@ PrintCalibrationPointReportBlock_(const calibration_point_t* point,
     printf("    Captured raw resistance stddev: n/a\n");
   }
   if (summary->captured_drift_available) {
-    printf("    Captured drift: %.3f C/min\n", summary->captured_drift_c_per_min);
+    printf("    Captured drift: %.3f C/min\n",
+           summary->captured_drift_c_per_min);
   } else {
     printf("    Captured drift: n/a\n");
   }
@@ -8153,7 +8185,8 @@ PrintCalibrationPointReportBlock_(const calibration_point_t* point,
     printf("    Captured delta: n/a\n");
   }
   if (summary->drift_limit_available) {
-    printf("    Drift limit used: %.3f C/min\n", summary->drift_limit_c_per_min);
+    printf("    Drift limit used: %.3f C/min\n",
+           summary->drift_limit_c_per_min);
   } else {
     printf("    Drift limit used: n/a\n");
   }
@@ -8189,7 +8222,7 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
   double delta_c_ema = 0.0;
   double drift_c_per_min_ema = 0.0;
   bool trend_ema_initialized = false;
-  MaybePushCalRawSampleFromSensor();
+  (void)MaybePushCalRawSampleFromSensorWithStatus_();
 
   CalWindowGetStats(&last_raw_mC, &mean_raw_mC, &stddev_mC);
   CalWindowGetResistanceStats(&last_raw_mOhm, &mean_raw_mOhm, &stddev_mOhm);
@@ -9422,13 +9455,15 @@ PrintCalHelpBody(void)
   printf("  Note: cal live supports --drift_c_per_min X (absolute value) to\n");
   printf("        send one ntfy when |drift| stays under threshold for the\n");
   printf("        configured calibration window duration.\n");
-  printf("  Note: cal livecal mirrors cal live arguments but prints calibrated\n");
-  printf("        values and refuses to start unless calibration is applied.\n");
-  printf("  Note: during cal live, cal capture attaches to the same session,\n");
-  printf("        reuses buffered live data, and may capture immediately.\n");
   printf(
-    "  Note: 'cal stop' aborts an active cal live/cal livecal/cal capture "
-    "operation.\n\n");
+    "  Note: cal livecal mirrors cal live arguments but prints calibrated\n");
+  printf(
+    "        values and refuses to start unless calibration is applied.\n");
+  printf(
+    "  Note: during cal live, cal capture attaches to the same session,\n");
+  printf("        reuses buffered live data, and may capture immediately.\n");
+  printf("  Note: 'cal stop' aborts an active cal live/cal livecal/cal capture "
+         "operation.\n\n");
   printf("EXAMPLES\n");
   printf("  cal status\n");
   printf("  cal set method \"ice + satpt steam\"\n");
@@ -9656,11 +9691,12 @@ RegisterCommands(void)
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&rtd_cmd));
 
-  g_cal_args.action = arg_str1(NULL,
-                               NULL,
-                               "<action>",
-                               "status|cfg|set|clear|add|import|restore|del|remove|"
-                               "list|apply|live|capture|stop");
+  g_cal_args.action =
+    arg_str1(NULL,
+             NULL,
+             "<action>",
+             "status|cfg|set|clear|add|import|restore|del|remove|"
+             "list|apply|live|capture|stop");
   g_cal_args.raw_c =
     arg_dbl0(NULL, NULL, "<raw_c>", "Raw Celsius sample (use with 'add')");
   g_cal_args.actual_c =
@@ -9691,9 +9727,10 @@ RegisterCommands(void)
     .command = "cal",
     .summary = "Manage calibration metadata, live/import point capture, and "
                "model fitting",
-    .synopsis = "cal "
-                "<status|cfg|metar|set|list|add|import|restore|del|remove|clear|"
-                "apply|live|capture|stop> ...",
+    .synopsis =
+      "cal "
+      "<status|cfg|metar|set|list|add|import|restore|del|remove|clear|"
+      "apply|live|capture|stop> ...",
     .print_body = PrintCalHelpBody,
     .topic_help = &CalTopicHelp,
     .func = &CommandCal,
