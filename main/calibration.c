@@ -1017,6 +1017,31 @@ CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
   }
 }
 
+bool
+CalWindowGetActiveSampleByIndex(size_t index_from_oldest,
+                                int32_t* out_raw_mC,
+                                int32_t* out_raw_mOhm,
+                                int64_t* out_time_us)
+{
+  const calibration_active_window_info_t active_window = ResolveActiveWindowInfo_();
+  if (index_from_oldest >= active_window.active_count) {
+    return false;
+  }
+
+  const size_t index =
+    (active_window.oldest_index + index_from_oldest) % CAL_WINDOW_MAX_SAMPLES;
+  if (out_raw_mC != NULL) {
+    *out_raw_mC = g_cal_window.samples_milli_c[index];
+  }
+  if (out_raw_mOhm != NULL) {
+    *out_raw_mOhm = g_cal_window.samples_milli_ohm[index];
+  }
+  if (out_time_us != NULL) {
+    *out_time_us = g_cal_window.samples_time_us[index];
+  }
+  return true;
+}
+
 static void
 ComputeCalibrationWindowTrendStats_(size_t count,
                                     size_t oldest_index,
