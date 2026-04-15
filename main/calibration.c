@@ -6,6 +6,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "esp_timer.h"
 
 static const char* kTag = "calibration";
@@ -49,6 +50,10 @@ typedef struct
   bool is_ready;
 } calibration_active_window_info_t;
 
+static int32_t g_cal_window_samples_milli_c_fallback[CAL_WINDOW_MAX_SAMPLES];
+static int32_t g_cal_window_samples_milli_ohm_fallback[CAL_WINDOW_MAX_SAMPLES];
+static int64_t g_cal_window_samples_time_us_fallback[CAL_WINDOW_MAX_SAMPLES];
+
 static cal_window_state_t g_cal_window = {
   .samples_milli_c = g_cal_window_samples_milli_c_fallback,
   .samples_milli_ohm = g_cal_window_samples_milli_ohm_fallback,
@@ -81,9 +86,6 @@ static calibration_active_window_info_t ResolveActiveWindowInfo_(void);
 static bool CalWindowEnsureStorage_(void);
 static bool CalWindowStorageIsPsram_(const void* ptr);
 
-static int32_t g_cal_window_samples_milli_c_fallback[CAL_WINDOW_MAX_SAMPLES];
-static int32_t g_cal_window_samples_milli_ohm_fallback[CAL_WINDOW_MAX_SAMPLES];
-static int64_t g_cal_window_samples_time_us_fallback[CAL_WINDOW_MAX_SAMPLES];
 static bool g_cal_window_storage_initialized = false;
 static bool g_cal_window_samples_milli_c_in_psram = false;
 static bool g_cal_window_samples_milli_ohm_in_psram = false;
@@ -252,7 +254,7 @@ CalWindowStorageIsPsram_(const void* ptr)
   if (ptr == NULL) {
     return false;
   }
-  return heap_caps_check_addr(ptr, MALLOC_CAP_SPIRAM);
+  return esp_ptr_external_ram(ptr);
 }
 
 static bool
