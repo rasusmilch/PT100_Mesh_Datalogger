@@ -3197,14 +3197,14 @@ PrintCalWindowCalibratedLine_(const char* timestamp_utc,
 {
   char fault_desc[64] = { 0 };
   Max31865FormatFault(fault_status, fault_desc, sizeof(fault_desc));
-  printf("cal livecal: ts=%s n=%u raw_ohm=%.3f mean_ohm=%.3f std_ohm=%.3f "
+  printf("cal livecal: ts=%s n=%u raw_ohm=%.3f std_ohm=%.3f mean_ohm=%.3f "
          "cal_temp=%.3fC std_temp=%.3fC mean_temp=%.3fC drift=%.3fC/min "
          "delta=%.3fC fault=%s (0x%02X)\n",
          (timestamp_utc != NULL) ? timestamp_utc : "n/a",
          (unsigned)sample_count,
          last_raw_mOhm / 1000.0,
-         mean_raw_mOhm / 1000.0,
          stddev_mOhm / 1000.0,
+         mean_raw_mOhm / 1000.0,
          calibrated_temp_c,
          stddev_calibrated_temp_c,
          mean_calibrated_temp_c,
