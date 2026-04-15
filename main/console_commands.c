@@ -33,6 +33,7 @@
 #include "driver/uart_vfs.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -4103,7 +4104,7 @@ CalHistoryEnsureStorage_(void)
     1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (history != NULL) {
     s_cal_history = history;
-    s_cal_history_in_psram = heap_caps_check_addr(history, MALLOC_CAP_SPIRAM);
+    s_cal_history_in_psram = esp_ptr_external_ram(history);
   } else {
     memset(&s_cal_history_fallback, 0, sizeof(s_cal_history_fallback));
     s_cal_history = &s_cal_history_fallback;
