@@ -96,6 +96,16 @@ extern "C"
     double max_abs_correction_c;
   } calibration_fit_diagnostics_t;
 
+  typedef struct
+  {
+    size_t samples_milli_c_bytes;
+    size_t samples_milli_ohm_bytes;
+    size_t samples_time_us_bytes;
+    bool samples_milli_c_in_psram;
+    bool samples_milli_ohm_in_psram;
+    bool samples_time_us_in_psram;
+  } cal_window_storage_layout_t;
+
   // Identity mapping (y = x).
   /**
    * @brief Execute CalibrationModelInitIdentity.
@@ -238,6 +248,7 @@ extern "C"
   void CalWindowGetTrendEmaStats(double* out_delta_c_ema,
                                  double* out_drift_c_per_min_ema,
                                  bool* out_initialized);
+  void CalWindowGetStorageLayout(cal_window_storage_layout_t* out_layout);
 
 #ifdef __cplusplus
 }
