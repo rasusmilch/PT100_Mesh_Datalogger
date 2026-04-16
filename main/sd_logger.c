@@ -45,6 +45,14 @@ static esp_err_t
 SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
                            uint64_t required_free_bytes,
                            uint32_t* deleted_files);
+static esp_err_t
+CommitHeaderIfEmptyAndSync_(FILE* file,
+                            const ptlog_header_t* header,
+                            const char* path,
+                            bool* file_was_empty_out,
+                            bool* header_written_out);
+static bool
+SdLoggerUnlinkEmptyFileIfPresent_(const char* path);
 
 static uint8_t*
 AllocatePreferPsram(size_t bytes)
@@ -485,26 +493,98 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
 }
 
 /**
- * @brief Execute WriteHeaderIfEmpty.
- * @param logger Parameter logger.
+ * @brief Execute CommitHeaderIfEmptyAndSync_.
+ * @param file Parameter file.
+ * @param header Parameter header.
+ * @param path Parameter path.
+ * @param file_was_empty_out Parameter file_was_empty_out.
+ * @param header_written_out Parameter header_written_out.
  * @return Return the function result.
  */
 static esp_err_t
-WriteHeaderIfEmpty(sd_logger_t* logger)
+CommitHeaderIfEmptyAndSync_(FILE* file,
+                            const ptlog_header_t* header,
+                            const char* path,
+                            bool* file_was_empty_out,
+                            bool* header_written_out)
 {
+  if (file == NULL || header == NULL || path == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (file_was_empty_out != NULL) {
+    *file_was_empty_out = false;
+  }
+  if (header_written_out != NULL) {
+    *header_written_out = false;
+  }
+
   struct stat stat_buffer;
-  if (fstat(fileno(logger->file), &stat_buffer) != 0) {
+  const int file_descriptor = fileno(file);
+  if (file_descriptor < 0 || fstat(file_descriptor, &stat_buffer) != 0) {
+    ESP_LOGE(kTag, "fstat() failed for %s: errno=%d (%s)", path, errno, strerror(errno));
     return ESP_FAIL;
   }
   if (stat_buffer.st_size > 0) {
     return ESP_OK;
   }
 
-  if (logger->pending_header == NULL) {
-    return ESP_ERR_INVALID_STATE;
+  if (file_was_empty_out != NULL) {
+    *file_was_empty_out = true;
   }
-  const bool wrote_header = PtlogWriteHeader(logger->file, logger->pending_header);
-  return wrote_header ? ESP_OK : ESP_FAIL;
+  if (!PtlogWriteHeader(file, header)) {
+    ESP_LOGE(kTag, "Failed to write PTLOG header to %s", path);
+    return ESP_FAIL;
+  }
+  ESP_LOGI(kTag, "PTLOG header written to %s", path);
+  if (header_written_out != NULL) {
+    *header_written_out = true;
+  }
+
+  if (fflush(file) != 0) {
+    ESP_LOGE(kTag,
+             "Header fflush() failed for %s: errno=%d (%s)",
+             path,
+             errno,
+             strerror(errno));
+    return ESP_FAIL;
+  }
+  if (fsync(file_descriptor) != 0) {
+    ESP_LOGE(kTag,
+             "Header fsync() failed for %s: errno=%d (%s)",
+             path,
+             errno,
+             strerror(errno));
+    return ESP_FAIL;
+  }
+  ESP_LOGI(kTag, "PTLOG header sync committed for %s", path);
+  return ESP_OK;
+}
+
+static bool
+SdLoggerUnlinkEmptyFileIfPresent_(const char* path)
+{
+  if (path == NULL) {
+    return false;
+  }
+
+  struct stat stat_buffer;
+  if (stat(path, &stat_buffer) != 0) {
+    return false;
+  }
+  if (stat_buffer.st_size != 0) {
+    return false;
+  }
+
+  if (unlink(path) != 0) {
+    ESP_LOGW(kTag,
+             "Failed to remove empty PTLOG placeholder %s: errno=%d (%s)",
+             path,
+             errno,
+             strerror(errno));
+    return false;
+  }
+  ESP_LOGW(kTag, "Removed empty PTLOG placeholder %s", path);
+  return true;
 }
 
 /**
@@ -754,7 +834,8 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
 
   SdLoggerClose(logger);
   logger->last_record_id_on_sd = 0;
-  logger->pending_header = header;
+
+  const bool file_existed_before_open = (access(path, F_OK) == 0);
 
   logger->file = fopen(path, "a+b");
   if (logger->file == NULL) {
@@ -762,6 +843,10 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
       kTag, "fopen failed for %s: %s (%d)", path, strerror(errno), errno);
     return ESP_FAIL;
   }
+  ESP_LOGI(kTag,
+           "%s daily PTLOG file %s",
+           file_existed_before_open ? "Opened existing" : "Created",
+           path);
 
   if (logger->file_buffer != NULL) {
     setvbuf((FILE*)logger->file,
@@ -772,13 +857,26 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
 
   esp_err_t resume_result = ApplyResumeInfo(logger, logger->file, path);
   if (resume_result != ESP_OK) {
+    fclose(logger->file);
+    logger->file = NULL;
     return resume_result;
   }
 
-  esp_err_t header_result = WriteHeaderIfEmpty(logger);
+  bool file_was_empty = false;
+  bool header_written = false;
+  esp_err_t header_result = CommitHeaderIfEmptyAndSync_(
+    logger->file, header, path, &file_was_empty, &header_written);
   if (header_result != ESP_OK) {
-    ESP_LOGE(kTag, "Failed to write header to %s", path);
+    ESP_LOGE(kTag, "Failed to commit header for %s", path);
+    fclose(logger->file);
+    logger->file = NULL;
+    if (!file_existed_before_open && file_was_empty) {
+      (void)SdLoggerUnlinkEmptyFileIfPresent_(path);
+    }
     return header_result;
+  }
+  if (header_written) {
+    ESP_LOGI(kTag, "Daily PTLOG header ready for %s", path);
   }
 
   strncpy(logger->current_date, date_string, sizeof(logger->current_date) - 1);
