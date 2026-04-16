@@ -115,6 +115,12 @@ extern "C"
  */
   esp_err_t SdLoggerUnmount(sd_logger_t* logger);
 
+/**
+ * @brief Reset SD logger mount-derived state without touching durable metadata.
+ * @param logger Parameter logger.
+ */
+  void SdLoggerResetMountState(sd_logger_t* logger);
+
   // Destructively format the SD card (create a fresh FAT filesystem) and leave
   // it mounted.
   //

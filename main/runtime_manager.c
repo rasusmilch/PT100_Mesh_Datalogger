@@ -8591,27 +8591,27 @@ SdFlushTask(void* context)
       if (detect_changed) {
         if (present) {
           ESP_LOGI(kTag, "SD card inserted");
+          UpdateCachedBool(state, &state->cached_status.sd_safe_to_remove, false);
         } else {
           ESP_LOGW(kTag, "SD card removed");
-          if (state->sd_logger.is_mounted) {
-            if (RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
-              SdLoggerClose(&state->sd_logger);
-              RuntimeDiagHeapCheck(
-                state, "SD unmount (card removed before)", false);
-              (void)SdLoggerUnmount(&state->sd_logger);
-              RuntimeDiagHeapCheck(
-                state, "SD unmount (card removed after)", false);
-              RuntimeSdIoUnlock(state);
-            }
-            UpdateCachedBool(state,
-                             &state->cached_status.sd_mounted,
-                             state->sd_logger.is_mounted);
-            ClearSdIoError(state);
-            state->sd_was_mounted = false;
-            state->sd_backoff_until_ticks = 0;
-            UpdateCachedUint32(
-              state, &state->cached_status.sd_backoff_remaining_ms, 0u);
+          if (RuntimeSdIoLock(state, kSdIoLockTimeoutTicks)) {
+            RuntimeDiagHeapCheck(
+              state, "SD unmount (card removed before)", false);
+            (void)SdLoggerUnmount(&state->sd_logger);
+            SdLoggerResetMountState(&state->sd_logger);
+            RuntimeDiagHeapCheck(
+              state, "SD unmount (card removed after)", false);
+            RuntimeSdIoUnlock(state);
           }
+          UpdateCachedBool(state,
+                           &state->cached_status.sd_mounted,
+                           state->sd_logger.is_mounted);
+          UpdateCachedBool(state, &state->cached_status.sd_safe_to_remove, false);
+          ClearSdIoError(state);
+          state->sd_was_mounted = false;
+          state->sd_backoff_until_ticks = 0;
+          UpdateCachedUint32(
+            state, &state->cached_status.sd_backoff_remaining_ms, 0u);
         }
       }
     }
@@ -10782,6 +10782,7 @@ EnsureSdMountedLocked(runtime_state_t* state)
       state, &state->cached_status.sd_mounted, state->sd_logger.is_mounted);
     return;
   }
+  SdLoggerResetMountState(&state->sd_logger);
   RuntimeDiagHeapCheck(state, "SD mount (ensure before)", false);
   esp_err_t mount_result =
     SdLoggerMount(&state->sd_logger, GetSpiHost(), CONFIG_APP_SD_CS_GPIO);
