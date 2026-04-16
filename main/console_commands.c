@@ -230,6 +230,8 @@ JoinArgsWithSpaces(int argc,
                    size_t out_size);
 static int
 CalTopicHelp(const char* topic);
+static int
+SdTopicHelp(const char* topic);
 static void
 PrintModeHelpBody(void);
 static int
@@ -2556,21 +2558,23 @@ CommandSd(int argc, char** argv)
       return 1;
     }
     if (argc < 3) {
-      printf("sd verify: %s\n", state->sd_verify_readback ? "on" : "off");
+      printf("sd verify readback: %s\n",
+             state->sd_verify_readback ? "on" : "off");
       return 0;
     }
     const char* value = argv[2];
     if (strcmp(value, "on") == 0) {
       state->sd_verify_readback = true;
-      printf("sd verify: on\n");
+      printf("sd verify readback: on\n");
       return 0;
     }
     if (strcmp(value, "off") == 0) {
       state->sd_verify_readback = false;
-      printf("sd verify: off\n");
+      printf("sd verify readback: off\n");
       return 0;
     }
-    printf("usage: sd verify on|off\n");
+    printf("usage: sd verify\n");
+    printf("       sd verify on|off\n");
     return 1;
   }
 
@@ -9417,9 +9421,48 @@ PrintSdHelpBody(void)
 {
   printf("SUBCOMMANDS\n");
   printf("  status | mount | unmount | format | view | verify\n\n");
+  printf("NOTES\n");
+  printf("  sd verify controls readback verification mode for future appends.\n");
+  printf("  It does not run an immediate verification pass.\n\n");
   printf("EXAMPLES\n");
   printf("  sd status\n");
   printf("  sd verify\n");
+  printf("  sd verify on\n");
+  printf("  sd verify off\n");
+}
+
+static const console_help_topic_t kSdTopics[] = {
+  {
+    .name = "verify",
+    .summary = "Show or set SD append readback-verification mode",
+    .synopsis = "sd verify\nsd verify on\nsd verify off",
+    .details = "Shows or toggles the readback verification mode used for "
+               "future SD append operations. This command does not run an "
+               "immediate verification sweep.",
+    .options = "  on    Enable readback verification for future appends.\n"
+               "  off   Disable readback verification for future appends.",
+    .examples = "  sd verify\n"
+                "  sd verify on\n"
+                "  sd verify off",
+  },
+  { 0 }
+};
+
+static int
+SdTopicHelp(const char* topic)
+{
+  if (topic == NULL || topic[0] == '\0') {
+    return 1;
+  }
+
+  for (size_t i = 0; kSdTopics[i].name != NULL; ++i) {
+    if (strcmp(kSdTopics[i].name, topic) == 0) {
+      ConsoleHelpPrintTopicManpage("sd", &kSdTopics[i]);
+      return 0;
+    }
+  }
+
+  return 1;
 }
 
 static void
@@ -10032,8 +10075,9 @@ RegisterCommands(void)
   static const console_registry_entry_t sd_cmd = {
     .command = "sd",
     .summary = "Manage SD card and log files",
-    .synopsis = "sd <status|mount|unmount|format|view|verify>",
+    .synopsis = "sd <status|mount|unmount|format|view|verify> [args]",
     .print_body = PrintSdHelpBody,
+    .topic_help = &SdTopicHelp,
     .func = &CommandSd,
   };
   ESP_ERROR_CHECK(ConsoleRegistryRegister(&sd_cmd));

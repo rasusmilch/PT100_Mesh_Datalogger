@@ -53,6 +53,8 @@ CommitHeaderIfEmptyAndSync_(FILE* file,
                             bool* header_written_out);
 static bool
 SdLoggerUnlinkEmptyFileIfPresent_(const char* path);
+static void
+SdLoggerResetMountState_(sd_logger_t* logger);
 
 static uint8_t*
 AllocatePreferPsram(size_t bytes)
@@ -635,6 +637,7 @@ SdLoggerMountInternal(sd_logger_t* logger,
     logger->mount_point, &sd_host, &slot_config, &mount_config, &card);
 
   if (result != ESP_OK) {
+    SdLoggerResetMountState_(logger);
     ESP_LOGW(kTag, "SD mount failed: %s", esp_err_to_name(result));
     return result;
   }
@@ -685,14 +688,39 @@ SdLoggerTryRemount(sd_logger_t* logger, bool format_if_mount_failed)
   if (logger == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  if (logger->is_mounted) {
+  if (logger->is_mounted && logger->card != NULL) {
     return ESP_OK;
   }
   if (!logger->slot_config_valid) {
     return ESP_ERR_INVALID_STATE;
   }
-  return SdLoggerMountInternal(
+
+  if (logger->card != NULL) {
+    const esp_err_t stale_unmount_result =
+      esp_vfs_fat_sdcard_unmount(logger->mount_point, logger->card);
+    if (stale_unmount_result != ESP_OK &&
+        stale_unmount_result != ESP_ERR_INVALID_STATE) {
+      ESP_LOGW(kTag,
+               "SD stale unmount failed (%s): %s",
+               logger->mount_point,
+               esp_err_to_name(stale_unmount_result));
+    }
+  }
+  SdLoggerResetMountState_(logger);
+
+  esp_err_t result = SdLoggerMountInternal(
     logger, logger->host_id, logger->cs_gpio, format_if_mount_failed);
+  if (result == ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(kTag, "SD remount invalid-state; resetting and retrying once");
+    SdLoggerResetMountState_(logger);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    result = SdLoggerMountInternal(
+      logger, logger->host_id, logger->cs_gpio, format_if_mount_failed);
+  }
+  if (result != ESP_OK) {
+    SdLoggerResetMountState_(logger);
+  }
+  return result;
 }
 
 /**
@@ -707,9 +735,7 @@ SdLoggerUnmount(sd_logger_t* logger)
     return ESP_ERR_INVALID_ARG;
   }
 
-  SdLoggerClose(logger);
-
-  if (logger->is_mounted && logger->card != NULL) {
+  if (logger->card != NULL) {
     esp_err_t unmount_result =
       esp_vfs_fat_sdcard_unmount(logger->mount_point, logger->card);
     if (unmount_result != ESP_OK) {
@@ -717,13 +743,19 @@ SdLoggerUnmount(sd_logger_t* logger)
                "SD unmount failed (%s): %s",
                logger->mount_point,
                esp_err_to_name(unmount_result));
-      // Continue clearing state regardless.
+    } else {
+      logger->card = NULL;
     }
   }
 
-  logger->is_mounted = false;
-  logger->card = NULL;
+  SdLoggerResetMountState_(logger);
   return ESP_OK;
+}
+
+void
+SdLoggerResetMountState(sd_logger_t* logger)
+{
+  SdLoggerResetMountState_(logger);
 }
 
 /**
@@ -1147,6 +1179,17 @@ SdLoggerClose(sd_logger_t* logger)
   logger->current_date[0] = '\0';
   logger->current_header_signature = 0;
   logger->pending_header = NULL;
+}
+
+static void
+SdLoggerResetMountState_(sd_logger_t* logger)
+{
+  if (logger == NULL) {
+    return;
+  }
+  SdLoggerClose(logger);
+  logger->is_mounted = false;
+  logger->card = NULL;
 }
 
 /**
