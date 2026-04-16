@@ -422,7 +422,7 @@ static void
 PrintTimeShow(const app_runtime_t* runtime);
 
 static bool
-ConsoleFramLogLock(runtime_state_t* state)
+ConsoleFramLogLock(const runtime_state_t* state)
 {
   if (state == NULL || state->fram_log_mutex == NULL) {
     return false;
@@ -432,7 +432,7 @@ ConsoleFramLogLock(runtime_state_t* state)
 }
 
 static void
-ConsoleFramLogUnlock(runtime_state_t* state)
+ConsoleFramLogUnlock(const runtime_state_t* state)
 {
   if (state == NULL || state->fram_log_mutex == NULL) {
     return;
