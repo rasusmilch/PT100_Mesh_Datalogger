@@ -304,6 +304,7 @@ class SessionLogger:
         self._log_file_lock = threading.Lock()
         self._last_flush_time = time.monotonic()
         self._lines_since_flush = 0
+        self._pending_file_lines: list[str] = []
 
         self._output_file = self._open_output_file()
         self._stdin_thread: Optional[threading.Thread] = None
@@ -318,7 +319,7 @@ class SessionLogger:
         resolved_path = self._resolve_output_path(self._output_config.output_path)
         mode = "a" if self._output_config.append else "w"
         os.makedirs(os.path.dirname(resolved_path) or ".", exist_ok=True)
-        return open(resolved_path, mode, encoding="utf-8", errors="replace", buffering=1)
+        return open(resolved_path, mode, encoding="utf-8", errors="replace")
 
     @staticmethod
     def _resolve_output_path(output_arg: str) -> str:
@@ -339,9 +340,7 @@ class SessionLogger:
     def _log_meta(self, message: str) -> None:
         prefix = _format_host_prefix(include_timestamp=True)
         line = f"{prefix}{message}\n"
-        with self._log_file_lock:
-            self._output_file.write(line)
-        self._lines_since_flush += 1
+        self._buffer_file_line(line)
         self._maybe_flush_due()
         if self._output_config.print_to_stdout:
             sys.stdout.write(line)
@@ -372,11 +371,7 @@ class SessionLogger:
         stripped = raw_line.rstrip("\r\n")
         host_prefix = _format_host_prefix(self._output_config.host_timestamps)
         file_line = f"{host_prefix}{stripped}\n"
-
-        with self._log_file_lock:
-            self._output_file.write(file_line)
-
-        self._lines_since_flush += 1
+        self._buffer_file_line(file_line)
         self._maybe_flush_due()
 
         if self._output_config.print_to_stdout:
@@ -384,20 +379,43 @@ class SessionLogger:
             sys.stdout.write(self._format_with_color(display_line) + "\n")
             sys.stdout.flush()
 
+    def _buffer_file_line(self, line: str) -> None:
+        with self._log_file_lock:
+            if self._closed:
+                return
+            self._pending_file_lines.append(line)
+            self._lines_since_flush += 1
+
+    def _drain_pending_lines_locked(self) -> int:
+        if not self._pending_file_lines:
+            return 0
+        pending_text = "".join(self._pending_file_lines)
+        self._output_file.write(pending_text)
+        drained_count = len(self._pending_file_lines)
+        self._pending_file_lines.clear()
+        return drained_count
+
     def _flush(self) -> None:
         with self._log_file_lock:
             if self._closed:
                 return
+            flushed_line_count = self._drain_pending_lines_locked()
             self._output_file.flush()
             if self._output_config.fsync_on_flush:
                 os.fsync(self._output_file.fileno())
-        self._lines_since_flush = 0
-        self._last_flush_time = time.monotonic()
+            if flushed_line_count > 0:
+                self._lines_since_flush = 0
+                self._last_flush_time = time.monotonic()
 
     def _maybe_flush_due(self) -> None:
         now = time.monotonic()
-        flush_due_to_lines = self._output_config.flush_lines > 0 and self._lines_since_flush >= self._output_config.flush_lines
-        flush_due_to_time = self._output_config.flush_interval_sec > 0 and (now - self._last_flush_time) >= self._output_config.flush_interval_sec
+        with self._log_file_lock:
+            pending_lines = self._lines_since_flush
+            last_flush_time = self._last_flush_time
+        flush_due_to_lines = self._output_config.flush_lines > 0 and pending_lines >= self._output_config.flush_lines
+        flush_due_to_time = self._output_config.flush_interval_sec > 0 and pending_lines > 0 and (
+            (now - last_flush_time) >= self._output_config.flush_interval_sec
+        )
         if flush_due_to_lines or flush_due_to_time:
             self._flush()
 
