@@ -7254,8 +7254,10 @@ SensorTask(void* context)
         disp_selected_milli_c = disp_cal_milli_c;
       }
 
-      CalWindowPushRawSample(disp_raw_milli_c,
-                             (int32_t)llround(disp_raw_res_ohm * 1000.0));
+      // Intentionally do not push runtime/display samples into the calibration
+      // capture window. `cal live` / `cal livecal` own that window and rely on
+      // a single writer so generation/sample-count snapshots stay coherent
+      // while calibrated cache refresh and validation run.
       if (sample.fault_present) {
         record.flags |= LOG_RECORD_FLAG_SENSOR_FAULT;
         record.fault_status = sample.fault_status;

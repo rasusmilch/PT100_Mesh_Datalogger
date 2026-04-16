@@ -4700,6 +4700,8 @@ CalConsoleOpTask(void* task_arg)
 
     if (live_output_mode == CAL_CONSOLE_LIVE_OUTPUT_CALIBRATED &&
         active_window_generation != last_calibrated_stats_generation) {
+      // The calibrated cache is keyed by active-window generation. Correctness
+      // depends on single-owner updates to the calibration live/capture window.
       if (!RefreshCalibratedWindowTempStatsCache_(sample_count,
                                                   active_window_generation,
                                                   last_raw_mC,
