@@ -459,3 +459,5 @@ cal livecal: ts=2026-04-16T18:32:59Z n=120 raw_ohm=118.851 std_ohm=0.006 mean_oh
 - BORE A
 cal livecal: ts=2026-04-16T18:32:59Z n=120 raw_ohm=118.851 std_ohm=0.006 mean_ohm=118.851 cal_temp=48.461C std_temp=0.015C mean_temp=48.461C drift=0.003C/min delta=0.004C fault=none (0x00)
 - BORE B
+cal livecal: ts=2026-04-16T19:02:43Z n=120 raw_ohm=118.890 std_ohm=0.006 mean_ohm=118.882 cal_temp=48.562C std_temp=0.016C mean_temp=48.542C drift=-0.001C/min delta=-0.000C fault=none (0x00)
+- BORE A
