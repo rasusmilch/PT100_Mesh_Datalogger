@@ -1195,6 +1195,7 @@ CommandStatus(int argc, char** argv)
   }
 
   const app_settings_t* settings = g_runtime->settings;
+  const runtime_state_t* state = RuntimeGetState();
 
   printf("node_id: %s\n", g_runtime->node_id_string);
   printf("runtime_running: %s\n", RuntimeIsRunning() ? "yes" : "no");
@@ -1207,6 +1208,8 @@ CommandStatus(int argc, char** argv)
   printf("sd_flush_period_ms: %u\n", (unsigned)settings->sd_flush_period_ms);
   printf("sd_batch_target_bytes: %u\n",
          (unsigned)settings->sd_batch_bytes_target);
+  printf("sd_verify_readback: %s\n",
+         (state != NULL && state->sd_verify_readback) ? "on" : "off");
   printf("node_role: %s\n", AppSettingsRoleToString(settings->node_role));
   printf("net_mode: %s\n", AppSettingsNetModeToString(settings->net_mode));
   const app_net_mode_t effective_net_mode =
@@ -2564,12 +2567,26 @@ CommandSd(int argc, char** argv)
     }
     const char* value = argv[2];
     if (strcmp(value, "on") == 0) {
+      const esp_err_t save_result = AppSettingsSaveSdVerifyReadback(true);
+      if (save_result != ESP_OK) {
+        printf("sd verify readback save failed: %s\n",
+               esp_err_to_name(save_result));
+        return 1;
+      }
       state->sd_verify_readback = true;
+      g_runtime->settings->sd_verify_readback = true;
       printf("sd verify readback: on\n");
       return 0;
     }
     if (strcmp(value, "off") == 0) {
+      const esp_err_t save_result = AppSettingsSaveSdVerifyReadback(false);
+      if (save_result != ESP_OK) {
+        printf("sd verify readback save failed: %s\n",
+               esp_err_to_name(save_result));
+        return 1;
+      }
       state->sd_verify_readback = false;
+      g_runtime->settings->sd_verify_readback = false;
       printf("sd verify readback: off\n");
       return 0;
     }

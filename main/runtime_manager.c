@@ -10307,6 +10307,7 @@ RuntimeManagerInitMinimal(void)
     ESP_LOGE(
       kTag, "AppSettingsLoad failed: %s", esp_err_to_name(settings_result));
   }
+  g_state.sd_verify_readback = g_state.settings.sd_verify_readback;
   g_state.last_rtd_ema_enabled = g_state.settings.rtd_ema_enabled;
   AppSettingsApplyTimeZone(&g_state.settings);
   UnitsGpioInit(&g_state.settings);
