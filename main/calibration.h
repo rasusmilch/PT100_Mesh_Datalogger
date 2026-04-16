@@ -232,12 +232,15 @@ extern "C"
                                        double mean_calibrated_temp_c,
                                        double stddev_calibrated_temp_c,
                                        bool valid,
-                                       size_t sample_count);
+                                       size_t sample_count,
+                                       uint32_t generation);
   void CalWindowGetCalibratedTempStats(double* out_last_calibrated_temp_c,
                                        double* out_mean_calibrated_temp_c,
                                        double* out_stddev_calibrated_temp_c,
                                        bool* out_valid,
-                                       size_t* out_sample_count);
+                                       size_t* out_sample_count,
+                                       uint32_t* out_generation);
+  uint32_t CalWindowGetActiveGeneration(void);
   /**
    * @brief Read one sample from the active calibration window by age.
    * @param index_from_oldest Zero-based index in active window order.

@@ -50,6 +50,8 @@ typedef struct
   double stddev_calibrated_temp_c;
   bool calibrated_temp_stats_valid;
   size_t calibrated_temp_stats_sample_count;
+  uint32_t calibrated_temp_stats_generation;
+  uint32_t active_window_generation;
 } cal_window_state_t;
 
 typedef struct
@@ -471,6 +473,8 @@ InvalidateCalibratedTempStats_(void)
   g_cal_window.stddev_calibrated_temp_c = 0.0;
   g_cal_window.calibrated_temp_stats_valid = false;
   g_cal_window.calibrated_temp_stats_sample_count = 0u;
+  g_cal_window.calibrated_temp_stats_generation = 0u;
+  ++g_cal_window.active_window_generation;
 }
 
 static void
@@ -1167,13 +1171,15 @@ CalWindowSetCalibratedTempStats(double last_calibrated_temp_c,
                                 double mean_calibrated_temp_c,
                                 double stddev_calibrated_temp_c,
                                 bool valid,
-                                size_t sample_count)
+                                size_t sample_count,
+                                uint32_t generation)
 {
   g_cal_window.last_calibrated_temp_c = last_calibrated_temp_c;
   g_cal_window.mean_calibrated_temp_c = mean_calibrated_temp_c;
   g_cal_window.stddev_calibrated_temp_c = stddev_calibrated_temp_c;
   g_cal_window.calibrated_temp_stats_valid = valid;
   g_cal_window.calibrated_temp_stats_sample_count = sample_count;
+  g_cal_window.calibrated_temp_stats_generation = generation;
 }
 
 void
@@ -1181,7 +1187,8 @@ CalWindowGetCalibratedTempStats(double* out_last_calibrated_temp_c,
                                 double* out_mean_calibrated_temp_c,
                                 double* out_stddev_calibrated_temp_c,
                                 bool* out_valid,
-                                size_t* out_sample_count)
+                                size_t* out_sample_count,
+                                uint32_t* out_generation)
 {
   if (out_last_calibrated_temp_c != NULL) {
     *out_last_calibrated_temp_c = g_cal_window.last_calibrated_temp_c;
@@ -1198,6 +1205,15 @@ CalWindowGetCalibratedTempStats(double* out_last_calibrated_temp_c,
   if (out_sample_count != NULL) {
     *out_sample_count = g_cal_window.calibrated_temp_stats_sample_count;
   }
+  if (out_generation != NULL) {
+    *out_generation = g_cal_window.calibrated_temp_stats_generation;
+  }
+}
+
+uint32_t
+CalWindowGetActiveGeneration(void)
+{
+  return g_cal_window.active_window_generation;
 }
 
 bool
