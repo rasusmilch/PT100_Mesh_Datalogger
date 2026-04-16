@@ -444,8 +444,11 @@ typedef struct
 {
   bool read_ok;
   bool sample_valid_for_window;
+  bool sample_skipped_duplicate;
+  bool sample_skipped_invalid_or_fault;
   uint8_t fault_status;
 } cal_live_sensor_status_t;
+static uint32_t g_cal_runtime_last_sample_id = 0u;
 
 static cal_live_sensor_status_t
 MaybePushCalRawSampleFromSensorWithStatus_(void)
@@ -454,6 +457,42 @@ MaybePushCalRawSampleFromSensorWithStatus_(void)
 
   const app_runtime_t* runtime = RuntimeGetRuntime();
   if (runtime == NULL || runtime->sensor == NULL) {
+    return status;
+  }
+
+  if (RuntimeIsRunning()) {
+    runtime_sensor_sample_t runtime_sample = { 0 };
+    if (!RuntimeCopyLatestSensorSample(&runtime_sample)) {
+      return status;
+    }
+    status.read_ok = true;
+    status.fault_status = (uint8_t)runtime_sample.fault;
+    if (runtime_sample.sample_id == g_cal_runtime_last_sample_id) {
+      status.sample_skipped_duplicate = true;
+      ESP_LOGD(kTag,
+               "cal sample duplicate skipped: sample_id=%" PRIu32,
+               runtime_sample.sample_id);
+      return status;
+    }
+    g_cal_runtime_last_sample_id = runtime_sample.sample_id;
+
+    if (!runtime_sample.valid || runtime_sample.fault != 0u) {
+      status.sample_skipped_invalid_or_fault = true;
+      ESP_LOGD(kTag,
+               "cal sample skipped: sample_id=%" PRIu32 " valid=%u fault=0x%02X",
+               runtime_sample.sample_id,
+               runtime_sample.valid ? 1u : 0u,
+               (unsigned)runtime_sample.fault);
+      return status;
+    }
+
+    // Calibration window is single-writer (console ops only).
+    // Runtime produces sensor samples but MUST NOT write to the window.
+    // Console consumes runtime samples via snapshot + sample_id tracking.
+    CalWindowPushRawSample(runtime_sample.temp_mC, runtime_sample.ohm_mohm);
+    status.sample_valid_for_window = true;
+    ESP_LOGD(
+      kTag, "cal sample consumed: sample_id=%" PRIu32, runtime_sample.sample_id);
     return status;
   }
 
@@ -3068,6 +3107,7 @@ CalConsoleOpStartLive(uint32_t every_ms,
   g_cal_console_op.low_internal_largest = g_cal_console_op.start_internal_largest;
   g_cal_console_op.min_stack_free_bytes = UINT32_MAX;
   g_cal_console_op.max_temp_buffer_bytes = 0u;
+  g_cal_runtime_last_sample_id = 0u;
   if (!CalHistoryEnsureStorage_()) {
     g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
     g_cal_console_op.task_handle = NULL;
@@ -3184,6 +3224,7 @@ CalConsoleOpStartCapture(double actual_temp_c,
   g_cal_console_op.low_internal_largest = g_cal_console_op.start_internal_largest;
   g_cal_console_op.min_stack_free_bytes = UINT32_MAX;
   g_cal_console_op.max_temp_buffer_bytes = 0u;
+  g_cal_runtime_last_sample_id = 0u;
   if (!CalHistoryEnsureStorage_()) {
     g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
     g_cal_console_op.task_handle = NULL;
@@ -4575,6 +4616,7 @@ CalConsoleOpTask(void* task_arg)
   }
   g_cal_console_op.start_us = esp_timer_get_time();
   g_cal_console_op.last_sample_count = 0;
+  g_cal_runtime_last_sample_id = 0u;
   const cal_console_op_mode_t mode = g_cal_console_op.mode;
   const cal_console_live_output_mode_t live_output_mode =
     g_cal_console_op.live_output_mode;

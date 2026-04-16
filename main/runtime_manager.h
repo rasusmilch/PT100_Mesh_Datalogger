@@ -66,6 +66,16 @@ extern "C"
     esp_err_t result;
   } sd_drain_stats_t;
 
+  typedef struct
+  {
+    uint32_t sample_id;
+    int64_t timestamp_us;
+    int32_t temp_mC;
+    int32_t ohm_mohm;
+    uint16_t fault;
+    bool valid;
+  } runtime_sensor_sample_t;
+
   /**
    * @brief Execute RuntimeManagerInit.
    * @return Return the function result.
@@ -185,6 +195,13 @@ extern "C"
    * @return Return the function result.
    */
   bool RuntimeIsRunning(void);
+
+  /**
+   * @brief Copy latest runtime-owned MAX31865 snapshot for console consumers.
+   * @param out_sample Destination sample snapshot.
+   * @return True when at least one sample has been published.
+   */
+  bool RuntimeCopyLatestSensorSample(runtime_sensor_sample_t* out_sample);
 
   /**
    * @brief Execute RuntimeApplyNetMode.
