@@ -142,6 +142,7 @@ EvaluateCalibratedTemperature_(double raw_temp_c,
                                double* calibrated_temp_c_out);
 static bool
 RefreshCalibratedWindowTempStatsCache_(size_t sample_count,
+                                       uint32_t window_generation,
                                        int32_t last_raw_mC,
                                        int32_t last_raw_mOhm,
                                        int32_t mean_raw_mC,
@@ -3695,6 +3696,7 @@ EvaluateCalibratedTemperature_(double raw_temp_c,
 
 static bool
 RefreshCalibratedWindowTempStatsCache_(size_t sample_count,
+                                       uint32_t window_generation,
                                        int32_t last_raw_mC,
                                        int32_t last_raw_mOhm,
                                        int32_t mean_raw_mC,
@@ -3704,19 +3706,22 @@ RefreshCalibratedWindowTempStatsCache_(size_t sample_count,
   double mean_calibrated_temp_c = 0.0;
   double stddev_calibrated_temp_c = 0.0;
   if (sample_count == 0u) {
-    CalWindowSetCalibratedTempStats(0.0, 0.0, 0.0, true, sample_count);
+    CalWindowSetCalibratedTempStats(
+      0.0, 0.0, 0.0, true, sample_count, window_generation);
     return true;
   }
 
   if (!EvaluateCalibratedTemperature_(
         last_raw_mC / 1000.0, last_raw_mOhm / 1000.0, &last_calibrated_temp_c)) {
-    CalWindowSetCalibratedTempStats(0.0, 0.0, 0.0, false, sample_count);
+    CalWindowSetCalibratedTempStats(
+      0.0, 0.0, 0.0, false, sample_count, window_generation);
     return false;
   }
 
   if (!EvaluateCalibratedTemperature_(
         mean_raw_mC / 1000.0, mean_raw_mOhm / 1000.0, &mean_calibrated_temp_c)) {
-    CalWindowSetCalibratedTempStats(0.0, 0.0, 0.0, false, sample_count);
+    CalWindowSetCalibratedTempStats(
+      0.0, 0.0, 0.0, false, sample_count, window_generation);
     return false;
   }
 
@@ -3740,7 +3745,12 @@ RefreshCalibratedWindowTempStatsCache_(size_t sample_count,
   }
   if (valid_count == 0u) {
     CalWindowSetCalibratedTempStats(
-      last_calibrated_temp_c, mean_calibrated_temp_c, 0.0, true, sample_count);
+      last_calibrated_temp_c,
+      mean_calibrated_temp_c,
+      0.0,
+      true,
+      sample_count,
+      window_generation);
     return true;
   }
   const double inv_count = 1.0 / (double)valid_count;
@@ -3751,7 +3761,8 @@ RefreshCalibratedWindowTempStatsCache_(size_t sample_count,
                                   mean_calibrated_temp_c,
                                   stddev_calibrated_temp_c,
                                   true,
-                                  sample_count);
+                                  sample_count,
+                                  window_generation);
   return true;
 }
 
@@ -4581,7 +4592,7 @@ CalConsoleOpTask(void* task_arg)
   const uint32_t window_duration_s = CalWindowGetDurationSeconds();
   int64_t last_print_us = 0;
   size_t last_sample_count = 0;
-  size_t last_calibrated_stats_sample_count = SIZE_MAX;
+  uint32_t last_calibrated_stats_generation = UINT32_MAX;
   if (!CalHistoryEnsureStorage_()) {
     printf("cal: history storage unavailable\n");
     goto cal_op_cleanup;
@@ -4641,6 +4652,7 @@ CalConsoleOpTask(void* task_arg)
       MaybePushCalRawSampleFromSensorWithStatus_();
 
     const size_t sample_count = CalWindowGetSampleCount();
+    const uint32_t active_window_generation = CalWindowGetActiveGeneration();
     const int64_t now_us = esp_timer_get_time();
     const bool new_sample_arrived =
       sensor_status.sample_valid_for_window && (sample_count > 0u);
@@ -4687,8 +4699,9 @@ CalConsoleOpTask(void* task_arg)
     }
 
     if (live_output_mode == CAL_CONSOLE_LIVE_OUTPUT_CALIBRATED &&
-        sample_count != last_calibrated_stats_sample_count) {
+        active_window_generation != last_calibrated_stats_generation) {
       if (!RefreshCalibratedWindowTempStatsCache_(sample_count,
+                                                  active_window_generation,
                                                   last_raw_mC,
                                                   last_raw_mOhm,
                                                   mean_raw_mC,
@@ -4699,9 +4712,10 @@ CalConsoleOpTask(void* task_arg)
       // Diagnostic: calibrated-window scan runs once per new window state,
       // not once per print tick.
       ESP_LOGD(kTag,
-               "cal livecal cache refreshed for sample_count=%u",
+               "cal livecal cache refreshed for generation=%u sample_count=%u",
+               (unsigned)active_window_generation,
                (unsigned)sample_count);
-      last_calibrated_stats_sample_count = sample_count;
+      last_calibrated_stats_generation = active_window_generation;
     }
 
     CalTrackLiveStackAndTempUsage_(0u);
@@ -4736,13 +4750,16 @@ CalConsoleOpTask(void* task_arg)
           double stddev_calibrated_temp_c = 0.0;
           bool calibrated_stats_valid = false;
           size_t calibrated_stats_sample_count = 0u;
+          uint32_t calibrated_stats_generation = 0u;
           temp_buffer_bytes += 64u;
           CalWindowGetCalibratedTempStats(&calibrated_temp_c,
                                           &mean_calibrated_temp_c,
                                           &stddev_calibrated_temp_c,
                                           &calibrated_stats_valid,
-                                          &calibrated_stats_sample_count);
+                                          &calibrated_stats_sample_count,
+                                          &calibrated_stats_generation);
           if (!calibrated_stats_valid ||
+              calibrated_stats_generation != active_window_generation ||
               calibrated_stats_sample_count != sample_count) {
             printf("cal livecal blocked: calibration evaluation failed\n");
             break;
