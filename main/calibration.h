@@ -228,6 +228,16 @@ extern "C"
                               double* out_elapsed_s,
                               double* out_drift_c_per_min,
                               double* out_abs_drift_c_per_min);
+  void CalWindowSetCalibratedTempStats(double last_calibrated_temp_c,
+                                       double mean_calibrated_temp_c,
+                                       double stddev_calibrated_temp_c,
+                                       bool valid,
+                                       size_t sample_count);
+  void CalWindowGetCalibratedTempStats(double* out_last_calibrated_temp_c,
+                                       double* out_mean_calibrated_temp_c,
+                                       double* out_stddev_calibrated_temp_c,
+                                       bool* out_valid,
+                                       size_t* out_sample_count);
   /**
    * @brief Read one sample from the active calibration window by age.
    * @param index_from_oldest Zero-based index in active window order.
