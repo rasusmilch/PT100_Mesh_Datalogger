@@ -71,6 +71,7 @@
 static const char* kTag = "console";
 static const TickType_t kConsoleFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kFlushTimeoutDefaultMs = 15000;
+static const size_t kConsoleMaxCmdlineLength = 1024;
 static const double kDefaultCaptureDriftLimitCPerMin = 0.020;
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
@@ -245,6 +246,9 @@ ModeTopicHelp(const char* topic);
  */
 static uint32_t
 ConsoleEffectiveSensorPollPeriodMs(const app_settings_t* settings);
+static bool
+ConsoleInputTooLongOrUnterminatedQuote_(const char* line,
+                                        size_t max_cmdline_length);
 
 /**
  * @brief Print combined calibration status including window stats, points, and
@@ -10467,6 +10471,12 @@ ConsoleTask(void* context)
     }
 
     if (strlen(line) > 0) {
+      if (ConsoleInputTooLongOrUnterminatedQuote_(
+            line, kConsoleMaxCmdlineLength)) {
+        printf("input too long or unterminated quoted string\n");
+        linenoiseFree(line);
+        continue;
+      }
       linenoiseHistoryAdd(line);
       int run_result = 0;
       esp_err_t result = esp_console_run(line, &run_result);
@@ -10482,6 +10492,35 @@ ConsoleTask(void* context)
     }
     linenoiseFree(line);
   }
+}
+
+static bool
+ConsoleInputTooLongOrUnterminatedQuote_(const char* line,
+                                        size_t max_cmdline_length)
+{
+  if (line == NULL || max_cmdline_length < 2u) {
+    return false;
+  }
+
+  const size_t line_length = strlen(line);
+  const bool maybe_truncated = (line_length >= (max_cmdline_length - 1u));
+  bool in_quotes = false;
+  bool escaped = false;
+  for (size_t index = 0; index < line_length; ++index) {
+    const char current = line[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (in_quotes && current == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (current == '"') {
+      in_quotes = !in_quotes;
+    }
+  }
+  return maybe_truncated || in_quotes;
 }
 
 /**
@@ -10549,7 +10588,7 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
 #endif
 
   esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
-  console_config.max_cmdline_length = 256;
+  console_config.max_cmdline_length = (uint32_t)kConsoleMaxCmdlineLength;
   console_config.max_cmdline_args = 8;
   ESP_ERROR_CHECK(esp_console_init(&console_config));
 
