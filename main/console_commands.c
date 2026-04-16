@@ -451,9 +451,6 @@ static cal_live_sensor_status_t
 MaybePushCalRawSampleFromSensorWithStatus_(void)
 {
   cal_live_sensor_status_t status = { 0 };
-  if (RuntimeIsRunning()) {
-    return status;
-  }
 
   const app_runtime_t* runtime = RuntimeGetRuntime();
   if (runtime == NULL || runtime->sensor == NULL) {
@@ -472,6 +469,10 @@ MaybePushCalRawSampleFromSensorWithStatus_(void)
     return status;
   }
 
+  // Run mode can remain active while a console calibration operation is in
+  // progress; however, this console path remains the sole writer to the
+  // calibration window. Runtime/background/display/logging flows must not push
+  // samples into this window.
   int32_t raw_milli_c = (int32_t)llround(sample.temperature_c * 1000.0);
   int32_t raw_milli_ohm = (int32_t)llround(sample.resistance_ohm * 1000.0);
   CalWindowPushRawSample(raw_milli_c, raw_milli_ohm);
