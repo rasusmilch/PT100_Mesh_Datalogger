@@ -39,6 +39,17 @@ typedef struct
   double active_sum_sq_milli_c;
   double active_sum_milli_ohm;
   double active_sum_sq_milli_ohm;
+  int32_t trend_begin_mean_raw_milli_c;
+  int32_t trend_end_mean_raw_milli_c;
+  int32_t trend_delta_raw_milli_c;
+  double trend_drift_c_per_min;
+  double trend_abs_drift_c_per_min;
+  bool trend_stats_valid;
+  double last_calibrated_temp_c;
+  double mean_calibrated_temp_c;
+  double stddev_calibrated_temp_c;
+  bool calibrated_temp_stats_valid;
+  size_t calibrated_temp_stats_sample_count;
 } cal_window_state_t;
 
 typedef struct
@@ -79,6 +90,8 @@ ComputeCalibrationWindowTrendStats_(size_t count,
                                     double* out_end_mean_mC,
                                     double* out_drift_c_per_min);
 static void ResetCalibrationTrendEma(void);
+static void InvalidateCalibratedTempStats_(void);
+static void RecomputeCachedTrendStats_(void);
 static void UpdateCalibrationTrendEma(double delta_c_raw,
                                       double drift_c_per_min_raw);
 static void RebuildCalibrationWindowState_(void);
@@ -339,6 +352,13 @@ RebuildCalibrationWindowState_(void)
   g_cal_window.stddev_raw_milli_c = 0;
   g_cal_window.mean_raw_milli_ohm = 0;
   g_cal_window.stddev_raw_milli_ohm = 0;
+  g_cal_window.trend_begin_mean_raw_milli_c = 0;
+  g_cal_window.trend_end_mean_raw_milli_c = 0;
+  g_cal_window.trend_delta_raw_milli_c = 0;
+  g_cal_window.trend_drift_c_per_min = 0.0;
+  g_cal_window.trend_abs_drift_c_per_min = 0.0;
+  g_cal_window.trend_stats_valid = false;
+  InvalidateCalibratedTempStats_();
 
   if (g_cal_window.count == 0u) {
     return;
@@ -412,6 +432,9 @@ RebuildCalibrationWindowState_(void)
                                      (oldest_time_us <= min_time_us);
     g_cal_window.active_is_ready = (active_count >= 3u) && matured_by_boundary;
   }
+  RecomputeCachedTrendStats_();
+  UpdateCalibrationTrendEma(g_cal_window.trend_delta_raw_milli_c / 1000.0,
+                            g_cal_window.trend_drift_c_per_min);
 }
 
 static void
@@ -438,6 +461,54 @@ UpdateCalibrationTrendEma(double delta_c_raw, double drift_c_per_min_raw)
   g_cal_window.trend_ema_drift_c_per_min =
     (alpha * drift_c_per_min_raw) +
     ((1.0 - alpha) * g_cal_window.trend_ema_drift_c_per_min);
+}
+
+static void
+InvalidateCalibratedTempStats_(void)
+{
+  g_cal_window.last_calibrated_temp_c = 0.0;
+  g_cal_window.mean_calibrated_temp_c = 0.0;
+  g_cal_window.stddev_calibrated_temp_c = 0.0;
+  g_cal_window.calibrated_temp_stats_valid = false;
+  g_cal_window.calibrated_temp_stats_sample_count = 0u;
+}
+
+static void
+RecomputeCachedTrendStats_(void)
+{
+  const calibration_active_window_info_t active_window = ResolveActiveWindowInfo_();
+  const size_t count = active_window.active_count;
+  const size_t oldest_index = active_window.oldest_index;
+  const size_t segment_count = (count / 4u >= 3u) ? (count / 4u) : 3u;
+
+  g_cal_window.trend_begin_mean_raw_milli_c = 0;
+  g_cal_window.trend_end_mean_raw_milli_c = 0;
+  g_cal_window.trend_delta_raw_milli_c = 0;
+  g_cal_window.trend_drift_c_per_min = 0.0;
+  g_cal_window.trend_abs_drift_c_per_min = 0.0;
+  g_cal_window.trend_stats_valid = false;
+
+  if (count < segment_count || segment_count == 0u) {
+    return;
+  }
+
+  double begin_mean_mC = 0.0;
+  double end_mean_mC = 0.0;
+  double drift_c_per_min = 0.0;
+  ComputeCalibrationWindowTrendStats_(count,
+                                      oldest_index,
+                                      segment_count,
+                                      &begin_mean_mC,
+                                      &end_mean_mC,
+                                      &drift_c_per_min);
+  const double delta_c =
+    ComputeCalibrationWindowDeltaCRaw(begin_mean_mC, end_mean_mC);
+  g_cal_window.trend_begin_mean_raw_milli_c = (int32_t)llround(begin_mean_mC);
+  g_cal_window.trend_end_mean_raw_milli_c = (int32_t)llround(end_mean_mC);
+  g_cal_window.trend_delta_raw_milli_c = (int32_t)llround(delta_c * 1000.0);
+  g_cal_window.trend_drift_c_per_min = drift_c_per_min;
+  g_cal_window.trend_abs_drift_c_per_min = fabs(drift_c_per_min);
+  g_cal_window.trend_stats_valid = true;
 }
 
 /**
@@ -922,6 +993,13 @@ CalWindowPushRawSample(int32_t raw_milli_c, int32_t raw_milli_ohm)
     g_cal_window.stddev_raw_milli_c = 0;
     g_cal_window.mean_raw_milli_ohm = 0;
     g_cal_window.stddev_raw_milli_ohm = 0;
+    g_cal_window.trend_begin_mean_raw_milli_c = 0;
+    g_cal_window.trend_end_mean_raw_milli_c = 0;
+    g_cal_window.trend_delta_raw_milli_c = 0;
+    g_cal_window.trend_drift_c_per_min = 0.0;
+    g_cal_window.trend_abs_drift_c_per_min = 0.0;
+    g_cal_window.trend_stats_valid = false;
+    InvalidateCalibratedTempStats_();
     return;
   }
 
@@ -955,16 +1033,10 @@ CalWindowPushRawSample(int32_t raw_milli_c, int32_t raw_milli_ohm)
     g_cal_window.active_is_ready =
       (g_cal_window.active_count >= 3u) && matured_by_boundary;
   }
-
-  int32_t delta_raw_mC = 0;
-  double drift_raw_c_per_min = 0.0;
-  CalWindowGetTrendStats(NULL,
-                         NULL,
-                         &delta_raw_mC,
-                         NULL,
-                         &drift_raw_c_per_min,
-                         NULL);
-  UpdateCalibrationTrendEma(delta_raw_mC / 1000.0, drift_raw_c_per_min);
+  InvalidateCalibratedTempStats_();
+  RecomputeCachedTrendStats_();
+  UpdateCalibrationTrendEma(g_cal_window.trend_delta_raw_milli_c / 1000.0,
+                            g_cal_window.trend_drift_c_per_min);
 }
 
 /**
@@ -1070,62 +1142,61 @@ CalWindowGetTrendStats(int32_t* out_begin_mean_raw_mC,
                        double* out_drift_c_per_min,
                        double* out_abs_drift_c_per_min)
 {
-  const calibration_active_window_info_t active_window = ResolveActiveWindowInfo_();
-  const size_t count = active_window.active_count;
-  const size_t oldest_index = active_window.oldest_index;
-  const size_t segment_count = (count / 4u >= 3u) ? (count / 4u) : 3u;
-  if (count < segment_count || segment_count == 0u) {
-    if (out_begin_mean_raw_mC != NULL) {
-      *out_begin_mean_raw_mC = 0;
-    }
-    if (out_end_mean_raw_mC != NULL) {
-      *out_end_mean_raw_mC = 0;
-    }
-    if (out_delta_raw_mC != NULL) {
-      *out_delta_raw_mC = 0;
-    }
-    if (out_elapsed_s != NULL) {
-      *out_elapsed_s = 0.0;
-    }
-    if (out_drift_c_per_min != NULL) {
-      *out_drift_c_per_min = 0.0;
-    }
-    if (out_abs_drift_c_per_min != NULL) {
-      *out_abs_drift_c_per_min = 0.0;
-    }
-    return;
-  }
-
-  double begin_mean_mC = 0.0;
-  double end_mean_mC = 0.0;
-  double drift_c_per_min = 0.0;
-  ComputeCalibrationWindowTrendStats_(count,
-                                      oldest_index,
-                                      segment_count,
-                                      &begin_mean_mC,
-                                      &end_mean_mC,
-                                      &drift_c_per_min);
-  const double delta_c =
-    ComputeCalibrationWindowDeltaCRaw(begin_mean_mC, end_mean_mC);
-  const double delta_mC = delta_c * 1000.0;
-
   if (out_begin_mean_raw_mC != NULL) {
-    *out_begin_mean_raw_mC = (int32_t)llround(begin_mean_mC);
+    *out_begin_mean_raw_mC = g_cal_window.trend_begin_mean_raw_milli_c;
   }
   if (out_end_mean_raw_mC != NULL) {
-    *out_end_mean_raw_mC = (int32_t)llround(end_mean_mC);
+    *out_end_mean_raw_mC = g_cal_window.trend_end_mean_raw_milli_c;
   }
   if (out_delta_raw_mC != NULL) {
-    *out_delta_raw_mC = (int32_t)llround(delta_mC);
+    *out_delta_raw_mC = g_cal_window.trend_delta_raw_milli_c;
   }
   if (out_elapsed_s != NULL) {
-    *out_elapsed_s = active_window.elapsed_s;
+    *out_elapsed_s = g_cal_window.active_elapsed_s;
   }
   if (out_drift_c_per_min != NULL) {
-    *out_drift_c_per_min = drift_c_per_min;
+    *out_drift_c_per_min = g_cal_window.trend_drift_c_per_min;
   }
   if (out_abs_drift_c_per_min != NULL) {
-    *out_abs_drift_c_per_min = fabs(drift_c_per_min);
+    *out_abs_drift_c_per_min = g_cal_window.trend_abs_drift_c_per_min;
+  }
+}
+
+void
+CalWindowSetCalibratedTempStats(double last_calibrated_temp_c,
+                                double mean_calibrated_temp_c,
+                                double stddev_calibrated_temp_c,
+                                bool valid,
+                                size_t sample_count)
+{
+  g_cal_window.last_calibrated_temp_c = last_calibrated_temp_c;
+  g_cal_window.mean_calibrated_temp_c = mean_calibrated_temp_c;
+  g_cal_window.stddev_calibrated_temp_c = stddev_calibrated_temp_c;
+  g_cal_window.calibrated_temp_stats_valid = valid;
+  g_cal_window.calibrated_temp_stats_sample_count = sample_count;
+}
+
+void
+CalWindowGetCalibratedTempStats(double* out_last_calibrated_temp_c,
+                                double* out_mean_calibrated_temp_c,
+                                double* out_stddev_calibrated_temp_c,
+                                bool* out_valid,
+                                size_t* out_sample_count)
+{
+  if (out_last_calibrated_temp_c != NULL) {
+    *out_last_calibrated_temp_c = g_cal_window.last_calibrated_temp_c;
+  }
+  if (out_mean_calibrated_temp_c != NULL) {
+    *out_mean_calibrated_temp_c = g_cal_window.mean_calibrated_temp_c;
+  }
+  if (out_stddev_calibrated_temp_c != NULL) {
+    *out_stddev_calibrated_temp_c = g_cal_window.stddev_calibrated_temp_c;
+  }
+  if (out_valid != NULL) {
+    *out_valid = g_cal_window.calibrated_temp_stats_valid;
+  }
+  if (out_sample_count != NULL) {
+    *out_sample_count = g_cal_window.calibrated_temp_stats_sample_count;
   }
 }
 
