@@ -481,7 +481,8 @@ MaybePushCalRawSampleFromSensorWithStatus_(void)
     if (!runtime_sample.valid || runtime_sample.fault != 0u) {
       status.sample_skipped_invalid_or_fault = true;
       ESP_LOGD(kTag,
-               "cal sample skipped: sample_id=%" PRIu32 " valid=%u fault=0x%02X",
+               "cal sample skipped: sample_id=%" PRIu32
+               " valid=%u fault=0x%02X",
                runtime_sample.sample_id,
                runtime_sample.valid ? 1u : 0u,
                (unsigned)runtime_sample.fault);
@@ -493,8 +494,9 @@ MaybePushCalRawSampleFromSensorWithStatus_(void)
     // Console consumes runtime samples via snapshot + sample_id tracking.
     CalWindowPushRawSample(runtime_sample.temp_mC, runtime_sample.ohm_mohm);
     status.sample_valid_for_window = true;
-    ESP_LOGD(
-      kTag, "cal sample consumed: sample_id=%" PRIu32, runtime_sample.sample_id);
+    ESP_LOGD(kTag,
+             "cal sample consumed: sample_id=%" PRIu32,
+             runtime_sample.sample_id);
     return status;
   }
 
@@ -1276,7 +1278,6 @@ CommandStatus(int argc, char** argv)
          (local_buffer[0] != '\0') ? local_buffer : "unknown",
          utc_offset_sec,
          local_time.tm_isdst);
-  runtime_state_t* state = RuntimeGetState();
   size_t fram_count = 0;
   size_t fram_capacity = 0;
   uint64_t fram_overrun_total = 0;
@@ -3118,14 +3119,15 @@ CalConsoleOpStartLive(uint32_t every_ms,
   g_cal_console_op.last_sample_count = 0;
   g_cal_console_op.start_internal_free =
     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  g_cal_console_op.start_internal_largest = heap_caps_get_largest_free_block(
-    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  g_cal_console_op.start_internal_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   g_cal_console_op.start_psram_free =
     heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  g_cal_console_op.start_psram_largest = heap_caps_get_largest_free_block(
-    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  g_cal_console_op.start_psram_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   g_cal_console_op.low_internal_free = g_cal_console_op.start_internal_free;
-  g_cal_console_op.low_internal_largest = g_cal_console_op.start_internal_largest;
+  g_cal_console_op.low_internal_largest =
+    g_cal_console_op.start_internal_largest;
   g_cal_console_op.min_stack_free_bytes = UINT32_MAX;
   g_cal_console_op.max_temp_buffer_bytes = 0u;
   g_cal_runtime_last_sample_id = 0u;
@@ -3136,13 +3138,12 @@ CalConsoleOpStartLive(uint32_t every_ms,
     printf("cal live: requires PSRAM-backed metric history\n");
     return ESP_ERR_NO_MEM;
   }
-  BaseType_t created = xTaskCreate(
-    &CalConsoleOpTask,
-    "cal_op",
-    kCalOpTaskStackBytes,
-    NULL,
-    2,
-    &g_cal_console_op.task_handle);
+  BaseType_t created = xTaskCreate(&CalConsoleOpTask,
+                                   "cal_op",
+                                   kCalOpTaskStackBytes,
+                                   NULL,
+                                   2,
+                                   &g_cal_console_op.task_handle);
   if (created != pdPASS) {
     g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
     g_cal_console_op.task_handle = NULL;
@@ -3235,14 +3236,15 @@ CalConsoleOpStartCapture(double actual_temp_c,
   g_cal_console_op.last_sample_count = 0;
   g_cal_console_op.start_internal_free =
     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  g_cal_console_op.start_internal_largest = heap_caps_get_largest_free_block(
-    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  g_cal_console_op.start_internal_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   g_cal_console_op.start_psram_free =
     heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  g_cal_console_op.start_psram_largest = heap_caps_get_largest_free_block(
-    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  g_cal_console_op.start_psram_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   g_cal_console_op.low_internal_free = g_cal_console_op.start_internal_free;
-  g_cal_console_op.low_internal_largest = g_cal_console_op.start_internal_largest;
+  g_cal_console_op.low_internal_largest =
+    g_cal_console_op.start_internal_largest;
   g_cal_console_op.min_stack_free_bytes = UINT32_MAX;
   g_cal_console_op.max_temp_buffer_bytes = 0u;
   g_cal_runtime_last_sample_id = 0u;
@@ -3253,13 +3255,12 @@ CalConsoleOpStartCapture(double actual_temp_c,
     printf("cal capture: requires PSRAM-backed metric history\n");
     return ESP_ERR_NO_MEM;
   }
-  BaseType_t created = xTaskCreate(
-    &CalConsoleOpTask,
-    "cal_op",
-    kCalOpTaskStackBytes,
-    NULL,
-    2,
-    &g_cal_console_op.task_handle);
+  BaseType_t created = xTaskCreate(&CalConsoleOpTask,
+                                   "cal_op",
+                                   kCalOpTaskStackBytes,
+                                   NULL,
+                                   2,
+                                   &g_cal_console_op.task_handle);
   if (created != pdPASS) {
     g_cal_console_op.mode = CAL_CONSOLE_OP_NONE;
     g_cal_console_op.task_handle = NULL;
@@ -3774,15 +3775,17 @@ RefreshCalibratedWindowTempStatsCache_(size_t sample_count,
     return true;
   }
 
-  if (!EvaluateCalibratedTemperature_(
-        last_raw_mC / 1000.0, last_raw_mOhm / 1000.0, &last_calibrated_temp_c)) {
+  if (!EvaluateCalibratedTemperature_(last_raw_mC / 1000.0,
+                                      last_raw_mOhm / 1000.0,
+                                      &last_calibrated_temp_c)) {
     CalWindowSetCalibratedTempStats(
       0.0, 0.0, 0.0, false, sample_count, window_generation);
     return false;
   }
 
-  if (!EvaluateCalibratedTemperature_(
-        mean_raw_mC / 1000.0, mean_raw_mOhm / 1000.0, &mean_calibrated_temp_c)) {
+  if (!EvaluateCalibratedTemperature_(mean_raw_mC / 1000.0,
+                                      mean_raw_mOhm / 1000.0,
+                                      &mean_calibrated_temp_c)) {
     CalWindowSetCalibratedTempStats(
       0.0, 0.0, 0.0, false, sample_count, window_generation);
     return false;
@@ -3807,13 +3810,12 @@ RefreshCalibratedWindowTempStatsCache_(size_t sample_count,
     ++valid_count;
   }
   if (valid_count == 0u) {
-    CalWindowSetCalibratedTempStats(
-      last_calibrated_temp_c,
-      mean_calibrated_temp_c,
-      0.0,
-      true,
-      sample_count,
-      window_generation);
+    CalWindowSetCalibratedTempStats(last_calibrated_temp_c,
+                                    mean_calibrated_temp_c,
+                                    0.0,
+                                    true,
+                                    sample_count,
+                                    window_generation);
     return true;
   }
   const double inv_count = 1.0 / (double)valid_count;
@@ -4141,8 +4143,8 @@ QueueCalLiveDriftReadyNtfy_(double drift_c_per_min,
   alert_ntfy_job_t job = { 0 };
   const uint32_t internal_free =
     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  const uint32_t internal_largest = heap_caps_get_largest_free_block(
-    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const uint32_t internal_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   snprintf(job.url, sizeof(job.url), "%s", manager->config.ntfy_url);
   snprintf(job.topic, sizeof(job.topic), "%s", manager->config.ntfy_topic);
   snprintf(job.token, sizeof(job.token), "%s", manager->config.ntfy_token);
@@ -4152,14 +4154,14 @@ QueueCalLiveDriftReadyNtfy_(double drift_c_per_min,
            manager->root_id_string != NULL ? manager->root_id_string : "");
   snprintf(job.title, sizeof(job.title), "PT100 Calibration Live Ready");
   int body_len = snprintf(job.body,
-           sizeof(job.body),
-           "cal live drift threshold met\n"
-           "Drift: %.3f C/min\n"
-           "Threshold: %.3f C/min\n"
-           "Sustained for: %" PRIu32 " s",
-           drift_c_per_min,
-           threshold_c_per_min,
-           sustained_seconds);
+                          sizeof(job.body),
+                          "cal live drift threshold met\n"
+                          "Drift: %.3f C/min\n"
+                          "Threshold: %.3f C/min\n"
+                          "Sustained for: %" PRIu32 " s",
+                          drift_c_per_min,
+                          threshold_c_per_min,
+                          sustained_seconds);
   snprintf(job.sequence_id,
            sizeof(job.sequence_id),
            "cal-live-ready-%" PRId64,
@@ -4231,8 +4233,9 @@ CalHistoryEnsureStorage_(void)
     return (s_cal_history != NULL && s_cal_history_in_psram);
   }
   const size_t bytes = sizeof(cal_window_metric_history_t);
-  cal_window_metric_history_t* history = (cal_window_metric_history_t*)heap_caps_calloc(
-    1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  cal_window_metric_history_t* history =
+    (cal_window_metric_history_t*)heap_caps_calloc(
+      1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (history != NULL && esp_ptr_external_ram(history)) {
     s_cal_history = history;
     s_cal_history_in_psram = true;
@@ -4256,16 +4259,16 @@ CalLogMemorySnapshot_(const char* stage, const char* mode_label)
   const char* mode = (mode_label != NULL) ? mode_label : "cal";
   const uint32_t internal_free =
     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  const uint32_t internal_largest = heap_caps_get_largest_free_block(
-    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const uint32_t internal_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   const uint32_t psram_free =
     heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  const uint32_t psram_largest = heap_caps_get_largest_free_block(
-    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  const uint32_t psram_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   const UBaseType_t stack_words = uxTaskGetStackHighWaterMark(NULL);
   printf("%s mem[%s]: internal_free=%" PRIu32 " internal_largest=%" PRIu32
-         " psram_free=%" PRIu32 " psram_largest=%" PRIu32
-         " stack_free=%" PRIu32 "\n",
+         " psram_free=%" PRIu32 " psram_largest=%" PRIu32 " stack_free=%" PRIu32
+         "\n",
          mode,
          phase,
          internal_free,
@@ -4280,8 +4283,8 @@ CalTrackLiveLowWatermark_(void)
 {
   const uint32_t internal_free =
     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  const uint32_t internal_largest = heap_caps_get_largest_free_block(
-    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const uint32_t internal_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (CalConsoleOpLock_(pdMS_TO_TICKS(5))) {
     if (g_cal_console_op.low_internal_free == 0u ||
         internal_free < g_cal_console_op.low_internal_free) {
@@ -4754,7 +4757,8 @@ CalConsoleOpTask(void* task_arg)
         (cal_window_metric_sample_t){ .timestamp_us = now_us,
                                       .window_ready = window_ready,
                                       .stddev_c = stddev_c,
-                                      .drift_c_per_min = gated_drift_c_per_min };
+                                      .drift_c_per_min =
+                                        gated_drift_c_per_min };
       s_cal_history->head =
         (s_cal_history->head + 1u) % CAL_WINDOW_METRIC_HISTORY_CAPACITY;
       if (s_cal_history->count < CAL_WINDOW_METRIC_HISTORY_CAPACITY) {
@@ -4791,7 +4795,8 @@ CalConsoleOpTask(void* task_arg)
         char timestamp_buf[40] = { 0 };
         (void)FormatCalLiveTimestampNow_(timestamp_buf, sizeof(timestamp_buf));
         char drift_eta_buf[24] = { 0 };
-        size_t temp_buffer_bytes = sizeof(timestamp_buf) + sizeof(drift_eta_buf);
+        size_t temp_buffer_bytes =
+          sizeof(timestamp_buf) + sizeof(drift_eta_buf);
         const char* drift_eta_text = NULL;
         if (live_drift_notify_armed) {
           const double target_abs_drift_c_per_min =
@@ -4975,21 +4980,22 @@ CalConsoleOpTask(void* task_arg)
   }
 
 cal_op_cleanup:
-  CalLogMemorySnapshot_("stop-post", (live_output_mode == CAL_CONSOLE_LIVE_OUTPUT_CALIBRATED)
-                                        ? "cal livecal"
-                                        : ((mode == CAL_CONSOLE_OP_CAPTURE) ? "cal capture"
-                                                                            : "cal live"));
+  CalLogMemorySnapshot_(
+    "stop-post",
+    (live_output_mode == CAL_CONSOLE_LIVE_OUTPUT_CALIBRATED)
+      ? "cal livecal"
+      : ((mode == CAL_CONSOLE_OP_CAPTURE) ? "cal capture" : "cal live"));
   if (CalConsoleOpLock_(pdMS_TO_TICKS(200))) {
     const uint32_t stop_internal_free =
       heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    const uint32_t stop_internal_largest = heap_caps_get_largest_free_block(
-      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const uint32_t stop_internal_largest =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     const uint32_t low_internal_free = g_cal_console_op.low_internal_free;
     const uint32_t low_internal_largest = g_cal_console_op.low_internal_largest;
     const uint32_t min_stack_free = g_cal_console_op.min_stack_free_bytes;
     const uint32_t max_temp_buffer = g_cal_console_op.max_temp_buffer_bytes;
-    printf("cal heap[start]: internal_free=%" PRIu32 " internal_largest=%" PRIu32
-           "\n",
+    printf("cal heap[start]: internal_free=%" PRIu32
+           " internal_largest=%" PRIu32 "\n",
            g_cal_console_op.start_internal_free,
            g_cal_console_op.start_internal_largest);
     printf("cal heap[low]: internal_free=%" PRIu32 " internal_largest=%" PRIu32
@@ -4997,7 +5003,8 @@ cal_op_cleanup:
            "\n",
            low_internal_free,
            low_internal_largest,
-           (int32_t)low_internal_free - (int32_t)g_cal_console_op.start_internal_free,
+           (int32_t)low_internal_free -
+             (int32_t)g_cal_console_op.start_internal_free,
            (int32_t)low_internal_largest -
              (int32_t)g_cal_console_op.start_internal_largest);
     printf("cal heap[stop]: internal_free=%" PRIu32 " internal_largest=%" PRIu32
@@ -5005,7 +5012,8 @@ cal_op_cleanup:
            "\n",
            stop_internal_free,
            stop_internal_largest,
-           (int32_t)stop_internal_free - (int32_t)g_cal_console_op.start_internal_free,
+           (int32_t)stop_internal_free -
+             (int32_t)g_cal_console_op.start_internal_free,
            (int32_t)stop_internal_largest -
              (int32_t)g_cal_console_op.start_internal_largest);
     if (min_stack_free != UINT32_MAX) {
@@ -5411,8 +5419,8 @@ CommandCal(int argc, char** argv)
                esp_err_to_name(result));
         return 1;
       }
-      CalLogMemorySnapshot_("start-post", calibrated_live ? "cal livecal"
-                                                          : "cal live");
+      CalLogMemorySnapshot_("start-post",
+                            calibrated_live ? "cal livecal" : "cal live");
       printf("cal %s started (use 'cal stop' to abort)\n",
              calibrated_live ? "livecal" : "live");
       if (drift_notify_armed) {
@@ -9439,7 +9447,8 @@ PrintSdHelpBody(void)
   printf("SUBCOMMANDS\n");
   printf("  status | mount | unmount | format | view | verify\n\n");
   printf("NOTES\n");
-  printf("  sd verify controls readback verification mode for future appends.\n");
+  printf(
+    "  sd verify controls readback verification mode for future appends.\n");
   printf("  It does not run an immediate verification pass.\n\n");
   printf("EXAMPLES\n");
   printf("  sd status\n");
