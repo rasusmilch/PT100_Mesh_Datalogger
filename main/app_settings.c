@@ -306,8 +306,6 @@ typedef struct
   calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
   uint8_t calibration_points_count;
   uint8_t calibration_domain;
-  uint16_t cal_window_duration_s;
-  uint16_t cal_trend_ema_alpha_permille;
   int64_t cal_last_utc;
   int64_t cal_last_override_utc;
   uint16_t cal_due_count;
@@ -335,6 +333,18 @@ typedef struct
   uint8_t mqtt_retain;
   uint8_t mqtt_bridge_mode;
 } app_settings_persist_payload_v6_t;
+
+typedef struct
+{
+  app_settings_blob_header_t header;
+  app_settings_persist_payload_v5_t payload;
+} app_settings_blob_v5_t;
+
+typedef struct
+{
+  app_settings_blob_header_t header;
+  app_settings_persist_payload_v6_t payload;
+} app_settings_blob_v6_t;
 
 typedef struct
 {
@@ -385,6 +395,10 @@ typedef struct
   app_settings_persist_payload_t payload;
 } app_settings_blob_t;
 #pragma pack(pop)
+
+_Static_assert(sizeof(app_settings_persist_payload_t) ==
+                 (sizeof(app_settings_persist_payload_v6_t) + 1u),
+               "v7 payload should differ from v6 only by sd_verify_readback");
 
 static uint32_t g_settings_blob_generation = 0;
 static bool g_saved_settings_valid = false;
@@ -474,6 +488,12 @@ AppSettingsMaybeLoadDisplaySamplePeriodMs(nvs_handle_t handle,
                                           app_settings_t* settings_out);
 static bool
 IsPrintableSettingString(const char* value, size_t max_len);
+static bool
+IsPlausibleTzPosixString_(const char* value, size_t max_len);
+static bool
+IsPlausibleMqttUri_(const char* value, size_t max_len);
+static bool
+ValidateAndSanitizePersistedPayload_(app_settings_persist_payload_t* payload);
 
 /**
  * @brief Execute DefaultNodeRole.
@@ -1149,6 +1169,10 @@ ReadSettingsBlob(nvs_handle_t handle,
     now->mqtt_retain = old->mqtt_retain;
     now->mqtt_bridge_mode = old->mqtt_bridge_mode;
     blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+    ESP_LOGI(kTag,
+             "settings blob %s migrated v3 -> v%" PRIu32,
+             key,
+             (uint32_t)APP_SETTINGS_BLOB_VERSION);
     return true;
   }
   if (header->version == 4u && blob_size == sizeof(app_settings_blob_v4_t)) {
@@ -1218,14 +1242,13 @@ ReadSettingsBlob(nvs_handle_t handle,
     now->mqtt_retain = old->mqtt_retain;
     now->mqtt_bridge_mode = old->mqtt_bridge_mode;
     blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+    ESP_LOGI(kTag,
+             "settings blob %s migrated v4 -> v%" PRIu32,
+             key,
+             (uint32_t)APP_SETTINGS_BLOB_VERSION);
     return true;
   }
   if (header->version == 5u) {
-    typedef struct
-    {
-      app_settings_blob_header_t header;
-      app_settings_persist_payload_v5_t payload;
-    } app_settings_blob_v5_t;
     if (blob_size == sizeof(app_settings_blob_v5_t)) {
       const app_settings_blob_v5_t* old_blob =
         (const app_settings_blob_v5_t*)raw;
@@ -1241,20 +1264,75 @@ ReadSettingsBlob(nvs_handle_t handle,
       blob_out->header = old_blob->header;
       blob_out->header.version = APP_SETTINGS_BLOB_VERSION;
       blob_out->header.size = sizeof(app_settings_persist_payload_t);
-      memcpy(&blob_out->payload, &old_blob->payload, sizeof(old_blob->payload));
+      blob_out->payload.log_period_ms = old_blob->payload.log_period_ms;
+      blob_out->payload.fram_flush_watermark_records =
+        old_blob->payload.fram_flush_watermark_records;
+      blob_out->payload.sd_flush_period_ms = old_blob->payload.sd_flush_period_ms;
+      blob_out->payload.sd_batch_bytes_target = old_blob->payload.sd_batch_bytes_target;
+      blob_out->payload.sd_verify_readback = 0u;
+      blob_out->payload.rtc_resync_period_ms = old_blob->payload.rtc_resync_period_ms;
+      blob_out->payload.calibration = old_blob->payload.calibration;
+      blob_out->payload.calibration_context = old_blob->payload.calibration_context;
+      blob_out->payload.calibration_context_valid =
+        old_blob->payload.calibration_context_valid;
+      memcpy(blob_out->payload.calibration_points,
+             old_blob->payload.calibration_points,
+             sizeof(blob_out->payload.calibration_points));
+      blob_out->payload.calibration_points_count =
+        old_blob->payload.calibration_points_count;
+      blob_out->payload.calibration_domain = old_blob->payload.calibration_domain;
       blob_out->payload.cal_window_duration_s = CAL_WINDOW_DURATION_DEFAULT_S;
       blob_out->payload.cal_trend_ema_alpha_permille =
         CAL_TREND_EMA_ALPHA_DEFAULT_PERMILLE;
+      blob_out->payload.cal_last_utc = old_blob->payload.cal_last_utc;
+      blob_out->payload.cal_last_override_utc = old_blob->payload.cal_last_override_utc;
+      blob_out->payload.cal_due_count = old_blob->payload.cal_due_count;
+      blob_out->payload.cal_due_unit = old_blob->payload.cal_due_unit;
+      blob_out->payload.cal_due_override_count =
+        old_blob->payload.cal_due_override_count;
+      blob_out->payload.cal_due_override_unit =
+        old_blob->payload.cal_due_override_unit;
+      blob_out->payload.cal_metar = old_blob->payload.cal_metar;
+      blob_out->payload.rtd_ema_enabled = old_blob->payload.rtd_ema_enabled;
+      blob_out->payload.rtd_ema_alpha_permille =
+        old_blob->payload.rtd_ema_alpha_permille;
+      blob_out->payload.rtd_fault_assert_ms = old_blob->payload.rtd_fault_assert_ms;
+      blob_out->payload.rtd_fault_clear_ms = old_blob->payload.rtd_fault_clear_ms;
+      memcpy(blob_out->payload.tz_posix,
+             old_blob->payload.tz_posix,
+             sizeof(blob_out->payload.tz_posix));
+      memcpy(blob_out->payload.unit_serial,
+             old_blob->payload.unit_serial,
+             sizeof(blob_out->payload.unit_serial));
+      memcpy(blob_out->payload.cal_method,
+             old_blob->payload.cal_method,
+             sizeof(blob_out->payload.cal_method));
+      blob_out->payload.dst_enabled = old_blob->payload.dst_enabled;
+      blob_out->payload.node_role = old_blob->payload.node_role;
+      blob_out->payload.allow_children = old_blob->payload.allow_children;
+      blob_out->payload.allow_children_set = old_blob->payload.allow_children_set;
+      blob_out->payload.display_attention_policy =
+        old_blob->payload.display_attention_policy;
+      blob_out->payload.net_mode = old_blob->payload.net_mode;
+      blob_out->payload.mqtt_enabled = old_blob->payload.mqtt_enabled;
+      memcpy(blob_out->payload.mqtt_broker_uri,
+             old_blob->payload.mqtt_broker_uri,
+             sizeof(blob_out->payload.mqtt_broker_uri));
+      memcpy(blob_out->payload.mqtt_topic_prefix,
+             old_blob->payload.mqtt_topic_prefix,
+             sizeof(blob_out->payload.mqtt_topic_prefix));
+      blob_out->payload.mqtt_qos = old_blob->payload.mqtt_qos;
+      blob_out->payload.mqtt_retain = old_blob->payload.mqtt_retain;
+      blob_out->payload.mqtt_bridge_mode = old_blob->payload.mqtt_bridge_mode;
       blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+      ESP_LOGI(kTag,
+               "settings blob %s migrated v5 -> v%" PRIu32,
+               key,
+               (uint32_t)APP_SETTINGS_BLOB_VERSION);
       return true;
     }
   }
   if (header->version == 6u) {
-    typedef struct
-    {
-      app_settings_blob_header_t header;
-      app_settings_persist_payload_v6_t payload;
-    } app_settings_blob_v6_t;
     if (blob_size == sizeof(app_settings_blob_v6_t)) {
       const app_settings_blob_v6_t* old_blob =
         (const app_settings_blob_v6_t*)raw;
@@ -1270,9 +1348,71 @@ ReadSettingsBlob(nvs_handle_t handle,
       blob_out->header = old_blob->header;
       blob_out->header.version = APP_SETTINGS_BLOB_VERSION;
       blob_out->header.size = sizeof(app_settings_persist_payload_t);
-      memcpy(&blob_out->payload, &old_blob->payload, sizeof(old_blob->payload));
+      blob_out->payload.log_period_ms = old_blob->payload.log_period_ms;
+      blob_out->payload.fram_flush_watermark_records =
+        old_blob->payload.fram_flush_watermark_records;
+      blob_out->payload.sd_flush_period_ms = old_blob->payload.sd_flush_period_ms;
+      blob_out->payload.sd_batch_bytes_target = old_blob->payload.sd_batch_bytes_target;
       blob_out->payload.sd_verify_readback = 0u;
+      blob_out->payload.rtc_resync_period_ms = old_blob->payload.rtc_resync_period_ms;
+      blob_out->payload.calibration = old_blob->payload.calibration;
+      blob_out->payload.calibration_context = old_blob->payload.calibration_context;
+      blob_out->payload.calibration_context_valid =
+        old_blob->payload.calibration_context_valid;
+      memcpy(blob_out->payload.calibration_points,
+             old_blob->payload.calibration_points,
+             sizeof(blob_out->payload.calibration_points));
+      blob_out->payload.calibration_points_count =
+        old_blob->payload.calibration_points_count;
+      blob_out->payload.calibration_domain = old_blob->payload.calibration_domain;
+      blob_out->payload.cal_window_duration_s = old_blob->payload.cal_window_duration_s;
+      blob_out->payload.cal_trend_ema_alpha_permille =
+        old_blob->payload.cal_trend_ema_alpha_permille;
+      blob_out->payload.cal_last_utc = old_blob->payload.cal_last_utc;
+      blob_out->payload.cal_last_override_utc = old_blob->payload.cal_last_override_utc;
+      blob_out->payload.cal_due_count = old_blob->payload.cal_due_count;
+      blob_out->payload.cal_due_unit = old_blob->payload.cal_due_unit;
+      blob_out->payload.cal_due_override_count =
+        old_blob->payload.cal_due_override_count;
+      blob_out->payload.cal_due_override_unit =
+        old_blob->payload.cal_due_override_unit;
+      blob_out->payload.cal_metar = old_blob->payload.cal_metar;
+      blob_out->payload.rtd_ema_enabled = old_blob->payload.rtd_ema_enabled;
+      blob_out->payload.rtd_ema_alpha_permille =
+        old_blob->payload.rtd_ema_alpha_permille;
+      blob_out->payload.rtd_fault_assert_ms = old_blob->payload.rtd_fault_assert_ms;
+      blob_out->payload.rtd_fault_clear_ms = old_blob->payload.rtd_fault_clear_ms;
+      memcpy(blob_out->payload.tz_posix,
+             old_blob->payload.tz_posix,
+             sizeof(blob_out->payload.tz_posix));
+      memcpy(blob_out->payload.unit_serial,
+             old_blob->payload.unit_serial,
+             sizeof(blob_out->payload.unit_serial));
+      memcpy(blob_out->payload.cal_method,
+             old_blob->payload.cal_method,
+             sizeof(blob_out->payload.cal_method));
+      blob_out->payload.dst_enabled = old_blob->payload.dst_enabled;
+      blob_out->payload.node_role = old_blob->payload.node_role;
+      blob_out->payload.allow_children = old_blob->payload.allow_children;
+      blob_out->payload.allow_children_set = old_blob->payload.allow_children_set;
+      blob_out->payload.display_attention_policy =
+        old_blob->payload.display_attention_policy;
+      blob_out->payload.net_mode = old_blob->payload.net_mode;
+      blob_out->payload.mqtt_enabled = old_blob->payload.mqtt_enabled;
+      memcpy(blob_out->payload.mqtt_broker_uri,
+             old_blob->payload.mqtt_broker_uri,
+             sizeof(blob_out->payload.mqtt_broker_uri));
+      memcpy(blob_out->payload.mqtt_topic_prefix,
+             old_blob->payload.mqtt_topic_prefix,
+             sizeof(blob_out->payload.mqtt_topic_prefix));
+      blob_out->payload.mqtt_qos = old_blob->payload.mqtt_qos;
+      blob_out->payload.mqtt_retain = old_blob->payload.mqtt_retain;
+      blob_out->payload.mqtt_bridge_mode = old_blob->payload.mqtt_bridge_mode;
       blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+      ESP_LOGI(kTag,
+               "settings blob %s migrated v6 -> v%" PRIu32,
+               key,
+               (uint32_t)APP_SETTINGS_BLOB_VERSION);
       return true;
     }
   }
@@ -1342,6 +1482,10 @@ ReadSettingsBlob(nvs_handle_t handle,
     now->mqtt_retain = old->mqtt_retain;
     now->mqtt_bridge_mode = old->mqtt_bridge_mode;
     blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+    ESP_LOGI(kTag,
+             "settings blob %s migrated v1 -> v%" PRIu32,
+             key,
+             (uint32_t)APP_SETTINGS_BLOB_VERSION);
     return true;
   }
   return false;
@@ -2550,6 +2694,123 @@ IsPrintableSettingString(const char* value, size_t max_len)
   return true;
 }
 
+static bool
+IsPlausibleTzPosixString_(const char* value, size_t max_len)
+{
+  if (!IsPrintableSettingString(value, max_len)) {
+    return false;
+  }
+  const size_t len = strnlen(value, max_len);
+  if (len < 3u) {
+    return false;
+  }
+  bool has_digit = false;
+  for (size_t i = 0; i < len; ++i) {
+    if (isdigit((unsigned char)value[i])) {
+      has_digit = true;
+      break;
+    }
+  }
+  return has_digit;
+}
+
+static bool
+IsPlausibleMqttUri_(const char* value, size_t max_len)
+{
+  if (!IsPrintableSettingString(value, max_len)) {
+    return false;
+  }
+  return (strncmp(value, "mqtt://", 7u) == 0) ||
+         (strncmp(value, "mqtts://", 8u) == 0);
+}
+
+static bool
+ValidateAndSanitizePersistedPayload_(app_settings_persist_payload_t* payload)
+{
+  if (payload == NULL) {
+    return false;
+  }
+  bool valid = true;
+  bool corruption_detected = false;
+
+  payload->tz_posix[sizeof(payload->tz_posix) - 1u] = '\0';
+  payload->unit_serial[sizeof(payload->unit_serial) - 1u] = '\0';
+  payload->cal_method[sizeof(payload->cal_method) - 1u] = '\0';
+  payload->mqtt_broker_uri[sizeof(payload->mqtt_broker_uri) - 1u] = '\0';
+  payload->mqtt_topic_prefix[sizeof(payload->mqtt_topic_prefix) - 1u] = '\0';
+
+  if (!IsPlausibleTzPosixString_(payload->tz_posix, sizeof(payload->tz_posix))) {
+    snprintf(payload->tz_posix,
+             sizeof(payload->tz_posix),
+             "%s",
+             APP_SETTINGS_TZ_DEFAULT_POSIX);
+    valid = false;
+    corruption_detected = true;
+    ESP_LOGW(kTag, "settings: invalid timezone in blob; using default");
+  }
+  if (payload->rtc_resync_period_ms > 86400000u) {
+    payload->rtc_resync_period_ms = 3600000u;
+    valid = false;
+    corruption_detected = true;
+    ESP_LOGW(kTag, "settings: invalid rtc_resync_ms in blob; using default");
+  }
+  if (payload->node_role > (uint8_t)APP_NODE_ROLE_RELAY) {
+    payload->node_role = (uint8_t)APP_NODE_ROLE_SENSOR;
+    payload->allow_children = 0u;
+    payload->allow_children_set = 1u;
+    valid = false;
+    corruption_detected = true;
+    ESP_LOGW(kTag, "settings: invalid role in blob; forcing SENSOR");
+  }
+  if (payload->net_mode > (uint8_t)APP_NET_MODE_NONE) {
+    payload->net_mode = (uint8_t)APP_NET_MODE_DIRECT_WIFI;
+    valid = false;
+    corruption_detected = true;
+    ESP_LOGW(kTag, "settings: invalid net_mode in blob; forcing WIFI");
+  }
+  if (payload->mqtt_enabled > 1u) {
+    payload->mqtt_enabled = 0u;
+    valid = false;
+    corruption_detected = true;
+    ESP_LOGW(kTag, "settings: invalid mqtt_enabled in blob; disabling MQTT");
+  }
+  if (!IsPlausibleMqttUri_(payload->mqtt_broker_uri,
+                           sizeof(payload->mqtt_broker_uri))) {
+    if (payload->mqtt_enabled == 1u) {
+      corruption_detected = true;
+    }
+    payload->mqtt_enabled = 0u;
+    snprintf(payload->mqtt_broker_uri,
+             sizeof(payload->mqtt_broker_uri),
+             "%s",
+             APP_SETTINGS_MQTT_BROKER_URI_DEFAULT);
+    valid = false;
+    ESP_LOGW(kTag, "settings: invalid MQTT URI in blob; disabling MQTT");
+  }
+  if (!IsPrintableSettingString(payload->mqtt_topic_prefix,
+                                sizeof(payload->mqtt_topic_prefix))) {
+    snprintf(payload->mqtt_topic_prefix,
+             sizeof(payload->mqtt_topic_prefix),
+             "%s",
+             APP_SETTINGS_MQTT_TOPIC_PREFIX_DEFAULT);
+    valid = false;
+    ESP_LOGW(kTag, "settings: invalid MQTT topic prefix in blob; using default");
+  }
+
+  if (corruption_detected) {
+    payload->node_role = (uint8_t)APP_NODE_ROLE_SENSOR;
+    payload->allow_children = 0u;
+    payload->allow_children_set = 1u;
+    payload->net_mode = (uint8_t)APP_NET_MODE_DIRECT_WIFI;
+    payload->mqtt_enabled = 0u;
+    ESP_LOGW(
+      kTag,
+      "settings: corruption detected; enforcing safe SENSOR/WIFI startup");
+  }
+
+  return valid;
+}
+
 static esp_err_t
 OpenNvs(nvs_handle_t* handle_out)
 {
@@ -2601,7 +2862,17 @@ AppSettingsLoad(app_settings_t* settings_out)
   }
 
   if (selected_blob != NULL) {
-    ApplyPersistedSettings(&selected_blob->payload, settings_out);
+    app_settings_persist_payload_t sanitized_payload = selected_blob->payload;
+    const bool payload_fully_valid =
+      ValidateAndSanitizePersistedPayload_(&sanitized_payload);
+    if (!payload_fully_valid) {
+      ESP_LOGW(kTag,
+               "settings: validation adjusted invalid persisted values "
+               "(blob %s gen=%" PRIu32 ")",
+               selected_key,
+               selected_blob->header.generation);
+    }
+    ApplyPersistedSettings(&sanitized_payload, settings_out);
     AppSettingsMaybeLoadDisplaySamplePeriodMs(handle, settings_out);
     g_settings_blob_generation = selected_blob->header.generation;
     g_display_attention_policy = settings_out->display_attention_policy;
