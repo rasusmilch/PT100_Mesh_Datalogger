@@ -112,6 +112,7 @@ typedef struct
 
 typedef struct
 {
+  // v1: baseline blob layout using legacy_calibration_point_v1_t.
   uint32_t log_period_ms;
   uint32_t fram_flush_watermark_records;
   uint32_t sd_flush_period_ms;
@@ -157,6 +158,7 @@ typedef struct
 
 typedef struct
 {
+  // v3: added sd_verify_readback, calibration_domain, and point mOhm fields.
   uint32_t log_period_ms;
   uint32_t fram_flush_watermark_records;
   uint32_t sd_flush_period_ms;
@@ -204,6 +206,7 @@ typedef struct
 
 typedef struct
 {
+  // v4: replaced sd_verify_readback with cal_metar and legacy point v2 layout.
   uint32_t log_period_ms;
   uint32_t fram_flush_watermark_records;
   uint32_t sd_flush_period_ms;
@@ -251,11 +254,11 @@ typedef struct
 
 typedef struct
 {
+  // v5: switched calibration_points to calibration_point_t.
   uint32_t log_period_ms;
   uint32_t fram_flush_watermark_records;
   uint32_t sd_flush_period_ms;
   uint32_t sd_batch_bytes_target;
-  uint8_t sd_verify_readback;
   uint32_t rtc_resync_period_ms;
   calibration_model_t calibration;
   calibration_context_t calibration_context;
@@ -263,8 +266,6 @@ typedef struct
   calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
   uint8_t calibration_points_count;
   uint8_t calibration_domain;
-  uint16_t cal_window_duration_s;
-  uint16_t cal_trend_ema_alpha_permille;
   int64_t cal_last_utc;
   int64_t cal_last_override_utc;
   uint16_t cal_due_count;
@@ -291,10 +292,11 @@ typedef struct
   uint8_t mqtt_qos;
   uint8_t mqtt_retain;
   uint8_t mqtt_bridge_mode;
-} app_settings_persist_payload_t;
+} app_settings_persist_payload_v5_t;
 
 typedef struct
 {
+  // v6: added cal_window_duration_s and cal_trend_ema_alpha_permille.
   uint32_t log_period_ms;
   uint32_t fram_flush_watermark_records;
   uint32_t sd_flush_period_ms;
@@ -306,6 +308,8 @@ typedef struct
   calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
   uint8_t calibration_points_count;
   uint8_t calibration_domain;
+  uint16_t cal_window_duration_s;
+  uint16_t cal_trend_ema_alpha_permille;
   int64_t cal_last_utc;
   int64_t cal_last_override_utc;
   uint16_t cal_due_count;
@@ -348,10 +352,12 @@ typedef struct
 
 typedef struct
 {
+  // v7/current: added sd_verify_readback.
   uint32_t log_period_ms;
   uint32_t fram_flush_watermark_records;
   uint32_t sd_flush_period_ms;
   uint32_t sd_batch_bytes_target;
+  uint8_t sd_verify_readback;
   uint32_t rtc_resync_period_ms;
   calibration_model_t calibration;
   calibration_context_t calibration_context;
@@ -387,7 +393,7 @@ typedef struct
   uint8_t mqtt_qos;
   uint8_t mqtt_retain;
   uint8_t mqtt_bridge_mode;
-} app_settings_persist_payload_v5_t;
+} app_settings_persist_payload_t;
 
 typedef struct
 {
