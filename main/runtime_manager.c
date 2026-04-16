@@ -4313,9 +4313,9 @@ SnapshotActiveSettings(runtime_state_t* state)
     return;
   }
   state->node_role_active = state->settings.node_role;
-  state->net_mode_active = (state->settings.node_role == APP_NODE_ROLE_ROOT)
-                             ? APP_NET_MODE_MESH
-                             : state->settings.net_mode;
+  state->net_mode_active =
+    AppSettingsGetEffectiveNetMode(state->settings.node_role,
+                                   state->settings.net_mode);
   state->mqtt_enabled_active = state->settings.mqtt_enabled;
   strlcpy(state->mqtt_broker_uri_active,
           state->settings.mqtt_broker_uri,
@@ -4390,8 +4390,7 @@ esp_err_t
 RuntimeApplyNetMode(app_net_mode_t mode)
 {
   const app_net_mode_t effective_mode =
-    (g_state.settings.node_role == APP_NODE_ROLE_ROOT) ? APP_NET_MODE_MESH
-                                                       : mode;
+    AppSettingsGetEffectiveNetMode(g_state.settings.node_role, mode);
   g_state.net_mode_active = effective_mode;
   if (effective_mode == APP_NET_MODE_MESH) {
     return RuntimeStartMeshTransport(&g_state);

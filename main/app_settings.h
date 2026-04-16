@@ -371,6 +371,23 @@ extern "C"
  * @return Return the function result.
  */
   bool AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out);
+/**
+ * @brief Resolve the runtime-effective network mode from role + configured
+ * setting.
+ * @param role Active node role.
+ * @param configured_mode Stored configured network mode.
+ * @return Effective network mode used by runtime/supervisor.
+ */
+  app_net_mode_t AppSettingsGetEffectiveNetMode(app_node_role_t role,
+                                                app_net_mode_t configured_mode);
+/**
+ * @brief Return a short reason when effective net mode overrides configured.
+ * @param role Active node role.
+ * @param configured_mode Stored configured network mode.
+ * @return Override reason string, or NULL when no override applies.
+ */
+  const char* AppSettingsGetNetModeOverrideReason(app_node_role_t role,
+                                                  app_net_mode_t configured_mode);
 
   // MQTT bridge mode helpers.
 /**
