@@ -647,6 +647,40 @@ AppSettingsParseNetMode(const char* value, app_net_mode_t* mode_out)
 }
 
 /**
+ * @brief Execute AppSettingsGetEffectiveNetMode.
+ * @param role Parameter role.
+ * @param configured_mode Parameter configured_mode.
+ * @return Return the function result.
+ */
+app_net_mode_t
+AppSettingsGetEffectiveNetMode(app_node_role_t role,
+                               app_net_mode_t configured_mode)
+{
+  if (role == APP_NODE_ROLE_ROOT) {
+    return APP_NET_MODE_MESH;
+  }
+  return configured_mode;
+}
+
+/**
+ * @brief Execute AppSettingsGetNetModeOverrideReason.
+ * @param role Parameter role.
+ * @param configured_mode Parameter configured_mode.
+ * @return Return the function result.
+ */
+const char*
+AppSettingsGetNetModeOverrideReason(app_node_role_t role,
+                                    app_net_mode_t configured_mode)
+{
+  const app_net_mode_t effective_mode =
+    AppSettingsGetEffectiveNetMode(role, configured_mode);
+  if (effective_mode != configured_mode && role == APP_NODE_ROLE_ROOT) {
+    return "role=root forces mesh";
+  }
+  return NULL;
+}
+
+/**
  * @brief Execute AppSettingsMqttBridgeModeToString.
  * @param mode Parameter mode.
  * @return Return the function result.

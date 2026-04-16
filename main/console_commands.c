@@ -234,6 +234,8 @@ static int
 SdTopicHelp(const char* topic);
 static void
 PrintModeHelpBody(void);
+static void
+PrintNetHelpBody(void);
 static int
 ModeTopicHelp(const char* topic);
 /**
@@ -1213,13 +1215,16 @@ CommandStatus(int argc, char** argv)
   printf("sd_verify_readback: %s\n",
          (state != NULL && state->sd_verify_readback) ? "on" : "off");
   printf("node_role: %s\n", AppSettingsRoleToString(settings->node_role));
-  printf("net_mode: %s\n", AppSettingsNetModeToString(settings->net_mode));
   const app_net_mode_t effective_net_mode =
-    (settings->node_role == APP_NODE_ROLE_ROOT) ? APP_NET_MODE_MESH
-                                                : settings->net_mode;
-  if (effective_net_mode != settings->net_mode) {
-    printf("net_mode_effective: %s\n",
-           AppSettingsNetModeToString(effective_net_mode));
+    AppSettingsGetEffectiveNetMode(settings->node_role, settings->net_mode);
+  printf("configured_net_mode: %s\n",
+         AppSettingsNetModeToString(settings->net_mode));
+  printf("effective_net_mode: %s\n",
+         AppSettingsNetModeToString(effective_net_mode));
+  const char* net_override_reason = AppSettingsGetNetModeOverrideReason(
+    settings->node_role, settings->net_mode);
+  if (net_override_reason != NULL) {
+    printf("effective_override_reason: %s\n", net_override_reason);
   }
   printf("allow_children: %s\n", settings->allow_children ? "yes" : "no");
   printf("tz_posix: %s\n", settings->tz_posix);
@@ -7244,8 +7249,19 @@ CommandNet(int argc, char** argv)
 
   const char* action = g_net_args.action->sval[0];
   if (strcmp(action, "show") == 0) {
-    printf("net_mode: %s\n",
-           AppSettingsNetModeToString(g_runtime->settings->net_mode));
+    const app_net_mode_t configured_mode = g_runtime->settings->net_mode;
+    const app_net_mode_t effective_mode =
+      AppSettingsGetEffectiveNetMode(g_runtime->settings->node_role,
+                                     configured_mode);
+    printf("configured_net_mode: %s\n",
+           AppSettingsNetModeToString(configured_mode));
+    printf("effective_net_mode: %s\n",
+           AppSettingsNetModeToString(effective_mode));
+    const char* net_override_reason = AppSettingsGetNetModeOverrideReason(
+      g_runtime->settings->node_role, configured_mode);
+    if (net_override_reason != NULL) {
+      printf("effective_override_reason: %s\n", net_override_reason);
+    }
     return 0;
   }
 
@@ -7266,8 +7282,20 @@ CommandNet(int argc, char** argv)
       printf("save failed: %s\n", esp_err_to_name(result));
       return 1;
     }
+    const app_net_mode_t effective_mode =
+      AppSettingsGetEffectiveNetMode(g_runtime->settings->node_role, mode);
+    const char* net_override_reason = AppSettingsGetNetModeOverrideReason(
+      g_runtime->settings->node_role, mode);
     printf("OK\n");
-    printf("net_mode set to %s\n", AppSettingsNetModeToString(mode));
+    printf("net_mode stored as %s\n", AppSettingsNetModeToString(mode));
+    if (effective_mode == mode) {
+      printf("effective_net_mode: %s\n", AppSettingsNetModeToString(mode));
+    } else {
+      printf("effective_net_mode remains %s (%s)\n",
+             AppSettingsNetModeToString(effective_mode),
+             (net_override_reason != NULL) ? net_override_reason
+                                           : "role-based override");
+    }
     NotifyNetSupervisor();
     return 0;
   }
@@ -9977,6 +10005,21 @@ PrintModeHelpBody(void)
   printf("  mode set diag\n");
 }
 
+static void
+PrintNetHelpBody(void)
+{
+  printf("SUBCOMMANDS\n");
+  printf("  show                              Show configured and effective net mode\n");
+  printf("  set mesh|wifi|none                Save configured net mode\n\n");
+  printf("NOTES\n");
+  printf("  Effective mode may be overridden by current role.\n");
+  printf("  root role forces effective mode to mesh.\n\n");
+  printf("EXAMPLES\n");
+  printf("  net show\n");
+  printf("  net set wifi\n");
+  printf("  net set mesh\n");
+}
+
 /**
  * @brief Print detailed mode subtopic help for a specific subcommand.
  * @param topic Mode subtopic name.
@@ -10349,6 +10392,9 @@ RegisterCommands(void)
     .command = "net",
     .summary = "Show or set network mode",
     .synopsis = "net show | net set mesh|wifi|none",
+    .description = "Show configured/effective network mode and save network "
+                   "preference. Root role forces effective mesh mode.",
+    .print_body = PrintNetHelpBody,
     .func = &CommandNet,
     .argtable = (void**)&g_net_args,
   };

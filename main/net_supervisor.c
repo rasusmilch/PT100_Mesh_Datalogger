@@ -39,10 +39,8 @@ GetDesiredNetMode(void)
   if (s_runtime == NULL || s_runtime->settings == NULL) {
     return APP_NET_MODE_NONE;
   }
-  if (s_runtime->settings->node_role == APP_NODE_ROLE_ROOT) {
-    return APP_NET_MODE_MESH;
-  }
-  return s_runtime->settings->net_mode;
+  return AppSettingsGetEffectiveNetMode(s_runtime->settings->node_role,
+                                        s_runtime->settings->net_mode);
 }
 
 static net_supervisor_mode_t
