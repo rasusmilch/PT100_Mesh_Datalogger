@@ -55,7 +55,6 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "i2c_bus.h"
-#include "linenoise/linenoise.h"
 #include "max31865_reader.h"
 #include "mem_guard.h"
 #include "runtime_manager.h"
@@ -73,6 +72,8 @@ static const TickType_t kConsoleFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kFlushTimeoutDefaultMs = 15000;
 static const size_t kConsoleMaxCmdlineLength = 660;
 static const double kDefaultCaptureDriftLimitCPerMin = 0.020;
+static char* s_console_cmdline_buffer = NULL;
+static bool s_console_cmdline_buffer_in_psram = false;
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
 static void
@@ -249,6 +250,10 @@ ConsoleEffectiveSensorPollPeriodMs(const app_settings_t* settings);
 static bool
 ConsoleInputTooLongOrUnterminatedQuote_(const char* line,
                                         size_t max_cmdline_length);
+static bool
+ConsoleCmdlineBufferInit_(size_t max_cmdline_length);
+static char*
+ConsoleReadLine_(const char* prompt);
 
 /**
  * @brief Print combined calibration status including window stats, points, and
@@ -10464,7 +10469,7 @@ ConsoleTask(void* context)
       continue;
     }
 #endif
-    char* line = linenoise("pt100> ");
+    char* line = ConsoleReadLine_("pt100> ");
     if (line == NULL) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
@@ -10474,10 +10479,8 @@ ConsoleTask(void* context)
       if (ConsoleInputTooLongOrUnterminatedQuote_(line,
                                                   kConsoleMaxCmdlineLength)) {
         printf("input too long or unterminated quoted string\n");
-        linenoiseFree(line);
         continue;
       }
-      linenoiseHistoryAdd(line);
       int run_result = 0;
       esp_err_t result = esp_console_run(line, &run_result);
       if (result == ESP_ERR_NOT_FOUND) {
@@ -10490,8 +10493,72 @@ ConsoleTask(void* context)
         printf("Command returned non-zero: %d\n", run_result);
       }
     }
-    linenoiseFree(line);
   }
+}
+
+static bool
+ConsoleCmdlineBufferInit_(size_t max_cmdline_length)
+{
+  if (s_console_cmdline_buffer != NULL) {
+    return true;
+  }
+
+  s_console_cmdline_buffer = (char*)heap_caps_malloc(
+    max_cmdline_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  s_console_cmdline_buffer_in_psram =
+    (s_console_cmdline_buffer != NULL &&
+     esp_ptr_external_ram(s_console_cmdline_buffer));
+  if (s_console_cmdline_buffer == NULL) {
+    s_console_cmdline_buffer =
+      (char*)heap_caps_malloc(max_cmdline_length, MALLOC_CAP_8BIT);
+    s_console_cmdline_buffer_in_psram = false;
+  }
+  if (s_console_cmdline_buffer == NULL) {
+    ESP_LOGE(kTag, "console buffer allocation failed (%u bytes)",
+             (unsigned)max_cmdline_length);
+    return false;
+  }
+
+  memset(s_console_cmdline_buffer, 0, max_cmdline_length);
+  ESP_LOGI(kTag, "console buffer: size=%u location=%s",
+           (unsigned)max_cmdline_length,
+           s_console_cmdline_buffer_in_psram ? "PSRAM" : "INTERNAL");
+  return true;
+}
+
+static char*
+ConsoleReadLine_(const char* prompt)
+{
+  if (s_console_cmdline_buffer == NULL) {
+    return NULL;
+  }
+  if (prompt != NULL) {
+    printf("%s", prompt);
+    fflush(stdout);
+  }
+
+  size_t write_index = 0u;
+  while (true) {
+    int c = getchar();
+    if (c == EOF) {
+      return NULL;
+    }
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      break;
+    }
+    if ((c == '\b' || c == 0x7F) && write_index > 0u) {
+      --write_index;
+      continue;
+    }
+    if (write_index < (kConsoleMaxCmdlineLength - 1u)) {
+      s_console_cmdline_buffer[write_index++] = (char)c;
+    }
+  }
+  s_console_cmdline_buffer[write_index] = '\0';
+  return s_console_cmdline_buffer;
 }
 
 static bool
@@ -10556,7 +10623,7 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
   usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
 
-  // Make stdin/stdout blocking (helps linenoise)
+  // Make stdin/stdout blocking (line input is read from stdin).
   fcntl(fileno(stdout), F_SETFL, 0);
   fcntl(fileno(stdin), F_SETFL, 0);
 
@@ -10590,12 +10657,12 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
   console_config.max_cmdline_length = (uint32_t)kConsoleMaxCmdlineLength;
   console_config.max_cmdline_args = 8;
+  if (!ConsoleCmdlineBufferInit_(kConsoleMaxCmdlineLength)) {
+    return ESP_ERR_NO_MEM;
+  }
   ESP_ERROR_CHECK(esp_console_init(&console_config));
 
   ConsoleHelpInit();
-
-  linenoiseSetDumbMode(1);
-  linenoiseHistorySetMaxLen(50);
 
   RegisterCommands();
 
