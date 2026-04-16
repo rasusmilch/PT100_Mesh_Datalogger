@@ -75,7 +75,7 @@ static const char* kKeySettingsBlob0 = "cfg0";
 static const char* kKeySettingsBlob1 = "cfg1";
 
 #define APP_SETTINGS_BLOB_MAGIC 0x53455454u // 'SETT'
-#define APP_SETTINGS_BLOB_VERSION 6u
+#define APP_SETTINGS_BLOB_VERSION 7u
 
 #pragma pack(push, 1)
 typedef struct
@@ -161,6 +161,7 @@ typedef struct
   uint32_t fram_flush_watermark_records;
   uint32_t sd_flush_period_ms;
   uint32_t sd_batch_bytes_target;
+  uint8_t sd_verify_readback;
   uint32_t rtc_resync_period_ms;
   calibration_model_t calibration;
   calibration_context_t calibration_context;
@@ -332,6 +333,49 @@ typedef struct
   uint8_t mqtt_qos;
   uint8_t mqtt_retain;
   uint8_t mqtt_bridge_mode;
+} app_settings_persist_payload_v6_t;
+
+typedef struct
+{
+  uint32_t log_period_ms;
+  uint32_t fram_flush_watermark_records;
+  uint32_t sd_flush_period_ms;
+  uint32_t sd_batch_bytes_target;
+  uint32_t rtc_resync_period_ms;
+  calibration_model_t calibration;
+  calibration_context_t calibration_context;
+  uint8_t calibration_context_valid;
+  calibration_point_t calibration_points[CALIBRATION_MAX_POINTS];
+  uint8_t calibration_points_count;
+  uint8_t calibration_domain;
+  uint16_t cal_window_duration_s;
+  uint16_t cal_trend_ema_alpha_permille;
+  int64_t cal_last_utc;
+  int64_t cal_last_override_utc;
+  uint16_t cal_due_count;
+  uint8_t cal_due_unit;
+  uint16_t cal_due_override_count;
+  uint8_t cal_due_override_unit;
+  calibration_metar_reference_t cal_metar;
+  uint8_t rtd_ema_enabled;
+  uint16_t rtd_ema_alpha_permille;
+  uint32_t rtd_fault_assert_ms;
+  uint32_t rtd_fault_clear_ms;
+  char tz_posix[APP_SETTINGS_TZ_POSIX_MAX_LEN];
+  char unit_serial[APP_SETTINGS_UNIT_SERIAL_MAX_LEN];
+  char cal_method[APP_SETTINGS_CAL_METHOD_MAX_LEN];
+  uint8_t dst_enabled;
+  uint8_t node_role;
+  uint8_t allow_children;
+  uint8_t allow_children_set;
+  uint32_t display_attention_policy;
+  uint8_t net_mode;
+  uint8_t mqtt_enabled;
+  char mqtt_broker_uri[128];
+  char mqtt_topic_prefix[64];
+  uint8_t mqtt_qos;
+  uint8_t mqtt_retain;
+  uint8_t mqtt_bridge_mode;
 } app_settings_persist_payload_v5_t;
 
 typedef struct
@@ -368,6 +412,8 @@ static void
 MutateSdFlushPeriodMs_(app_settings_t* settings, void* context);
 static void
 MutateSdBatchBytes_(app_settings_t* settings, void* context);
+static void
+MutateSdVerifyReadback_(app_settings_t* settings, void* context);
 static void
 MutateRtcResyncPeriodMs_(app_settings_t* settings, void* context);
 static void
@@ -681,6 +727,7 @@ ApplyDefaults(app_settings_t* settings)
     (uint32_t)CONFIG_APP_FRAM_FLUSH_WATERMARK_RECORDS_DEFAULT;
   settings->sd_flush_period_ms = (uint32_t)CONFIG_APP_SD_PERIODIC_FLUSH_MS;
   settings->sd_batch_bytes_target = (uint32_t)CONFIG_APP_SD_BATCH_BYTES_TARGET;
+  settings->sd_verify_readback = false;
   settings->rtc_resync_period_ms = 3600000u;
   CalibrationModelInitIdentity(&settings->calibration);
   memset(
@@ -908,6 +955,10 @@ SettingsBlobLooksValid(const app_settings_blob_t* blob)
     if (blob->header.size != sizeof(app_settings_persist_payload_v5_t)) {
       return false;
     }
+  } else if (blob->header.version == 6u) {
+    if (blob->header.size != sizeof(app_settings_persist_payload_v6_t)) {
+      return false;
+    }
   } else if (blob->header.version == 1u) {
     if (blob->header.size != sizeof(app_settings_persist_payload_v1_t)) {
       return false;
@@ -948,6 +999,20 @@ SettingsBlobLooksValid(const app_settings_blob_t* blob)
     } app_settings_blob_v5_t;
     app_settings_blob_v5_t temp_v5 = { .header = header, .payload = payload_v5 };
     return esp_rom_crc32_le(0, (const uint8_t*)&temp_v5, sizeof(temp_v5)) ==
+           crc_saved;
+  }
+  if (blob->header.version == 6u) {
+    app_settings_blob_header_t header = blob->header;
+    app_settings_persist_payload_v6_t payload_v6;
+    memcpy(&payload_v6, &blob->payload, sizeof(payload_v6));
+    header.crc32_le = 0;
+    typedef struct
+    {
+      app_settings_blob_header_t header;
+      app_settings_persist_payload_v6_t payload;
+    } app_settings_blob_v6_t;
+    app_settings_blob_v6_t temp_v6 = { .header = header, .payload = payload_v6 };
+    return esp_rom_crc32_le(0, (const uint8_t*)&temp_v6, sizeof(temp_v6)) ==
            crc_saved;
   }
   app_settings_blob_v1_t temp_v1;
@@ -1149,6 +1214,33 @@ ReadSettingsBlob(nvs_handle_t handle,
       return true;
     }
   }
+  if (header->version == 6u) {
+    typedef struct
+    {
+      app_settings_blob_header_t header;
+      app_settings_persist_payload_v6_t payload;
+    } app_settings_blob_v6_t;
+    if (blob_size == sizeof(app_settings_blob_v6_t)) {
+      const app_settings_blob_v6_t* old_blob =
+        (const app_settings_blob_v6_t*)raw;
+      app_settings_blob_v6_t crc_blob = *old_blob;
+      const uint32_t crc_saved = crc_blob.header.crc32_le;
+      crc_blob.header.crc32_le = 0;
+      const uint32_t crc =
+        esp_rom_crc32_le(0, (const uint8_t*)&crc_blob, sizeof(crc_blob));
+      if (crc != crc_saved) {
+        return false;
+      }
+      memset(blob_out, 0, sizeof(*blob_out));
+      blob_out->header = old_blob->header;
+      blob_out->header.version = APP_SETTINGS_BLOB_VERSION;
+      blob_out->header.size = sizeof(app_settings_persist_payload_t);
+      memcpy(&blob_out->payload, &old_blob->payload, sizeof(old_blob->payload));
+      blob_out->payload.sd_verify_readback = 0u;
+      blob_out->header.crc32_le = ComputeSettingsBlobCrc32(blob_out);
+      return true;
+    }
+  }
   if (header->version == 1u && blob_size == sizeof(app_settings_blob_v1_t)) {
     const app_settings_blob_v1_t* old_blob = (const app_settings_blob_v1_t*)raw;
     app_settings_blob_v1_t crc_blob = *old_blob;
@@ -1250,6 +1342,7 @@ SettingsPayloadFromSettings(const app_settings_t* settings,
     settings->fram_flush_watermark_records;
   payload->sd_flush_period_ms = settings->sd_flush_period_ms;
   payload->sd_batch_bytes_target = settings->sd_batch_bytes_target;
+  payload->sd_verify_readback = settings->sd_verify_readback ? 1u : 0u;
   payload->rtc_resync_period_ms = settings->rtc_resync_period_ms;
   payload->calibration = settings->calibration;
   payload->calibration_context = settings->calibration_context;
@@ -1327,6 +1420,9 @@ ApplyPersistedSettings(const app_settings_persist_payload_t* payload,
   }
   if (payload->sd_batch_bytes_target >= 4096) {
     settings_out->sd_batch_bytes_target = payload->sd_batch_bytes_target;
+  }
+  if (payload->sd_verify_readback <= 1u) {
+    settings_out->sd_verify_readback = (payload->sd_verify_readback == 1u);
   }
   if (payload->rtc_resync_period_ms <= 86400000u) {
     settings_out->rtc_resync_period_ms = payload->rtc_resync_period_ms;
@@ -1721,6 +1817,12 @@ static void
 MutateSdBatchBytes_(app_settings_t* settings, void* context)
 {
   settings->sd_batch_bytes_target = *(uint32_t*)context;
+}
+
+static void
+MutateSdVerifyReadback_(app_settings_t* settings, void* context)
+{
+  settings->sd_verify_readback = *(bool*)context;
 }
 
 static void
@@ -2589,6 +2691,12 @@ esp_err_t
 AppSettingsSaveSdBatchBytes(uint32_t batch_bytes)
 {
   return PersistMutatedSettingsSnapshot_(MutateSdBatchBytes_, &batch_bytes);
+}
+
+esp_err_t
+AppSettingsSaveSdVerifyReadback(bool enabled)
+{
+  return PersistMutatedSettingsSnapshot_(MutateSdVerifyReadback_, &enabled);
 }
 
 /**
