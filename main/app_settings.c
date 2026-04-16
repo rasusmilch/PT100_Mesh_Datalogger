@@ -255,6 +255,7 @@ typedef struct
   uint32_t fram_flush_watermark_records;
   uint32_t sd_flush_period_ms;
   uint32_t sd_batch_bytes_target;
+  uint8_t sd_verify_readback;
   uint32_t rtc_resync_period_ms;
   calibration_model_t calibration;
   calibration_context_t calibration_context;
