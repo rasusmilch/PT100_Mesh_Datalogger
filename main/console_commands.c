@@ -71,7 +71,7 @@
 static const char* kTag = "console";
 static const TickType_t kConsoleFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kFlushTimeoutDefaultMs = 15000;
-static const size_t kConsoleMaxCmdlineLength = 1024;
+static const size_t kConsoleMaxCmdlineLength = 660;
 static const double kDefaultCaptureDriftLimitCPerMin = 0.020;
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
@@ -7254,9 +7254,8 @@ CommandNet(int argc, char** argv)
   const char* action = g_net_args.action->sval[0];
   if (strcmp(action, "show") == 0) {
     const app_net_mode_t configured_mode = g_runtime->settings->net_mode;
-    const app_net_mode_t effective_mode =
-      AppSettingsGetEffectiveNetMode(g_runtime->settings->node_role,
-                                     configured_mode);
+    const app_net_mode_t effective_mode = AppSettingsGetEffectiveNetMode(
+      g_runtime->settings->node_role, configured_mode);
     printf("configured_net_mode: %s\n",
            AppSettingsNetModeToString(configured_mode));
     printf("effective_net_mode: %s\n",
@@ -7288,8 +7287,8 @@ CommandNet(int argc, char** argv)
     }
     const app_net_mode_t effective_mode =
       AppSettingsGetEffectiveNetMode(g_runtime->settings->node_role, mode);
-    const char* net_override_reason = AppSettingsGetNetModeOverrideReason(
-      g_runtime->settings->node_role, mode);
+    const char* net_override_reason =
+      AppSettingsGetNetModeOverrideReason(g_runtime->settings->node_role, mode);
     printf("OK\n");
     printf("net_mode stored as %s\n", AppSettingsNetModeToString(mode));
     if (effective_mode == mode) {
@@ -10013,7 +10012,8 @@ static void
 PrintNetHelpBody(void)
 {
   printf("SUBCOMMANDS\n");
-  printf("  show                              Show configured and effective net mode\n");
+  printf("  show                              Show configured and effective "
+         "net mode\n");
   printf("  set mesh|wifi|none                Save configured net mode\n\n");
   printf("NOTES\n");
   printf("  Effective mode may be overridden by current role.\n");
@@ -10471,8 +10471,8 @@ ConsoleTask(void* context)
     }
 
     if (strlen(line) > 0) {
-      if (ConsoleInputTooLongOrUnterminatedQuote_(
-            line, kConsoleMaxCmdlineLength)) {
+      if (ConsoleInputTooLongOrUnterminatedQuote_(line,
+                                                  kConsoleMaxCmdlineLength)) {
         printf("input too long or unterminated quoted string\n");
         linenoiseFree(line);
         continue;
