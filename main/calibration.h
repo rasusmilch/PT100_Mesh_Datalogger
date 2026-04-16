@@ -240,6 +240,14 @@ extern "C"
                                        bool* out_valid,
                                        size_t* out_sample_count,
                                        uint32_t* out_generation);
+  /**
+   * @brief Get generation counter for the active calibration capture window.
+   *
+   * This generation is incremented whenever CalWindowPushRawSample mutates the
+   * active window content. Cache validation in `cal livecal` assumes this
+   * window has a single logical writer (the calibration console live/capture
+   * path).
+   */
   uint32_t CalWindowGetActiveGeneration(void);
   /**
    * @brief Read one sample from the active calibration window by age.
