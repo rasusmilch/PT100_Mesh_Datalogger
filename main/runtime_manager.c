@@ -132,6 +132,7 @@ static char g_sd_csv_line_buffer[CONFIG_APP_MAX_CSV_LINE_BYTES];
 static stack_monitor_t g_stack_monitor;
 static runtime_state_t g_state;
 static app_runtime_t g_runtime;
+static runtime_sensor_sample_t g_runtime_sensor_sample;
 static bool g_alert_http_psram_failure_logged = false;
 static RTC_DATA_ATTR runtime_reboot_alert_latch_t g_reboot_alert_latch = {
   .magic = kRebootAlertLatchMagic,
@@ -161,6 +162,7 @@ typedef struct
 
 static portMUX_TYPE g_i2c_op_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_rtc_errlog_latch_lock = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE g_runtime_sensor_sample_lock = portMUX_INITIALIZER_UNLOCKED;
 static runtime_i2c_op_state_t g_i2c_op_state = {
   .active = false,
   .op_name = kMutexHolderNone,
@@ -377,6 +379,13 @@ UpdateSensorEmaFromSample(runtime_state_t* state,
                           uint16_t alpha_permille,
                           const max31865_sample_t* sample,
                           esp_err_t result);
+
+/**
+ * @brief Publish latest runtime sensor snapshot from SensorTask.
+ * @param sample Source MAX31865 sample.
+ */
+static void
+RuntimePublishSensorSnapshot(const max31865_sample_t* sample);
 
 static const char*
 Max31865OneShotPhaseToString(max31865_one_shot_phase_t phase);
@@ -642,6 +651,25 @@ UpdateSensorEmaFromSample(runtime_state_t* state,
 
   const double alpha = (double)alpha_permille / 1000.0;
   (void)Max31865ApplyEmaSample(&state->sensor, alpha, sample, NULL);
+}
+
+static void
+RuntimePublishSensorSnapshot(const max31865_sample_t* sample)
+{
+  if (sample == NULL) {
+    return;
+  }
+
+  taskENTER_CRITICAL(&g_runtime_sensor_sample_lock);
+  g_runtime_sensor_sample.timestamp_us = esp_timer_get_time();
+  g_runtime_sensor_sample.temp_mC =
+    (int32_t)llround(sample->temperature_c * 1000.0);
+  g_runtime_sensor_sample.ohm_mohm =
+    (int32_t)llround(sample->resistance_ohm * 1000.0);
+  g_runtime_sensor_sample.fault = sample->fault_status;
+  g_runtime_sensor_sample.valid = !sample->fault_present;
+  g_runtime_sensor_sample.sample_id++;
+  taskEXIT_CRITICAL(&g_runtime_sensor_sample_lock);
 }
 
 static const char*
@@ -7146,6 +7174,7 @@ SensorTask(void* context)
         state, ema_enabled, alpha_permille, &sample, result);
       raw_temp_c = sample.temperature_c;
       raw_res_ohm = sample.resistance_ohm;
+      RuntimePublishSensorSnapshot(&sample);
     }
 
     const int64_t now_ms = esp_timer_get_time() / 1000;
@@ -11385,6 +11414,19 @@ bool
 RuntimeIsRunning(void)
 {
   return g_state.logger_running;
+}
+
+bool
+RuntimeCopyLatestSensorSample(runtime_sensor_sample_t* out_sample)
+{
+  if (out_sample == NULL) {
+    return false;
+  }
+
+  taskENTER_CRITICAL(&g_runtime_sensor_sample_lock);
+  *out_sample = g_runtime_sensor_sample;
+  taskEXIT_CRITICAL(&g_runtime_sensor_sample_lock);
+  return out_sample->sample_id > 0u;
 }
 
 /**
