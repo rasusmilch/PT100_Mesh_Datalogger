@@ -214,7 +214,15 @@ ParseCalImportArgs_(int argc,
                     double* stddev_c_out);
 static bool
 ParseCalibrationImportStatusLine_(const char* line,
-                                  calibration_point_t* point_out);
+                                  calibration_point_t* point_out,
+                                  bool* single_payload_out,
+                                  size_t* token_count_out);
+static bool
+ParseCalibrationImportStatusTokens_(int argc,
+                                    char** argv,
+                                    int start_index,
+                                    calibration_point_t* point_out,
+                                    size_t* token_count_out);
 static bool
 NextCalibrationImportTokenSpan_(const char* line,
                                 size_t* cursor_inout,
@@ -3652,8 +3660,352 @@ ParseCalibrationImportDriftLimitSourceSpan_(
   return false;
 }
 
+typedef struct
+{
+  bool found_reference_temp_c;
+  bool found_ideal_ref_res_ohm;
+  bool found_captured_raw_temp_avg_c;
+  bool found_captured_raw_temp_stddev_c;
+  bool found_captured_raw_res_avg_ohm;
+  bool found_captured_raw_res_stddev_ohm;
+  bool found_captured_drift_c_per_min;
+  bool found_captured_delta_c;
+  bool found_drift_limit_c_per_min;
+  bool found_drift_limit_source;
+  bool found_captured_window_s;
+  bool found_captured_ema_alpha;
+} cal_import_field_presence_t;
+
 static bool
-ParseCalibrationImportStatusLine_(const char* line, calibration_point_t* point_out)
+CalibrationImportValueIsNaSpan_(const char* value_start, size_t value_len)
+{
+  return (value_start != NULL && value_len == 3u &&
+          strncmp(value_start, "n/a", 3) == 0);
+}
+
+static void
+LogCalibrationImportFieldParsed_(const char* field_name,
+                                 double parsed_value,
+                                 bool available)
+{
+  if (available) {
+    ESP_LOGI(kTag,
+             "cal import debug: field %s=%.6f",
+             field_name,
+             parsed_value);
+  } else {
+    ESP_LOGI(kTag, "cal import debug: field %s=n/a", field_name);
+  }
+}
+
+static void
+LogCalibrationImportFieldAbsent_(const char* field_name)
+{
+  ESP_LOGI(kTag, "cal import debug: field %s absent", field_name);
+}
+
+static void
+LogCalibrationImportDriftSource_(calibration_drift_limit_source_t source)
+{
+  ESP_LOGI(kTag,
+           "cal import debug: field drift_limit_source=%s",
+           DriftLimitSourceToString_(source));
+}
+
+static void
+LogCalibrationImportSummary_(const calibration_point_t* point)
+{
+  if (point == NULL) {
+    return;
+  }
+  ESP_LOGI(kTag,
+           "cal import debug: summary reference_temp_C=%.3f "
+           "captured_raw_res_avg_Ohm=%.3f",
+           point->actual_mC / 1000.0,
+           point->raw_avg_mOhm / 1000.0);
+  ESP_LOGI(kTag,
+           "cal import debug: summary raw_temp_avg_present=%s "
+           "raw_temp_stddev_present=%s raw_res_stddev_present=%s "
+           "captured_drift_present=%s captured_delta_present=%s "
+           "drift_limit_present=%s drift_source_present=%s "
+           "captured_window_present=%s captured_ema_alpha_present=%s",
+           (point->raw_avg_mC != INT32_MIN) ? "yes" : "no",
+           (point->raw_stddev_mC >= 0) ? "yes" : "no",
+           (point->raw_stddev_mOhm >= 0) ? "yes" : "no",
+           (point->captured_drift_mC_per_min !=
+            CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN)
+             ? "yes"
+             : "no",
+           (point->captured_delta_mC != CAL_CAPTURE_DELTA_UNAVAILABLE_MC) ? "yes"
+                                                                           : "no",
+           (point->capture_drift_limit_mC_per_min !=
+            CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN)
+             ? "yes"
+             : "no",
+           (point->drift_limit_source !=
+            (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE)
+             ? "yes"
+             : "no",
+           (point->captured_window_s != CAL_CAPTURE_WINDOW_S_UNAVAILABLE) ? "yes"
+                                                                           : "no",
+           (point->captured_ema_alpha_permille !=
+            CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE)
+             ? "yes"
+             : "no");
+}
+
+static void
+LogCalibrationImportOptionalAbsence_(const cal_import_field_presence_t* fields)
+{
+  if (fields == NULL) {
+    return;
+  }
+  if (!fields->found_ideal_ref_res_ohm) {
+    LogCalibrationImportFieldAbsent_("ideal_ref_res_Ohm");
+  }
+  if (!fields->found_captured_raw_temp_avg_c) {
+    LogCalibrationImportFieldAbsent_("captured_raw_temp_avg_C");
+  }
+  if (!fields->found_captured_raw_temp_stddev_c) {
+    LogCalibrationImportFieldAbsent_("captured_raw_temp_stddev_C");
+  }
+  if (!fields->found_captured_raw_res_stddev_ohm) {
+    LogCalibrationImportFieldAbsent_("captured_raw_res_stddev_Ohm");
+  }
+  if (!fields->found_captured_drift_c_per_min) {
+    LogCalibrationImportFieldAbsent_("captured_drift_C_per_min");
+  }
+  if (!fields->found_captured_delta_c) {
+    LogCalibrationImportFieldAbsent_("captured_delta_C");
+  }
+  if (!fields->found_drift_limit_c_per_min) {
+    LogCalibrationImportFieldAbsent_("drift_limit_C_per_min");
+  }
+  if (!fields->found_drift_limit_source) {
+    LogCalibrationImportFieldAbsent_("drift_limit_source");
+  }
+  if (!fields->found_captured_window_s) {
+    LogCalibrationImportFieldAbsent_("captured_window_s");
+  }
+  if (!fields->found_captured_ema_alpha) {
+    LogCalibrationImportFieldAbsent_("captured_ema_alpha");
+  }
+}
+
+static void
+ParseCalibrationImportTokenSpan_(const char* token_start,
+                                 size_t token_len,
+                                 calibration_point_t* point,
+                                 bool* have_actual,
+                                 bool* have_raw_ohm,
+                                 cal_import_field_presence_t* fields)
+{
+  if (token_start == NULL || point == NULL || have_actual == NULL ||
+      have_raw_ohm == NULL || fields == NULL) {
+    return;
+  }
+  const char* equals = memchr(token_start, '=', token_len);
+  if (equals == NULL || equals == token_start ||
+      equals == (token_start + token_len - 1u)) {
+    ESP_LOGI(kTag,
+             "cal import debug: ignored token '%.*s'",
+             (int)token_len,
+             token_start);
+    return;
+  }
+  const char* key_start = token_start;
+  const size_t key_len = (size_t)(equals - token_start);
+  const char* value_start = equals + 1;
+  const size_t value_len = (size_t)((token_start + token_len) - value_start);
+  const bool value_is_na = CalibrationImportValueIsNaSpan_(value_start, value_len);
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "reference_temp_C")) {
+    fields->found_reference_temp_c = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("reference_temp_C", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->actual_mC = (int32_t)llround(parsed * 1000.0);
+      *have_actual = true;
+      LogCalibrationImportFieldParsed_("reference_temp_C", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "ideal_ref_res_Ohm")) {
+    fields->found_ideal_ref_res_ohm = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("ideal_ref_res_Ohm", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      LogCalibrationImportFieldParsed_("ideal_ref_res_Ohm", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(
+        key_start, key_len, "captured_raw_res_avg_Ohm")) {
+    fields->found_captured_raw_res_avg_ohm = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("captured_raw_res_avg_Ohm", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->raw_avg_mOhm = (int32_t)llround(parsed * 1000.0);
+      *have_raw_ohm = true;
+      LogCalibrationImportFieldParsed_("captured_raw_res_avg_Ohm", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "captured_raw_temp_avg_C")) {
+    fields->found_captured_raw_temp_avg_c = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("captured_raw_temp_avg_C", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->raw_avg_mC = (int32_t)llround(parsed * 1000.0);
+      LogCalibrationImportFieldParsed_("captured_raw_temp_avg_C", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(
+        key_start, key_len, "captured_raw_temp_stddev_C")) {
+    fields->found_captured_raw_temp_stddev_c = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("captured_raw_temp_stddev_C", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->raw_stddev_mC = (int32_t)llround(parsed * 1000.0);
+      LogCalibrationImportFieldParsed_(
+        "captured_raw_temp_stddev_C", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(
+        key_start, key_len, "captured_raw_res_stddev_Ohm")) {
+    fields->found_captured_raw_res_stddev_ohm = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("captured_raw_res_stddev_Ohm", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->raw_stddev_mOhm = (int32_t)llround(parsed * 1000.0);
+      LogCalibrationImportFieldParsed_(
+        "captured_raw_res_stddev_Ohm", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "captured_drift_C_per_min")) {
+    fields->found_captured_drift_c_per_min = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("captured_drift_C_per_min", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->captured_drift_mC_per_min = (int32_t)llround(parsed * 1000.0);
+      LogCalibrationImportFieldParsed_("captured_drift_C_per_min", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "captured_delta_C")) {
+    fields->found_captured_delta_c = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("captured_delta_C", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->captured_delta_mC = (int32_t)llround(parsed * 1000.0);
+      LogCalibrationImportFieldParsed_("captured_delta_C", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "drift_limit_C_per_min")) {
+    fields->found_drift_limit_c_per_min = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("drift_limit_C_per_min", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->capture_drift_limit_mC_per_min = (int32_t)llround(parsed * 1000.0);
+      LogCalibrationImportFieldParsed_("drift_limit_C_per_min", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "drift_limit_source")) {
+    fields->found_drift_limit_source = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("drift_limit_source", 0.0, false);
+      return;
+    }
+    calibration_drift_limit_source_t source = CAL_DRIFT_LIMIT_SOURCE_USER;
+    if (ParseCalibrationImportDriftLimitSourceSpan_(
+          value_start, value_len, &source)) {
+      point->drift_limit_source = (uint8_t)source;
+      LogCalibrationImportDriftSource_(source);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "captured_window_s")) {
+    fields->found_captured_window_s = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("captured_window_s", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->captured_window_s = (int16_t)llround(parsed);
+      LogCalibrationImportFieldParsed_("captured_window_s", parsed, true);
+    }
+    return;
+  }
+
+  if (CalibrationImportKeyEquals_(key_start, key_len, "captured_ema_alpha")) {
+    fields->found_captured_ema_alpha = true;
+    if (value_is_na) {
+      LogCalibrationImportFieldParsed_("captured_ema_alpha", 0.0, false);
+      return;
+    }
+    double parsed = 0.0;
+    if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
+      point->captured_ema_alpha_permille = (int16_t)llround(parsed * 1000.0);
+      LogCalibrationImportFieldParsed_("captured_ema_alpha", parsed, true);
+    }
+    return;
+  }
+
+  ESP_LOGI(
+    kTag,
+    "cal import debug: ignored key '%.*s'",
+    (int)key_len,
+    key_start);
+}
+
+static bool
+ParseCalibrationImportStatusLine_(const char* line,
+                                  calibration_point_t* point_out,
+                                  bool* single_payload_out,
+                                  size_t* token_count_out)
 {
   if (line == NULL || point_out == NULL) {
     return false;
@@ -3672,6 +4024,7 @@ ParseCalibrationImportStatusLine_(const char* line, calibration_point_t* point_o
     CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
   bool have_actual = false;
   bool have_raw_ohm = false;
+  cal_import_field_presence_t fields = { 0 };
 
   // Parse directly from the console-owned command buffer without mutating it.
   // This keeps quoted console input handling stable while avoiding whole-line
@@ -3679,67 +4032,79 @@ ParseCalibrationImportStatusLine_(const char* line, calibration_point_t* point_o
   size_t cursor = 0u;
   const char* token_start = NULL;
   size_t token_len = 0u;
+  size_t token_count = 0u;
   while (NextCalibrationImportTokenSpan_(
     line, &cursor, &token_start, &token_len)) {
-    const char* equals = memchr(token_start, '=', token_len);
-    if (equals == NULL || equals == token_start ||
-        equals == (token_start + token_len - 1u)) {
-      continue;
-    }
-    const char* key_start = token_start;
-    const size_t key_len = (size_t)(equals - token_start);
-    const char* value_start = equals + 1;
-    const size_t value_len =
-      (size_t)((token_start + token_len) - value_start);
-
-    if (CalibrationImportKeyEquals_(
-          key_start, key_len, "drift_limit_source")) {
-      calibration_drift_limit_source_t source = CAL_DRIFT_LIMIT_SOURCE_USER;
-      if (ParseCalibrationImportDriftLimitSourceSpan_(
-            value_start, value_len, &source)) {
-        point.drift_limit_source = (uint8_t)source;
-      }
-      continue;
-    }
-
-    double parsed = 0.0;
-    if (!ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
-      continue;
-    }
-    if (CalibrationImportKeyEquals_(key_start, key_len, "reference_temp_C")) {
-      point.actual_mC = (int32_t)llround(parsed * 1000.0);
-      have_actual = true;
-    } else if (CalibrationImportKeyEquals_(
-                 key_start, key_len, "captured_raw_res_avg_Ohm")) {
-      point.raw_avg_mOhm = (int32_t)llround(parsed * 1000.0);
-      have_raw_ohm = true;
-    } else if (CalibrationImportKeyEquals_(
-                 key_start, key_len, "captured_raw_temp_avg_C")) {
-      point.raw_avg_mC = (int32_t)llround(parsed * 1000.0);
-    } else if (CalibrationImportKeyEquals_(
-                 key_start, key_len, "captured_raw_temp_stddev_C")) {
-      point.raw_stddev_mC = (int32_t)llround(parsed * 1000.0);
-    } else if (CalibrationImportKeyEquals_(
-                 key_start, key_len, "captured_raw_res_stddev_Ohm")) {
-      point.raw_stddev_mOhm = (int32_t)llround(parsed * 1000.0);
-    } else if (CalibrationImportKeyEquals_(
-                 key_start, key_len, "captured_drift_C_per_min")) {
-      point.captured_drift_mC_per_min = (int32_t)llround(parsed * 1000.0);
-    } else if (CalibrationImportKeyEquals_(key_start, key_len, "captured_delta_C")) {
-      point.captured_delta_mC = (int32_t)llround(parsed * 1000.0);
-    } else if (CalibrationImportKeyEquals_(
-                 key_start, key_len, "drift_limit_C_per_min")) {
-      point.capture_drift_limit_mC_per_min = (int32_t)llround(parsed * 1000.0);
-    } else if (CalibrationImportKeyEquals_(key_start, key_len, "captured_window_s")) {
-      point.captured_window_s = (int16_t)llround(parsed);
-    } else if (CalibrationImportKeyEquals_(key_start, key_len, "captured_ema_alpha")) {
-      point.captured_ema_alpha_permille = (int16_t)llround(parsed * 1000.0);
-    }
+    token_count++;
+    ParseCalibrationImportTokenSpan_(
+      token_start, token_len, &point, &have_actual, &have_raw_ohm, &fields);
   }
 
+  LogCalibrationImportOptionalAbsence_(&fields);
   if (!have_actual || !have_raw_ohm) {
     return false;
   }
+  if (single_payload_out != NULL) {
+    *single_payload_out = true;
+  }
+  if (token_count_out != NULL) {
+    *token_count_out = token_count;
+  }
+  LogCalibrationImportSummary_(&point);
+  *point_out = point;
+  return true;
+}
+
+static bool
+ParseCalibrationImportStatusTokens_(int argc,
+                                    char** argv,
+                                    int start_index,
+                                    calibration_point_t* point_out,
+                                    size_t* token_count_out)
+{
+  if (argv == NULL || point_out == NULL || start_index < 0 ||
+      start_index >= argc) {
+    return false;
+  }
+  calibration_point_t point = { 0 };
+  point.raw_avg_mC = INT32_MIN;
+  point.raw_stddev_mC = -1;
+  point.raw_stddev_mOhm = -1;
+  point.captured_drift_mC_per_min = CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN;
+  point.captured_delta_mC = CAL_CAPTURE_DELTA_UNAVAILABLE_MC;
+  point.capture_drift_limit_mC_per_min =
+    CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN;
+  point.drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+  point.captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
+  point.captured_ema_alpha_permille =
+    CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
+  bool have_actual = false;
+  bool have_raw_ohm = false;
+  size_t token_count = 0u;
+  cal_import_field_presence_t fields = { 0 };
+
+  for (int i = start_index; i < argc; ++i) {
+    const char* token = argv[i];
+    if (token == NULL || token[0] == '\0') {
+      continue;
+    }
+    token_count++;
+    ParseCalibrationImportTokenSpan_(token,
+                                     strlen(token),
+                                     &point,
+                                     &have_actual,
+                                     &have_raw_ohm,
+                                     &fields);
+  }
+
+  LogCalibrationImportOptionalAbsence_(&fields);
+  if (!have_actual || !have_raw_ohm) {
+    return false;
+  }
+  if (token_count_out != NULL) {
+    *token_count_out = token_count;
+  }
+  LogCalibrationImportSummary_(&point);
   *point_out = point;
   return true;
 }
@@ -5838,17 +6203,38 @@ CommandCal(int argc, char** argv)
       double stddev_c = 0.0;
       calibration_point_t imported_point = { 0 };
       bool parsed_status_line = false;
-      if (!ParseCalImportArgs_(argc,
-                               argv,
-                               &raw_ohm,
-                               &actual_c,
-                               &raw_c_supplied,
-                               &raw_c,
-                               &stddev_c_supplied,
-                               &stddev_c)) {
-        if (argc >= 3 &&
-            ParseCalibrationImportStatusLine_(argv[2], &imported_point)) {
+      const bool parsed_numeric_mode = ParseCalImportArgs_(argc,
+                                                           argv,
+                                                           &raw_ohm,
+                                                           &actual_c,
+                                                           &raw_c_supplied,
+                                                           &raw_c,
+                                                           &stddev_c_supplied,
+                                                           &stddev_c);
+      if (parsed_numeric_mode) {
+        ESP_LOGI(kTag, "cal import: mode=numeric argc=%d", argc);
+      } else {
+        bool single_payload = false;
+        size_t status_token_count = 0u;
+        const bool parsed_single_payload =
+          (argc == 3) &&
+          ParseCalibrationImportStatusLine_(
+            argv[2], &imported_point, &single_payload, &status_token_count);
+        const bool parsed_argv_stream =
+          (argc > 3) &&
+          ParseCalibrationImportStatusTokens_(
+            argc, argv, 2, &imported_point, &status_token_count);
+        if (parsed_single_payload || parsed_argv_stream) {
           parsed_status_line = true;
+          single_payload = parsed_single_payload;
+          ESP_LOGI(kTag,
+                   "cal import: mode=status-line quoted=%s argc=%d",
+                   single_payload ? "yes" : "no",
+                   argc);
+          ESP_LOGI(kTag,
+                   "cal import debug: source=%s token_count=%u",
+                   single_payload ? "single-arg" : "argv-stream",
+                   (unsigned)status_token_count);
           raw_ohm = imported_point.raw_avg_mOhm / 1000.0;
           actual_c = imported_point.actual_mC / 1000.0;
           raw_c_supplied = (imported_point.raw_avg_mC != INT32_MIN);
@@ -5859,7 +6245,8 @@ CommandCal(int argc, char** argv)
         } else {
           printf(
             "usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
-            "[--stddev_c <value>] OR cal import \"<cal status point line>\"\n");
+            "[--stddev_c <value>] OR cal import <cal status point line> "
+            "(quoted or unquoted)\n");
           return 1;
         }
       }
@@ -5932,11 +6319,21 @@ CommandCal(int argc, char** argv)
           (unsigned)(point_index + 1),
           actual_c,
           raw_ohm);
+        if (parsed_status_line) {
+          ESP_LOGI(kTag,
+                   "cal import debug: result=updated point_index=%u",
+                   (unsigned)(point_index + 1));
+        }
       } else {
         printf("cal import OK: added point #%u actual=%.3fC raw_avg_Ohm=%.3f\n",
                (unsigned)(point_index + 1),
                actual_c,
                raw_ohm);
+        if (parsed_status_line) {
+          ESP_LOGI(kTag,
+                   "cal import debug: result=added point_index=%u",
+                   (unsigned)(point_index + 1));
+        }
       }
       if (!raw_c_supplied) {
         printf("cal import note: --raw_c not supplied (stored as n/a)\n");
@@ -9898,6 +10295,8 @@ static const console_help_topic_t kCalTopics[] = {
     .summary = "Manually import/restore a resistance-domain calibration point",
     .synopsis = "cal import <raw_ohm> <actual_c> [--raw_c <value>] "
                 "[--stddev_c <value>]\n"
+                "cal import <cal status point line>\n"
+                "cal import \"<cal status point line>\"\n"
                 "cal restore <raw_ohm> <actual_c> [--raw_c <value>] "
                 "[--stddev_c <value>]",
     .details =
@@ -9907,7 +10306,8 @@ static const console_help_topic_t kCalTopics[] = {
       "captured raw temperature average/stddev may also be provided.\n"
       "The command also accepts a pasted point line copied directly from "
       "'cal status' and restores all available per-point metadata fields "
-      "(including drift/window fields) when present.\n"
+      "(including drift/window fields) when present. Pasted status-line "
+      "imports work both with quotes and without quotes.\n"
       "Domain guardrail: if temp-domain legacy points exist, import is "
       "refused until 'cal clear' is used.\n"
       "Overwrite behavior: if a point already exists with the same reference "
@@ -9918,7 +10318,8 @@ static const console_help_topic_t kCalTopics[] = {
       "  --raw_c <value>            Optional captured raw average Celsius.\n"
       "  --stddev_c <value>         Optional captured raw stddev Celsius "
       "(>=0).\n"
-      "  \"<status line>\"          Pasted line from cal status/report.",
+      "  <status line>              Pasted line from cal status/report "
+      "(quoted or unquoted).",
     .examples = "  cal import 99.970 0.0 --raw_c -0.078 --stddev_c 0.019\n"
                 "  cal import 135.650 98.388 --raw_c 92.475 --stddev_c 0.036\n"
                 "  cal restore 99.970 0.0\n"
@@ -9926,7 +10327,12 @@ static const console_help_topic_t kCalTopics[] = {
                 "captured_raw_res_avg_Ohm=138.132 "
                 "captured_drift_C_per_min=0.010 "
                 "drift_limit_C_per_min=0.020 drift_limit_source=DEFAULT "
-                "captured_window_s=8 captured_ema_alpha=0.250\"",
+                "captured_window_s=8 captured_ema_alpha=0.250\"\n"
+                "  cal import 1: reference_temp_C=98.795 "
+                "captured_raw_res_avg_Ohm=138.132 "
+                "captured_drift_C_per_min=0.010 "
+                "drift_limit_C_per_min=0.020 drift_limit_source=DEFAULT "
+                "captured_window_s=8 captured_ema_alpha=0.250",
   },
   {
     .name = "clear",
@@ -10119,6 +10525,8 @@ PrintCalHelpBody(void)
   printf("  cal import 135.650 98.388 --raw_c 92.475 --stddev_c 0.036\n");
   printf("  cal import \"1: reference_temp_C=98.795 captured_raw_res_avg_Ohm="
          "138.132 ... drift_limit_source=DEFAULT ...\"\n");
+  printf("  cal import 1: reference_temp_C=98.795 captured_raw_res_avg_Ohm="
+         "138.132 ... drift_limit_source=DEFAULT ...\n");
   printf("  cal del 1\n");
   printf("  cal apply\n");
 }
