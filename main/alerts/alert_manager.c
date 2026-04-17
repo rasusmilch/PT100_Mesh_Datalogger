@@ -192,6 +192,24 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
                             int64_t now_epoch,
                             uint32_t wait_ms,
                             int64_t* next_attempt_ms);
+static void
+AlertManagerStartupNtfyReset(alert_manager_t* manager);
+static bool
+AlertManagerStartupNtfyWindowExpired(const alert_manager_t* manager,
+                                     int64_t now_ms);
+static const char*
+AlertManagerStartupModeLabel(alert_system_code_t mode_code);
+static void
+AlertManagerStartupNtfyBuildMessage(const alert_manager_t* manager,
+                                    char* title,
+                                    size_t title_size,
+                                    char* body,
+                                    size_t body_size);
+static bool
+AlertManagerStartupNtfyFlush(alert_manager_t* manager,
+                             int64_t now_ms,
+                             int64_t now_epoch,
+                             bool force_flush);
 static bool
 AppendTextLine(char* body, size_t body_size, size_t* used, const char* text);
 
@@ -205,6 +223,7 @@ static const uint32_t kRestartSeqHighValueThreshold = 100000;
 static const uint64_t kRestartRecordIdDropThreshold = 1000;
 static const int64_t kRestartWarnLogMinIntervalMs = 10000;
 static const uint32_t kSequenceWrapWindow = 1000;
+static const int64_t kStartupNtfyCoalesceWindowMs = 5000;
 static int64_t s_last_nonmonotonic_log_ms = 0;
 RTC_DATA_ATTR static uint32_t g_ntfy_msg_seq = 0;
 #if CONFIG_MESH_LITE_NODE_INFO_REPORT
@@ -1161,6 +1180,7 @@ AlertManagerTick(alert_manager_t* manager, int64_t now_ms, int64_t now_epoch)
   if (manager == NULL) {
     return;
   }
+  AlertManagerStartupNtfyTick(manager, now_ms, now_epoch);
   RefreshMeshOnline(manager, now_ms);
 
   for (size_t i = 0; i < ALERT_MAX_LEAVES; ++i) {
@@ -1770,6 +1790,79 @@ AlertManagerEmitSystemMode(alert_manager_t* manager,
     leaf_id,
     &payload,
     now_ms);
+}
+
+void
+AlertManagerStartupNtfyBegin(alert_manager_t* manager,
+                             int64_t now_ms,
+                             int64_t now_epoch)
+{
+  if (manager == NULL) {
+    return;
+  }
+  const uint64_t leaf_id = ResolveLeafId(manager, 0);
+  const uint32_t mask = EffectiveEnableMask(manager, leaf_id);
+  if ((mask & (1u << ALERT_SYSTEM_BOOT)) == 0u) {
+    return;
+  }
+  if (manager->startup_ntfy_pending_active) {
+    return;
+  }
+  manager->startup_ntfy_pending_active = true;
+  manager->startup_ntfy_boot_seen = true;
+  manager->startup_ntfy_mode_seen = false;
+  manager->startup_ntfy_mode_code = ALERT_SYSTEM_CODE_NONE;
+  manager->startup_ntfy_first_ms = now_ms;
+  manager->startup_ntfy_first_epoch = now_epoch;
+  ESP_LOGI(kTag, "startup ntfy pending opened");
+}
+
+void
+AlertManagerStartupNtfyUpdateMode(alert_manager_t* manager,
+                                  alert_system_code_t mode_code,
+                                  int64_t now_ms,
+                                  int64_t now_epoch)
+{
+  if (manager == NULL) {
+    return;
+  }
+  if (!manager->startup_ntfy_pending_active ||
+      !manager->startup_ntfy_boot_seen) {
+    AlertManagerEmitSystemMode(manager, mode_code, now_ms, now_epoch);
+    return;
+  }
+
+  (void)AlertManagerStartupNtfyFlush(manager, now_ms, now_epoch, false);
+  if (!manager->startup_ntfy_pending_active) {
+    AlertManagerEmitSystemMode(manager, mode_code, now_ms, now_epoch);
+    return;
+  }
+
+  const uint64_t leaf_id = ResolveLeafId(manager, 0);
+  const uint32_t mask = EffectiveEnableMask(manager, leaf_id);
+  if ((mask & (1u << ALERT_SYSTEM_MODE)) == 0u) {
+    return;
+  }
+  manager->startup_ntfy_mode_seen = true;
+  manager->startup_ntfy_mode_code = mode_code;
+  if (now_epoch > 0) {
+    manager->startup_ntfy_first_epoch = now_epoch;
+  }
+  ESP_LOGI(kTag,
+           "startup ntfy pending updated with mode=%s",
+           AlertManagerStartupModeLabel(mode_code));
+  (void)AlertManagerStartupNtfyFlush(manager, now_ms, now_epoch, true);
+}
+
+void
+AlertManagerStartupNtfyTick(alert_manager_t* manager,
+                            int64_t now_ms,
+                            int64_t now_epoch)
+{
+  if (manager == NULL || !manager->startup_ntfy_pending_active) {
+    return;
+  }
+  (void)AlertManagerStartupNtfyFlush(manager, now_ms, now_epoch, false);
 }
 
 /**
@@ -2506,7 +2599,11 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
   snprintf(job.url, sizeof(job.url), "%s", manager->config.ntfy_url);
   snprintf(job.topic, sizeof(job.topic), "%s", manager->config.ntfy_topic);
   snprintf(job.token, sizeof(job.token), "%s", manager->config.ntfy_token);
-  snprintf(job.root_id, sizeof(job.root_id), "%s", manager->root_id_string);
+  snprintf(job.root_id,
+           sizeof(job.root_id),
+           "%s",
+           (manager->root_id_string != NULL) ? manager->root_id_string
+                                             : "unknown");
   snprintf(job.title, sizeof(job.title), "%s", scratch->title);
   snprintf(job.body, sizeof(job.body), "%s", scratch->body);
   job.http_timeout_ms = ResolveNtfyHttpTimeoutMs(manager);
@@ -2540,6 +2637,142 @@ AlertManagerSendBatchedNtfy(alert_manager_t* manager,
            scratch->batch.total_count,
            (unsigned)scratch->batch.entry_count);
   AlertManagerLogNtfyBodyLines("queued", scratch->body);
+  return true;
+}
+
+static void
+AlertManagerStartupNtfyReset(alert_manager_t* manager)
+{
+  if (manager == NULL) {
+    return;
+  }
+  manager->startup_ntfy_pending_active = false;
+  manager->startup_ntfy_boot_seen = false;
+  manager->startup_ntfy_mode_seen = false;
+  manager->startup_ntfy_mode_code = ALERT_SYSTEM_CODE_NONE;
+  manager->startup_ntfy_first_ms = 0;
+  manager->startup_ntfy_first_epoch = -1;
+}
+
+static bool
+AlertManagerStartupNtfyWindowExpired(const alert_manager_t* manager,
+                                     int64_t now_ms)
+{
+  if (manager == NULL || !manager->startup_ntfy_pending_active ||
+      manager->startup_ntfy_first_ms <= 0 || now_ms <= 0) {
+    return false;
+  }
+  return (now_ms - manager->startup_ntfy_first_ms) >=
+         kStartupNtfyCoalesceWindowMs;
+}
+
+static const char*
+AlertManagerStartupModeLabel(alert_system_code_t mode_code)
+{
+  switch (mode_code) {
+    case ALERT_SYSTEM_CODE_MODE_RUN:
+      return "RUN";
+    case ALERT_SYSTEM_CODE_MODE_DIAG:
+      return "DIAG";
+    default:
+      break;
+  }
+  return "UNKNOWN";
+}
+
+static void
+AlertManagerStartupNtfyBuildMessage(const alert_manager_t* manager,
+                                    char* title,
+                                    size_t title_size,
+                                    char* body,
+                                    size_t body_size)
+{
+  if (manager == NULL || title == NULL || body == NULL || title_size == 0 ||
+      body_size == 0) {
+    return;
+  }
+  if (manager->startup_ntfy_mode_seen) {
+    snprintf(title,
+             title_size,
+             "START: System booted in %s",
+             AlertManagerStartupModeLabel(manager->startup_ntfy_mode_code));
+  } else {
+    snprintf(title, title_size, "%s", "START: System booted");
+  }
+
+  const char* root_id =
+    (manager->root_id_string != NULL) ? manager->root_id_string : "unknown";
+  int written = snprintf(
+    body, body_size, "root: %s\n• system boot\n", root_id);
+  if (written < 0) {
+    body[0] = '\0';
+    return;
+  }
+  size_t used = (size_t)written;
+  if (used >= body_size) {
+    body[body_size - 1] = '\0';
+    return;
+  }
+  if (manager->startup_ntfy_mode_seen) {
+    (void)snprintf(body + used,
+                   body_size - used,
+                   "• initial mode %s\n",
+                   AlertManagerStartupModeLabel(manager->startup_ntfy_mode_code));
+  }
+}
+
+static bool
+AlertManagerStartupNtfyFlush(alert_manager_t* manager,
+                             int64_t now_ms,
+                             int64_t now_epoch,
+                             bool force_flush)
+{
+  if (manager == NULL || !manager->startup_ntfy_pending_active ||
+      !manager->startup_ntfy_boot_seen || manager->ntfy.job_queue == NULL) {
+    return false;
+  }
+  if (!force_flush && !AlertManagerStartupNtfyWindowExpired(manager, now_ms)) {
+    return false;
+  }
+
+  const uint32_t msg_seq = ++g_ntfy_msg_seq;
+  alert_ntfy_job_t job = { 0 };
+  AlertManagerStartupNtfyBuildMessage(
+    manager, job.title, sizeof(job.title), job.body, sizeof(job.body));
+  snprintf(job.url, sizeof(job.url), "%s", manager->config.ntfy_url);
+  snprintf(job.topic, sizeof(job.topic), "%s", manager->config.ntfy_topic);
+  snprintf(job.token, sizeof(job.token), "%s", manager->config.ntfy_token);
+  snprintf(job.root_id,
+           sizeof(job.root_id),
+           "%s",
+           (manager->root_id_string != NULL) ? manager->root_id_string
+                                             : "unknown");
+  AlertManagerBuildNtfySequenceId(manager->ntfy_boot_nonce,
+                                  msg_seq,
+                                  job.sequence_id,
+                                  sizeof(job.sequence_id));
+  job.http_timeout_ms = ResolveNtfyHttpTimeoutMs(manager);
+  job.attempt = 0u;
+  job.next_attempt_ms = now_ms;
+
+  if (!AlertNtfyEnqueueJob(&manager->ntfy, &job)) {
+    ESP_LOGW(kTag, "startup ntfy flush deferred (job queue full)");
+    return false;
+  }
+
+  manager->ntfy.last_attempt_ms = now_ms;
+  if (manager->startup_ntfy_mode_seen) {
+    ESP_LOGI(kTag,
+             "startup ntfy flushed combined (mode=%s)",
+             AlertManagerStartupModeLabel(manager->startup_ntfy_mode_code));
+  } else {
+    ESP_LOGI(kTag, "startup ntfy flushed boot-only");
+  }
+  AlertManagerLogNtfyBodyLines("startup", job.body);
+  if (now_epoch > 0) {
+    manager->startup_ntfy_first_epoch = now_epoch;
+  }
+  AlertManagerStartupNtfyReset(manager);
   return true;
 }
 
