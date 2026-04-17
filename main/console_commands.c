@@ -73,7 +73,9 @@ static const int32_t kFlushTimeoutDefaultMs = 15000;
 static const size_t kConsoleMaxCmdlineLength = 1024;
 static const double kDefaultCaptureDriftLimitCPerMin = 0.020;
 static char* s_console_cmdline_buffer = NULL;
+static char* s_console_cmdline_snapshot = NULL;
 static bool s_console_cmdline_buffer_in_psram = false;
+static bool s_console_cmdline_snapshot_in_psram = false;
 static void
 FormatFileTime(const time_t* timestamp, char* buffer, size_t buffer_size);
 static void
@@ -282,6 +284,8 @@ ConsoleInputTooLongOrUnterminatedQuote_(const char* line,
                                         size_t max_cmdline_length);
 static bool
 ConsoleCmdlineBufferInit_(size_t max_cmdline_length);
+static bool
+ConsoleCmdlineSnapshotCapture_(const char* line, size_t max_cmdline_length);
 static char*
 ConsoleReadLine_(const char* prompt);
 
@@ -3712,6 +3716,29 @@ CalibrationImportTokenIsKnownKeyPrefix_(const char* token_start,
   return false;
 }
 
+static bool
+CalibrationImportTokenLooksMangledKey_(const char* token_start, size_t token_len)
+{
+  if (token_start == NULL || token_len == 0u) {
+    return false;
+  }
+  static const char* kLikelyPrefixes[] = {
+    "captured_",
+    "drift_limit_",
+    "reference_",
+    "ideal_",
+  };
+  for (size_t i = 0; i < (sizeof(kLikelyPrefixes) / sizeof(kLikelyPrefixes[0]));
+       ++i) {
+    const size_t prefix_len = strlen(kLikelyPrefixes[i]);
+    if (token_len >= prefix_len &&
+        strncmp(token_start, kLikelyPrefixes[i], prefix_len) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 typedef struct
 {
   bool found_reference_temp_c;
@@ -4091,8 +4118,9 @@ ParseCalibrationImportStatusLine_(const char* line,
   bool truncated_payload = false;
   cal_import_field_presence_t fields = { 0 };
 
-  // Parse directly from the console-owned command buffer without mutating it.
-  // This keeps quoted console input handling stable while avoiding whole-line
+  // Parse directly from the immutable pre-dispatch command snapshot without
+  // mutating it. This keeps quoted console input handling stable while avoiding
+  // whole-line
   // temporary copies (only tiny bounded per-token numeric buffers are used).
   size_t cursor = 0u;
   const char* token_start = NULL;
@@ -4210,11 +4238,11 @@ CalibrationImportPayloadFromConsoleLine_(const char* action,
                                          bool* payload_quoted_out)
 {
   if (action == NULL || payload_start_out == NULL || payload_len_out == NULL ||
-      payload_quoted_out == NULL || s_console_cmdline_buffer == NULL) {
+      payload_quoted_out == NULL || s_console_cmdline_snapshot == NULL) {
     return false;
   }
 
-  const char* cursor = s_console_cmdline_buffer;
+  const char* cursor = s_console_cmdline_snapshot;
   while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
     cursor++;
   }
@@ -4246,7 +4274,8 @@ CalibrationImportPayloadFromConsoleLine_(const char* action,
   }
 
   const char* payload_start = cursor;
-  const char* payload_end = s_console_cmdline_buffer + strlen(s_console_cmdline_buffer);
+  const char* payload_end =
+    s_console_cmdline_snapshot + strlen(s_console_cmdline_snapshot);
   while (payload_end > payload_start &&
          isspace((unsigned char)payload_end[-1])) {
     payload_end--;
@@ -6382,6 +6411,13 @@ CommandCal(int argc, char** argv)
         const char* payload_start = NULL;
         size_t payload_len = 0u;
         bool payload_quoted = false;
+        const size_t snapshot_len =
+          (s_console_cmdline_snapshot != NULL)
+            ? strlen(s_console_cmdline_snapshot)
+            : 0u;
+        const size_t mutable_len =
+          (s_console_cmdline_buffer != NULL) ? strlen(s_console_cmdline_buffer)
+                                             : 0u;
         bool raw_tail_available = CalibrationImportPayloadFromConsoleLine_(
           action, &payload_start, &payload_len, &payload_quoted);
         bool parsed_raw_tail = false;
@@ -6395,12 +6431,18 @@ CommandCal(int argc, char** argv)
             argc, argv, 2, &imported_point, &status_token_count);
         if (parsed_raw_tail || parsed_argv_stream) {
           parsed_status_line = true;
-          status_source = parsed_raw_tail ? "raw-tail" : "argv-stream";
+          status_source = parsed_raw_tail ? "snapshot-raw-tail" : "argv-stream";
           ESP_LOGI(kTag,
                    "cal import: mode=status-line source=%s quoted=%s argc=%d",
                    status_source,
                    (raw_tail_available && payload_quoted) ? "yes" : "no",
                    argc);
+          ESP_LOGI(kTag,
+                   "cal import debug: snapshot_available=%s snapshot_len=%u "
+                   "mutable_len=%u",
+                   (s_console_cmdline_snapshot != NULL) ? "yes" : "no",
+                   (unsigned)snapshot_len,
+                   (unsigned)mutable_len);
           ESP_LOGI(kTag,
                    "cal import debug: source=%s token_count=%u payload_len=%u",
                    status_source,
@@ -6408,13 +6450,14 @@ CommandCal(int argc, char** argv)
                    (unsigned)payload_len);
           if (raw_tail_available) {
             ESP_LOGI(kTag,
-                     "cal import debug: raw-tail payload_len=%u quoted=%s",
+                     "cal import debug: snapshot-raw-tail payload_len=%u "
+                     "quoted=%s",
                      (unsigned)payload_len,
                      payload_quoted ? "yes" : "no");
           } else {
             ESP_LOGI(kTag,
-                     "cal import debug: raw-tail unavailable; falling back to "
-                     "argv-stream");
+                     "cal import debug: snapshot raw-tail unavailable; "
+                     "falling back to argv-stream");
           }
           raw_ohm = imported_point.raw_avg_mOhm / 1000.0;
           actual_c = imported_point.actual_mC / 1000.0;
@@ -6424,11 +6467,18 @@ CommandCal(int argc, char** argv)
           stddev_c =
             stddev_c_supplied ? (imported_point.raw_stddev_mC / 1000.0) : 0.0;
         } else {
+          ESP_LOGI(kTag,
+                   "cal import debug: snapshot_available=%s snapshot_len=%u "
+                   "mutable_len=%u",
+                   (s_console_cmdline_snapshot != NULL) ? "yes" : "no",
+                   (unsigned)snapshot_len,
+                   (unsigned)mutable_len);
           if (raw_tail_available) {
             size_t cursor = 0u;
             const char* token_start = NULL;
             size_t token_len = 0u;
             bool truncation_detected = false;
+            bool mangled_token_detected = false;
             while (NextCalibrationImportTokenSpan_(
               payload_start, &cursor, &token_start, &token_len)) {
               const char* equals = memchr(token_start, '=', token_len);
@@ -6449,8 +6499,21 @@ CommandCal(int argc, char** argv)
                 truncation_detected = true;
                 break;
               }
+              if (equals == NULL &&
+                  !CalibrationImportTokenLooksLikeDisplayIndex_(token_start,
+                                                                token_len) &&
+                  CalibrationImportTokenLooksMangledKey_(token_start,
+                                                         token_len)) {
+                ESP_LOGI(kTag,
+                         "cal import debug: parse failure near mangled token "
+                         "'%.*s'",
+                         (int)token_len,
+                         token_start);
+                mangled_token_detected = true;
+                break;
+              }
             }
-            if (truncation_detected) {
+            if (truncation_detected || mangled_token_detected) {
               return 1;
             }
           }
@@ -11253,6 +11316,9 @@ ConsoleTask(void* context)
         printf("input too long or unterminated quoted string\n");
         continue;
       }
+      if (!ConsoleCmdlineSnapshotCapture_(line, kConsoleMaxCmdlineLength)) {
+        ESP_LOGW(kTag, "console snapshot capture failed; using stale snapshot");
+      }
       int run_result = 0;
       esp_err_t result = esp_console_run(line, &run_result);
       if (result == ESP_ERR_NOT_FOUND) {
@@ -11271,15 +11337,17 @@ ConsoleTask(void* context)
 static bool
 ConsoleCmdlineBufferInit_(size_t max_cmdline_length)
 {
-  if (s_console_cmdline_buffer != NULL) {
+  if (s_console_cmdline_buffer != NULL && s_console_cmdline_snapshot != NULL) {
     return true;
   }
 
-  s_console_cmdline_buffer = (char*)heap_caps_malloc(
-    max_cmdline_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  s_console_cmdline_buffer_in_psram =
-    (s_console_cmdline_buffer != NULL &&
-     esp_ptr_external_ram(s_console_cmdline_buffer));
+  if (s_console_cmdline_buffer == NULL) {
+    s_console_cmdline_buffer = (char*)heap_caps_malloc(
+      max_cmdline_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_console_cmdline_buffer_in_psram =
+      (s_console_cmdline_buffer != NULL &&
+       esp_ptr_external_ram(s_console_cmdline_buffer));
+  }
   if (s_console_cmdline_buffer == NULL) {
     s_console_cmdline_buffer =
       (char*)heap_caps_malloc(max_cmdline_length, MALLOC_CAP_8BIT);
@@ -11292,12 +11360,65 @@ ConsoleCmdlineBufferInit_(size_t max_cmdline_length)
     return false;
   }
 
+  if (s_console_cmdline_snapshot == NULL) {
+    if (s_console_cmdline_buffer_in_psram) {
+      s_console_cmdline_snapshot = (char*)heap_caps_malloc(
+        max_cmdline_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      s_console_cmdline_snapshot_in_psram =
+        (s_console_cmdline_snapshot != NULL &&
+         esp_ptr_external_ram(s_console_cmdline_snapshot));
+      if (s_console_cmdline_snapshot == NULL) {
+        s_console_cmdline_snapshot =
+          (char*)heap_caps_malloc(max_cmdline_length, MALLOC_CAP_8BIT);
+        s_console_cmdline_snapshot_in_psram = false;
+      }
+    } else {
+      s_console_cmdline_snapshot =
+        (char*)heap_caps_malloc(max_cmdline_length, MALLOC_CAP_8BIT);
+      s_console_cmdline_snapshot_in_psram = false;
+      if (s_console_cmdline_snapshot == NULL) {
+        s_console_cmdline_snapshot = (char*)heap_caps_malloc(
+          max_cmdline_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_console_cmdline_snapshot_in_psram =
+          (s_console_cmdline_snapshot != NULL &&
+           esp_ptr_external_ram(s_console_cmdline_snapshot));
+      }
+    }
+  }
+  if (s_console_cmdline_snapshot == NULL) {
+    ESP_LOGE(kTag,
+             "console snapshot allocation failed (%u bytes)",
+             (unsigned)max_cmdline_length);
+    return false;
+  }
+
   memset(s_console_cmdline_buffer, 0, max_cmdline_length);
+  memset(s_console_cmdline_snapshot, 0, max_cmdline_length);
   ESP_LOGI(kTag,
            "console buffer: size=%u location=%s",
            (unsigned)max_cmdline_length,
            s_console_cmdline_buffer_in_psram ? "PSRAM" : "INTERNAL");
+  ESP_LOGI(kTag,
+           "console snapshot buffer: size=%u location=%s",
+           (unsigned)max_cmdline_length,
+           s_console_cmdline_snapshot_in_psram ? "PSRAM" : "INTERNAL");
   return true;
+}
+
+static bool
+ConsoleCmdlineSnapshotCapture_(const char* line, size_t max_cmdline_length)
+{
+  if (line == NULL || s_console_cmdline_snapshot == NULL ||
+      max_cmdline_length == 0u) {
+    return false;
+  }
+
+  const size_t line_len = strlen(line);
+  const size_t copy_len =
+    (line_len < (max_cmdline_length - 1u)) ? line_len : (max_cmdline_length - 1u);
+  memcpy(s_console_cmdline_snapshot, line, copy_len);
+  s_console_cmdline_snapshot[copy_len] = '\0';
+  return (copy_len == line_len);
 }
 
 static char*
