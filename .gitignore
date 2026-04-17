@@ -92,7 +92,7 @@ main.tar.gz
 *.tar.gz
 *.zip
 dependencies.yml
-*.csv
+# *.csv
 main/console
 *.txt
 host_tools/*.txt
