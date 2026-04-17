@@ -213,15 +213,26 @@ ParseCalImportArgs_(int argc,
                     bool* stddev_c_supplied_out,
                     double* stddev_c_out);
 static bool
-ParseCalibrationImportStatusLine_(char* line, calibration_point_t* point_out);
-static char*
-NextCalibrationImportToken_(char** cursor);
+ParseCalibrationImportStatusLine_(const char* line,
+                                  calibration_point_t* point_out);
 static bool
-ParseCalibrationImportDoubleValue_(const char* value, double* parsed_out);
+NextCalibrationImportTokenSpan_(const char* line,
+                                size_t* cursor_inout,
+                                const char** token_start_out,
+                                size_t* token_len_out);
 static bool
-ParseCalibrationImportDriftLimitSource_(
-  const char* value,
+ParseCalibrationImportDoubleSpan_(const char* value_start,
+                                  size_t value_len,
+                                  double* parsed_out);
+static bool
+ParseCalibrationImportDriftLimitSourceSpan_(
+  const char* value_start,
+  size_t value_len,
   calibration_drift_limit_source_t* source_out);
+static bool
+CalibrationImportKeyEquals_(const char* key_start,
+                            size_t key_len,
+                            const char* expected);
 static int
 FindCalibrationPointIndexByActualMc_(const app_settings_t* settings,
                                      int32_t actual_mC);
@@ -3538,43 +3549,61 @@ ParseOptionInt_(int argc, char** argv, const char* name, int* value_out)
   return true;
 }
 
-static char*
-NextCalibrationImportToken_(char** cursor)
+static bool
+NextCalibrationImportTokenSpan_(const char* line,
+                                size_t* cursor_inout,
+                                const char** token_start_out,
+                                size_t* token_len_out)
 {
-  if (cursor == NULL || *cursor == NULL) {
-    return NULL;
+  if (line == NULL || cursor_inout == NULL || token_start_out == NULL ||
+      token_len_out == NULL) {
+    return false;
   }
 
-  char* token = *cursor;
-  while (*token != '\0' && isspace((unsigned char)*token)) {
-    token++;
+  size_t cursor = *cursor_inout;
+  while (line[cursor] != '\0' && isspace((unsigned char)line[cursor])) {
+    cursor++;
   }
-  if (*token == '\0') {
-    *cursor = token;
-    return NULL;
+  if (line[cursor] == '\0') {
+    *cursor_inout = cursor;
+    return false;
   }
 
-  char* end = token;
-  while (*end != '\0' && !isspace((unsigned char)*end)) {
-    end++;
+  const char* token_start = line + cursor;
+  while (line[cursor] != '\0' && !isspace((unsigned char)line[cursor])) {
+    cursor++;
   }
-  if (*end != '\0') {
-    *end = '\0';
-    end++;
-  }
-  *cursor = end;
-  return token;
+
+  *token_start_out = token_start;
+  *token_len_out = (size_t)((line + cursor) - token_start);
+  *cursor_inout = cursor;
+  return true;
 }
 
 static bool
-ParseCalibrationImportDoubleValue_(const char* value, double* parsed_out)
+ParseCalibrationImportDoubleSpan_(const char* value_start,
+                                  size_t value_len,
+                                  double* parsed_out)
 {
-  if (value == NULL || parsed_out == NULL || strcmp(value, "n/a") == 0) {
+  if (value_start == NULL || parsed_out == NULL || value_len == 0u) {
     return false;
   }
+  if (value_len == 3u && strncmp(value_start, "n/a", 3) == 0) {
+    return false;
+  }
+
+  // Parse only a bounded numeric token. We intentionally avoid copying the
+  // whole status line while still keeping strtod() usage deterministic.
+  char numeric_buf[48];
+  if (value_len >= sizeof(numeric_buf)) {
+    return false;
+  }
+  memcpy(numeric_buf, value_start, value_len);
+  numeric_buf[value_len] = '\0';
+
   char* end = NULL;
-  const double parsed = strtod(value, &end);
-  if (end == value || *end != '\0') {
+  const double parsed = strtod(numeric_buf, &end);
+  if (end == numeric_buf || *end != '\0') {
     return false;
   }
   *parsed_out = parsed;
@@ -3582,26 +3611,41 @@ ParseCalibrationImportDoubleValue_(const char* value, double* parsed_out)
 }
 
 static bool
-ParseCalibrationImportDriftLimitSource_(
-  const char* value,
+CalibrationImportKeyEquals_(const char* key_start,
+                            size_t key_len,
+                            const char* expected)
+{
+  return (key_start != NULL && expected != NULL &&
+          strlen(expected) == key_len &&
+          strncmp(key_start, expected, key_len) == 0);
+}
+
+static bool
+ParseCalibrationImportDriftLimitSourceSpan_(
+  const char* value_start,
+  size_t value_len,
   calibration_drift_limit_source_t* source_out)
 {
-  if (value == NULL || source_out == NULL) {
+  if (value_start == NULL || source_out == NULL) {
     return false;
   }
-  if (strcmp(value, "DEFAULT") == 0) {
+  if (value_len == strlen("DEFAULT") &&
+      strncmp(value_start, "DEFAULT", value_len) == 0) {
     *source_out = CAL_DRIFT_LIMIT_SOURCE_DEFAULT;
     return true;
   }
-  if (strcmp(value, "USER") == 0) {
+  if (value_len == strlen("USER") &&
+      strncmp(value_start, "USER", value_len) == 0) {
     *source_out = CAL_DRIFT_LIMIT_SOURCE_USER;
     return true;
   }
-  if (strcmp(value, "DISABLED") == 0) {
+  if (value_len == strlen("DISABLED") &&
+      strncmp(value_start, "DISABLED", value_len) == 0) {
     *source_out = CAL_DRIFT_LIMIT_SOURCE_DISABLED;
     return true;
   }
-  if (strcmp(value, "LEGACY_UNAVAILABLE") == 0) {
+  if (value_len == strlen("LEGACY_UNAVAILABLE") &&
+      strncmp(value_start, "LEGACY_UNAVAILABLE", value_len) == 0) {
     *source_out = CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
     return true;
   }
@@ -3609,7 +3653,7 @@ ParseCalibrationImportDriftLimitSource_(
 }
 
 static bool
-ParseCalibrationImportStatusLine_(char* line, calibration_point_t* point_out)
+ParseCalibrationImportStatusLine_(const char* line, calibration_point_t* point_out)
 {
   if (line == NULL || point_out == NULL) {
     return false;
@@ -3629,52 +3673,66 @@ ParseCalibrationImportStatusLine_(char* line, calibration_point_t* point_out)
   bool have_actual = false;
   bool have_raw_ohm = false;
 
-  // Parse directly on the console-owned command buffer to avoid any temporary
-  // heap/stack copies and preserve deterministic memory behavior.
-  char* cursor = line;
-  for (char* token = NextCalibrationImportToken_(&cursor); token != NULL;
-       token = NextCalibrationImportToken_(&cursor)) {
-    char* equals = strchr(token, '=');
-    if (equals == NULL) {
+  // Parse directly from the console-owned command buffer without mutating it.
+  // This keeps quoted console input handling stable while avoiding whole-line
+  // temporary copies (only tiny bounded per-token numeric buffers are used).
+  size_t cursor = 0u;
+  const char* token_start = NULL;
+  size_t token_len = 0u;
+  while (NextCalibrationImportTokenSpan_(
+    line, &cursor, &token_start, &token_len)) {
+    const char* equals = memchr(token_start, '=', token_len);
+    if (equals == NULL || equals == token_start ||
+        equals == (token_start + token_len - 1u)) {
       continue;
     }
-    *equals = '\0';
-    const char* key = token;
-    const char* value = equals + 1;
+    const char* key_start = token_start;
+    const size_t key_len = (size_t)(equals - token_start);
+    const char* value_start = equals + 1;
+    const size_t value_len =
+      (size_t)((token_start + token_len) - value_start);
 
-    if (strcmp(key, "drift_limit_source") == 0) {
+    if (CalibrationImportKeyEquals_(
+          key_start, key_len, "drift_limit_source")) {
       calibration_drift_limit_source_t source = CAL_DRIFT_LIMIT_SOURCE_USER;
-      if (ParseCalibrationImportDriftLimitSource_(value, &source)) {
+      if (ParseCalibrationImportDriftLimitSourceSpan_(
+            value_start, value_len, &source)) {
         point.drift_limit_source = (uint8_t)source;
       }
       continue;
     }
 
     double parsed = 0.0;
-    if (!ParseCalibrationImportDoubleValue_(value, &parsed)) {
+    if (!ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       continue;
     }
-    if (strcmp(key, "reference_temp_C") == 0) {
+    if (CalibrationImportKeyEquals_(key_start, key_len, "reference_temp_C")) {
       point.actual_mC = (int32_t)llround(parsed * 1000.0);
       have_actual = true;
-    } else if (strcmp(key, "captured_raw_res_avg_Ohm") == 0) {
+    } else if (CalibrationImportKeyEquals_(
+                 key_start, key_len, "captured_raw_res_avg_Ohm")) {
       point.raw_avg_mOhm = (int32_t)llround(parsed * 1000.0);
       have_raw_ohm = true;
-    } else if (strcmp(key, "captured_raw_temp_avg_C") == 0) {
+    } else if (CalibrationImportKeyEquals_(
+                 key_start, key_len, "captured_raw_temp_avg_C")) {
       point.raw_avg_mC = (int32_t)llround(parsed * 1000.0);
-    } else if (strcmp(key, "captured_raw_temp_stddev_C") == 0) {
+    } else if (CalibrationImportKeyEquals_(
+                 key_start, key_len, "captured_raw_temp_stddev_C")) {
       point.raw_stddev_mC = (int32_t)llround(parsed * 1000.0);
-    } else if (strcmp(key, "captured_raw_res_stddev_Ohm") == 0) {
+    } else if (CalibrationImportKeyEquals_(
+                 key_start, key_len, "captured_raw_res_stddev_Ohm")) {
       point.raw_stddev_mOhm = (int32_t)llround(parsed * 1000.0);
-    } else if (strcmp(key, "captured_drift_C_per_min") == 0) {
+    } else if (CalibrationImportKeyEquals_(
+                 key_start, key_len, "captured_drift_C_per_min")) {
       point.captured_drift_mC_per_min = (int32_t)llround(parsed * 1000.0);
-    } else if (strcmp(key, "captured_delta_C") == 0) {
+    } else if (CalibrationImportKeyEquals_(key_start, key_len, "captured_delta_C")) {
       point.captured_delta_mC = (int32_t)llround(parsed * 1000.0);
-    } else if (strcmp(key, "drift_limit_C_per_min") == 0) {
+    } else if (CalibrationImportKeyEquals_(
+                 key_start, key_len, "drift_limit_C_per_min")) {
       point.capture_drift_limit_mC_per_min = (int32_t)llround(parsed * 1000.0);
-    } else if (strcmp(key, "captured_window_s") == 0) {
+    } else if (CalibrationImportKeyEquals_(key_start, key_len, "captured_window_s")) {
       point.captured_window_s = (int16_t)llround(parsed);
-    } else if (strcmp(key, "captured_ema_alpha") == 0) {
+    } else if (CalibrationImportKeyEquals_(key_start, key_len, "captured_ema_alpha")) {
       point.captured_ema_alpha_permille = (int16_t)llround(parsed * 1000.0);
     }
   }
@@ -5850,6 +5908,7 @@ CommandCal(int argc, char** argv)
       point->captured_ema_alpha_permille =
         CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
       if (parsed_status_line) {
+        point->raw_stddev_mOhm = imported_point.raw_stddev_mOhm;
         point->captured_drift_mC_per_min =
           imported_point.captured_drift_mC_per_min;
         point->captured_delta_mC = imported_point.captured_delta_mC;
