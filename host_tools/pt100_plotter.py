@@ -2076,6 +2076,7 @@ class PlotterApp:
 
         self.start_time_text = tk.StringVar(value="")
         self.end_time_text = tk.StringVar(value="")
+        self._has_manual_time_range = False
         self.display_tz_choice = tk.StringVar(value="Local")
         self.scenario_choice = tk.StringVar(value="General")
 
@@ -2121,11 +2122,13 @@ class PlotterApp:
 
         row = 2
         tk.Label(frm, text='Start time (YYYY-MM-DD HH:MM):').grid(row=row, column=0, sticky="w", pady=(12, 0))
-        tk.Entry(frm, textvariable=self.start_time_text, width=26).grid(row=row, column=1, sticky="w", pady=(12, 0))
+        self.start_time_entry = tk.Entry(frm, textvariable=self.start_time_text, width=26)
+        self.start_time_entry.grid(row=row, column=1, sticky="w", pady=(12, 0))
         row += 1
 
         tk.Label(frm, text='End time (YYYY-MM-DD HH:MM):').grid(row=row, column=0, sticky="w", pady=(6, 0))
-        tk.Entry(frm, textvariable=self.end_time_text, width=26).grid(row=row, column=1, sticky="w", pady=(6, 0))
+        self.end_time_entry = tk.Entry(frm, textvariable=self.end_time_text, width=26)
+        self.end_time_entry.grid(row=row, column=1, sticky="w", pady=(6, 0))
         row += 1
 
         tk.Button(frm, text="Select range…", command=self.open_range_selector).grid(row=row, column=1, sticky="w", pady=(4, 0))
@@ -2259,12 +2262,29 @@ class PlotterApp:
         label = _format_display_tz_label(display_tz, start_dt, end_dt)
         return DisplayTimeConfig(display_tz=display_tz, display_tz_label=label)
 
-    def _autofill_time_range(self) -> None:
+    def _apply_selected_time_range(
+        self,
+        start_text: str,
+        end_text: str,
+        *,
+        mark_manual: bool,
+    ) -> None:
+        """Apply start/end text to the main form through one explicit update path."""
+        self.start_time_text.set(start_text)
+        self.end_time_text.set(end_text)
+        self._has_manual_time_range = mark_manual
+        # Ensure main-window Entry widgets repaint before/around dialog teardown.
+        self.start_time_entry.update_idletasks()
+        self.end_time_entry.update_idletasks()
+        self.root.update_idletasks()
+
+    def _autofill_time_range(self, *, force: bool = False) -> None:
+        if self._has_manual_time_range and not force:
+            return
         if not self.loaded:
             return
         if self.loaded.time_column != "__time":
-            self.start_time_text.set("")
-            self.end_time_text.set("")
+            self._apply_selected_time_range("", "", mark_manual=False)
             return
         display_tz = _resolve_display_tz(self.display_tz_choice.get())
         if display_tz is None:
@@ -2279,8 +2299,11 @@ class PlotterApp:
             return
         start_min = minutes.min()
         end_min = minutes.max()
-        self.start_time_text.set(start_min.strftime("%Y-%m-%d %H:%M"))
-        self.end_time_text.set(end_min.strftime("%Y-%m-%d %H:%M"))
+        self._apply_selected_time_range(
+            start_min.strftime("%Y-%m-%d %H:%M"),
+            end_min.strftime("%Y-%m-%d %H:%M"),
+            mark_manual=False,
+        )
 
     def _detect_aggregated(self, time_series: pd.Series) -> bool:
         if time_series.empty:
@@ -2416,7 +2439,8 @@ class PlotterApp:
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
         self._ensure_valid_y_choice()
-        self._autofill_time_range()
+        self._has_manual_time_range = False
+        self._autofill_time_range(force=True)
 
         if self.loaded.dropped_no_time_rows:
             messagebox.showinfo(
@@ -2465,6 +2489,7 @@ class PlotterApp:
             x_plot = display_series.to_numpy()
             x_slider = mdates.date2num(display_series)
             present_minutes = display_series.dt.floor("min")
+            present_minutes_index = pd.DatetimeIndex(present_minutes.unique()).sort_values()
             start_dt = pd.to_datetime(display_series).min()
             end_dt = pd.to_datetime(display_series).max()
             display_config = self._get_display_time_config(start_dt=start_dt, end_dt=end_dt)
@@ -2474,6 +2499,7 @@ class PlotterApp:
             x_slider = pd.to_numeric(df[time_column], errors="coerce").to_numpy(dtype=float, copy=False)
             x_plot = x_slider
             present_minutes = None
+            present_minutes_index = None
             display_config = DisplayTimeConfig(display_tz=None, display_tz_label="n/a")
             x_label = _human_time_label(time_column)
 
@@ -2529,7 +2555,13 @@ class PlotterApp:
                         start_ts = start_ts.tz_localize(display_tz)
                     if end_ts.tzinfo is None:
                         end_ts = end_ts.tz_localize(display_tz)
-                    slider.set_val((mdates.date2num(start_ts), mdates.date2num(end_ts)))
+                    slider_min = float(np.min(x_slider))
+                    slider_max = float(np.max(x_slider))
+                    start_num = max(slider_min, min(slider_max, mdates.date2num(start_ts)))
+                    end_num = max(slider_min, min(slider_max, mdates.date2num(end_ts)))
+                    if start_num > end_num:
+                        start_num, end_num = end_num, start_num
+                    slider.set_val((start_num, end_num))
             except Exception:
                 pass
 
@@ -2568,8 +2600,7 @@ class PlotterApp:
 
         def _apply_range() -> None:
             if time_column != "__time" or present_minutes is None:
-                self.start_time_text.set("")
-                self.end_time_text.set("")
+                self._apply_selected_time_range("", "", mark_manual=False)
                 messagebox.showinfo(
                     "Range Selection",
                     "This log uses record_id; time trimming is unavailable. The slider is for visual preview only.",
@@ -2578,10 +2609,9 @@ class PlotterApp:
                 return
             start_dt = mdates.num2date(slider.val[0], tz=display_tz)
             end_dt = mdates.num2date(slider.val[1], tz=display_tz)
-            start_text = _nearest_minute_string(pd.DatetimeIndex(present_minutes.unique()).sort_values(), start_dt)
-            end_text = _nearest_minute_string(pd.DatetimeIndex(present_minutes.unique()).sort_values(), end_dt)
-            self.start_time_text.set(start_text)
-            self.end_time_text.set(end_text)
+            start_text = _nearest_minute_string(present_minutes_index, start_dt)
+            end_text = _nearest_minute_string(present_minutes_index, end_dt)
+            self._apply_selected_time_range(start_text, end_text, mark_manual=True)
             selector_window.destroy()
 
         action_frame = tk.Frame(selector_window, padx=8, pady=6)
