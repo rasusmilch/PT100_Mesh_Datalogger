@@ -215,7 +215,6 @@ ParseCalImportArgs_(int argc,
 static bool
 ParseCalibrationImportStatusLine_(const char* line,
                                   calibration_point_t* point_out,
-                                  bool* single_payload_out,
                                   size_t* token_count_out);
 static bool
 ParseCalibrationImportStatusTokens_(int argc,
@@ -223,6 +222,11 @@ ParseCalibrationImportStatusTokens_(int argc,
                                     int start_index,
                                     calibration_point_t* point_out,
                                     size_t* token_count_out);
+static bool
+CalibrationImportPayloadFromConsoleLine_(const char* action,
+                                         const char** payload_start_out,
+                                         size_t* payload_len_out,
+                                         bool* payload_quoted_out);
 static bool
 NextCalibrationImportTokenSpan_(const char* line,
                                 size_t* cursor_inout,
@@ -3660,6 +3664,54 @@ ParseCalibrationImportDriftLimitSourceSpan_(
   return false;
 }
 
+static bool
+CalibrationImportTokenLooksLikeDisplayIndex_(const char* token_start,
+                                             size_t token_len)
+{
+  if (token_start == NULL || token_len < 2u ||
+      token_start[token_len - 1u] != ':') {
+    return false;
+  }
+  for (size_t i = 0; i + 1u < token_len; ++i) {
+    if (!isdigit((unsigned char)token_start[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool
+CalibrationImportTokenIsKnownKeyPrefix_(const char* token_start,
+                                        size_t token_len)
+{
+  if (token_start == NULL || token_len == 0u) {
+    return false;
+  }
+  static const char* kKnownKeys[] = {
+    "reference_temp_C",
+    "ideal_ref_res_Ohm",
+    "captured_raw_temp_avg_C",
+    "captured_raw_temp_stddev_C",
+    "captured_raw_res_avg_Ohm",
+    "captured_raw_res_stddev_Ohm",
+    "captured_drift_C_per_min",
+    "captured_delta_C",
+    "drift_limit_C_per_min",
+    "drift_limit_source",
+    "captured_window_s",
+    "captured_ema_alpha",
+  };
+  for (size_t i = 0; i < (sizeof(kKnownKeys) / sizeof(kKnownKeys[0])); ++i) {
+    const char* known_key = kKnownKeys[i];
+    const size_t known_len = strlen(known_key);
+    if (token_len < known_len &&
+        strncmp(token_start, known_key, token_len) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 typedef struct
 {
   bool found_reference_temp_c;
@@ -3798,7 +3850,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
                                  calibration_point_t* point,
                                  bool* have_actual,
                                  bool* have_raw_ohm,
-                                 cal_import_field_presence_t* fields)
+                                 cal_import_field_presence_t* fields,
+                                 bool* truncated_payload_out)
 {
   if (token_start == NULL || point == NULL || have_actual == NULL ||
       have_raw_ohm == NULL || fields == NULL) {
@@ -3807,6 +3860,18 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
   const char* equals = memchr(token_start, '=', token_len);
   if (equals == NULL || equals == token_start ||
       equals == (token_start + token_len - 1u)) {
+    if (equals == NULL &&
+        !CalibrationImportTokenLooksLikeDisplayIndex_(token_start, token_len) &&
+        CalibrationImportTokenIsKnownKeyPrefix_(token_start, token_len)) {
+      if (truncated_payload_out != NULL) {
+        *truncated_payload_out = true;
+      }
+      ESP_LOGI(kTag,
+               "cal import debug: truncation detected near token '%.*s'",
+               (int)token_len,
+               token_start);
+      return;
+    }
     ESP_LOGI(kTag,
              "cal import debug: ignored token '%.*s'",
              (int)token_len,
@@ -4004,7 +4069,6 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
 static bool
 ParseCalibrationImportStatusLine_(const char* line,
                                   calibration_point_t* point_out,
-                                  bool* single_payload_out,
                                   size_t* token_count_out)
 {
   if (line == NULL || point_out == NULL) {
@@ -4024,6 +4088,7 @@ ParseCalibrationImportStatusLine_(const char* line,
     CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
   bool have_actual = false;
   bool have_raw_ohm = false;
+  bool truncated_payload = false;
   cal_import_field_presence_t fields = { 0 };
 
   // Parse directly from the console-owned command buffer without mutating it.
@@ -4037,15 +4102,30 @@ ParseCalibrationImportStatusLine_(const char* line,
     line, &cursor, &token_start, &token_len)) {
     token_count++;
     ParseCalibrationImportTokenSpan_(
-      token_start, token_len, &point, &have_actual, &have_raw_ohm, &fields);
+      token_start,
+      token_len,
+      &point,
+      &have_actual,
+      &have_raw_ohm,
+      &fields,
+      &truncated_payload);
+    if (truncated_payload) {
+      break;
+    }
   }
 
+  if (!fields.found_reference_temp_c) {
+    LogCalibrationImportFieldAbsent_("reference_temp_C");
+  }
+  if (!fields.found_captured_raw_res_avg_ohm) {
+    LogCalibrationImportFieldAbsent_("captured_raw_res_avg_Ohm");
+  }
   LogCalibrationImportOptionalAbsence_(&fields);
-  if (!have_actual || !have_raw_ohm) {
+  if (truncated_payload) {
     return false;
   }
-  if (single_payload_out != NULL) {
-    *single_payload_out = true;
+  if (!have_actual || !have_raw_ohm) {
+    return false;
   }
   if (token_count_out != NULL) {
     *token_count_out = token_count;
@@ -4080,6 +4160,7 @@ ParseCalibrationImportStatusTokens_(int argc,
     CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
   bool have_actual = false;
   bool have_raw_ohm = false;
+  bool truncated_payload = false;
   size_t token_count = 0u;
   cal_import_field_presence_t fields = { 0 };
 
@@ -4094,10 +4175,23 @@ ParseCalibrationImportStatusTokens_(int argc,
                                      &point,
                                      &have_actual,
                                      &have_raw_ohm,
-                                     &fields);
+                                     &fields,
+                                     &truncated_payload);
+    if (truncated_payload) {
+      break;
+    }
   }
 
+  if (!fields.found_reference_temp_c) {
+    LogCalibrationImportFieldAbsent_("reference_temp_C");
+  }
+  if (!fields.found_captured_raw_res_avg_ohm) {
+    LogCalibrationImportFieldAbsent_("captured_raw_res_avg_Ohm");
+  }
   LogCalibrationImportOptionalAbsence_(&fields);
+  if (truncated_payload) {
+    return false;
+  }
   if (!have_actual || !have_raw_ohm) {
     return false;
   }
@@ -4106,6 +4200,75 @@ ParseCalibrationImportStatusTokens_(int argc,
   }
   LogCalibrationImportSummary_(&point);
   *point_out = point;
+  return true;
+}
+
+static bool
+CalibrationImportPayloadFromConsoleLine_(const char* action,
+                                         const char** payload_start_out,
+                                         size_t* payload_len_out,
+                                         bool* payload_quoted_out)
+{
+  if (action == NULL || payload_start_out == NULL || payload_len_out == NULL ||
+      payload_quoted_out == NULL || s_console_cmdline_buffer == NULL) {
+    return false;
+  }
+
+  const char* cursor = s_console_cmdline_buffer;
+  while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+    cursor++;
+  }
+  const char* cmd_start = cursor;
+  while (*cursor != '\0' && !isspace((unsigned char)*cursor)) {
+    cursor++;
+  }
+  if ((size_t)(cursor - cmd_start) != 3u || strncmp(cmd_start, "cal", 3) != 0) {
+    return false;
+  }
+  while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+    cursor++;
+  }
+  const char* action_start = cursor;
+  while (*cursor != '\0' && !isspace((unsigned char)*cursor)) {
+    cursor++;
+  }
+  const size_t action_len = (size_t)(cursor - action_start);
+  if (action_len != strlen(action) ||
+      strncmp(action_start, action, action_len) != 0) {
+    return false;
+  }
+
+  while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+    cursor++;
+  }
+  if (*cursor == '\0') {
+    return false;
+  }
+
+  const char* payload_start = cursor;
+  const char* payload_end = s_console_cmdline_buffer + strlen(s_console_cmdline_buffer);
+  while (payload_end > payload_start &&
+         isspace((unsigned char)payload_end[-1])) {
+    payload_end--;
+  }
+  if (payload_end <= payload_start) {
+    return false;
+  }
+
+  bool quoted = false;
+  if ((size_t)(payload_end - payload_start) >= 2u && payload_start[0] == '"' &&
+      payload_end[-1] == '"') {
+    quoted = true;
+    payload_start++;
+    payload_end--;
+  }
+  if (payload_end <= payload_start) {
+    return false;
+  }
+
+  *payload_start_out = payload_start;
+  *payload_len_out = (size_t)(payload_end - payload_start);
+  *payload_quoted_out = quoted;
   return true;
 }
 
@@ -6203,6 +6366,7 @@ CommandCal(int argc, char** argv)
       double stddev_c = 0.0;
       calibration_point_t imported_point = { 0 };
       bool parsed_status_line = false;
+      const char* status_source = NULL;
       const bool parsed_numeric_mode = ParseCalImportArgs_(argc,
                                                            argv,
                                                            &raw_ohm,
@@ -6214,27 +6378,44 @@ CommandCal(int argc, char** argv)
       if (parsed_numeric_mode) {
         ESP_LOGI(kTag, "cal import: mode=numeric argc=%d", argc);
       } else {
-        bool single_payload = false;
         size_t status_token_count = 0u;
-        const bool parsed_single_payload =
-          (argc == 3) &&
-          ParseCalibrationImportStatusLine_(
-            argv[2], &imported_point, &single_payload, &status_token_count);
+        const char* payload_start = NULL;
+        size_t payload_len = 0u;
+        bool payload_quoted = false;
+        bool raw_tail_available = CalibrationImportPayloadFromConsoleLine_(
+          action, &payload_start, &payload_len, &payload_quoted);
+        bool parsed_raw_tail = false;
+        if (raw_tail_available) {
+          parsed_raw_tail = ParseCalibrationImportStatusLine_(
+            payload_start, &imported_point, &status_token_count);
+        }
         const bool parsed_argv_stream =
           (argc > 3) &&
           ParseCalibrationImportStatusTokens_(
             argc, argv, 2, &imported_point, &status_token_count);
-        if (parsed_single_payload || parsed_argv_stream) {
+        if (parsed_raw_tail || parsed_argv_stream) {
           parsed_status_line = true;
-          single_payload = parsed_single_payload;
+          status_source = parsed_raw_tail ? "raw-tail" : "argv-stream";
           ESP_LOGI(kTag,
-                   "cal import: mode=status-line quoted=%s argc=%d",
-                   single_payload ? "yes" : "no",
+                   "cal import: mode=status-line source=%s quoted=%s argc=%d",
+                   status_source,
+                   (raw_tail_available && payload_quoted) ? "yes" : "no",
                    argc);
           ESP_LOGI(kTag,
-                   "cal import debug: source=%s token_count=%u",
-                   single_payload ? "single-arg" : "argv-stream",
-                   (unsigned)status_token_count);
+                   "cal import debug: source=%s token_count=%u payload_len=%u",
+                   status_source,
+                   (unsigned)status_token_count,
+                   (unsigned)payload_len);
+          if (raw_tail_available) {
+            ESP_LOGI(kTag,
+                     "cal import debug: raw-tail payload_len=%u quoted=%s",
+                     (unsigned)payload_len,
+                     payload_quoted ? "yes" : "no");
+          } else {
+            ESP_LOGI(kTag,
+                     "cal import debug: raw-tail unavailable; falling back to "
+                     "argv-stream");
+          }
           raw_ohm = imported_point.raw_avg_mOhm / 1000.0;
           actual_c = imported_point.actual_mC / 1000.0;
           raw_c_supplied = (imported_point.raw_avg_mC != INT32_MIN);
@@ -6243,6 +6424,41 @@ CommandCal(int argc, char** argv)
           stddev_c =
             stddev_c_supplied ? (imported_point.raw_stddev_mC / 1000.0) : 0.0;
         } else {
+          if (raw_tail_available) {
+            size_t cursor = 0u;
+            const char* token_start = NULL;
+            size_t token_len = 0u;
+            bool truncation_detected = false;
+            while (NextCalibrationImportTokenSpan_(
+              payload_start, &cursor, &token_start, &token_len)) {
+              const char* equals = memchr(token_start, '=', token_len);
+              if (equals == NULL &&
+                  !CalibrationImportTokenLooksLikeDisplayIndex_(token_start,
+                                                                token_len) &&
+                  CalibrationImportTokenIsKnownKeyPrefix_(token_start,
+                                                          token_len)) {
+                printf("cal import failed: status line appears truncated near "
+                       "'%.*s'\n",
+                       (int)token_len,
+                       token_start);
+                ESP_LOGI(kTag,
+                         "cal import debug: result=rejected reason=truncated "
+                         "token='%.*s'",
+                         (int)token_len,
+                         token_start);
+                truncation_detected = true;
+                break;
+              }
+            }
+            if (truncation_detected) {
+              return 1;
+            }
+          }
+          ESP_LOGI(kTag,
+                   "cal import debug: result=rejected reason=parse-failed "
+                   "source=%s argc=%d",
+                   raw_tail_available ? "raw-tail" : "argv-stream",
+                   argc);
           printf(
             "usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
             "[--stddev_c <value>] OR cal import <cal status point line> "
@@ -6321,8 +6537,9 @@ CommandCal(int argc, char** argv)
           raw_ohm);
         if (parsed_status_line) {
           ESP_LOGI(kTag,
-                   "cal import debug: result=updated point_index=%u",
-                   (unsigned)(point_index + 1));
+                   "cal import debug: result=updated point_index=%u source=%s",
+                   (unsigned)(point_index + 1),
+                   (status_source != NULL) ? status_source : "unknown");
         }
       } else {
         printf("cal import OK: added point #%u actual=%.3fC raw_avg_Ohm=%.3f\n",
@@ -6331,8 +6548,9 @@ CommandCal(int argc, char** argv)
                raw_ohm);
         if (parsed_status_line) {
           ESP_LOGI(kTag,
-                   "cal import debug: result=added point_index=%u",
-                   (unsigned)(point_index + 1));
+                   "cal import debug: result=added point_index=%u source=%s",
+                   (unsigned)(point_index + 1),
+                   (status_source != NULL) ? status_source : "unknown");
         }
       }
       if (!raw_c_supplied) {
@@ -11212,7 +11430,10 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
 
   esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
   console_config.max_cmdline_length = (uint32_t)kConsoleMaxCmdlineLength;
-  console_config.max_cmdline_args = 8;
+  // Keep headroom for long unquoted "cal import <status-line>" payloads.
+  // Even though import parsing now prefers raw command-tail scanning, a
+  // generous argv limit avoids accidental truncation in other command paths.
+  console_config.max_cmdline_args = 48;
   if (!ConsoleCmdlineBufferInit_(kConsoleMaxCmdlineLength)) {
     return ESP_ERR_NO_MEM;
   }
