@@ -213,8 +213,15 @@ ParseCalImportArgs_(int argc,
                     bool* stddev_c_supplied_out,
                     double* stddev_c_out);
 static bool
-ParseCalibrationImportStatusLine_(const char* line,
-                                  calibration_point_t* point_out);
+ParseCalibrationImportStatusLine_(char* line, calibration_point_t* point_out);
+static char*
+NextCalibrationImportToken_(char** cursor);
+static bool
+ParseCalibrationImportDoubleValue_(const char* value, double* parsed_out);
+static bool
+ParseCalibrationImportDriftLimitSource_(
+  const char* value,
+  calibration_drift_limit_source_t* source_out);
 static int
 FindCalibrationPointIndexByActualMc_(const app_settings_t* settings,
                                      int32_t actual_mC);
@@ -3531,9 +3538,78 @@ ParseOptionInt_(int argc, char** argv, const char* name, int* value_out)
   return true;
 }
 
+static char*
+NextCalibrationImportToken_(char** cursor)
+{
+  if (cursor == NULL || *cursor == NULL) {
+    return NULL;
+  }
+
+  char* token = *cursor;
+  while (*token != '\0' && isspace((unsigned char)*token)) {
+    token++;
+  }
+  if (*token == '\0') {
+    *cursor = token;
+    return NULL;
+  }
+
+  char* end = token;
+  while (*end != '\0' && !isspace((unsigned char)*end)) {
+    end++;
+  }
+  if (*end != '\0') {
+    *end = '\0';
+    end++;
+  }
+  *cursor = end;
+  return token;
+}
+
 static bool
-ParseCalibrationImportStatusLine_(const char* line,
-                                  calibration_point_t* point_out)
+ParseCalibrationImportDoubleValue_(const char* value, double* parsed_out)
+{
+  if (value == NULL || parsed_out == NULL || strcmp(value, "n/a") == 0) {
+    return false;
+  }
+  char* end = NULL;
+  const double parsed = strtod(value, &end);
+  if (end == value || *end != '\0') {
+    return false;
+  }
+  *parsed_out = parsed;
+  return true;
+}
+
+static bool
+ParseCalibrationImportDriftLimitSource_(
+  const char* value,
+  calibration_drift_limit_source_t* source_out)
+{
+  if (value == NULL || source_out == NULL) {
+    return false;
+  }
+  if (strcmp(value, "DEFAULT") == 0) {
+    *source_out = CAL_DRIFT_LIMIT_SOURCE_DEFAULT;
+    return true;
+  }
+  if (strcmp(value, "USER") == 0) {
+    *source_out = CAL_DRIFT_LIMIT_SOURCE_USER;
+    return true;
+  }
+  if (strcmp(value, "DISABLED") == 0) {
+    *source_out = CAL_DRIFT_LIMIT_SOURCE_DISABLED;
+    return true;
+  }
+  if (strcmp(value, "LEGACY_UNAVAILABLE") == 0) {
+    *source_out = CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE;
+    return true;
+  }
+  return false;
+}
+
+static bool
+ParseCalibrationImportStatusLine_(char* line, calibration_point_t* point_out)
 {
   if (line == NULL || point_out == NULL) {
     return false;
@@ -3550,15 +3626,14 @@ ParseCalibrationImportStatusLine_(const char* line,
   point.captured_window_s = CAL_CAPTURE_WINDOW_S_UNAVAILABLE;
   point.captured_ema_alpha_permille =
     CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE;
-
-  char buf[768];
-  snprintf(buf, sizeof(buf), "%s", line);
-  const char* delimiters = " \t";
-  char* saveptr = NULL;
   bool have_actual = false;
   bool have_raw_ohm = false;
-  for (char* token = strtok_r(buf, delimiters, &saveptr); token != NULL;
-       token = strtok_r(NULL, delimiters, &saveptr)) {
+
+  // Parse directly on the console-owned command buffer to avoid any temporary
+  // heap/stack copies and preserve deterministic memory behavior.
+  char* cursor = line;
+  for (char* token = NextCalibrationImportToken_(&cursor); token != NULL;
+       token = NextCalibrationImportToken_(&cursor)) {
     char* equals = strchr(token, '=');
     if (equals == NULL) {
       continue;
@@ -3566,9 +3641,17 @@ ParseCalibrationImportStatusLine_(const char* line,
     *equals = '\0';
     const char* key = token;
     const char* value = equals + 1;
-    char* end = NULL;
-    const double parsed = strtod(value, &end);
-    if (end == value || *end != '\0') {
+
+    if (strcmp(key, "drift_limit_source") == 0) {
+      calibration_drift_limit_source_t source = CAL_DRIFT_LIMIT_SOURCE_USER;
+      if (ParseCalibrationImportDriftLimitSource_(value, &source)) {
+        point.drift_limit_source = (uint8_t)source;
+      }
+      continue;
+    }
+
+    double parsed = 0.0;
+    if (!ParseCalibrationImportDoubleValue_(value, &parsed)) {
       continue;
     }
     if (strcmp(key, "reference_temp_C") == 0) {
@@ -3589,7 +3672,6 @@ ParseCalibrationImportStatusLine_(const char* line,
       point.captured_delta_mC = (int32_t)llround(parsed * 1000.0);
     } else if (strcmp(key, "drift_limit_C_per_min") == 0) {
       point.capture_drift_limit_mC_per_min = (int32_t)llround(parsed * 1000.0);
-      point.drift_limit_source = (uint8_t)CAL_DRIFT_LIMIT_SOURCE_USER;
     } else if (strcmp(key, "captured_window_s") == 0) {
       point.captured_window_s = (int16_t)llround(parsed);
     } else if (strcmp(key, "captured_ema_alpha") == 0) {
@@ -5706,10 +5788,8 @@ CommandCal(int argc, char** argv)
                                &raw_c,
                                &stddev_c_supplied,
                                &stddev_c)) {
-        char pasted_line[768] = { 0 };
-        if (JoinArgsWithSpaces(
-              argc, argv, 2, pasted_line, sizeof(pasted_line)) &&
-            ParseCalibrationImportStatusLine_(pasted_line, &imported_point)) {
+        if (argc >= 3 &&
+            ParseCalibrationImportStatusLine_(argv[2], &imported_point)) {
           parsed_status_line = true;
           raw_ohm = imported_point.raw_avg_mOhm / 1000.0;
           actual_c = imported_point.actual_mC / 1000.0;
@@ -6051,7 +6131,8 @@ CommandCal(int argc, char** argv)
          "cal metar set <elevation_ft> \"<raw METAR>\" | cal metar show | "
          "cal metar clear | "
          "cal import <raw_ohm> <actual_c> [--raw_c <value>] "
-         "[--stddev_c <value>] | cal restore ... | "
+         "[--stddev_c <value>] | cal import \"<cal status point line>\" | "
+         "cal restore ... | "
          "cal del <index> | cal remove <index> | "
          "cal list | cal apply | cal live [seconds] "
          "[--every_ms 1000] [--drift_c_per_min 0.020] | "
@@ -9766,7 +9847,8 @@ static const console_help_topic_t kCalTopics[] = {
       "resistance in ohms and reference temperature in Celsius. Optional "
       "captured raw temperature average/stddev may also be provided.\n"
       "The command also accepts a pasted point line copied directly from "
-      "'cal status'.\n"
+      "'cal status' and restores all available per-point metadata fields "
+      "(including drift/window fields) when present.\n"
       "Domain guardrail: if temp-domain legacy points exist, import is "
       "refused until 'cal clear' is used.\n"
       "Overwrite behavior: if a point already exists with the same reference "
@@ -9782,7 +9864,10 @@ static const console_help_topic_t kCalTopics[] = {
                 "  cal import 135.650 98.388 --raw_c 92.475 --stddev_c 0.036\n"
                 "  cal restore 99.970 0.0\n"
                 "  cal import \"1: reference_temp_C=98.795 "
-                "captured_raw_res_avg_Ohm=138.132 ...\"",
+                "captured_raw_res_avg_Ohm=138.132 "
+                "captured_drift_C_per_min=0.010 "
+                "drift_limit_C_per_min=0.020 drift_limit_source=DEFAULT "
+                "captured_window_s=8 captured_ema_alpha=0.250\"",
   },
   {
     .name = "clear",
@@ -9973,6 +10058,8 @@ PrintCalHelpBody(void)
   printf("  cal livecal --seconds 20 --every_ms 500\n");
   printf("  satpt A2922 1315\n");
   printf("  cal import 135.650 98.388 --raw_c 92.475 --stddev_c 0.036\n");
+  printf("  cal import \"1: reference_temp_C=98.795 captured_raw_res_avg_Ohm="
+         "138.132 ... drift_limit_source=DEFAULT ...\"\n");
   printf("  cal del 1\n");
   printf("  cal apply\n");
 }
