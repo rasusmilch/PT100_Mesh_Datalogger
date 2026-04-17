@@ -71,6 +71,8 @@ static const char* kTag = "console";
 static const TickType_t kConsoleFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kFlushTimeoutDefaultMs = 15000;
 static const size_t kConsoleMaxCmdlineLength = 1024;
+static const int kConsoleTransportRxBufferSize = 2048;
+static const int kConsoleTransportTxBufferSize = 2048;
 static const double kDefaultCaptureDriftLimitCPerMin = 0.020;
 static char* s_console_cmdline_buffer = NULL;
 static char* s_console_cmdline_snapshot = NULL;
@@ -228,7 +230,8 @@ static bool
 CalibrationImportPayloadFromConsoleLine_(const char* action,
                                          const char** payload_start_out,
                                          size_t* payload_len_out,
-                                         bool* payload_quoted_out);
+                                         bool* payload_quoted_out,
+                                         bool* unterminated_quote_out);
 static bool
 NextCalibrationImportTokenSpan_(const char* line,
                                 size_t* cursor_inout,
@@ -3691,6 +3694,15 @@ CalibrationImportTokenIsKnownKeyPrefix_(const char* token_start,
   if (token_start == NULL || token_len == 0u) {
     return false;
   }
+  size_t effective_len = token_len;
+  while (effective_len > 0u &&
+         (token_start[effective_len - 1u] == '"' ||
+          token_start[effective_len - 1u] == '\'')) {
+    effective_len--;
+  }
+  if (effective_len == 0u) {
+    return false;
+  }
   static const char* kKnownKeys[] = {
     "reference_temp_C",
     "ideal_ref_res_Ohm",
@@ -3708,8 +3720,8 @@ CalibrationImportTokenIsKnownKeyPrefix_(const char* token_start,
   for (size_t i = 0; i < (sizeof(kKnownKeys) / sizeof(kKnownKeys[0])); ++i) {
     const char* known_key = kKnownKeys[i];
     const size_t known_len = strlen(known_key);
-    if (token_len < known_len &&
-        strncmp(token_start, known_key, token_len) == 0) {
+    if (effective_len < known_len &&
+        strncmp(token_start, known_key, effective_len) == 0) {
       return true;
     }
   }
@@ -4235,12 +4247,15 @@ static bool
 CalibrationImportPayloadFromConsoleLine_(const char* action,
                                          const char** payload_start_out,
                                          size_t* payload_len_out,
-                                         bool* payload_quoted_out)
+                                         bool* payload_quoted_out,
+                                         bool* unterminated_quote_out)
 {
   if (action == NULL || payload_start_out == NULL || payload_len_out == NULL ||
-      payload_quoted_out == NULL || s_console_cmdline_snapshot == NULL) {
+      payload_quoted_out == NULL || unterminated_quote_out == NULL ||
+      s_console_cmdline_snapshot == NULL) {
     return false;
   }
+  *unterminated_quote_out = false;
 
   const char* cursor = s_console_cmdline_snapshot;
   while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
@@ -4285,9 +4300,14 @@ CalibrationImportPayloadFromConsoleLine_(const char* action,
   }
 
   bool quoted = false;
-  if ((size_t)(payload_end - payload_start) >= 2u && payload_start[0] == '"' &&
-      payload_end[-1] == '"') {
-    quoted = true;
+  if (payload_start[0] == '"') {
+    if ((size_t)(payload_end - payload_start) >= 2u && payload_end[-1] == '"') {
+      quoted = true;
+    } else {
+      *unterminated_quote_out = true;
+    }
+  }
+  if (quoted) {
     payload_start++;
     payload_end--;
   }
@@ -6411,6 +6431,7 @@ CommandCal(int argc, char** argv)
         const char* payload_start = NULL;
         size_t payload_len = 0u;
         bool payload_quoted = false;
+        bool unterminated_payload_quote = false;
         const size_t snapshot_len =
           (s_console_cmdline_snapshot != NULL)
             ? strlen(s_console_cmdline_snapshot)
@@ -6419,7 +6440,32 @@ CommandCal(int argc, char** argv)
           (s_console_cmdline_buffer != NULL) ? strlen(s_console_cmdline_buffer)
                                              : 0u;
         bool raw_tail_available = CalibrationImportPayloadFromConsoleLine_(
-          action, &payload_start, &payload_len, &payload_quoted);
+          action,
+          &payload_start,
+          &payload_len,
+          &payload_quoted,
+          &unterminated_payload_quote);
+        if (raw_tail_available && s_console_cmdline_snapshot != NULL) {
+          ESP_LOGI(kTag,
+                   "cal import debug: snapshot_line='%s'",
+                   s_console_cmdline_snapshot);
+          ESP_LOGI(kTag,
+                   "cal import debug: payload='%.*s'",
+                   (int)payload_len,
+                   payload_start);
+          ESP_LOGI(kTag,
+                   "cal import debug: payload_len=%u quoted=%s",
+                   (unsigned)payload_len,
+                   payload_quoted ? "yes" : "no");
+        }
+        if (unterminated_payload_quote) {
+          ESP_LOGI(
+            kTag,
+            "cal import debug: unterminated quote in snapshot payload");
+          printf("cal import failed: input appears truncated before parser "
+                 "(transport RX limit or incomplete paste)\n");
+          return 1;
+        }
         bool parsed_raw_tail = false;
         if (raw_tail_available) {
           parsed_raw_tail = ParseCalibrationImportStatusLine_(
@@ -6491,6 +6537,8 @@ CommandCal(int argc, char** argv)
                        "'%.*s'\n",
                        (int)token_len,
                        token_start);
+                printf("cal import failed: input appears truncated before "
+                       "parser (transport RX limit or incomplete paste)\n");
                 ESP_LOGI(kTag,
                          "cal import debug: result=rejected reason=truncated "
                          "token='%.*s'",
@@ -6504,6 +6552,8 @@ CommandCal(int argc, char** argv)
                                                                 token_len) &&
                   CalibrationImportTokenLooksMangledKey_(token_start,
                                                          token_len)) {
+                printf("cal import failed: input appears truncated before "
+                       "parser (transport RX limit or incomplete paste)\n");
                 ESP_LOGI(kTag,
                          "cal import debug: parse failure near mangled token "
                          "'%.*s'",
@@ -11522,9 +11572,12 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
   fcntl(fileno(stdout), F_SETFL, 0);
   fcntl(fileno(stdin), F_SETFL, 0);
 
+  // The esp_console max_cmdline_length bound alone is not enough for long
+  // pasted commands. If the transport RX FIFO/ring is smaller than the line,
+  // input can be truncated before ConsoleReadLine_() or snapshot capture.
   usb_serial_jtag_driver_config_t usb_cfg = {
-    .tx_buffer_size = 256,
-    .rx_buffer_size = 256,
+    .tx_buffer_size = kConsoleTransportTxBufferSize,
+    .rx_buffer_size = kConsoleTransportRxBufferSize,
   };
   ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
   usb_serial_jtag_vfs_use_driver();
@@ -11543,7 +11596,14 @@ ConsoleCommandsStart(app_runtime_t* runtime, app_boot_mode_t boot_mode)
     .source_clk = UART_SCLK_DEFAULT,
   };
 
-  ESP_ERROR_CHECK(uart_driver_install(uart_num, 256, 0, 0, NULL, 0));
+  // Keep UART transport buffers comfortably larger than the command line
+  // buffer so long "cal import <status-line>" pastes are delivered intact.
+  ESP_ERROR_CHECK(uart_driver_install(uart_num,
+                                      kConsoleTransportRxBufferSize,
+                                      kConsoleTransportTxBufferSize,
+                                      0,
+                                      NULL,
+                                      0));
   ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
   uart_vfs_dev_use_driver(uart_num);
 
