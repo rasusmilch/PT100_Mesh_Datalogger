@@ -217,9 +217,10 @@ ParseCalImportArgs_(int argc,
                     bool* stddev_c_supplied_out,
                     double* stddev_c_out);
 static bool
-ParseCalibrationImportStatusLine_(const char* line,
-                                  calibration_point_t* point_out,
-                                  size_t* token_count_out);
+ParseCalibrationImportStatusLineSpan_(const char* line_start,
+                                      size_t line_len,
+                                      calibration_point_t* point_out,
+                                      size_t* token_count_out);
 static bool
 ParseCalibrationImportStatusTokens_(int argc,
                                     char** argv,
@@ -233,7 +234,8 @@ CalibrationImportPayloadFromConsoleLine_(const char* action,
                                          bool* payload_quoted_out,
                                          bool* unterminated_quote_out);
 static bool
-NextCalibrationImportTokenSpan_(const char* line,
+NextCalibrationImportTokenSpan_(const char* line_start,
+                                size_t line_len,
                                 size_t* cursor_inout,
                                 const char** token_start_out,
                                 size_t* token_len_out);
@@ -3569,32 +3571,35 @@ ParseOptionInt_(int argc, char** argv, const char* name, int* value_out)
 }
 
 static bool
-NextCalibrationImportTokenSpan_(const char* line,
+NextCalibrationImportTokenSpan_(const char* line_start,
+                                size_t line_len,
                                 size_t* cursor_inout,
                                 const char** token_start_out,
                                 size_t* token_len_out)
 {
-  if (line == NULL || cursor_inout == NULL || token_start_out == NULL ||
+  if (line_start == NULL || cursor_inout == NULL || token_start_out == NULL ||
       token_len_out == NULL) {
     return false;
   }
 
   size_t cursor = *cursor_inout;
-  while (line[cursor] != '\0' && isspace((unsigned char)line[cursor])) {
+  while (cursor < line_len &&
+         isspace((unsigned char)line_start[cursor])) {
     cursor++;
   }
-  if (line[cursor] == '\0') {
+  if (cursor >= line_len) {
     *cursor_inout = cursor;
     return false;
   }
 
-  const char* token_start = line + cursor;
-  while (line[cursor] != '\0' && !isspace((unsigned char)line[cursor])) {
+  const char* token_start = line_start + cursor;
+  while (cursor < line_len &&
+         !isspace((unsigned char)line_start[cursor])) {
     cursor++;
   }
 
   *token_start_out = token_start;
-  *token_len_out = (size_t)((line + cursor) - token_start);
+  *token_len_out = (size_t)((line_start + cursor) - token_start);
   *cursor_inout = cursor;
   return true;
 }
@@ -3796,6 +3801,21 @@ LogCalibrationImportFieldAbsent_(const char* field_name)
 }
 
 static void
+LogCalibrationImportFieldParseFailed_(const char* field_name,
+                                      const char* value_start,
+                                      size_t value_len)
+{
+  if (field_name == NULL || value_start == NULL) {
+    return;
+  }
+  ESP_LOGI(kTag,
+           "cal import debug: field %s parse failed for value '%.*s'",
+           field_name,
+           (int)value_len,
+           value_start);
+}
+
+static void
 LogCalibrationImportDriftSource_(calibration_drift_limit_source_t source)
 {
   ESP_LOGI(kTag,
@@ -3934,6 +3954,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
       point->actual_mC = (int32_t)llround(parsed * 1000.0);
       *have_actual = true;
       LogCalibrationImportFieldParsed_("reference_temp_C", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "reference_temp_C", value_start, value_len);
     }
     return;
   }
@@ -3963,6 +3986,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
       point->raw_avg_mOhm = (int32_t)llround(parsed * 1000.0);
       *have_raw_ohm = true;
       LogCalibrationImportFieldParsed_("captured_raw_res_avg_Ohm", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "captured_raw_res_avg_Ohm", value_start, value_len);
     }
     return;
   }
@@ -3977,6 +4003,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       point->raw_avg_mC = (int32_t)llround(parsed * 1000.0);
       LogCalibrationImportFieldParsed_("captured_raw_temp_avg_C", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "captured_raw_temp_avg_C", value_start, value_len);
     }
     return;
   }
@@ -3993,6 +4022,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
       point->raw_stddev_mC = (int32_t)llround(parsed * 1000.0);
       LogCalibrationImportFieldParsed_(
         "captured_raw_temp_stddev_C", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "captured_raw_temp_stddev_C", value_start, value_len);
     }
     return;
   }
@@ -4009,6 +4041,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
       point->raw_stddev_mOhm = (int32_t)llround(parsed * 1000.0);
       LogCalibrationImportFieldParsed_(
         "captured_raw_res_stddev_Ohm", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "captured_raw_res_stddev_Ohm", value_start, value_len);
     }
     return;
   }
@@ -4023,6 +4058,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       point->captured_drift_mC_per_min = (int32_t)llround(parsed * 1000.0);
       LogCalibrationImportFieldParsed_("captured_drift_C_per_min", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "captured_drift_C_per_min", value_start, value_len);
     }
     return;
   }
@@ -4037,6 +4075,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       point->captured_delta_mC = (int32_t)llround(parsed * 1000.0);
       LogCalibrationImportFieldParsed_("captured_delta_C", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "captured_delta_C", value_start, value_len);
     }
     return;
   }
@@ -4051,6 +4092,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       point->capture_drift_limit_mC_per_min = (int32_t)llround(parsed * 1000.0);
       LogCalibrationImportFieldParsed_("drift_limit_C_per_min", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "drift_limit_C_per_min", value_start, value_len);
     }
     return;
   }
@@ -4080,6 +4124,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       point->captured_window_s = (int16_t)llround(parsed);
       LogCalibrationImportFieldParsed_("captured_window_s", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "captured_window_s", value_start, value_len);
     }
     return;
   }
@@ -4094,6 +4141,9 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       point->captured_ema_alpha_permille = (int16_t)llround(parsed * 1000.0);
       LogCalibrationImportFieldParsed_("captured_ema_alpha", parsed, true);
+    } else {
+      LogCalibrationImportFieldParseFailed_(
+        "captured_ema_alpha", value_start, value_len);
     }
     return;
   }
@@ -4106,11 +4156,12 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
 }
 
 static bool
-ParseCalibrationImportStatusLine_(const char* line,
-                                  calibration_point_t* point_out,
-                                  size_t* token_count_out)
+ParseCalibrationImportStatusLineSpan_(const char* line_start,
+                                      size_t line_len,
+                                      calibration_point_t* point_out,
+                                      size_t* token_count_out)
 {
-  if (line == NULL || point_out == NULL) {
+  if (line_start == NULL || point_out == NULL) {
     return false;
   }
   calibration_point_t point = { 0 };
@@ -4139,7 +4190,7 @@ ParseCalibrationImportStatusLine_(const char* line,
   size_t token_len = 0u;
   size_t token_count = 0u;
   while (NextCalibrationImportTokenSpan_(
-    line, &cursor, &token_start, &token_len)) {
+    line_start, line_len, &cursor, &token_start, &token_len)) {
     token_count++;
     ParseCalibrationImportTokenSpan_(
       token_start,
@@ -6468,8 +6519,8 @@ CommandCal(int argc, char** argv)
         }
         bool parsed_raw_tail = false;
         if (raw_tail_available) {
-          parsed_raw_tail = ParseCalibrationImportStatusLine_(
-            payload_start, &imported_point, &status_token_count);
+          parsed_raw_tail = ParseCalibrationImportStatusLineSpan_(
+            payload_start, payload_len, &imported_point, &status_token_count);
         }
         const bool parsed_argv_stream =
           (argc > 3) &&
@@ -6526,7 +6577,7 @@ CommandCal(int argc, char** argv)
             bool truncation_detected = false;
             bool mangled_token_detected = false;
             while (NextCalibrationImportTokenSpan_(
-              payload_start, &cursor, &token_start, &token_len)) {
+              payload_start, payload_len, &cursor, &token_start, &token_len)) {
               const char* equals = memchr(token_start, '=', token_len);
               if (equals == NULL &&
                   !CalibrationImportTokenLooksLikeDisplayIndex_(token_start,
