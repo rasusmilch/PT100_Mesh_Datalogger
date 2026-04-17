@@ -115,6 +115,12 @@ extern "C"
     uint32_t ntfy_boot_nonce;
     uint32_t global_window_start_ms;
     uint32_t global_sent_in_window;
+    bool startup_ntfy_pending_active;
+    bool startup_ntfy_boot_seen;
+    bool startup_ntfy_mode_seen;
+    alert_system_code_t startup_ntfy_mode_code;
+    int64_t startup_ntfy_first_ms;
+    int64_t startup_ntfy_first_epoch;
   } alert_manager_t;
 
   typedef struct
@@ -379,6 +385,38 @@ extern "C"
                                   alert_system_code_t mode_code,
                                   int64_t now_ms,
                                   int64_t now_epoch);
+
+  /**
+   * @brief Open startup ntfy coalescing window for initial boot/mode events.
+   * @param manager Parameter manager.
+   * @param now_ms Parameter now_ms.
+   * @param now_epoch Parameter now_epoch.
+   */
+  void AlertManagerStartupNtfyBegin(alert_manager_t* manager,
+                                    int64_t now_ms,
+                                    int64_t now_epoch);
+
+  /**
+   * @brief Update pending startup ntfy with the initial mode event.
+   * @param manager Parameter manager.
+   * @param mode_code Parameter mode_code.
+   * @param now_ms Parameter now_ms.
+   * @param now_epoch Parameter now_epoch.
+   */
+  void AlertManagerStartupNtfyUpdateMode(alert_manager_t* manager,
+                                         alert_system_code_t mode_code,
+                                         int64_t now_ms,
+                                         int64_t now_epoch);
+
+  /**
+   * @brief Flush pending startup ntfy when coalescing conditions are met.
+   * @param manager Parameter manager.
+   * @param now_ms Parameter now_ms.
+   * @param now_epoch Parameter now_epoch.
+   */
+  void AlertManagerStartupNtfyTick(alert_manager_t* manager,
+                                   int64_t now_ms,
+                                   int64_t now_epoch);
 
   /**
    * @brief Execute AlertManagerProcessSystemError.

@@ -9578,6 +9578,7 @@ ControlTask(void* context)
   static int64_t next_errlog_init_ms = 0;
   static uint32_t last_i2c_hang_log_ms = 0;
   static bool alert_boot_pending = true;
+  static bool startup_mode_pending = true;
   static alert_system_code_t pending_mode_code = ALERT_SYSTEM_CODE_NONE;
   static runtime_phase_t last_phase = RUNTIME_PHASE_DIAGNOSTICS;
   uint32_t min_stack_hwm_bytes = UINT32_MAX;
@@ -9792,14 +9793,21 @@ ControlTask(void* context)
       const bool storage_stall_active =
         RuntimeComputeStorageStallCondition(state, now_ms);
       if (alert_boot_pending) {
-        AlertManagerEmitSystemBoot(&state->alert_manager, now_ms, now_epoch);
+        AlertManagerStartupNtfyBegin(&state->alert_manager, now_ms, now_epoch);
         alert_boot_pending = false;
       }
       if (pending_mode_code != ALERT_SYSTEM_CODE_NONE) {
-        AlertManagerEmitSystemMode(
-          &state->alert_manager, pending_mode_code, now_ms, now_epoch);
+        if (startup_mode_pending) {
+          AlertManagerStartupNtfyUpdateMode(
+            &state->alert_manager, pending_mode_code, now_ms, now_epoch);
+          startup_mode_pending = false;
+        } else {
+          AlertManagerEmitSystemMode(
+            &state->alert_manager, pending_mode_code, now_ms, now_epoch);
+        }
         pending_mode_code = ALERT_SYSTEM_CODE_NONE;
       }
+      AlertManagerStartupNtfyTick(&state->alert_manager, now_ms, now_epoch);
       AlertManagerProcessSystemError(&state->alert_manager,
                                      ALERT_SYSTEM_CODE_ERROR_SD_IO,
                                      state->cached_status.sd_io_error_active,
