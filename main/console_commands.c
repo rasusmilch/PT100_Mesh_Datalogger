@@ -70,7 +70,7 @@
 static const char* kTag = "console";
 static const TickType_t kConsoleFramLogLockTimeoutTicks = pdMS_TO_TICKS(2000);
 static const int32_t kFlushTimeoutDefaultMs = 15000;
-static const size_t kConsoleMaxCmdlineLength = 660;
+static const size_t kConsoleMaxCmdlineLength = 1024;
 static const double kDefaultCaptureDriftLimitCPerMin = 0.020;
 static char* s_console_cmdline_buffer = NULL;
 static bool s_console_cmdline_buffer_in_psram = false;
@@ -10514,13 +10514,15 @@ ConsoleCmdlineBufferInit_(size_t max_cmdline_length)
     s_console_cmdline_buffer_in_psram = false;
   }
   if (s_console_cmdline_buffer == NULL) {
-    ESP_LOGE(kTag, "console buffer allocation failed (%u bytes)",
+    ESP_LOGE(kTag,
+             "console buffer allocation failed (%u bytes)",
              (unsigned)max_cmdline_length);
     return false;
   }
 
   memset(s_console_cmdline_buffer, 0, max_cmdline_length);
-  ESP_LOGI(kTag, "console buffer: size=%u location=%s",
+  ESP_LOGI(kTag,
+           "console buffer: size=%u location=%s",
            (unsigned)max_cmdline_length,
            s_console_cmdline_buffer_in_psram ? "PSRAM" : "INTERNAL");
   return true;
