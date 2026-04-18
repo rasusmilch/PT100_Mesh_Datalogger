@@ -4,7 +4,7 @@
 This script reads pasted `cal livecal:` lines from standard input and prints a
 CSV fragment in the form:
 
-    ,,timestamp,mean_temp_C,mean_ohm,std_temp_C,std_ohm,drift_C_per_min
+    timestamp,mean_temp_C,mean_ohm,std_temp_C,std_ohm,drift_C_per_min
 
 Example input:
     cal livecal: ts=2026-04-17T20:32:38Z n=120 raw_ohm=118.838 std_ohm=0.006 mean_ohm=118.840 cal_temp=48.428C std_temp=0.016C mean_temp=48.433C drift=0.003C/min delta=0.005C fault=none (0x00)
@@ -64,7 +64,6 @@ def parse_livecal_line(livecal_line: str) -> str:
     drift_c_per_min = match.group("drift")
 
     return (
-        f",,"
         f"{timestamp},"
         f"{mean_temp_c},"
         f"{mean_ohm},"
