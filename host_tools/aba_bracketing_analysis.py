@@ -6,15 +6,17 @@ last records in each run, evaluates that model at the middle record timestamp,
 and reports the difference between the expected and measured middle record values.
 
 Expected CSV columns:
-    run,bore,timestamp,mean_temp,mean_ohm
+    run,bore,timestamp,mean_temp_C,mean_ohm
 
 Example row:
     1,A,2026-04-15T13:48:32Z,-49.105,80.445
 
-By default, each run must contain exactly three records and they must be ordered
-as A-B-A (or more generally X-Y-X, where the first and last bore labels match
-and the middle bore label differs). This behavior can be relaxed with command
-line flags if needed.
+Behavior:
+    - Incomplete or malformed CSV rows are skipped with a warning.
+    - Only complete alternating three-record runs are analyzed.
+    - A complete alternating run must sort by timestamp into X-Y-X, where the
+      first and last bore labels match and the middle bore label differs.
+    - Invalid runs are skipped with a warning instead of aborting the program.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import statistics
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,15 @@ class AggregateAnalysis:
     midpoint_fraction_stats: SummaryStatistics
 
 
+def emit_warning(message: str) -> None:
+    """Emit a non-fatal warning to stderr.
+
+    Args:
+        message: Warning text to print.
+    """
+    print(f"Warning: {message}", file=sys.stderr)
+
+
 def parse_command_line_arguments() -> argparse.Namespace:
     """Parse command line arguments.
 
@@ -143,7 +154,8 @@ def parse_command_line_arguments() -> argparse.Namespace:
     argument_parser = argparse.ArgumentParser(
         description=(
             "Perform A-B-A bracketing analysis on a CSV file containing run, "
-            "bore, timestamp, mean_temp, and mean_ohm columns."
+            "bore, timestamp, mean_temp_C, and mean_ohm columns. Incomplete "
+            "rows and invalid runs are skipped with warnings."
         )
     )
     argument_parser.add_argument(
@@ -156,22 +168,6 @@ def parse_command_line_arguments() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional path to write per-run analysis results as CSV.",
-    )
-    argument_parser.add_argument(
-        "--allow-non-aba",
-        action="store_true",
-        help=(
-            "Allow runs where the first and last bore labels do not match. "
-            "The script will still use the first, middle, and last records."
-        ),
-    )
-    argument_parser.add_argument(
-        "--allow-extra-records",
-        action="store_true",
-        help=(
-            "Allow runs with more than three records. If set, the script will "
-            "use the first, middle, and last records after sorting by time."
-        ),
     )
     return argument_parser.parse_args()
 
@@ -200,14 +196,16 @@ def parse_iso8601_utc(timestamp_text: str) -> datetime.datetime:
 def load_records_from_csv(csv_path: Path) -> List[BoreRecord]:
     """Load and validate records from the input CSV file.
 
+    Incomplete or malformed rows are skipped with a warning.
+
     Args:
         csv_path: Path to the input CSV file.
 
     Returns:
-        List of BoreRecord instances.
+        List of valid BoreRecord instances.
 
     Raises:
-        ValueError: If required columns are missing or a row is invalid.
+        ValueError: If required columns are missing or no valid rows are found.
     """
     required_columns = {"run", "bore", "timestamp", "mean_temp_C", "mean_ohm"}
     records: List[BoreRecord] = []
@@ -223,21 +221,27 @@ def load_records_from_csv(csv_path: Path) -> List[BoreRecord]:
             raise ValueError(f"CSV file is missing required columns: {missing_columns_text}")
 
         for source_row_number, row in enumerate(csv_reader, start=2):
-            try:
-                run_id = str(row["run"]).strip()
-                bore_label = str(row["bore"]).strip()
-                timestamp_utc = parse_iso8601_utc(str(row["timestamp"]))
-                mean_temp_c = float(str(row["mean_temp_C"]).strip())
-                mean_ohm = float(str(row["mean_ohm"]).strip())
-            except Exception as error:  # pylint: disable=broad-except
-                raise ValueError(
-                    f"Failed to parse row {source_row_number}: {error}"
-                ) from error
+            run_id = str(row.get("run", "")).strip()
+            bore_label = str(row.get("bore", "")).strip()
+            timestamp_text = str(row.get("timestamp", "")).strip()
+            mean_temp_text = str(row.get("mean_temp_C", "")).strip()
+            mean_ohm_text = str(row.get("mean_ohm", "")).strip()
 
-            if not run_id:
-                raise ValueError(f"Row {source_row_number} has an empty run value.")
-            if not bore_label:
-                raise ValueError(f"Row {source_row_number} has an empty bore value.")
+            if not run_id or not bore_label or not timestamp_text or not mean_temp_text or not mean_ohm_text:
+                emit_warning(
+                    f"Skipping row {source_row_number}: incomplete row values "
+                    f"(run={run_id!r}, bore={bore_label!r}, timestamp={timestamp_text!r}, "
+                    f"mean_temp_C={mean_temp_text!r}, mean_ohm={mean_ohm_text!r})."
+                )
+                continue
+
+            try:
+                timestamp_utc = parse_iso8601_utc(timestamp_text)
+                mean_temp_c = float(mean_temp_text)
+                mean_ohm = float(mean_ohm_text)
+            except Exception as error:  # pylint: disable=broad-except
+                emit_warning(f"Skipping row {source_row_number}: failed to parse row: {error}")
+                continue
 
             records.append(
                 BoreRecord(
@@ -251,7 +255,7 @@ def load_records_from_csv(csv_path: Path) -> List[BoreRecord]:
             )
 
     if not records:
-        raise ValueError("No data rows were found in the CSV file.")
+        raise ValueError("No valid data rows were found in the CSV file.")
 
     return records
 
@@ -301,20 +305,57 @@ def compute_linear_interpolation(
     return predicted_value, slope_per_second
 
 
-def analyze_single_run(
-    run_id: str,
-    run_records: Sequence[BoreRecord],
-    *,
-    allow_non_aba: bool,
-    allow_extra_records: bool,
-) -> RunAnalysisResult:
-    """Analyze one run using A-B-A bracketing.
+def get_sorted_run_records(run_records: Sequence[BoreRecord]) -> List[BoreRecord]:
+    """Sort run records by timestamp.
+
+    Args:
+        run_records: Records belonging to a run.
+
+    Returns:
+        Time-sorted records.
+    """
+    return sorted(run_records, key=lambda record: record.timestamp_utc)
+
+
+def validate_complete_alternating_run(run_id: str, sorted_records: Sequence[BoreRecord]) -> None:
+    """Validate that a run is a complete alternating three-record bracket.
+
+    A valid run must contain exactly three records that sort into X-Y-X by bore
+    label, where the first and last labels match and the middle label differs.
+
+    Args:
+        run_id: Run identifier.
+        sorted_records: Time-sorted records for the run.
+
+    Raises:
+        ValueError: If the run is incomplete or not alternating.
+    """
+    if len(sorted_records) != 3:
+        raise ValueError(
+            f"Skipping run {run_id}: expected exactly three records, found {len(sorted_records)}."
+        )
+
+    first_record, middle_record, last_record = sorted_records
+
+    if first_record.bore_label != last_record.bore_label:
+        raise ValueError(
+            f"Skipping run {run_id}: first bore {first_record.bore_label!r} does not match "
+            f"last bore {last_record.bore_label!r}."
+        )
+
+    if middle_record.bore_label == first_record.bore_label:
+        raise ValueError(
+            f"Skipping run {run_id}: middle bore {middle_record.bore_label!r} does not alternate "
+            f"from outer bore {first_record.bore_label!r}."
+        )
+
+
+def analyze_single_run(run_id: str, run_records: Sequence[BoreRecord]) -> RunAnalysisResult:
+    """Analyze one complete alternating three-record run.
 
     Args:
         run_id: Run identifier.
         run_records: Records belonging to the run.
-        allow_non_aba: Whether to allow first and last bore labels to differ.
-        allow_extra_records: Whether to allow more than three records.
 
     Returns:
         Per-run analysis result.
@@ -322,30 +363,10 @@ def analyze_single_run(
     Raises:
         ValueError: If the run does not meet the required shape.
     """
-    sorted_records = sorted(run_records, key=lambda record: record.timestamp_utc)
+    sorted_records = get_sorted_run_records(run_records)
+    validate_complete_alternating_run(run_id, sorted_records)
 
-    if len(sorted_records) < 3:
-        raise ValueError(f"Run {run_id} has fewer than three records.")
-
-    if len(sorted_records) != 3 and not allow_extra_records:
-        raise ValueError(
-            f"Run {run_id} has {len(sorted_records)} records; expected exactly three. "
-            f"Use --allow-extra-records to permit this."
-        )
-
-    if len(sorted_records) == 3:
-        first_record, middle_record, last_record = sorted_records
-    else:
-        middle_index = len(sorted_records) // 2
-        first_record = sorted_records[0]
-        middle_record = sorted_records[middle_index]
-        last_record = sorted_records[-1]
-
-    if (first_record.bore_label != last_record.bore_label) and not allow_non_aba:
-        raise ValueError(
-            f"Run {run_id} is not an A-B-A style bracket: "
-            f"first bore is {first_record.bore_label!r}, last bore is {last_record.bore_label!r}."
-        )
+    first_record, middle_record, last_record = sorted_records
 
     first_time_seconds = first_record.timestamp_utc.timestamp()
     middle_time_seconds = middle_record.timestamp_utc.timestamp()
@@ -505,6 +526,11 @@ def write_per_run_results_csv(output_csv_path: Path, results: Sequence[RunAnalys
         csv_writer = csv.DictWriter(output_csv_file, fieldnames=field_names)
         csv_writer.writeheader()
         for result in results:
+            middle_fraction_of_total = (
+                result.middle_offset_seconds / result.elapsed_seconds
+                if not math.isclose(result.elapsed_seconds, 0.0)
+                else float("nan")
+            )
             csv_writer.writerow(
                 {
                     "run": result.run_id,
@@ -516,7 +542,7 @@ def write_per_run_results_csv(output_csv_path: Path, results: Sequence[RunAnalys
                     "last_timestamp_utc": result.last_record.timestamp_utc.isoformat().replace("+00:00", "Z"),
                     "elapsed_minutes": f"{result.elapsed_seconds / 60.0:.9f}",
                     "middle_offset_minutes": f"{result.middle_offset_seconds / 60.0:.9f}",
-                    "middle_fraction_of_total": f"{result.middle_offset_seconds / result.elapsed_seconds:.9f}",
+                    "middle_fraction_of_total": f"{middle_fraction_of_total:.9f}",
                     "first_mean_temp_c": f"{result.first_record.mean_temp_c:.9f}",
                     "middle_mean_temp_c": f"{result.middle_record.mean_temp_c:.9f}",
                     "last_mean_temp_c": f"{result.last_record.mean_temp_c:.9f}",
@@ -558,7 +584,11 @@ def print_per_run_table(results: Sequence[RunAnalysisResult]) -> None:
     print("-" * 110)
 
     for result in results:
-        middle_fraction = result.middle_offset_seconds / result.elapsed_seconds
+        middle_fraction = (
+            result.middle_offset_seconds / result.elapsed_seconds
+            if not math.isclose(result.elapsed_seconds, 0.0)
+            else float("nan")
+        )
         print(
             f"{result.run_id:>8}  "
             f"{result.first_record.bore_label:>6}  "
@@ -584,19 +614,26 @@ def main() -> int:
         grouped_records = group_records_by_run(records)
 
         analysis_results: List[RunAnalysisResult] = []
-        for run_id in sorted(grouped_records, key=lambda value: (str(value))):
-            analysis_results.append(
-                analyze_single_run(
-                    run_id=run_id,
-                    run_records=grouped_records[run_id],
-                    allow_non_aba=arguments.allow_non_aba,
-                    allow_extra_records=arguments.allow_extra_records,
+        for run_id in sorted(grouped_records, key=lambda value: str(value)):
+            try:
+                analysis_results.append(
+                    analyze_single_run(
+                        run_id=run_id,
+                        run_records=grouped_records[run_id],
+                    )
                 )
-            )
+            except ValueError as error:
+                emit_warning(str(error))
+
+        print(f"Input file: {arguments.csv_path}")
+
+        if not analysis_results:
+            emit_warning("No complete alternating three-record runs were found after filtering.")
+            print("Runs analyzed: 0")
+            return 0
 
         aggregate_analysis = build_aggregate_analysis(analysis_results)
 
-        print(f"Input file: {arguments.csv_path}")
         print(f"Runs analyzed: {len(analysis_results)}")
         print_per_run_table(analysis_results)
         print()

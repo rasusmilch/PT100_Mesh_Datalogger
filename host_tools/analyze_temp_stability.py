@@ -70,6 +70,25 @@ def parse_arguments() -> argparse.Namespace:
         help="Temperature column to analyze. Default prefers calibrated temperature.",
     )
     argument_parser.add_argument(
+        "--target-temp",
+        type=float,
+        default=None,
+        help=(
+            "Optional target/setpoint temperature in deg C. When provided with "
+            "--setpoint-band, stable segments must also remain inside the band."
+        ),
+    )
+    argument_parser.add_argument(
+        "--setpoint-band",
+        type=float,
+        default=None,
+        help=(
+            "Optional half-band around --target-temp in deg C. Example: "
+            "--target-temp 120 --setpoint-band 0.25 requires temperature to "
+            "remain within 119.75 to 120.25 C."
+        ),
+    )
+    argument_parser.add_argument(
         "--min-samples",
         type=int,
         default=5,
@@ -255,6 +274,8 @@ def find_stable_segments(
     dataframe: pd.DataFrame,
     drift_threshold_c_per_min: float,
     hold_sec: float,
+    target_temp_c: Optional[float],
+    setpoint_band_c: Optional[float],
 ) -> list[tuple[int, int]]:
     """Find contiguous drift-stable regions that satisfy the dwell requirement.
 
@@ -262,6 +283,8 @@ def find_stable_segments(
         dataframe: Data with computed rolling drift.
         drift_threshold_c_per_min: Absolute drift threshold.
         hold_sec: Required continuous hold time inside threshold.
+        target_temp_c: Optional target temperature in deg C.
+        setpoint_band_c: Optional allowed half-band around the target in deg C.
 
     Returns:
         list[tuple[int, int]]: Inclusive (start_index, end_index) pairs for stable regions.
@@ -269,6 +292,12 @@ def find_stable_segments(
     within_threshold_mask = (
         dataframe["drift_c_per_min"].abs() <= drift_threshold_c_per_min
     ) & dataframe["drift_c_per_min"].notna()
+
+    if target_temp_c is not None and setpoint_band_c is not None:
+        within_setpoint_band_mask = (
+            (dataframe["temperature_c"] - target_temp_c).abs() <= setpoint_band_c
+        ) & dataframe["temperature_c"].notna()
+        within_threshold_mask = within_threshold_mask & within_setpoint_band_mask
     stable_indices = np.flatnonzero(within_threshold_mask.to_numpy(dtype=bool))
     if len(stable_indices) == 0:
         return []
@@ -450,6 +479,7 @@ def estimate_autocorrelation_time_constant(
 
 def analyze_stable_region(
     stable_dataframe: pd.DataFrame,
+    target_temp_c: Optional[float],
 ) -> Dict[str, Any]:
     """Compute stability metrics for the region after the drift threshold is met.
 
@@ -485,6 +515,14 @@ def analyze_stable_region(
         "detrended_std_temp_c": float(np.std(detrended_temperatures_c, ddof=1)) if len(detrended_temperatures_c) > 1 else 0.0,
         "detrended_peak_to_peak_temp_c": float(np.ptp(detrended_temperatures_c)),
     }
+    if target_temp_c is not None:
+        temperature_error_c = temperatures_c - target_temp_c
+        summary.update({
+            "target_temp_c": float(target_temp_c),
+            "mean_error_from_target_c": float(np.mean(temperature_error_c)),
+            "median_error_from_target_c": float(np.median(temperature_error_c)),
+            "max_abs_error_from_target_c": float(np.max(np.abs(temperature_error_c))),
+        })
     summary.update(cycle_summary)
     summary.update(autocorr_summary)
     return summary
@@ -498,6 +536,8 @@ def format_summary_text(
     window_sec: float,
     drift_threshold_c_per_min: float,
     hold_sec: float,
+    target_temp_c: Optional[float],
+    setpoint_band_c: Optional[float],
     full_dataframe: pd.DataFrame,
     stable_segments: list[dict[str, Any]],
 ) -> str:
@@ -510,6 +550,8 @@ def format_summary_text(
         window_sec: Drift window length.
         drift_threshold_c_per_min: Stability threshold.
         hold_sec: Required stable dwell time.
+        target_temp_c: Optional target temperature in deg C.
+        setpoint_band_c: Optional allowed half-band around the target in deg C.
         full_dataframe: Full cleaned dataset.
         stable_segments: Stable-region summaries.
 
@@ -522,6 +564,10 @@ def format_summary_text(
     report_lines.append(f"Window length: {window_sec:.3f} s")
     report_lines.append(f"Drift threshold: {drift_threshold_c_per_min:.6f} C/min")
     report_lines.append(f"Hold time: {hold_sec:.3f} s")
+    if target_temp_c is not None:
+        report_lines.append(f"Target temperature: {target_temp_c:.6f} C")
+    if setpoint_band_c is not None:
+        report_lines.append(f"Setpoint band: +/-{setpoint_band_c:.6f} C")
     report_lines.append(f"Sample count analyzed: {len(full_dataframe)}")
     if header_fields.get("cal_applied"):
         report_lines.append(f"Header cal_applied: {header_fields['cal_applied']}")
@@ -550,6 +596,10 @@ def format_summary_text(
         "stable_region_r_squared",
         "detrended_std_temp_c",
         "detrended_peak_to_peak_temp_c",
+        "target_temp_c",
+        "mean_error_from_target_c",
+        "median_error_from_target_c",
+        "max_abs_error_from_target_c",
         "dominant_period_sec",
         "dominant_frequency_hz",
         "dominant_cycle_amplitude_c",
@@ -607,6 +657,8 @@ def save_summary_files(
 def plot_temperature_trace(
     dataframe: pd.DataFrame,
     stable_segments: list[dict[str, Any]],
+    target_temp_c: Optional[float],
+    setpoint_band_c: Optional[float],
     output_path: Path,
 ) -> None:
     """Plot the full temperature trace with the detected stable point.
@@ -614,6 +666,8 @@ def plot_temperature_trace(
     Args:
         dataframe: Full cleaned dataset.
         stable_segments: Stable-region summaries.
+        target_temp_c: Optional target temperature in deg C.
+        setpoint_band_c: Optional allowed half-band around the target in deg C.
         output_path: PNG output path.
 
     Returns:
@@ -628,6 +682,11 @@ def plot_temperature_trace(
             alpha=0.15,
             label="Stable segment" if segment_number == 1 else None,
         )
+    if target_temp_c is not None:
+        axis.axhline(target_temp_c, linestyle=":", label="Target temp")
+    if target_temp_c is not None and setpoint_band_c is not None:
+        axis.axhline(target_temp_c + setpoint_band_c, linestyle="--", label="Upper band")
+        axis.axhline(target_temp_c - setpoint_band_c, linestyle="--", label="Lower band")
     axis.set_xlabel("Elapsed time (s)")
     axis.set_ylabel("Temperature (C)")
     axis.set_title("Temperature trace")
@@ -671,12 +730,16 @@ def plot_drift_trace(
 
 def plot_stable_region_detail(
     stable_dataframe: pd.DataFrame,
+    target_temp_c: Optional[float],
+    setpoint_band_c: Optional[float],
     output_path: Path,
 ) -> None:
     """Plot detailed stable-region behavior.
 
     Args:
         stable_dataframe: Dataset beginning at the stable start.
+        target_temp_c: Optional target temperature in deg C.
+        setpoint_band_c: Optional allowed half-band around the target in deg C.
         output_path: PNG output path.
 
     Returns:
@@ -690,6 +753,11 @@ def plot_stable_region_detail(
     figure, axis = plt.subplots(figsize=(12, 6))
     axis.plot(elapsed_seconds, temperatures_c, label="Stable region temperature")
     axis.plot(elapsed_seconds, fitted_temperatures_c, linestyle="--", label="Linear trend")
+    if target_temp_c is not None:
+        axis.axhline(target_temp_c, linestyle=":", label="Target temp")
+    if target_temp_c is not None and setpoint_band_c is not None:
+        axis.axhline(target_temp_c + setpoint_band_c, linestyle="--", label="Upper band")
+        axis.axhline(target_temp_c - setpoint_band_c, linestyle="--", label="Lower band")
     axis.set_xlabel("Elapsed time (s)")
     axis.set_ylabel("Temperature (C)")
     axis.set_title("Stable-region detail")
@@ -711,6 +779,13 @@ def main() -> int:
         int: Process exit code.
     """
     arguments = parse_arguments()
+
+    if (arguments.target_temp is None) != (arguments.setpoint_band is None):
+        raise ValueError(
+            "--target-temp and --setpoint-band must be provided together when either is used."
+        )
+    if arguments.setpoint_band is not None and arguments.setpoint_band < 0.0:
+        raise ValueError("--setpoint-band must be non-negative.")
 
     output_dir = arguments.output_dir
     if output_dir is None:
@@ -736,6 +811,8 @@ def main() -> int:
         dataframe,
         drift_threshold_c_per_min=arguments.drift_threshold,
         hold_sec=arguments.hold_sec,
+        target_temp_c=arguments.target_temp,
+        setpoint_band_c=arguments.setpoint_band,
     )
 
     stable_segments: list[dict[str, Any]] = []
@@ -743,7 +820,10 @@ def main() -> int:
     longest_stable_duration_sec = -1.0
     for stable_start_index, stable_end_index in stable_index_pairs:
         stable_dataframe = dataframe.iloc[stable_start_index : stable_end_index + 1].copy().reset_index(drop=True)
-        stable_summary = analyze_stable_region(stable_dataframe)
+        stable_summary = analyze_stable_region(
+            stable_dataframe,
+            target_temp_c=arguments.target_temp,
+        )
         stable_duration_sec = stable_summary["duration_sec"]
         stable_segment = {
             "start_index": stable_start_index,
@@ -768,6 +848,8 @@ def main() -> int:
         window_sec=arguments.window_sec,
         drift_threshold_c_per_min=arguments.drift_threshold,
         hold_sec=arguments.hold_sec,
+        target_temp_c=arguments.target_temp,
+        setpoint_band_c=arguments.setpoint_band,
         full_dataframe=dataframe,
         stable_segments=stable_segments,
     )
@@ -776,10 +858,21 @@ def main() -> int:
     dataframe.to_csv(output_dir / "rolling_drift.csv", index=False)
 
     if not arguments.no_plots:
-        plot_temperature_trace(dataframe, stable_segments, output_dir / "temperature_trace.png")
+        plot_temperature_trace(
+            dataframe,
+            stable_segments,
+            arguments.target_temp,
+            arguments.setpoint_band,
+            output_dir / "temperature_trace.png",
+        )
         plot_drift_trace(dataframe, arguments.drift_threshold, output_dir / "drift_trace.png")
         if longest_stable_dataframe is not None:
-            plot_stable_region_detail(longest_stable_dataframe, output_dir / "stable_region_detail.png")
+            plot_stable_region_detail(
+                longest_stable_dataframe,
+                arguments.target_temp,
+                arguments.setpoint_band,
+                output_dir / "stable_region_detail.png",
+            )
 
     print(summary_text)
     print("")
