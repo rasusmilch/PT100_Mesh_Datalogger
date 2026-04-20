@@ -276,8 +276,7 @@ def compute_trailing_window_drift(
             continue
         if window_elapsed_seconds[-1] <= window_elapsed_seconds[0]:
             continue
-        current_window_span_sec = window_elapsed_seconds[-1] - window_elapsed_seconds[0]
-        if current_window_span_sec < window_sec:
+        if current_time_seconds < window_sec:
             continue
 
         regression_result = linregress(window_elapsed_seconds, window_temperatures_c)
