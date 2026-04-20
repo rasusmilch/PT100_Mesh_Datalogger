@@ -110,6 +110,24 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Skip plot generation.",
     )
+    argument_parser.add_argument(
+        "--plot-smoothing-sec",
+        type=float,
+        default=120.0,
+        help=(
+            "Smoothing span in seconds used only for plot overlays. "
+            "Values <= 0 disable smoothing overlays."
+        ),
+    )
+    argument_parser.add_argument(
+        "--plot-smoothing-method",
+        choices=["rolling", "savgol"],
+        default="rolling",
+        help=(
+            "Smoothing method for plot overlays: rolling=centered moving average, "
+            "savgol=Savitzky-Golay smoothing via scipy.signal.savgol_filter."
+        ),
+    )
     return argument_parser.parse_args()
 
 
@@ -258,6 +276,9 @@ def compute_trailing_window_drift(
             continue
         if window_elapsed_seconds[-1] <= window_elapsed_seconds[0]:
             continue
+        current_window_span_sec = window_elapsed_seconds[-1] - window_elapsed_seconds[0]
+        if current_window_span_sec < window_sec:
+            continue
 
         regression_result = linregress(window_elapsed_seconds, window_temperatures_c)
         drift_values_c_per_min[sample_index] = regression_result.slope * SECONDS_PER_MINUTE
@@ -268,6 +289,92 @@ def compute_trailing_window_drift(
     dataframe["window_start_elapsed_sec"] = window_start_seconds
     return dataframe
 
+
+
+def compute_plot_smoothing_series(
+    elapsed_seconds: np.ndarray,
+    values: np.ndarray,
+    smoothing_sec: float,
+    method: str,
+) -> np.ndarray:
+    """Compute a smoothed series used only for plot overlays.
+
+    Args:
+        elapsed_seconds: Monotonic elapsed sample times in seconds.
+        values: Data values to smooth for plotting.
+        smoothing_sec: Target smoothing span in seconds.
+        method: Smoothing method, either "rolling" or "savgol".
+
+    Returns:
+        np.ndarray: Smoothed values. Falls back to raw values for short or invalid inputs.
+    """
+    raw_values = np.asarray(values, dtype=float)
+    elapsed_seconds = np.asarray(elapsed_seconds, dtype=float)
+
+    if smoothing_sec <= 0.0 or len(raw_values) < 2 or len(elapsed_seconds) < 2:
+        return raw_values.copy()
+
+    sample_intervals = np.diff(elapsed_seconds)
+    valid_intervals = sample_intervals[np.isfinite(sample_intervals) & (sample_intervals > 0.0)]
+    if len(valid_intervals) == 0:
+        return raw_values.copy()
+
+    median_interval_sec = float(np.median(valid_intervals))
+    if not np.isfinite(median_interval_sec) or median_interval_sec <= 0.0:
+        return raw_values.copy()
+
+    smoothing_samples = max(int(round(smoothing_sec / median_interval_sec)), 1)
+    if smoothing_samples <= 1:
+        return raw_values.copy()
+
+    if method == "rolling":
+        return (
+            pd.Series(raw_values)
+            .rolling(window=smoothing_samples, center=True, min_periods=1)
+            .mean()
+            .to_numpy(dtype=float)
+        )
+
+    if method == "savgol":
+        smoothed_values = raw_values.copy()
+        finite_mask = np.isfinite(raw_values)
+        if not finite_mask.any():
+            return smoothed_values
+
+        finite_indices = np.flatnonzero(finite_mask)
+        run_start = 0
+        while run_start < len(finite_indices):
+            run_end = run_start
+            while (
+                run_end + 1 < len(finite_indices)
+                and finite_indices[run_end + 1] == finite_indices[run_end] + 1
+            ):
+                run_end += 1
+
+            start_index = int(finite_indices[run_start])
+            end_index = int(finite_indices[run_end]) + 1
+            run_values = raw_values[start_index:end_index]
+            run_length = len(run_values)
+
+            window_length = min(smoothing_samples, run_length)
+            if window_length % 2 == 0:
+                window_length -= 1
+            if window_length >= 3:
+                polyorder = min(2, window_length - 1)
+                if polyorder >= 1:
+                    try:
+                        smoothed_values[start_index:end_index] = signal.savgol_filter(
+                            run_values,
+                            window_length=window_length,
+                            polyorder=polyorder,
+                            mode="interp",
+                        )
+                    except ValueError:
+                        pass
+            run_start = run_end + 1
+        return smoothed_values
+
+    return raw_values.copy()
 
 
 def find_stable_segments(
@@ -659,6 +766,8 @@ def plot_temperature_trace(
     stable_segments: list[dict[str, Any]],
     target_temp_c: Optional[float],
     setpoint_band_c: Optional[float],
+    plot_smoothing_sec: float,
+    plot_smoothing_method: str,
     output_path: Path,
 ) -> None:
     """Plot the full temperature trace with the detected stable point.
@@ -668,13 +777,36 @@ def plot_temperature_trace(
         stable_segments: Stable-region summaries.
         target_temp_c: Optional target temperature in deg C.
         setpoint_band_c: Optional allowed half-band around the target in deg C.
+        plot_smoothing_sec: Smoothing span in seconds for plot overlays only.
+        plot_smoothing_method: Plot overlay smoothing method.
         output_path: PNG output path.
 
     Returns:
         None.
     """
     figure, axis = plt.subplots(figsize=(12, 6))
-    axis.plot(dataframe["elapsed_sec"], dataframe["temperature_c"], label="Temperature")
+    elapsed_seconds = dataframe["elapsed_sec"].to_numpy(dtype=float)
+    temperatures_c = dataframe["temperature_c"].to_numpy(dtype=float)
+    axis.plot(
+        elapsed_seconds,
+        temperatures_c,
+        alpha=0.4,
+        linewidth=1.0,
+        label="Temperature (raw)",
+    )
+    if plot_smoothing_sec > 0.0:
+        smoothed_temperatures_c = compute_plot_smoothing_series(
+            elapsed_seconds=elapsed_seconds,
+            values=temperatures_c,
+            smoothing_sec=plot_smoothing_sec,
+            method=plot_smoothing_method,
+        )
+        axis.plot(
+            elapsed_seconds,
+            smoothed_temperatures_c,
+            linewidth=2.0,
+            label="Temperature (smoothed)",
+        )
     for segment_number, stable_segment in enumerate(stable_segments, start=1):
         axis.axvspan(
             stable_segment["start_elapsed_sec"],
@@ -701,6 +833,8 @@ def plot_temperature_trace(
 def plot_drift_trace(
     dataframe: pd.DataFrame,
     drift_threshold_c_per_min: float,
+    plot_smoothing_sec: float,
+    plot_smoothing_method: str,
     output_path: Path,
 ) -> None:
     """Plot trailing-window drift versus time.
@@ -708,13 +842,36 @@ def plot_drift_trace(
     Args:
         dataframe: Dataset with computed drift.
         drift_threshold_c_per_min: Stability threshold.
+        plot_smoothing_sec: Smoothing span in seconds for plot overlays only.
+        plot_smoothing_method: Plot overlay smoothing method.
         output_path: PNG output path.
 
     Returns:
         None.
     """
     figure, axis = plt.subplots(figsize=(12, 6))
-    axis.plot(dataframe["elapsed_sec"], dataframe["drift_c_per_min"], label="Rolling drift")
+    elapsed_seconds = dataframe["elapsed_sec"].to_numpy(dtype=float)
+    drift_c_per_min = dataframe["drift_c_per_min"].to_numpy(dtype=float)
+    axis.plot(
+        elapsed_seconds,
+        drift_c_per_min,
+        alpha=0.4,
+        linewidth=1.0,
+        label="Rolling drift (raw)",
+    )
+    if plot_smoothing_sec > 0.0:
+        smoothed_drift_c_per_min = compute_plot_smoothing_series(
+            elapsed_seconds=elapsed_seconds,
+            values=drift_c_per_min,
+            smoothing_sec=plot_smoothing_sec,
+            method=plot_smoothing_method,
+        )
+        axis.plot(
+            elapsed_seconds,
+            smoothed_drift_c_per_min,
+            linewidth=2.0,
+            label="Rolling drift (smoothed)",
+        )
     axis.axhline(drift_threshold_c_per_min, linestyle="--", label="+ threshold")
     axis.axhline(-drift_threshold_c_per_min, linestyle="--", label="- threshold")
     axis.set_xlabel("Elapsed time (s)")
@@ -732,6 +889,8 @@ def plot_stable_region_detail(
     stable_dataframe: pd.DataFrame,
     target_temp_c: Optional[float],
     setpoint_band_c: Optional[float],
+    plot_smoothing_sec: float,
+    plot_smoothing_method: str,
     output_path: Path,
 ) -> None:
     """Plot detailed stable-region behavior.
@@ -740,6 +899,8 @@ def plot_stable_region_detail(
         stable_dataframe: Dataset beginning at the stable start.
         target_temp_c: Optional target temperature in deg C.
         setpoint_band_c: Optional allowed half-band around the target in deg C.
+        plot_smoothing_sec: Smoothing span in seconds for plot overlays only.
+        plot_smoothing_method: Plot overlay smoothing method.
         output_path: PNG output path.
 
     Returns:
@@ -751,7 +912,26 @@ def plot_stable_region_detail(
     fitted_temperatures_c = regression.intercept + regression.slope * elapsed_seconds
 
     figure, axis = plt.subplots(figsize=(12, 6))
-    axis.plot(elapsed_seconds, temperatures_c, label="Stable region temperature")
+    axis.plot(
+        elapsed_seconds,
+        temperatures_c,
+        alpha=0.4,
+        linewidth=1.0,
+        label="Stable region temperature (raw)",
+    )
+    if plot_smoothing_sec > 0.0:
+        smoothed_temperatures_c = compute_plot_smoothing_series(
+            elapsed_seconds=elapsed_seconds,
+            values=temperatures_c,
+            smoothing_sec=plot_smoothing_sec,
+            method=plot_smoothing_method,
+        )
+        axis.plot(
+            elapsed_seconds,
+            smoothed_temperatures_c,
+            linewidth=2.0,
+            label="Stable region temperature (smoothed)",
+        )
     axis.plot(elapsed_seconds, fitted_temperatures_c, linestyle="--", label="Linear trend")
     if target_temp_c is not None:
         axis.axhline(target_temp_c, linestyle=":", label="Target temp")
@@ -863,14 +1043,24 @@ def main() -> int:
             stable_segments,
             arguments.target_temp,
             arguments.setpoint_band,
+            arguments.plot_smoothing_sec,
+            arguments.plot_smoothing_method,
             output_dir / "temperature_trace.png",
         )
-        plot_drift_trace(dataframe, arguments.drift_threshold, output_dir / "drift_trace.png")
+        plot_drift_trace(
+            dataframe,
+            arguments.drift_threshold,
+            arguments.plot_smoothing_sec,
+            arguments.plot_smoothing_method,
+            output_dir / "drift_trace.png",
+        )
         if longest_stable_dataframe is not None:
             plot_stable_region_detail(
                 longest_stable_dataframe,
                 arguments.target_temp,
                 arguments.setpoint_band,
+                arguments.plot_smoothing_sec,
+                arguments.plot_smoothing_method,
                 output_dir / "stable_region_detail.png",
             )
 
