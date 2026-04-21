@@ -304,6 +304,20 @@ static void
 PrintCalibrationStatusUnified(const app_settings_t* settings,
                               const runtime_state_t* state);
 /**
+ * @brief Print human-readable calibration equation and named coefficients.
+ * @param model Active stored calibration model.
+ */
+static void
+PrintCalibrationEquationBlock_(const calibration_model_t* model);
+/**
+ * @brief Print polynomial coefficients using symbolic names that map from
+ * highest-order term down to constant term.
+ * @param coefficients Stored polynomial coefficients in constant-first order.
+ * @param degree Polynomial degree to print.
+ */
+static void
+PrintNamedPolynomialCoefficients_(const double* coefficients, uint8_t degree);
+/**
  * @brief Summary values for rendering one calibration point in status/report
  * output.
  */
@@ -9582,6 +9596,57 @@ PrintCalibrationPointReportBlock_(const calibration_point_t* point,
   printf("\n");
 }
 
+/**
+ * @brief Print polynomial coefficients using symbolic names that map from
+ * highest-order term down to constant term.
+ * @param coefficients Stored polynomial coefficients in constant-first order.
+ * @param degree Polynomial degree to print.
+ */
+static void
+PrintNamedPolynomialCoefficients_(const double* coefficients, uint8_t degree)
+{
+  for (uint8_t symbol_index = 0; symbol_index <= degree; ++symbol_index) {
+    const char symbol = (char)('a' + symbol_index);
+    const uint8_t coefficient_index = (uint8_t)(degree - symbol_index);
+    printf("%c: %.9g\n", symbol, coefficients[coefficient_index]);
+  }
+}
+
+/**
+ * @brief Print human-readable calibration equation and named coefficients.
+ * @param model Active stored calibration model.
+ */
+static void
+PrintCalibrationEquationBlock_(const calibration_model_t* model)
+{
+  if (model->mode == CAL_FIT_MODE_PIECEWISE) {
+    printf("calibration_equation: piecewise interpolation\n");
+    printf("calibration_coefficients: n/a (piecewise uses stored calibration "
+           "points, not polynomial coefficients)\n");
+    return;
+  }
+
+  switch (model->degree) {
+    case 0:
+      printf("calibration_equation: a\n");
+      break;
+    case 1:
+      printf("calibration_equation: ax+b\n");
+      break;
+    case 2:
+      printf("calibration_equation: ax^2+bx+c\n");
+      break;
+    case 3:
+      printf("calibration_equation: ax^3+bx^2+cx+d\n");
+      break;
+    default:
+      printf("calibration_equation: polynomial_degree_%u\n",
+             (unsigned)model->degree);
+      break;
+  }
+  PrintNamedPolynomialCoefficients_(model->coefficients, model->degree);
+}
+
 static void
 PrintCalibrationStatusUnified(const app_settings_t* settings,
                               const runtime_state_t* state)
@@ -9637,6 +9702,7 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
          (settings->calibration_domain == CAL_DOMAIN_RESISTANCE_OHM)
            ? "resistance_ohm (fit uses raw/corrected ohms)"
            : "legacy_temp_c (fit uses raw/corrected Celsius)");
+  PrintCalibrationEquationBlock_(&settings->calibration);
   printf("cal_points: %u\n", (unsigned)settings->calibration_points_count);
   const char* applied_reason = NULL;
   const bool applied =
@@ -10558,9 +10624,12 @@ static const console_help_topic_t kCalTopics[] = {
     .details = "Prints window statistics, model/point state, residuals, and "
                "calibration schedule metadata (last/due/method/time status) in "
                "one deduplicated output. Also prints the stored calibration "
-               "steam-reference METAR block, per-point ideal reference "
-               "resistance + residuals (C and ohms), and copy/paste-friendly "
-               "report blocks for both steam-reference and calibration points.",
+               "equation and named coefficients for polynomial models, "
+               "explicitly identifies piecewise interpolation mode, emits the "
+               "stored calibration steam-reference METAR block, reports "
+               "per-point ideal reference resistance + residuals (C and ohms), "
+               "and includes copy/paste-friendly report blocks for both "
+               "steam-reference and calibration points.",
     .options = NULL,
     .examples = "  cal status",
   },
