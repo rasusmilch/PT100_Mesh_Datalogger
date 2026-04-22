@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_memory_utils.h"
 #include "esp_timer.h"
+#include "max31865_reader.h"
 
 static const char* kTag = "calibration";
 
@@ -100,6 +101,29 @@ static void RebuildCalibrationWindowState_(void);
 static calibration_active_window_info_t ResolveActiveWindowInfo_(void);
 static bool CalWindowEnsureStorage_(void);
 static bool CalWindowStorageIsPsram_(const void* ptr);
+static void ComputeResidualStats_(double sum,
+                                  double sum_abs,
+                                  double sum_sq,
+                                  double max_abs,
+                                  size_t count,
+                                  double* mean_signed_out,
+                                  double* mean_abs_out,
+                                  double* rmse_out,
+                                  double* stddev_out,
+                                  double* sse_out);
+static size_t CalibrationParameterCountForModel_(
+  const calibration_model_t* model,
+  size_t point_count);
+static bool CalibrationCanComputeR2_(const calibration_model_t* model);
+static void ComputeR2Metrics_(double sse,
+                              double mean_target,
+                              double sum_target_sq,
+                              size_t point_count,
+                              size_t parameter_count,
+                              bool* r2_available_out,
+                              bool* adjusted_r2_available_out,
+                              double* r2_out,
+                              double* adjusted_r2_out);
 
 static bool g_cal_window_storage_initialized = false;
 static bool g_cal_window_samples_milli_c_in_psram = false;
@@ -585,6 +609,367 @@ FitLeastSquaresPolynomial(const calibration_point_t* points,
   return ESP_OK;
 }
 
+static void
+ComputeResidualStats_(double sum,
+                      double sum_abs,
+                      double sum_sq,
+                      double max_abs,
+                      size_t count,
+                      double* mean_signed_out,
+                      double* mean_abs_out,
+                      double* rmse_out,
+                      double* stddev_out,
+                      double* sse_out)
+{
+  if (mean_signed_out != NULL) {
+    *mean_signed_out = 0.0;
+  }
+  if (mean_abs_out != NULL) {
+    *mean_abs_out = 0.0;
+  }
+  if (rmse_out != NULL) {
+    *rmse_out = 0.0;
+  }
+  if (stddev_out != NULL) {
+    *stddev_out = 0.0;
+  }
+  if (sse_out != NULL) {
+    *sse_out = 0.0;
+  }
+  (void)max_abs;
+  if (count == 0u) {
+    return;
+  }
+  const double inv_count = 1.0 / (double)count;
+  const double mean = sum * inv_count;
+  const double variance = fmax(0.0, (sum_sq * inv_count) - (mean * mean));
+  if (mean_signed_out != NULL) {
+    *mean_signed_out = mean;
+  }
+  if (mean_abs_out != NULL) {
+    *mean_abs_out = sum_abs * inv_count;
+  }
+  if (rmse_out != NULL) {
+    *rmse_out = sqrt(sum_sq * inv_count);
+  }
+  if (stddev_out != NULL) {
+    *stddev_out = sqrt(variance);
+  }
+  if (sse_out != NULL) {
+    *sse_out = sum_sq;
+  }
+}
+
+static size_t
+CalibrationParameterCountForModel_(const calibration_model_t* model,
+                                   size_t point_count)
+{
+  if (model == NULL) {
+    return 0u;
+  }
+  if (model->mode == CAL_FIT_MODE_PIECEWISE) {
+    return point_count;
+  }
+  return (size_t)model->degree + 1u;
+}
+
+static bool
+CalibrationCanComputeR2_(const calibration_model_t* model)
+{
+  if (model == NULL) {
+    return false;
+  }
+  return (model->mode == CAL_FIT_MODE_LINEAR || model->mode == CAL_FIT_MODE_POLY);
+}
+
+static void
+ComputeR2Metrics_(double sse,
+                  double mean_target,
+                  double sum_target_sq,
+                  size_t point_count,
+                  size_t parameter_count,
+                  bool* r2_available_out,
+                  bool* adjusted_r2_available_out,
+                  double* r2_out,
+                  double* adjusted_r2_out)
+{
+  if (r2_available_out != NULL) {
+    *r2_available_out = false;
+  }
+  if (adjusted_r2_available_out != NULL) {
+    *adjusted_r2_available_out = false;
+  }
+  if (r2_out != NULL) {
+    *r2_out = 0.0;
+  }
+  if (adjusted_r2_out != NULL) {
+    *adjusted_r2_out = 0.0;
+  }
+  if (point_count == 0u) {
+    return;
+  }
+  const double tss = fmax(0.0, sum_target_sq - ((double)point_count * mean_target * mean_target));
+  if (tss <= 1e-18) {
+    return;
+  }
+
+  const double r2 = 1.0 - (sse / tss);
+  if (r2_out != NULL) {
+    *r2_out = r2;
+  }
+  if (r2_available_out != NULL) {
+    *r2_available_out = true;
+  }
+
+  if (point_count > parameter_count && point_count > 1u) {
+    const double numerator = (1.0 - r2) * ((double)point_count - 1.0);
+    const double denominator = (double)point_count - (double)parameter_count;
+    if (denominator > 0.0) {
+      if (adjusted_r2_out != NULL) {
+        *adjusted_r2_out = 1.0 - (numerator / denominator);
+      }
+      if (adjusted_r2_available_out != NULL) {
+        *adjusted_r2_available_out = true;
+      }
+    }
+  }
+}
+
+esp_err_t
+CalibrationBuildFitDomainPoints(const calibration_point_t* stored_points,
+                                size_t num_points,
+                                calibration_domain_t fit_domain,
+                                double rtd_nominal_ohm,
+                                calibration_point_t* fit_points_out)
+{
+  if (stored_points == NULL || fit_points_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (num_points < 1u || num_points > CALIBRATION_MAX_POINTS) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+
+  for (size_t i = 0; i < num_points; ++i) {
+    fit_points_out[i] = stored_points[i];
+    if (fit_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+      if (stored_points[i].raw_avg_mOhm <= 0) {
+        return ESP_ERR_INVALID_ARG;
+      }
+      const double actual_c = stored_points[i].actual_mC / 1000.0;
+      const double target_ohm =
+        Max31865TemperatureToResistanceCvd(actual_c, rtd_nominal_ohm);
+      if (!isfinite(target_ohm)) {
+        return ESP_ERR_INVALID_STATE;
+      }
+      fit_points_out[i].raw_avg_mC = stored_points[i].raw_avg_mOhm;
+      fit_points_out[i].actual_mC = (int32_t)llround(target_ohm * 1000.0);
+    }
+  }
+  return ESP_OK;
+}
+
+esp_err_t
+CalibrationBuildFitReport(
+  const calibration_point_t* stored_points,
+  size_t num_points,
+  calibration_domain_t fit_domain,
+  const calibration_model_t* model,
+  double rtd_nominal_ohm,
+  calibration_resistance_to_temp_fn_t resistance_to_temp_fn,
+  void* resistance_to_temp_context,
+  calibration_fit_report_t* report_out)
+{
+  if (stored_points == NULL || model == NULL || report_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (num_points < 1u || num_points > CALIBRATION_MAX_POINTS) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  calibration_point_t fit_points[CALIBRATION_MAX_POINTS] = { 0 };
+  esp_err_t build_result = CalibrationBuildFitDomainPoints(
+    stored_points, num_points, fit_domain, rtd_nominal_ohm, fit_points);
+  if (build_result != ESP_OK) {
+    return build_result;
+  }
+
+  memset(report_out, 0, sizeof(*report_out));
+  report_out->point_results_count = num_points;
+  calibration_fit_diagnostics_t* summary = &report_out->summary;
+  summary->fit_domain = fit_domain;
+  summary->fit_mode = model->mode;
+  summary->degree = model->degree;
+  summary->point_count = num_points;
+  summary->parameter_count = CalibrationParameterCountForModel_(model, num_points);
+  summary->degrees_of_freedom =
+    (int32_t)num_points - (int32_t)summary->parameter_count;
+  summary->r_squared_is_meaningful = CalibrationCanComputeR2_(model);
+
+  double temp_sum = 0.0;
+  double temp_sum_abs = 0.0;
+  double temp_sum_sq = 0.0;
+  double temp_max_abs = 0.0;
+  double temp_target_sum = 0.0;
+  double temp_target_sum_sq = 0.0;
+
+  double res_sum = 0.0;
+  double res_sum_abs = 0.0;
+  double res_sum_sq = 0.0;
+  double res_max_abs = 0.0;
+  double res_target_sum = 0.0;
+  double res_target_sum_sq = 0.0;
+  size_t temp_count = 0u;
+  size_t res_count = 0u;
+
+  for (size_t i = 0; i < num_points; ++i) {
+    const calibration_point_t* point = &stored_points[i];
+    calibration_fit_point_result_t* row = &report_out->point_results[i];
+    memset(row, 0, sizeof(*row));
+    row->point_index = i + 1u;
+    row->fit_domain = fit_domain;
+    row->target_temp_c = point->actual_mC / 1000.0;
+    row->target_temp_c_available = true;
+    row->captured_raw_temp_c = point->raw_avg_mC / 1000.0;
+    row->captured_raw_temp_c_available = (point->raw_avg_mC != INT32_MIN);
+    row->captured_raw_res_ohm = point->raw_avg_mOhm / 1000.0;
+    row->captured_raw_res_ohm_available = (point->raw_avg_mOhm > 0);
+
+    if (fit_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+      if (!row->captured_raw_res_ohm_available) {
+        continue;
+      }
+      const double target_res_ohm =
+        Max31865TemperatureToResistanceCvd(row->target_temp_c, rtd_nominal_ohm);
+      if (!isfinite(target_res_ohm)) {
+        continue;
+      }
+      row->target_res_ohm = target_res_ohm;
+      row->target_res_ohm_available = true;
+
+      const double fitted_res_ohm = CalibrationModelEvaluateWithPoints(
+        model, row->captured_raw_res_ohm, fit_points, num_points);
+      if (!isfinite(fitted_res_ohm)) {
+        continue;
+      }
+      row->fitted_res_ohm = fitted_res_ohm;
+      row->fitted_res_ohm_available = true;
+      row->res_residual_ohm = row->target_res_ohm - row->fitted_res_ohm;
+      row->res_residual_ohm_available = true;
+      row->correction_fit_domain = row->fitted_res_ohm - row->captured_raw_res_ohm;
+      row->correction_fit_domain_available = true;
+
+      if (resistance_to_temp_fn != NULL) {
+        const double fitted_temp_c =
+          resistance_to_temp_fn(fitted_res_ohm, resistance_to_temp_context);
+        if (isfinite(fitted_temp_c)) {
+          row->fitted_temp_c = fitted_temp_c;
+          row->fitted_temp_c_available = true;
+          row->temp_residual_c = row->target_temp_c - row->fitted_temp_c;
+          row->temp_residual_c_available = true;
+        }
+      }
+    } else {
+      const double fitted_temp_c = CalibrationModelEvaluateWithPoints(
+        model, row->captured_raw_temp_c, fit_points, num_points);
+      if (!isfinite(fitted_temp_c)) {
+        continue;
+      }
+      row->fitted_temp_c = fitted_temp_c;
+      row->fitted_temp_c_available = true;
+      row->temp_residual_c = row->target_temp_c - row->fitted_temp_c;
+      row->temp_residual_c_available = true;
+      row->correction_fit_domain = row->fitted_temp_c - row->captured_raw_temp_c;
+      row->correction_fit_domain_available = row->captured_raw_temp_c_available;
+    }
+
+    if (row->temp_residual_c_available) {
+      const double residual = row->temp_residual_c;
+      temp_sum += residual;
+      temp_sum_abs += fabs(residual);
+      temp_sum_sq += residual * residual;
+      if (fabs(residual) > temp_max_abs) {
+        temp_max_abs = fabs(residual);
+      }
+      temp_target_sum += row->target_temp_c;
+      temp_target_sum_sq += row->target_temp_c * row->target_temp_c;
+      ++temp_count;
+    }
+    if (row->res_residual_ohm_available) {
+      const double residual = row->res_residual_ohm;
+      res_sum += residual;
+      res_sum_abs += fabs(residual);
+      res_sum_sq += residual * residual;
+      if (fabs(residual) > res_max_abs) {
+        res_max_abs = fabs(residual);
+      }
+      res_target_sum += row->target_res_ohm;
+      res_target_sum_sq += row->target_res_ohm * row->target_res_ohm;
+      ++res_count;
+    }
+    if (row->correction_fit_domain_available) {
+      const double abs_correction = fabs(row->correction_fit_domain);
+      if (!summary->max_abs_correction_fit_domain_available ||
+          abs_correction > summary->max_abs_correction_fit_domain) {
+        summary->max_abs_correction_fit_domain = abs_correction;
+        summary->max_abs_correction_fit_domain_available = true;
+      }
+    }
+  }
+
+  summary->mean_signed_residual_c_available = (temp_count > 0u);
+  summary->mean_abs_residual_c_available = (temp_count > 0u);
+  summary->rmse_c_available = (temp_count > 0u);
+  summary->residual_stddev_c_available = (temp_count > 0u);
+  summary->max_abs_residual_c_available = (temp_count > 0u);
+  summary->sse_c_available = (temp_count > 0u);
+  ComputeResidualStats_(temp_sum,
+                        temp_sum_abs,
+                        temp_sum_sq,
+                        temp_max_abs,
+                        temp_count,
+                        &summary->mean_signed_residual_c,
+                        &summary->mean_abs_residual_c,
+                        &summary->rmse_c,
+                        &summary->residual_stddev_c,
+                        &summary->sse_c);
+  summary->max_abs_residual_c = (temp_count > 0u) ? temp_max_abs : 0.0;
+
+  if (fit_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+    summary->mean_signed_residual_ohm_available = (res_count > 0u);
+    summary->mean_abs_residual_ohm_available = (res_count > 0u);
+    summary->rmse_ohm_available = (res_count > 0u);
+    summary->residual_stddev_ohm_available = (res_count > 0u);
+    summary->max_abs_residual_ohm_available = (res_count > 0u);
+    summary->sse_ohm_available = (res_count > 0u);
+    ComputeResidualStats_(res_sum,
+                          res_sum_abs,
+                          res_sum_sq,
+                          res_max_abs,
+                          res_count,
+                          &summary->mean_signed_residual_ohm,
+                          &summary->mean_abs_residual_ohm,
+                          &summary->rmse_ohm,
+                          &summary->residual_stddev_ohm,
+                          &summary->sse_ohm);
+    summary->max_abs_residual_ohm = (res_count > 0u) ? res_max_abs : 0.0;
+  }
+
+  if (CalibrationCanComputeR2_(model) && temp_count > 0u) {
+    ComputeR2Metrics_(temp_sum_sq,
+                      temp_target_sum / (double)temp_count,
+                      temp_target_sum_sq,
+                      temp_count,
+                      summary->parameter_count,
+                      &summary->r_squared_available,
+                      &summary->adjusted_r_squared_available,
+                      &summary->r_squared,
+                      &summary->adjusted_r_squared);
+  }
+  if (summary->max_abs_correction_fit_domain_available) {
+    summary->max_abs_correction_c = summary->max_abs_correction_fit_domain;
+  }
+  return ESP_OK;
+}
+
 /**
  * @brief Execute ComputeDiagnostics.
  * @param points Parameter points.
@@ -596,6 +981,7 @@ FitLeastSquaresPolynomial(const calibration_point_t* points,
 static esp_err_t
 ComputeDiagnostics(const calibration_point_t* points,
                    size_t num_points,
+                   calibration_domain_t fit_domain,
                    const calibration_model_t* model,
                    calibration_fit_diagnostics_t* diagnostics_out)
 {
@@ -603,24 +989,21 @@ ComputeDiagnostics(const calibration_point_t* points,
     return ESP_OK;
   }
 
-  double sum_sq = 0.0;
-  double max_abs_residual = 0.0;
-  for (size_t index = 0; index < num_points; ++index) {
-    const double raw_c = points[index].raw_avg_mC / 1000.0;
-    const double actual_c = points[index].actual_mC / 1000.0;
-    const double predicted_c =
-      CalibrationModelEvaluateWithPoints(model, raw_c, points, num_points);
-    const double residual = actual_c - predicted_c;
-    const double abs_residual = fabs(residual);
-    sum_sq += residual * residual;
-    if (abs_residual > max_abs_residual) {
-      max_abs_residual = abs_residual;
-    }
+  calibration_fit_report_t report;
+  memset(&report, 0, sizeof(report));
+  esp_err_t report_result =
+    CalibrationBuildFitReport(points,
+                              num_points,
+                              fit_domain,
+                              model,
+                              100.0,
+                              NULL,
+                              NULL,
+                              &report);
+  if (report_result != ESP_OK) {
+    return report_result;
   }
-
-  diagnostics_out->rms_error_c =
-    (num_points > 0) ? sqrt(sum_sq / (double)num_points) : 0.0;
-  diagnostics_out->max_abs_residual_c = max_abs_residual;
+  *diagnostics_out = report.summary;
   return ESP_OK;
 }
 
@@ -645,7 +1028,7 @@ IsSlopeReasonable(const calibration_fit_options_t* options,
 }
 
 /**
- * @brief Execute IsCorrectionReasonable.
+ * @brief Execute CalibrationFitApplyCorrectionGuard.
  * @param options Parameter options.
  * @param model Parameter model.
  * @param points Parameter points.
@@ -653,12 +1036,13 @@ IsSlopeReasonable(const calibration_fit_options_t* options,
  * @param diagnostics_out Parameter diagnostics_out.
  * @return Return the function result.
  */
-static bool
-IsCorrectionReasonable(const calibration_fit_options_t* options,
-                       const calibration_model_t* model,
-                       const calibration_point_t* points,
-                       size_t num_points,
-                       calibration_fit_diagnostics_t* diagnostics_out)
+bool
+CalibrationFitApplyCorrectionGuard(
+  const calibration_fit_options_t* options,
+  const calibration_model_t* model,
+  const calibration_point_t* points,
+  size_t num_points,
+  calibration_fit_diagnostics_t* diagnostics_out)
 {
   if (options->guard_min_c >= options->guard_max_c) {
     return true;
@@ -675,6 +1059,8 @@ IsCorrectionReasonable(const calibration_fit_options_t* options,
     fmax(fabs(correction_min), fabs(correction_max));
   if (diagnostics_out != NULL) {
     diagnostics_out->max_abs_correction_c = max_abs_correction;
+    diagnostics_out->max_abs_correction_fit_domain = max_abs_correction;
+    diagnostics_out->max_abs_correction_fit_domain_available = true;
   }
   return max_abs_correction <= options->max_abs_correction_c;
 }
@@ -813,6 +1199,17 @@ CalibrationModelFitFromPointsWithOptions(
     ESP_LOGW(kTag, "duplicate raw values in calibration points");
     return ESP_ERR_INVALID_ARG;
   }
+  calibration_domain_t fit_domain = CAL_DOMAIN_TEMP_C;
+  bool all_points_have_resistance = true;
+  for (size_t i = 0; i < num_points; ++i) {
+    if (points[i].raw_avg_mOhm <= 0) {
+      all_points_have_resistance = false;
+      break;
+    }
+  }
+  if (all_points_have_resistance) {
+    fit_domain = CAL_DOMAIN_RESISTANCE_OHM;
+  }
 
   if (num_points == 1) {
     const double offset =
@@ -824,9 +1221,22 @@ CalibrationModelFitFromPointsWithOptions(
     model_out->coefficients[1] = 1.0;
     model_out->is_valid = true;
     if (diagnostics_out != NULL) {
-      diagnostics_out->rms_error_c = 0.0;
-      diagnostics_out->max_abs_residual_c = 0.0;
+      memset(diagnostics_out, 0, sizeof(*diagnostics_out));
+      diagnostics_out->fit_domain = fit_domain;
+      diagnostics_out->fit_mode = model_out->mode;
+      diagnostics_out->degree = model_out->degree;
+      diagnostics_out->point_count = num_points;
+      diagnostics_out->parameter_count = 1u;
+      diagnostics_out->degrees_of_freedom = 0;
+      diagnostics_out->mean_signed_residual_c_available = true;
+      diagnostics_out->mean_abs_residual_c_available = true;
+      diagnostics_out->rmse_c_available = true;
+      diagnostics_out->residual_stddev_c_available = true;
+      diagnostics_out->max_abs_residual_c_available = true;
+      diagnostics_out->sse_c_available = true;
+      diagnostics_out->max_abs_correction_fit_domain_available = true;
       diagnostics_out->max_abs_correction_c = fabs(offset);
+      diagnostics_out->max_abs_correction_fit_domain = fabs(offset);
     }
     return ESP_OK;
   }
@@ -841,8 +1251,9 @@ CalibrationModelFitFromPointsWithOptions(
       model_out->mode = CAL_FIT_MODE_PIECEWISE;
       model_out->degree = 1;
       model_out->is_valid = true;
-      ComputeDiagnostics(points, num_points, model_out, diagnostics_out);
-      if (!IsCorrectionReasonable(
+      ComputeDiagnostics(
+        points, num_points, fit_domain, model_out, diagnostics_out);
+      if (!CalibrationFitApplyCorrectionGuard(
             options, model_out, points, num_points, diagnostics_out)) {
         ESP_LOGW(kTag,
                  "correction exceeds max abs %.2fC within [%.1f, %.1f]",
@@ -879,7 +1290,7 @@ CalibrationModelFitFromPointsWithOptions(
   }
   model_out->mode = options->mode;
 
-  ComputeDiagnostics(points, num_points, model_out, diagnostics_out);
+  ComputeDiagnostics(points, num_points, fit_domain, model_out, diagnostics_out);
 
   if (!IsSlopeReasonable(options, model_out)) {
     ESP_LOGW(kTag,
@@ -890,7 +1301,7 @@ CalibrationModelFitFromPointsWithOptions(
     return ESP_ERR_INVALID_STATE;
   }
 
-  if (!IsCorrectionReasonable(
+  if (!CalibrationFitApplyCorrectionGuard(
         options, model_out, points, num_points, diagnostics_out)) {
     ESP_LOGW(kTag,
              "correction exceeds max abs %.2fC within [%.1f, %.1f]",

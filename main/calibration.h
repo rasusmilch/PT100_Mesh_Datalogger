@@ -91,10 +91,155 @@ extern "C"
 
   typedef struct
   {
-    double rms_error_c;
+    calibration_domain_t fit_domain;
+    calibration_fit_mode_t fit_mode;
+    uint8_t degree;
+    size_t point_count;
+    size_t parameter_count;
+    int32_t degrees_of_freedom;
+    bool mean_signed_residual_c_available;
+    bool mean_abs_residual_c_available;
+    bool rmse_c_available;
+    bool residual_stddev_c_available;
+    bool max_abs_residual_c_available;
+    bool sse_c_available;
+    bool mean_signed_residual_ohm_available;
+    bool mean_abs_residual_ohm_available;
+    bool rmse_ohm_available;
+    bool residual_stddev_ohm_available;
+    bool max_abs_residual_ohm_available;
+    bool sse_ohm_available;
+    bool r_squared_available;
+    bool adjusted_r_squared_available;
+    bool max_abs_correction_fit_domain_available;
+    bool r_squared_is_meaningful;
+    double mean_signed_residual_c;
+    double mean_abs_residual_c;
+    double rmse_c;
+    double residual_stddev_c;
     double max_abs_residual_c;
+    double sse_c;
+    double mean_signed_residual_ohm;
+    double mean_abs_residual_ohm;
+    double rmse_ohm;
+    double residual_stddev_ohm;
+    double max_abs_residual_ohm;
+    double sse_ohm;
+    double r_squared;
+    double adjusted_r_squared;
     double max_abs_correction_c;
+    double max_abs_correction_fit_domain;
   } calibration_fit_diagnostics_t;
+
+  /**
+   * @brief One derived model-fit evaluation row for a stored calibration point.
+   *
+   * Captured values are authoritative stored values from the record.
+   * Fitted values/residuals are derived from evaluating the active model.
+   */
+  typedef struct
+  {
+    size_t point_index;
+    calibration_domain_t fit_domain;
+    bool target_temp_c_available;
+    bool target_res_ohm_available;
+    bool captured_raw_temp_c_available;
+    bool captured_raw_res_ohm_available;
+    bool fitted_temp_c_available;
+    bool fitted_res_ohm_available;
+    bool temp_residual_c_available;
+    bool res_residual_ohm_available;
+    bool correction_fit_domain_available;
+    double target_temp_c;
+    double target_res_ohm;
+    double captured_raw_temp_c;
+    double captured_raw_res_ohm;
+    double fitted_temp_c;
+    double fitted_res_ohm;
+    double temp_residual_c;
+    double res_residual_ohm;
+    double correction_fit_domain;
+  } calibration_fit_point_result_t;
+
+  /**
+   * @brief Conversion callback for resistance->temperature in active runtime
+   * path units/model.
+   * @param resistance_ohm Resistance in ohms.
+   * @param context Opaque caller context.
+   * @return Temperature in Celsius, or non-finite on failure.
+   */
+  typedef double (*calibration_resistance_to_temp_fn_t)(
+    double resistance_ohm,
+    void* context);
+
+  /**
+   * @brief Full model-fit report output (overall + per-point rows).
+   */
+  typedef struct
+  {
+    calibration_fit_diagnostics_t summary;
+    calibration_fit_point_result_t point_results[CALIBRATION_MAX_POINTS];
+    size_t point_results_count;
+  } calibration_fit_report_t;
+
+  /**
+   * @brief Evaluate active model fitness against stored calibration points.
+   *
+   * This function never mutates point metadata or stored captured residuals.
+   * It only computes derived fit-report values for presentation/audit use.
+   *
+   * @param stored_points Authoritative stored calibration points.
+   * @param num_points Number of points in stored_points.
+   * @param fit_domain Active calibration domain for evaluation.
+   * @param model Active model to evaluate.
+   * @param rtd_nominal_ohm Nominal RTD resistance at 0C used for CVD helper.
+   * @param resistance_to_temp_fn Runtime-path resistance->temperature callback
+   * (required for resistance-domain evaluation).
+   * @param resistance_to_temp_context Opaque callback context.
+   * @param report_out Receives full report.
+   * @return ESP_OK on success.
+   */
+  esp_err_t CalibrationBuildFitReport(const calibration_point_t* stored_points,
+                                      size_t num_points,
+                                      calibration_domain_t fit_domain,
+                                      const calibration_model_t* model,
+                                      double rtd_nominal_ohm,
+                                      calibration_resistance_to_temp_fn_t
+                                        resistance_to_temp_fn,
+                                      void* resistance_to_temp_context,
+                                      calibration_fit_report_t* report_out);
+
+  /**
+   * @brief Fill derived correction guard diagnostics on a summary.
+   * @param options Fit options containing guard interval and correction limit.
+   * @param model Active model.
+   * @param points Fit-domain points used by model evaluation.
+   * @param num_points Number of fit points.
+   * @param diagnostics_out Diagnostics to update.
+   * @return true when correction is within configured limit.
+   */
+  bool CalibrationFitApplyCorrectionGuard(
+    const calibration_fit_options_t* options,
+    const calibration_model_t* model,
+    const calibration_point_t* points,
+    size_t num_points,
+    calibration_fit_diagnostics_t* diagnostics_out);
+
+  /**
+   * @brief Build fit-domain points from stored points for model fitting.
+   * @param stored_points Authoritative stored points.
+   * @param num_points Number of points.
+   * @param fit_domain Domain used for fitting/evaluation.
+   * @param rtd_nominal_ohm Nominal RTD resistance at 0C for CVD conversion.
+   * @param fit_points_out Receives remapped fit-domain points.
+   * @return ESP_OK on success.
+   */
+  esp_err_t CalibrationBuildFitDomainPoints(
+    const calibration_point_t* stored_points,
+    size_t num_points,
+    calibration_domain_t fit_domain,
+    double rtd_nominal_ohm,
+    calibration_point_t* fit_points_out);
 
   typedef struct
   {
