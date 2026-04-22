@@ -149,6 +149,18 @@ EvaluateCalibratedTemperature_(double raw_temp_c,
 static double
 ConsoleResistanceToTemperatureFitCallback_(double resistance_ohm, void* context);
 static void
+PrintCalibrationFitLabelAndValueOrNa_(const char* label,
+                                      bool available,
+                                      double value);
+static const char*
+CalibrationFitDomainDisplayString_(calibration_domain_t fit_domain);
+static const char*
+CalibrationFitCorrectionLabel_(calibration_domain_t fit_domain);
+static const char*
+CalibrationFitCorrectionColumnHeader_(calibration_domain_t fit_domain);
+static const char*
+CalibrationFitDegreeLabel_(calibration_fit_mode_t fit_mode);
+static void
 PrintCalibrationFitValueOrNa_(const char* label,
                               bool available,
                               double value,
@@ -9682,6 +9694,51 @@ ConsoleResistanceToTemperatureFitCallback_(double resistance_ohm, void* context)
 }
 
 static void
+PrintCalibrationFitLabelAndValueOrNa_(const char* label,
+                                      bool available,
+                                      double value)
+{
+  PrintCalibrationFitValueOrNa_(label, available, value, "");
+}
+
+static const char*
+CalibrationFitDomainDisplayString_(calibration_domain_t fit_domain)
+{
+  return (fit_domain == CAL_DOMAIN_RESISTANCE_OHM) ? "Resistance (ohms)"
+                                                    : "Legacy temperature (C)";
+}
+
+static const char*
+CalibrationFitCorrectionLabel_(calibration_domain_t fit_domain)
+{
+  if (fit_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+    return "Largest applied correction (ohms)";
+  }
+  if (fit_domain == CAL_DOMAIN_TEMP_C) {
+    return "Largest applied correction (C)";
+  }
+  return "Largest applied correction (fit domain)";
+}
+
+static const char*
+CalibrationFitCorrectionColumnHeader_(calibration_domain_t fit_domain)
+{
+  if (fit_domain == CAL_DOMAIN_RESISTANCE_OHM) {
+    return "correction_ohm";
+  }
+  if (fit_domain == CAL_DOMAIN_TEMP_C) {
+    return "correction_C";
+  }
+  return "applied_correction";
+}
+
+static const char*
+CalibrationFitDegreeLabel_(calibration_fit_mode_t fit_mode)
+{
+  return (fit_mode == CAL_FIT_MODE_POLYNOMIAL) ? "Polynomial degree" : "Degree";
+}
+
+static void
 PrintCalibrationFitValueOrNa_(const char* label,
                               bool available,
                               double value,
@@ -9701,73 +9758,75 @@ PrintCalibrationFitDiagnosticsBlock_(
   if (diagnostics == NULL) {
     return;
   }
-  printf("    fit_domain: %s\n",
-         (diagnostics->fit_domain == CAL_DOMAIN_RESISTANCE_OHM) ? "resistance_ohm"
-                                                                 : "legacy_temp_c");
-  printf("    fit_mode: %s\n", CalibrationModeToString(diagnostics->fit_mode));
-  printf("    degree: %u\n", (unsigned)diagnostics->degree);
-  printf("    point_count: %u\n", (unsigned)diagnostics->point_count);
-  printf("    parameter_count: %u\n", (unsigned)diagnostics->parameter_count);
-  printf("    degrees_of_freedom: %d\n", (int)diagnostics->degrees_of_freedom);
-  PrintCalibrationFitValueOrNa_("mean_signed_residual_ohm",
-                                diagnostics->mean_signed_residual_ohm_available,
-                                diagnostics->mean_signed_residual_ohm,
-                                "");
-  PrintCalibrationFitValueOrNa_("mean_abs_residual_ohm",
-                                diagnostics->mean_abs_residual_ohm_available,
-                                diagnostics->mean_abs_residual_ohm,
-                                "");
-  PrintCalibrationFitValueOrNa_(
-    "rmse_ohm", diagnostics->rmse_ohm_available, diagnostics->rmse_ohm, "");
-  PrintCalibrationFitValueOrNa_("residual_stddev_ohm",
-                                diagnostics->residual_stddev_ohm_available,
-                                diagnostics->residual_stddev_ohm,
-                                "");
-  PrintCalibrationFitValueOrNa_("max_abs_residual_ohm",
-                                diagnostics->max_abs_residual_ohm_available,
-                                diagnostics->max_abs_residual_ohm,
-                                "");
-  PrintCalibrationFitValueOrNa_(
-    "sse_ohm", diagnostics->sse_ohm_available, diagnostics->sse_ohm, "");
-  PrintCalibrationFitValueOrNa_(
-    "mean_signed_residual_c",
+  printf("    Fit domain: %s\n",
+         CalibrationFitDomainDisplayString_(diagnostics->fit_domain));
+  printf("    Model type: %s\n", CalibrationModeToString(diagnostics->fit_mode));
+  printf("    %s: %u\n",
+         CalibrationFitDegreeLabel_(diagnostics->fit_mode),
+         (unsigned)diagnostics->degree);
+  printf("    Calibration points used: %u\n", (unsigned)diagnostics->point_count);
+  printf("    Model parameters: %u\n", (unsigned)diagnostics->parameter_count);
+  printf("    Degrees of freedom: %d\n", (int)diagnostics->degrees_of_freedom);
+  PrintCalibrationFitLabelAndValueOrNa_("Mean signed residual (ohms)",
+                                        diagnostics->mean_signed_residual_ohm_available,
+                                        diagnostics->mean_signed_residual_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Mean absolute residual (ohms)",
+    diagnostics->mean_abs_residual_ohm_available,
+    diagnostics->mean_abs_residual_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Root mean square error (ohms)",
+    diagnostics->rmse_ohm_available,
+    diagnostics->rmse_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Residual standard deviation (ohms)",
+    diagnostics->residual_stddev_ohm_available,
+    diagnostics->residual_stddev_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Maximum absolute residual (ohms)",
+    diagnostics->max_abs_residual_ohm_available,
+    diagnostics->max_abs_residual_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Sum of squared error (ohm^2)",
+    diagnostics->sse_ohm_available,
+    diagnostics->sse_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Mean signed residual (C)",
     diagnostics->mean_signed_residual_c_available,
-    diagnostics->mean_signed_residual_c,
-    "");
-  PrintCalibrationFitValueOrNa_("mean_abs_residual_c",
-                                diagnostics->mean_abs_residual_c_available,
-                                diagnostics->mean_abs_residual_c,
-                                "");
-  PrintCalibrationFitValueOrNa_(
-    "rmse_c", diagnostics->rmse_c_available, diagnostics->rmse_c, "");
-  PrintCalibrationFitValueOrNa_("residual_stddev_c",
-                                diagnostics->residual_stddev_c_available,
-                                diagnostics->residual_stddev_c,
-                                "");
-  PrintCalibrationFitValueOrNa_("max_abs_residual_c",
-                                diagnostics->max_abs_residual_c_available,
-                                diagnostics->max_abs_residual_c,
-                                "");
-  PrintCalibrationFitValueOrNa_(
-    "sse_c", diagnostics->sse_c_available, diagnostics->sse_c, "");
+    diagnostics->mean_signed_residual_c);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Mean absolute residual (C)",
+    diagnostics->mean_abs_residual_c_available,
+    diagnostics->mean_abs_residual_c);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Root mean square error (C)", diagnostics->rmse_c_available, diagnostics->rmse_c);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Residual standard deviation (C)",
+    diagnostics->residual_stddev_c_available,
+    diagnostics->residual_stddev_c);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Maximum absolute residual (C)",
+    diagnostics->max_abs_residual_c_available,
+    diagnostics->max_abs_residual_c);
+  PrintCalibrationFitLabelAndValueOrNa_("Sum of squared error (C^2)",
+                                        diagnostics->sse_c_available,
+                                        diagnostics->sse_c);
   if (diagnostics->r_squared_available && diagnostics->r_squared_is_meaningful) {
-    PrintCalibrationFitValueOrNa_(
-      "r_squared", true, diagnostics->r_squared, "");
+    PrintCalibrationFitLabelAndValueOrNa_("R^2", true, diagnostics->r_squared);
   } else {
-    printf("    r_squared: n/a\n");
+    printf("    R^2: n/a\n");
   }
   if (diagnostics->adjusted_r_squared_available &&
       diagnostics->r_squared_is_meaningful) {
-    PrintCalibrationFitValueOrNa_(
-      "adjusted_r_squared", true, diagnostics->adjusted_r_squared, "");
+    PrintCalibrationFitLabelAndValueOrNa_(
+      "Adjusted R^2", true, diagnostics->adjusted_r_squared);
   } else {
-    printf("    adjusted_r_squared: n/a\n");
+    printf("    Adjusted R^2: n/a\n");
   }
-  PrintCalibrationFitValueOrNa_(
-    "max_abs_correction_fit_domain",
+  PrintCalibrationFitLabelAndValueOrNa_(
+    CalibrationFitCorrectionLabel_(diagnostics->fit_domain),
     diagnostics->max_abs_correction_fit_domain_available,
-    diagnostics->max_abs_correction_fit_domain,
-    "");
+    diagnostics->max_abs_correction_fit_domain);
 }
 
 static void
@@ -9777,7 +9836,8 @@ PrintCalibrationModelFitTable_(const calibration_fit_report_t* fit_report)
     return;
   }
   printf("    fit_table:\n");
-  printf("      idx  target_C   target_ohm  raw_C      raw_ohm    fit_C      fit_ohm    model_fit_res_C  model_fit_res_ohm  fit_domain_correction\n");
+  printf("      pt   target_C   target_ohm  captured_C  captured_ohm  model_C    model_ohm  temp_res_C       ohm_residual       %s\n",
+         CalibrationFitCorrectionColumnHeader_(fit_report->summary.fit_domain));
   for (size_t i = 0; i < fit_report->point_results_count; ++i) {
     const calibration_fit_point_result_t* row = &fit_report->point_results[i];
     printf("      %-4u %-10.6f ", (unsigned)row->point_index, row->target_temp_c_available ? row->target_temp_c : NAN);
