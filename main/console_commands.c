@@ -147,7 +147,8 @@ EvaluateCalibratedTemperature_(double raw_temp_c,
                                double raw_resistance_ohm,
                                double* calibrated_temp_c_out);
 static double
-ConsoleResistanceToTemperatureFitCallback_(double resistance_ohm, void* context);
+ConsoleResistanceToTemperatureFitCallback_(double resistance_ohm,
+                                           void* context);
 static void
 PrintCalibrationFitLabelAndValueOrNa_(const char* label,
                                       bool available,
@@ -3623,8 +3624,7 @@ NextCalibrationImportTokenSpan_(const char* line_start,
   }
 
   size_t cursor = *cursor_inout;
-  while (cursor < line_len &&
-         isspace((unsigned char)line_start[cursor])) {
+  while (cursor < line_len && isspace((unsigned char)line_start[cursor])) {
     cursor++;
   }
   if (cursor >= line_len) {
@@ -3633,8 +3633,7 @@ NextCalibrationImportTokenSpan_(const char* line_start,
   }
 
   const char* token_start = line_start + cursor;
-  while (cursor < line_len &&
-         !isspace((unsigned char)line_start[cursor])) {
+  while (cursor < line_len && !isspace((unsigned char)line_start[cursor])) {
     cursor++;
   }
 
@@ -3740,27 +3739,20 @@ CalibrationImportTokenIsKnownKeyPrefix_(const char* token_start,
     return false;
   }
   size_t effective_len = token_len;
-  while (effective_len > 0u &&
-         (token_start[effective_len - 1u] == '"' ||
-          token_start[effective_len - 1u] == '\'')) {
+  while (effective_len > 0u && (token_start[effective_len - 1u] == '"' ||
+                                token_start[effective_len - 1u] == '\'')) {
     effective_len--;
   }
   if (effective_len == 0u) {
     return false;
   }
   static const char* kKnownKeys[] = {
-    "reference_temp_C",
-    "ideal_ref_res_Ohm",
-    "captured_raw_temp_avg_C",
-    "captured_raw_temp_stddev_C",
-    "captured_raw_res_avg_Ohm",
-    "captured_raw_res_stddev_Ohm",
-    "captured_drift_C_per_min",
-    "captured_delta_C",
-    "drift_limit_C_per_min",
-    "drift_limit_source",
-    "captured_window_s",
-    "captured_ema_alpha",
+    "reference_temp_C",         "ideal_ref_res_Ohm",
+    "captured_raw_temp_avg_C",  "captured_raw_temp_stddev_C",
+    "captured_raw_res_avg_Ohm", "captured_raw_res_stddev_Ohm",
+    "captured_drift_C_per_min", "captured_delta_C",
+    "drift_limit_C_per_min",    "drift_limit_source",
+    "captured_window_s",        "captured_ema_alpha",
   };
   for (size_t i = 0; i < (sizeof(kKnownKeys) / sizeof(kKnownKeys[0])); ++i) {
     const char* known_key = kKnownKeys[i];
@@ -3774,7 +3766,8 @@ CalibrationImportTokenIsKnownKeyPrefix_(const char* token_start,
 }
 
 static bool
-CalibrationImportTokenLooksMangledKey_(const char* token_start, size_t token_len)
+CalibrationImportTokenLooksMangledKey_(const char* token_start,
+                                       size_t token_len)
 {
   if (token_start == NULL || token_len == 0u) {
     return false;
@@ -3825,10 +3818,7 @@ LogCalibrationImportFieldParsed_(const char* field_name,
                                  bool available)
 {
   if (available) {
-    ESP_LOGI(kTag,
-             "cal import debug: field %s=%.6f",
-             field_name,
-             parsed_value);
+    ESP_LOGI(kTag, "cal import debug: field %s=%.6f", field_name, parsed_value);
   } else {
     ESP_LOGI(kTag, "cal import debug: field %s=n/a", field_name);
   }
@@ -3874,35 +3864,36 @@ LogCalibrationImportSummary_(const calibration_point_t* point)
            "captured_raw_res_avg_Ohm=%.3f",
            point->actual_mC / 1000.0,
            point->raw_avg_mOhm / 1000.0);
-  ESP_LOGI(kTag,
-           "cal import debug: summary raw_temp_avg_present=%s "
-           "raw_temp_stddev_present=%s raw_res_stddev_present=%s "
-           "captured_drift_present=%s captured_delta_present=%s "
-           "drift_limit_present=%s drift_source_present=%s "
-           "captured_window_present=%s captured_ema_alpha_present=%s",
-           (point->raw_avg_mC != INT32_MIN) ? "yes" : "no",
-           (point->raw_stddev_mC >= 0) ? "yes" : "no",
-           (point->raw_stddev_mOhm >= 0) ? "yes" : "no",
-           (point->captured_drift_mC_per_min !=
-            CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN)
-             ? "yes"
-             : "no",
-           (point->captured_delta_mC != CAL_CAPTURE_DELTA_UNAVAILABLE_MC) ? "yes"
-                                                                           : "no",
-           (point->capture_drift_limit_mC_per_min !=
-            CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN)
-             ? "yes"
-             : "no",
-           (point->drift_limit_source !=
-            (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE)
-             ? "yes"
-             : "no",
-           (point->captured_window_s != CAL_CAPTURE_WINDOW_S_UNAVAILABLE) ? "yes"
-                                                                           : "no",
-           (point->captured_ema_alpha_permille !=
-            CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE)
-             ? "yes"
-             : "no");
+  ESP_LOGI(
+    kTag,
+    "cal import debug: summary raw_temp_avg_present=%s "
+    "raw_temp_stddev_present=%s raw_res_stddev_present=%s "
+    "captured_drift_present=%s captured_delta_present=%s "
+    "drift_limit_present=%s drift_source_present=%s "
+    "captured_window_present=%s captured_ema_alpha_present=%s",
+    (point->raw_avg_mC != INT32_MIN) ? "yes" : "no",
+    (point->raw_stddev_mC >= 0) ? "yes" : "no",
+    (point->raw_stddev_mOhm >= 0) ? "yes" : "no",
+    (point->captured_drift_mC_per_min !=
+     CAL_CAPTURE_DRIFT_UNAVAILABLE_MC_PER_MIN)
+      ? "yes"
+      : "no",
+    (point->captured_delta_mC != CAL_CAPTURE_DELTA_UNAVAILABLE_MC) ? "yes"
+                                                                   : "no",
+    (point->capture_drift_limit_mC_per_min !=
+     CAL_CAPTURE_DRIFT_LIMIT_UNAVAILABLE_MC_PER_MIN)
+      ? "yes"
+      : "no",
+    (point->drift_limit_source !=
+     (uint8_t)CAL_DRIFT_LIMIT_SOURCE_LEGACY_UNAVAILABLE)
+      ? "yes"
+      : "no",
+    (point->captured_window_s != CAL_CAPTURE_WINDOW_S_UNAVAILABLE) ? "yes"
+                                                                   : "no",
+    (point->captured_ema_alpha_permille !=
+     CAL_CAPTURE_EMA_ALPHA_UNAVAILABLE_PERMILLE)
+      ? "yes"
+      : "no");
 }
 
 static void
@@ -3981,7 +3972,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
   const size_t key_len = (size_t)(equals - token_start);
   const char* value_start = equals + 1;
   const size_t value_len = (size_t)((token_start + token_len) - value_start);
-  const bool value_is_na = CalibrationImportValueIsNaSpan_(value_start, value_len);
+  const bool value_is_na =
+    CalibrationImportValueIsNaSpan_(value_start, value_len);
 
   if (CalibrationImportKeyEquals_(key_start, key_len, "reference_temp_C")) {
     fields->found_reference_temp_c = true;
@@ -4025,7 +4017,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       point->raw_avg_mOhm = (int32_t)llround(parsed * 1000.0);
       *have_raw_ohm = true;
-      LogCalibrationImportFieldParsed_("captured_raw_res_avg_Ohm", parsed, true);
+      LogCalibrationImportFieldParsed_(
+        "captured_raw_res_avg_Ohm", parsed, true);
     } else {
       LogCalibrationImportFieldParseFailed_(
         "captured_raw_res_avg_Ohm", value_start, value_len);
@@ -4033,7 +4026,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     return;
   }
 
-  if (CalibrationImportKeyEquals_(key_start, key_len, "captured_raw_temp_avg_C")) {
+  if (CalibrationImportKeyEquals_(
+        key_start, key_len, "captured_raw_temp_avg_C")) {
     fields->found_captured_raw_temp_avg_c = true;
     if (value_is_na) {
       LogCalibrationImportFieldParsed_("captured_raw_temp_avg_C", 0.0, false);
@@ -4054,7 +4048,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
         key_start, key_len, "captured_raw_temp_stddev_C")) {
     fields->found_captured_raw_temp_stddev_c = true;
     if (value_is_na) {
-      LogCalibrationImportFieldParsed_("captured_raw_temp_stddev_C", 0.0, false);
+      LogCalibrationImportFieldParsed_(
+        "captured_raw_temp_stddev_C", 0.0, false);
       return;
     }
     double parsed = 0.0;
@@ -4073,7 +4068,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
         key_start, key_len, "captured_raw_res_stddev_Ohm")) {
     fields->found_captured_raw_res_stddev_ohm = true;
     if (value_is_na) {
-      LogCalibrationImportFieldParsed_("captured_raw_res_stddev_Ohm", 0.0, false);
+      LogCalibrationImportFieldParsed_(
+        "captured_raw_res_stddev_Ohm", 0.0, false);
       return;
     }
     double parsed = 0.0;
@@ -4088,7 +4084,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     return;
   }
 
-  if (CalibrationImportKeyEquals_(key_start, key_len, "captured_drift_C_per_min")) {
+  if (CalibrationImportKeyEquals_(
+        key_start, key_len, "captured_drift_C_per_min")) {
     fields->found_captured_drift_c_per_min = true;
     if (value_is_na) {
       LogCalibrationImportFieldParsed_("captured_drift_C_per_min", 0.0, false);
@@ -4097,7 +4094,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     double parsed = 0.0;
     if (ParseCalibrationImportDoubleSpan_(value_start, value_len, &parsed)) {
       point->captured_drift_mC_per_min = (int32_t)llround(parsed * 1000.0);
-      LogCalibrationImportFieldParsed_("captured_drift_C_per_min", parsed, true);
+      LogCalibrationImportFieldParsed_(
+        "captured_drift_C_per_min", parsed, true);
     } else {
       LogCalibrationImportFieldParseFailed_(
         "captured_drift_C_per_min", value_start, value_len);
@@ -4122,7 +4120,8 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
     return;
   }
 
-  if (CalibrationImportKeyEquals_(key_start, key_len, "drift_limit_C_per_min")) {
+  if (CalibrationImportKeyEquals_(
+        key_start, key_len, "drift_limit_C_per_min")) {
     fields->found_drift_limit_c_per_min = true;
     if (value_is_na) {
       LogCalibrationImportFieldParsed_("drift_limit_C_per_min", 0.0, false);
@@ -4189,10 +4188,7 @@ ParseCalibrationImportTokenSpan_(const char* token_start,
   }
 
   ESP_LOGI(
-    kTag,
-    "cal import debug: ignored key '%.*s'",
-    (int)key_len,
-    key_start);
+    kTag, "cal import debug: ignored key '%.*s'", (int)key_len, key_start);
 }
 
 static bool
@@ -4232,14 +4228,13 @@ ParseCalibrationImportStatusLineSpan_(const char* line_start,
   while (NextCalibrationImportTokenSpan_(
     line_start, line_len, &cursor, &token_start, &token_len)) {
     token_count++;
-    ParseCalibrationImportTokenSpan_(
-      token_start,
-      token_len,
-      &point,
-      &have_actual,
-      &have_raw_ohm,
-      &fields,
-      &truncated_payload);
+    ParseCalibrationImportTokenSpan_(token_start,
+                                     token_len,
+                                     &point,
+                                     &have_actual,
+                                     &have_raw_ohm,
+                                     &fields,
+                                     &truncated_payload);
     if (truncated_payload) {
       break;
     }
@@ -6523,19 +6518,18 @@ CommandCal(int argc, char** argv)
         size_t payload_len = 0u;
         bool payload_quoted = false;
         bool unterminated_payload_quote = false;
-        const size_t snapshot_len =
-          (s_console_cmdline_snapshot != NULL)
-            ? strlen(s_console_cmdline_snapshot)
-            : 0u;
-        const size_t mutable_len =
-          (s_console_cmdline_buffer != NULL) ? strlen(s_console_cmdline_buffer)
-                                             : 0u;
-        bool raw_tail_available = CalibrationImportPayloadFromConsoleLine_(
-          action,
-          &payload_start,
-          &payload_len,
-          &payload_quoted,
-          &unterminated_payload_quote);
+        const size_t snapshot_len = (s_console_cmdline_snapshot != NULL)
+                                      ? strlen(s_console_cmdline_snapshot)
+                                      : 0u;
+        const size_t mutable_len = (s_console_cmdline_buffer != NULL)
+                                     ? strlen(s_console_cmdline_buffer)
+                                     : 0u;
+        bool raw_tail_available =
+          CalibrationImportPayloadFromConsoleLine_(action,
+                                                   &payload_start,
+                                                   &payload_len,
+                                                   &payload_quoted,
+                                                   &unterminated_payload_quote);
         if (raw_tail_available && s_console_cmdline_snapshot != NULL) {
           ESP_LOGI(kTag,
                    "cal import debug: snapshot_line='%s'",
@@ -6550,9 +6544,8 @@ CommandCal(int argc, char** argv)
                    payload_quoted ? "yes" : "no");
         }
         if (unterminated_payload_quote) {
-          ESP_LOGI(
-            kTag,
-            "cal import debug: unterminated quote in snapshot payload");
+          ESP_LOGI(kTag,
+                   "cal import debug: unterminated quote in snapshot payload");
           printf("cal import failed: input appears truncated before parser "
                  "(transport RX limit or incomplete paste)\n");
           return 1;
@@ -6563,9 +6556,8 @@ CommandCal(int argc, char** argv)
             payload_start, payload_len, &imported_point, &status_token_count);
         }
         const bool parsed_argv_stream =
-          (argc > 3) &&
-          ParseCalibrationImportStatusTokens_(
-            argc, argv, 2, &imported_point, &status_token_count);
+          (argc > 3) && ParseCalibrationImportStatusTokens_(
+                          argc, argv, 2, &imported_point, &status_token_count);
         if (parsed_raw_tail || parsed_argv_stream) {
           parsed_status_line = true;
           status_source = parsed_raw_tail ? "snapshot-raw-tail" : "argv-stream";
@@ -6663,10 +6655,9 @@ CommandCal(int argc, char** argv)
                    "source=%s argc=%d",
                    raw_tail_available ? "raw-tail" : "argv-stream",
                    argc);
-          printf(
-            "usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
-            "[--stddev_c <value>] OR cal import <cal status point line> "
-            "(quoted or unquoted)\n");
+          printf("usage: cal import <raw_ohm> <actual_c> [--raw_c <value>] "
+                 "[--stddev_c <value>] OR cal import <cal status point line> "
+                 "(quoted or unquoted)\n");
           return 1;
         }
       }
@@ -6910,12 +6901,12 @@ CommandCal(int argc, char** argv)
       have_resistance_points ? CAL_DOMAIN_RESISTANCE_OHM : CAL_DOMAIN_TEMP_C;
 
     calibration_point_t fit_points[CALIBRATION_MAX_POINTS] = { 0 };
-    esp_err_t result = CalibrationBuildFitDomainPoints(
-      settings->calibration_points,
-      settings->calibration_points_count,
-      apply_domain,
-      g_runtime->sensor->rtd_nominal_ohm,
-      fit_points);
+    esp_err_t result =
+      CalibrationBuildFitDomainPoints(settings->calibration_points,
+                                      settings->calibration_points_count,
+                                      apply_domain,
+                                      g_runtime->sensor->rtd_nominal_ohm,
+                                      fit_points);
     if (result != ESP_OK) {
       printf("cal apply failed: could not build fit-domain points (%s)\n",
              esp_err_to_name(result));
@@ -6966,14 +6957,15 @@ CommandCal(int argc, char** argv)
       return 1;
     }
     calibration_fit_report_t fit_report;
-    result = CalibrationBuildFitReport(settings->calibration_points,
-                                       settings->calibration_points_count,
-                                       apply_domain,
-                                       &model,
-                                       g_runtime->sensor->rtd_nominal_ohm,
-                                       ConsoleResistanceToTemperatureFitCallback_,
-                                       g_runtime->sensor,
-                                       &fit_report);
+    result =
+      CalibrationBuildFitReport(settings->calibration_points,
+                                settings->calibration_points_count,
+                                apply_domain,
+                                &model,
+                                g_runtime->sensor->rtd_nominal_ohm,
+                                ConsoleResistanceToTemperatureFitCallback_,
+                                g_runtime->sensor,
+                                &fit_report);
     if (result != ESP_OK) {
       printf("fit report failed: %s\n", esp_err_to_name(result));
       return 1;
@@ -9705,7 +9697,7 @@ static const char*
 CalibrationFitDomainDisplayString_(calibration_domain_t fit_domain)
 {
   return (fit_domain == CAL_DOMAIN_RESISTANCE_OHM) ? "Resistance (ohms)"
-                                                    : "Legacy temperature (C)";
+                                                   : "Legacy temperature (C)";
 }
 
 static const char*
@@ -9735,7 +9727,7 @@ CalibrationFitCorrectionColumnHeader_(calibration_domain_t fit_domain)
 static const char*
 CalibrationFitDegreeLabel_(calibration_fit_mode_t fit_mode)
 {
-  return (fit_mode == CAL_FIT_MODE_POLYNOMIAL) ? "Polynomial degree" : "Degree";
+  return (fit_mode == CAL_FIT_MODE_POLY) ? "Polynomial degree" : "Degree";
 }
 
 static void
@@ -9745,7 +9737,10 @@ PrintCalibrationFitValueOrNa_(const char* label,
                               const char* unit_suffix)
 {
   if (available) {
-    printf("    %s: %.9g%s\n", label, value, (unit_suffix != NULL) ? unit_suffix : "");
+    printf("    %s: %.9g%s\n",
+           label,
+           value,
+           (unit_suffix != NULL) ? unit_suffix : "");
   } else {
     printf("    %s: n/a\n", label);
   }
@@ -9760,24 +9755,26 @@ PrintCalibrationFitDiagnosticsBlock_(
   }
   printf("    Fit domain: %s\n",
          CalibrationFitDomainDisplayString_(diagnostics->fit_domain));
-  printf("    Model type: %s\n", CalibrationModeToString(diagnostics->fit_mode));
+  printf("    Model type: %s\n",
+         CalibrationModeToString(diagnostics->fit_mode));
   printf("    %s: %u\n",
          CalibrationFitDegreeLabel_(diagnostics->fit_mode),
          (unsigned)diagnostics->degree);
-  printf("    Calibration points used: %u\n", (unsigned)diagnostics->point_count);
+  printf("    Calibration points used: %u\n",
+         (unsigned)diagnostics->point_count);
   printf("    Model parameters: %u\n", (unsigned)diagnostics->parameter_count);
   printf("    Degrees of freedom: %d\n", (int)diagnostics->degrees_of_freedom);
-  PrintCalibrationFitLabelAndValueOrNa_("Mean signed residual (ohms)",
-                                        diagnostics->mean_signed_residual_ohm_available,
-                                        diagnostics->mean_signed_residual_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_(
+    "Mean signed residual (ohms)",
+    diagnostics->mean_signed_residual_ohm_available,
+    diagnostics->mean_signed_residual_ohm);
   PrintCalibrationFitLabelAndValueOrNa_(
     "Mean absolute residual (ohms)",
     diagnostics->mean_abs_residual_ohm_available,
     diagnostics->mean_abs_residual_ohm);
-  PrintCalibrationFitLabelAndValueOrNa_(
-    "Root mean square error (ohms)",
-    diagnostics->rmse_ohm_available,
-    diagnostics->rmse_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_("Root mean square error (ohms)",
+                                        diagnostics->rmse_ohm_available,
+                                        diagnostics->rmse_ohm);
   PrintCalibrationFitLabelAndValueOrNa_(
     "Residual standard deviation (ohms)",
     diagnostics->residual_stddev_ohm_available,
@@ -9786,10 +9783,9 @@ PrintCalibrationFitDiagnosticsBlock_(
     "Maximum absolute residual (ohms)",
     diagnostics->max_abs_residual_ohm_available,
     diagnostics->max_abs_residual_ohm);
-  PrintCalibrationFitLabelAndValueOrNa_(
-    "Sum of squared error (ohm^2)",
-    diagnostics->sse_ohm_available,
-    diagnostics->sse_ohm);
+  PrintCalibrationFitLabelAndValueOrNa_("Sum of squared error (ohm^2)",
+                                        diagnostics->sse_ohm_available,
+                                        diagnostics->sse_ohm);
   PrintCalibrationFitLabelAndValueOrNa_(
     "Mean signed residual (C)",
     diagnostics->mean_signed_residual_c_available,
@@ -9798,8 +9794,9 @@ PrintCalibrationFitDiagnosticsBlock_(
     "Mean absolute residual (C)",
     diagnostics->mean_abs_residual_c_available,
     diagnostics->mean_abs_residual_c);
-  PrintCalibrationFitLabelAndValueOrNa_(
-    "Root mean square error (C)", diagnostics->rmse_c_available, diagnostics->rmse_c);
+  PrintCalibrationFitLabelAndValueOrNa_("Root mean square error (C)",
+                                        diagnostics->rmse_c_available,
+                                        diagnostics->rmse_c);
   PrintCalibrationFitLabelAndValueOrNa_(
     "Residual standard deviation (C)",
     diagnostics->residual_stddev_c_available,
@@ -9811,7 +9808,8 @@ PrintCalibrationFitDiagnosticsBlock_(
   PrintCalibrationFitLabelAndValueOrNa_("Sum of squared error (C^2)",
                                         diagnostics->sse_c_available,
                                         diagnostics->sse_c);
-  if (diagnostics->r_squared_available && diagnostics->r_squared_is_meaningful) {
+  if (diagnostics->r_squared_available &&
+      diagnostics->r_squared_is_meaningful) {
     PrintCalibrationFitLabelAndValueOrNa_("R^2", true, diagnostics->r_squared);
   } else {
     printf("    R^2: n/a\n");
@@ -9835,51 +9833,77 @@ PrintCalibrationModelFitTable_(const calibration_fit_report_t* fit_report)
   if (fit_report == NULL) {
     return;
   }
-  printf("    fit_table:\n");
-  printf("      pt   target_C   target_ohm  captured_C  captured_ohm  model_C    model_ohm  temp_res_C       ohm_residual       %s\n",
+
+  printf("    Fit Table:\n");
+  printf("      %-4s %-13s %-15s %-14s %-16s %-12s %-14s %-16s %-14s %-16s\n",
+         "pt",
+         "Target (C)",
+         "Target (ohm)",
+         "Captured (C)",
+         "Captured (ohm)",
+         "Model (C)",
+         "Model (ohm)",
+         "Temp.Res (C)",
+         "Ohm.Res",
          CalibrationFitCorrectionColumnHeader_(fit_report->summary.fit_domain));
+
   for (size_t i = 0; i < fit_report->point_results_count; ++i) {
     const calibration_fit_point_result_t* row = &fit_report->point_results[i];
-    printf("      %-4u %-10.6f ", (unsigned)row->point_index, row->target_temp_c_available ? row->target_temp_c : NAN);
+
+    printf("      %-4u ", (unsigned)row->point_index);
+
+    if (row->target_temp_c_available) {
+      printf("%-13.6f ", row->target_temp_c);
+    } else {
+      printf("%-13s ", "n/a");
+    }
+
     if (row->target_res_ohm_available) {
-      printf("%-11.6f ", row->target_res_ohm);
+      printf("%-15.6f ", row->target_res_ohm);
     } else {
-      printf("%-11s ", "n/a");
+      printf("%-15s ", "n/a");
     }
+
     if (row->captured_raw_temp_c_available) {
-      printf("%-10.6f ", row->captured_raw_temp_c);
+      printf("%-14.6f ", row->captured_raw_temp_c);
     } else {
-      printf("%-10s ", "n/a");
+      printf("%-14s ", "n/a");
     }
+
     if (row->captured_raw_res_ohm_available) {
-      printf("%-10.6f ", row->captured_raw_res_ohm);
+      printf("%-16.6f ", row->captured_raw_res_ohm);
     } else {
-      printf("%-10s ", "n/a");
+      printf("%-16s ", "n/a");
     }
+
     if (row->fitted_temp_c_available) {
-      printf("%-10.6f ", row->fitted_temp_c);
+      printf("%-12.6f ", row->fitted_temp_c);
     } else {
-      printf("%-10s ", "n/a");
+      printf("%-12s ", "n/a");
     }
+
     if (row->fitted_res_ohm_available) {
-      printf("%-10.6f ", row->fitted_res_ohm);
+      printf("%-14.6f ", row->fitted_res_ohm);
     } else {
-      printf("%-10s ", "n/a");
+      printf("%-14s ", "n/a");
     }
+
     if (row->temp_residual_c_available) {
       printf("%-16.6f ", row->temp_residual_c);
     } else {
       printf("%-16s ", "n/a");
     }
+
     if (row->res_residual_ohm_available) {
-      printf("%-18.6f ", row->res_residual_ohm);
+      printf("%-14.6f ", row->res_residual_ohm);
     } else {
-      printf("%-18s ", "n/a");
+      printf("%-14s ", "n/a");
     }
+
     if (row->correction_fit_domain_available) {
-      printf("%.6f\n", row->correction_fit_domain);
+      printf("%-16.6f\n", row->correction_fit_domain);
     } else {
-      printf("n/a\n");
+      printf("%-16s\n", "n/a");
     }
   }
 }
@@ -9898,18 +9922,19 @@ PrintCalibrationModelFitReport_(const app_settings_t* settings)
     return;
   }
   calibration_fit_report_t report;
-  esp_err_t report_result = CalibrationBuildFitReport(
-    settings->calibration_points,
-    settings->calibration_points_count,
-    settings->calibration_domain,
-    &settings->calibration,
-    g_runtime->sensor->rtd_nominal_ohm,
-    ConsoleResistanceToTemperatureFitCallback_,
-    g_runtime->sensor,
-    &report);
+  esp_err_t report_result =
+    CalibrationBuildFitReport(settings->calibration_points,
+                              settings->calibration_points_count,
+                              settings->calibration_domain,
+                              &settings->calibration,
+                              g_runtime->sensor->rtd_nominal_ohm,
+                              ConsoleResistanceToTemperatureFitCallback_,
+                              g_runtime->sensor,
+                              &report);
   printf("Calibration Model Fit Report:\n");
   if (report_result != ESP_OK) {
-    printf("  unavailable: fit report failed (%s)\n", esp_err_to_name(report_result));
+    printf("  unavailable: fit report failed (%s)\n",
+           esp_err_to_name(report_result));
     return;
   }
   PrintCalibrationEquationBlock_(&settings->calibration);
@@ -11859,8 +11884,9 @@ ConsoleCmdlineSnapshotCapture_(const char* line, size_t max_cmdline_length)
   }
 
   const size_t line_len = strlen(line);
-  const size_t copy_len =
-    (line_len < (max_cmdline_length - 1u)) ? line_len : (max_cmdline_length - 1u);
+  const size_t copy_len = (line_len < (max_cmdline_length - 1u))
+                            ? line_len
+                            : (max_cmdline_length - 1u);
   memcpy(s_console_cmdline_snapshot, line, copy_len);
   s_console_cmdline_snapshot[copy_len] = '\0';
   return (copy_len == line_len);
