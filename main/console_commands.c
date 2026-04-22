@@ -146,6 +146,20 @@ static bool
 EvaluateCalibratedTemperature_(double raw_temp_c,
                                double raw_resistance_ohm,
                                double* calibrated_temp_c_out);
+static double
+ConsoleResistanceToTemperatureFitCallback_(double resistance_ohm, void* context);
+static void
+PrintCalibrationFitValueOrNa_(const char* label,
+                              bool available,
+                              double value,
+                              const char* unit_suffix);
+static void
+PrintCalibrationFitDiagnosticsBlock_(
+  const calibration_fit_diagnostics_t* diagnostics);
+static void
+PrintCalibrationModelFitTable_(const calibration_fit_report_t* fit_report);
+static void
+PrintCalibrationModelFitReport_(const app_settings_t* settings);
 static bool
 RefreshCalibratedWindowTempStatsCache_(size_t sample_count,
                                        uint32_t window_generation,
@@ -6884,19 +6898,16 @@ CommandCal(int argc, char** argv)
       have_resistance_points ? CAL_DOMAIN_RESISTANCE_OHM : CAL_DOMAIN_TEMP_C;
 
     calibration_point_t fit_points[CALIBRATION_MAX_POINTS] = { 0 };
-    for (size_t i = 0; i < settings->calibration_points_count; ++i) {
-      fit_points[i] = settings->calibration_points[i];
-      if (apply_domain == CAL_DOMAIN_RESISTANCE_OHM) {
-        const double actual_c = fit_points[i].actual_mC / 1000.0;
-        const double ideal_ohm = Max31865TemperatureToResistanceCvd(
-          actual_c, g_runtime->sensor->rtd_nominal_ohm);
-        if (!isfinite(ideal_ohm)) {
-          printf("cal apply failed: invalid CVD resistance conversion\n");
-          return 1;
-        }
-        fit_points[i].raw_avg_mC = fit_points[i].raw_avg_mOhm;
-        fit_points[i].actual_mC = (int32_t)llround(ideal_ohm * 1000.0);
-      }
+    esp_err_t result = CalibrationBuildFitDomainPoints(
+      settings->calibration_points,
+      settings->calibration_points_count,
+      apply_domain,
+      g_runtime->sensor->rtd_nominal_ohm,
+      fit_points);
+    if (result != ESP_OK) {
+      printf("cal apply failed: could not build fit-domain points (%s)\n",
+             esp_err_to_name(result));
+      return 1;
     }
 
     calibration_model_t model;
@@ -6932,7 +6943,7 @@ CommandCal(int argc, char** argv)
     }
 
     calibration_fit_diagnostics_t diagnostics = { 0 };
-    esp_err_t result = CalibrationModelFitFromPointsWithOptions(
+    result = CalibrationModelFitFromPointsWithOptions(
       fit_points,
       settings->calibration_points_count,
       &options,
@@ -6942,6 +6953,20 @@ CommandCal(int argc, char** argv)
       printf("fit failed: %s\n", esp_err_to_name(result));
       return 1;
     }
+    calibration_fit_report_t fit_report;
+    result = CalibrationBuildFitReport(settings->calibration_points,
+                                       settings->calibration_points_count,
+                                       apply_domain,
+                                       &model,
+                                       g_runtime->sensor->rtd_nominal_ohm,
+                                       ConsoleResistanceToTemperatureFitCallback_,
+                                       g_runtime->sensor,
+                                       &fit_report);
+    if (result != ESP_OK) {
+      printf("fit report failed: %s\n", esp_err_to_name(result));
+      return 1;
+    }
+    diagnostics = fit_report.summary;
 
     settings->calibration = model;
     settings->calibration_domain = apply_domain;
@@ -6965,9 +6990,8 @@ CommandCal(int argc, char** argv)
            model.coefficients[1],
            model.coefficients[2],
            model.coefficients[3]);
-    printf("fit diagnostics: rms_error=%.6f max_abs_residual=%.6f\n",
-           diagnostics.rms_error_c,
-           diagnostics.max_abs_residual_c);
+    printf("fit diagnostics:\n");
+    PrintCalibrationFitDiagnosticsBlock_(&diagnostics);
     ForcePtlogRevisionForCalibrationMetadata("cal apply");
 
     return 0;
@@ -9647,6 +9671,192 @@ PrintCalibrationEquationBlock_(const calibration_model_t* model)
   PrintNamedPolynomialCoefficients_(model->coefficients, model->degree);
 }
 
+static double
+ConsoleResistanceToTemperatureFitCallback_(double resistance_ohm, void* context)
+{
+  const max31865_reader_t* reader = (const max31865_reader_t*)context;
+  if (reader == NULL) {
+    return NAN;
+  }
+  return Max31865ResistanceToTemperature(reader, resistance_ohm);
+}
+
+static void
+PrintCalibrationFitValueOrNa_(const char* label,
+                              bool available,
+                              double value,
+                              const char* unit_suffix)
+{
+  if (available) {
+    printf("    %s: %.9g%s\n", label, value, (unit_suffix != NULL) ? unit_suffix : "");
+  } else {
+    printf("    %s: n/a\n", label);
+  }
+}
+
+static void
+PrintCalibrationFitDiagnosticsBlock_(
+  const calibration_fit_diagnostics_t* diagnostics)
+{
+  if (diagnostics == NULL) {
+    return;
+  }
+  printf("    fit_domain: %s\n",
+         (diagnostics->fit_domain == CAL_DOMAIN_RESISTANCE_OHM) ? "resistance_ohm"
+                                                                 : "legacy_temp_c");
+  printf("    fit_mode: %s\n", CalibrationModeToString(diagnostics->fit_mode));
+  printf("    degree: %u\n", (unsigned)diagnostics->degree);
+  printf("    point_count: %u\n", (unsigned)diagnostics->point_count);
+  printf("    parameter_count: %u\n", (unsigned)diagnostics->parameter_count);
+  printf("    degrees_of_freedom: %d\n", (int)diagnostics->degrees_of_freedom);
+  PrintCalibrationFitValueOrNa_("mean_signed_residual_ohm",
+                                diagnostics->mean_signed_residual_ohm_available,
+                                diagnostics->mean_signed_residual_ohm,
+                                "");
+  PrintCalibrationFitValueOrNa_("mean_abs_residual_ohm",
+                                diagnostics->mean_abs_residual_ohm_available,
+                                diagnostics->mean_abs_residual_ohm,
+                                "");
+  PrintCalibrationFitValueOrNa_(
+    "rmse_ohm", diagnostics->rmse_ohm_available, diagnostics->rmse_ohm, "");
+  PrintCalibrationFitValueOrNa_("residual_stddev_ohm",
+                                diagnostics->residual_stddev_ohm_available,
+                                diagnostics->residual_stddev_ohm,
+                                "");
+  PrintCalibrationFitValueOrNa_("max_abs_residual_ohm",
+                                diagnostics->max_abs_residual_ohm_available,
+                                diagnostics->max_abs_residual_ohm,
+                                "");
+  PrintCalibrationFitValueOrNa_(
+    "sse_ohm", diagnostics->sse_ohm_available, diagnostics->sse_ohm, "");
+  PrintCalibrationFitValueOrNa_(
+    "mean_signed_residual_c",
+    diagnostics->mean_signed_residual_c_available,
+    diagnostics->mean_signed_residual_c,
+    "");
+  PrintCalibrationFitValueOrNa_("mean_abs_residual_c",
+                                diagnostics->mean_abs_residual_c_available,
+                                diagnostics->mean_abs_residual_c,
+                                "");
+  PrintCalibrationFitValueOrNa_(
+    "rmse_c", diagnostics->rmse_c_available, diagnostics->rmse_c, "");
+  PrintCalibrationFitValueOrNa_("residual_stddev_c",
+                                diagnostics->residual_stddev_c_available,
+                                diagnostics->residual_stddev_c,
+                                "");
+  PrintCalibrationFitValueOrNa_("max_abs_residual_c",
+                                diagnostics->max_abs_residual_c_available,
+                                diagnostics->max_abs_residual_c,
+                                "");
+  PrintCalibrationFitValueOrNa_(
+    "sse_c", diagnostics->sse_c_available, diagnostics->sse_c, "");
+  if (diagnostics->r_squared_available && diagnostics->r_squared_is_meaningful) {
+    PrintCalibrationFitValueOrNa_(
+      "r_squared", true, diagnostics->r_squared, "");
+  } else {
+    printf("    r_squared: n/a\n");
+  }
+  if (diagnostics->adjusted_r_squared_available &&
+      diagnostics->r_squared_is_meaningful) {
+    PrintCalibrationFitValueOrNa_(
+      "adjusted_r_squared", true, diagnostics->adjusted_r_squared, "");
+  } else {
+    printf("    adjusted_r_squared: n/a\n");
+  }
+  PrintCalibrationFitValueOrNa_(
+    "max_abs_correction_fit_domain",
+    diagnostics->max_abs_correction_fit_domain_available,
+    diagnostics->max_abs_correction_fit_domain,
+    "");
+}
+
+static void
+PrintCalibrationModelFitTable_(const calibration_fit_report_t* fit_report)
+{
+  if (fit_report == NULL) {
+    return;
+  }
+  printf("    fit_table:\n");
+  printf("      idx  target_C   target_ohm  raw_C      raw_ohm    fit_C      fit_ohm    model_fit_res_C  model_fit_res_ohm  fit_domain_correction\n");
+  for (size_t i = 0; i < fit_report->point_results_count; ++i) {
+    const calibration_fit_point_result_t* row = &fit_report->point_results[i];
+    printf("      %-4u %-10.6f ", (unsigned)row->point_index, row->target_temp_c_available ? row->target_temp_c : NAN);
+    if (row->target_res_ohm_available) {
+      printf("%-11.6f ", row->target_res_ohm);
+    } else {
+      printf("%-11s ", "n/a");
+    }
+    if (row->captured_raw_temp_c_available) {
+      printf("%-10.6f ", row->captured_raw_temp_c);
+    } else {
+      printf("%-10s ", "n/a");
+    }
+    if (row->captured_raw_res_ohm_available) {
+      printf("%-10.6f ", row->captured_raw_res_ohm);
+    } else {
+      printf("%-10s ", "n/a");
+    }
+    if (row->fitted_temp_c_available) {
+      printf("%-10.6f ", row->fitted_temp_c);
+    } else {
+      printf("%-10s ", "n/a");
+    }
+    if (row->fitted_res_ohm_available) {
+      printf("%-10.6f ", row->fitted_res_ohm);
+    } else {
+      printf("%-10s ", "n/a");
+    }
+    if (row->temp_residual_c_available) {
+      printf("%-16.6f ", row->temp_residual_c);
+    } else {
+      printf("%-16s ", "n/a");
+    }
+    if (row->res_residual_ohm_available) {
+      printf("%-18.6f ", row->res_residual_ohm);
+    } else {
+      printf("%-18s ", "n/a");
+    }
+    if (row->correction_fit_domain_available) {
+      printf("%.6f\n", row->correction_fit_domain);
+    } else {
+      printf("n/a\n");
+    }
+  }
+}
+
+static void
+PrintCalibrationModelFitReport_(const app_settings_t* settings)
+{
+  if (settings == NULL || g_runtime == NULL || g_runtime->sensor == NULL) {
+    printf("Calibration Model Fit Report:\n");
+    printf("  unavailable: runtime context missing\n");
+    return;
+  }
+  if (settings->calibration_points_count == 0u) {
+    printf("Calibration Model Fit Report:\n");
+    printf("  no points\n");
+    return;
+  }
+  calibration_fit_report_t report;
+  esp_err_t report_result = CalibrationBuildFitReport(
+    settings->calibration_points,
+    settings->calibration_points_count,
+    settings->calibration_domain,
+    &settings->calibration,
+    g_runtime->sensor->rtd_nominal_ohm,
+    ConsoleResistanceToTemperatureFitCallback_,
+    g_runtime->sensor,
+    &report);
+  printf("Calibration Model Fit Report:\n");
+  if (report_result != ESP_OK) {
+    printf("  unavailable: fit report failed (%s)\n", esp_err_to_name(report_result));
+    return;
+  }
+  PrintCalibrationEquationBlock_(&settings->calibration);
+  PrintCalibrationFitDiagnosticsBlock_(&report.summary);
+  PrintCalibrationModelFitTable_(&report);
+}
+
 static void
 PrintCalibrationStatusUnified(const app_settings_t* settings,
                               const runtime_state_t* state)
@@ -9739,6 +9949,7 @@ PrintCalibrationStatusUnified(const app_settings_t* settings,
         point, &summary, (uint32_t)(index + 1), point_is_resistance_domain);
     }
   }
+  PrintCalibrationModelFitReport_(settings);
 
   char base_last[32];
   char override_last[32];
@@ -10607,6 +10818,8 @@ static const console_help_topic_t kCalTopics[] = {
       "  - Mixed temp-only and resistance points are rejected.\n"
       "Runtime path when resistance-domain calibration is active:\n"
       "  raw measured ohms -> corrected ohms -> corrected temperature.\n"
+      "After fitting, cal apply prints an audit-oriented model-fit diagnostics "
+      "suite (domain-aware metrics with n/a where not meaningful).\n"
       "Operator note: cal apply warns when calibration method text is unset; "
       "set it with 'cal set method \"...\"' for traceable records.",
     .options =
@@ -10628,8 +10841,10 @@ static const console_help_topic_t kCalTopics[] = {
                "explicitly identifies piecewise interpolation mode, emits the "
                "stored calibration steam-reference METAR block, reports "
                "per-point ideal reference resistance + residuals (C and ohms), "
-               "and includes copy/paste-friendly report blocks for both "
-               "steam-reference and calibration points.",
+               "includes copy/paste-friendly report blocks for both "
+               "steam-reference and calibration points, and adds a separate "
+               "Calibration Model Fit Report block with full model-fit "
+               "diagnostics + per-point fit table.",
     .options = NULL,
     .examples = "  cal status",
   },
