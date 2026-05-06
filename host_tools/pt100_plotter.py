@@ -2354,7 +2354,7 @@ class PlotterApp:
         self.highlight_lower_limit = tk.StringVar(value="")
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
-        self.pdf_sensor_fault_threshold_text.set("0.10")
+        self.pdf_sensor_fault_threshold_text = tk.StringVar(value="0.10")
 
         self._build_ui()
 
@@ -2722,7 +2722,7 @@ class PlotterApp:
         self._refresh_status_flags_view(self.loaded.dataframe if self.loaded else None)
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
-        self.pdf_sensor_fault_threshold_text.set("0.10")
+        self.pdf_sensor_fault_threshold_text = tk.StringVar(value="0.10")
         self._ensure_valid_y_choice()
         self._has_manual_time_range = False
         self._autofill_time_range(force=True)
