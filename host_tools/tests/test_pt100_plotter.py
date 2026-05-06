@@ -396,3 +396,46 @@ def test_plot_export_paths_do_not_require_legacy_direct_vars():
         assert not hasattr(app, "pdf_path_var")
     finally:
         root.destroy()
+
+def test_sensor_fault_threshold_summary_below_and_included():
+    rows = [p.FlagSummaryRow("SENSOR_FAULT", "Sensor fault", 1, 0.05, "", True, True)]
+    app = type("A", (), {})()
+    msg = p.PlotterApp._status_summary_for_rows(app, rows, threshold_percent=0.10)
+    assert "Below threshold 0.10%" in msg
+    rows2 = [p.FlagSummaryRow("SENSOR_FAULT", "Sensor fault", 1, 0.10, "", True, True)]
+    msg2 = p.PlotterApp._status_summary_for_rows(app, rows2, threshold_percent=0.10)
+    assert "Included in PDF at/above threshold 0.10%" in msg2
+
+
+def test_status_summary_no_nonzero_flags_message():
+    rows = [p.FlagSummaryRow("SENSOR_FAULT", "Sensor fault", 0, 0.0, "", True, True)]
+    app = type("A", (), {})()
+    msg = p.PlotterApp._status_summary_for_rows(app, rows, threshold_percent=0.10)
+    assert msg == "Status: No nonzero status flags in selected range."
+
+
+def test_invalid_range_blocks_plot_and_export_pdf_buttons():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        cfg = p.create_default_report_config()
+        cfg.display_timezone = "UTC"
+        cfg.y_axis_series = "cal_temp_c"
+        app.report_config_loaded = True
+        app._apply_report_config_to_ui(cfg)
+        app.loaded = SimpleNamespace(
+            dataframe=pd.DataFrame({"__time": pd.to_datetime(["2026-01-01T00:00:00Z"]), "flags": [0x0003], "cal_temp_c": [1.0]}),
+            tzinfo=datetime.timezone.utc,
+        )
+        app._get_trimmed_df = lambda _cfg: (_ for _ in ()).throw(ValueError("End time is earlier than start time."))
+        app._refresh_status_from_current_range()
+        assert "Range is invalid" in app.status_summary_label.cget("text")
+        assert str(app.plot_btn["state"]) == tk.DISABLED
+        assert str(app.pdf_btn["state"]) == tk.DISABLED
+    finally:
+        root.destroy()
