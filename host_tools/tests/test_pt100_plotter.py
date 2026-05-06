@@ -112,3 +112,19 @@ def test_parse_nonnegative_float_rejects_negative_and_nonnumeric():
         p._parse_nonnegative_float("-0.1", "field", 0.10)
     with pytest.raises(ValueError):
         p._parse_nonnegative_float("abc", "field", 0.10)
+
+
+def test_plotter_app_initializes_pdf_sensor_fault_threshold_text():
+    tk = pytest.importorskip("tkinter")
+    root = None
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        assert hasattr(app, "pdf_sensor_fault_threshold_text")
+        assert app.pdf_sensor_fault_threshold_text.get() == "0.10"
+    finally:
+        root.destroy()
