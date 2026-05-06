@@ -127,6 +127,7 @@ _FALLBACK_FLAG_DEFS: List[Tuple[int, str]] = [
 ]
 
 _DEFAULT_ROLLING_MEAN_DIVISOR = 40
+REPORT_CONFIG_VERSION = 1
 
 
 @dataclass
@@ -192,7 +193,10 @@ def validate_report_config(config: ReportConfig) -> None:
         try:
             ZoneInfo(config.display_timezone)
         except Exception as exc:
-            raise ValueError(f"display_timezone is not resolvable: {config.display_timezone}") from exc
+            raise ValueError(
+                f"Invalid timezone '{config.display_timezone}' for display_timezone. "
+                "Check Edit Options and enter a valid IANA timezone (for example: America/Chicago) or use UTC/Local."
+            ) from exc
     if not isinstance(config.y_axis_series, str) or not config.y_axis_series.strip():
         raise ValueError("y_axis_series must be a non-empty string")
     if int(config.rolling_mean_divisor) < 1:
@@ -202,26 +206,55 @@ def validate_report_config(config: ReportConfig) -> None:
     if int(config.pdf_plot_dpi) < 72:
         raise ValueError("pdf_plot_dpi must be >= 72")
     if float(config.pdf_sensor_fault_threshold_percent) < 0:
-        raise ValueError("pdf_sensor_fault_threshold_percent must be non-negative")
+        raise ValueError(
+            "Invalid threshold value for pdf_sensor_fault_threshold_percent. Check that it is a non-negative number."
+        )
     if (not config.highlight_above_enabled) and (config.highlight_above_value is not None):
-        raise ValueError("highlight_above_value must be null when highlight_above_enabled is false")
+        raise ValueError("Invalid highlight limit: highlight_above_value must be blank when highlight_above_enabled is false.")
     if (not config.highlight_below_enabled) and (config.highlight_below_value is not None):
-        raise ValueError("highlight_below_value must be null when highlight_below_enabled is false")
+        raise ValueError("Invalid highlight limit: highlight_below_value must be blank when highlight_below_enabled is false.")
 
 
 def save_report_config(config: ReportConfig, path: str) -> None:
     validate_report_config(config)
+    payload = asdict(config)
+    payload["config_version"] = REPORT_CONFIG_VERSION
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(asdict(config), f, indent=2)
+        json.dump(payload, f, indent=2)
 
 
 def load_report_config(path: str) -> ReportConfig:
-    with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+    if not os.path.exists(path):
+        raise ValueError(
+            f"Missing config file: {path}. Check that the file exists and that you selected the correct configuration."
+        )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON in config file '{path}'. Check for missing commas, quotes, or braces and try again."
+        ) from exc
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid report config format. Check that the config file contains a JSON object.")
+    if "config_version" not in raw:
+        raise ValueError(
+            "Missing required config field 'config_version'. "
+            "Check whether this config is from an older release and migrate it before loading."
+        )
+    config_version = raw.get("config_version")
+    if config_version != REPORT_CONFIG_VERSION:
+        raise ValueError(
+            f"Unsupported config_version '{config_version}'. "
+            f"This tool supports config_version {REPORT_CONFIG_VERSION}. Check that you selected a compatible config file."
+        )
+    raw = {k: v for k, v in raw.items() if k != "config_version"}
     try:
         config = ReportConfig(**raw)
     except TypeError as exc:
-        raise ValueError(f"Invalid report config schema: {exc}") from exc
+        raise ValueError(
+            f"Missing required config field(s): {exc}. Check that all required settings are present in the config."
+        ) from exc
     validate_report_config(config)
     return config
 
@@ -234,7 +267,10 @@ def build_plot_options_from_config(
 ) -> PlotOptions:
     validate_report_config(config)
     if config.y_axis_series not in trimmed_dataframe.columns:
-        raise ValueError(f"Configured y_axis_series not found in loaded data: {config.y_axis_series}")
+        raise ValueError(
+            f"Configured y-axis series {config.y_axis_series} is not present in the selected log files. "
+            "Open Edit Options and choose a series that exists in the loaded logs."
+        )
 
     stats = StatsOptions(
         show_min=config.show_minimum,
@@ -2714,10 +2750,15 @@ class PlotterApp:
         if not path:
             return
         cfg = create_default_report_config()
-        save_report_config(cfg, path)
+        try:
+            save_report_config(cfg, path)
+            loaded_cfg = load_report_config(path)
+        except Exception as exc:
+            messagebox.showerror("Config Error", f"Failed to create config file at '{path}'. Check file permissions and settings.\n\n{exc}")
+            return
         self.config_path = path
         self.report_config_loaded = True
-        self._apply_report_config_to_ui(load_report_config(path))
+        self._apply_report_config_to_ui(loaded_cfg)
         self._set_actions_enabled(True)
 
     def load_config(self) -> None:
@@ -2726,7 +2767,11 @@ class PlotterApp:
         path = filedialog.askopenfilename(title="Load report config", filetypes=[("JSON", "*.json"), ("All Files", "*.*")])
         if not path:
             return
-        cfg = load_report_config(path)
+        try:
+            cfg = load_report_config(path)
+        except Exception as exc:
+            messagebox.showerror("Config Error", f"Failed to load config file '{path}'.\n\n{exc}")
+            return
         self.config_path = path
         self.report_config_loaded = True
         self._apply_report_config_to_ui(cfg)
@@ -2735,8 +2780,12 @@ class PlotterApp:
     def save_config(self) -> None:
         if not self.config_path:
             return
-        cfg = self._build_report_config_from_ui()
-        save_report_config(cfg, self.config_path)
+        try:
+            cfg = self._build_report_config_from_ui()
+            save_report_config(cfg, self.config_path)
+        except Exception as exc:
+            messagebox.showerror("Config Error", f"Failed to save config file '{self.config_path}'. Check the highlighted settings and file permissions.\n\n{exc}")
+            return
         self.report_config = cfg
         self._config_dirty = False
 
@@ -3367,7 +3416,7 @@ class PlotterApp:
         try:
             trimmed.to_csv(save_path, index=False)
         except Exception as exc:
-            messagebox.showerror("Save Error", str(exc))
+            messagebox.showerror("CSV Save Error", f"Failed to save CSV file '{save_path}'. Check file permissions and available disk space.\n\n{exc}")
             return
 
         messagebox.showinfo("Saved", f"Saved trimmed CSV:\n{save_path}\n\n{summary}")
@@ -3513,7 +3562,7 @@ class PlotterApp:
             options.smooth = smooth
             options.overlay_raw_temp = overlay_raw
         except Exception as exc:
-            messagebox.showerror("PDF Error", str(exc))
+            messagebox.showerror("PDF Export Error", f"Failed to export PDF report to '{save_path}'. Check file permissions, disk space, and PDF settings.\n\n{exc}")
             return
 
         fig, plot_points, total_points = _build_figure(

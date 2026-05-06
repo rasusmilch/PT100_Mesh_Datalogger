@@ -161,12 +161,41 @@ def test_report_config_round_trip(tmp_path):
     p.save_report_config(cfg, str(path))
     loaded = p.load_report_config(str(path))
     assert loaded == cfg
+    assert '"config_version": 1' in path.read_text(encoding="utf-8")
 
 
 def test_report_config_missing_required_fields_rejected(tmp_path):
     path = tmp_path / "bad.json"
-    path.write_text('{"input_timezone_mode": "UTC"}', encoding='utf-8')
-    with pytest.raises(ValueError, match='Invalid report config schema'):
+    path.write_text('{"config_version": 1, "input_timezone_mode": "UTC"}', encoding='utf-8')
+    with pytest.raises(ValueError, match='Missing required config field'):
+        p.load_report_config(str(path))
+
+
+def test_report_config_missing_config_version_rejected(tmp_path):
+    path = tmp_path / "missing_version.json"
+    cfg = p.create_default_report_config()
+    raw = cfg.__dict__.copy()
+    import json
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="config_version"):
+        p.load_report_config(str(path))
+
+
+def test_report_config_future_config_version_rejected(tmp_path):
+    path = tmp_path / "future_version.json"
+    cfg = p.create_default_report_config()
+    raw = cfg.__dict__.copy()
+    raw["config_version"] = 999
+    import json
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="Unsupported config_version"):
+        p.load_report_config(str(path))
+
+
+def test_report_config_invalid_json_produces_controlled_error(tmp_path):
+    path = tmp_path / "invalid.json"
+    path.write_text('{"config_version": 1,', encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid JSON"):
         p.load_report_config(str(path))
 
 
@@ -174,6 +203,7 @@ def test_report_config_invalid_timezone_mode_rejected(tmp_path):
     path = tmp_path / "bad_mode.json"
     cfg = p.create_default_report_config()
     raw = cfg.__dict__.copy()
+    raw["config_version"] = p.REPORT_CONFIG_VERSION
     raw["input_timezone_mode"] = "Mars"
     import json
     path.write_text(json.dumps(raw), encoding='utf-8')
@@ -282,15 +312,25 @@ def test_build_plot_options_missing_series_raises_clear_error():
     cfg = p.create_default_report_config()
     cfg.y_axis_series = "raw_temp_c"
     df = pd.DataFrame({"cal_temp_c": [1.0]})
-    with pytest.raises(ValueError, match="Configured y_axis_series not found"):
+    with pytest.raises(ValueError, match="raw_temp_c"):
         p.build_plot_options_from_config(cfg, _mk_loaded_log(df), df, p.DisplayTimeConfig(None, "n/a"))
 
 
 def test_build_plot_options_invalid_display_timezone_blocks():
     cfg = p.create_default_report_config()
     cfg.display_timezone = "Bad/Timezone"
-    with pytest.raises(ValueError, match="display_timezone"):
+    with pytest.raises(ValueError, match="Bad/Timezone"):
         p.validate_report_config(cfg)
+
+
+def test_operator_validation_messages_do_not_expose_tracebacks():
+    cfg = p.create_default_report_config()
+    cfg.display_timezone = "Bad/Timezone"
+    with pytest.raises(ValueError) as exc:
+        p.validate_report_config(cfg)
+    msg = str(exc.value)
+    assert "Traceback" not in msg
+    assert "File \"" not in msg
 
 
 def test_validate_report_config_invalid_input_timezone_mode_blocks():
