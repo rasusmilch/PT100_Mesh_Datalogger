@@ -146,3 +146,62 @@ def test_plotter_app_initializes_pdf_sensor_fault_threshold_text():
         assert len(app.status_flags_tree.get_children()) >= 1
     finally:
         root.destroy()
+
+
+def test_create_default_report_config_values():
+    cfg = p.create_default_report_config()
+    assert cfg.input_timezone_mode == "Log/source time"
+    assert cfg.y_axis_series == "cal_temp_c"
+    assert cfg.pdf_sensor_fault_threshold_percent == pytest.approx(0.10)
+
+
+def test_report_config_round_trip(tmp_path):
+    path = tmp_path / "report_config.json"
+    cfg = p.create_default_report_config()
+    p.save_report_config(cfg, str(path))
+    loaded = p.load_report_config(str(path))
+    assert loaded == cfg
+
+
+def test_report_config_missing_required_fields_rejected(tmp_path):
+    path = tmp_path / "bad.json"
+    path.write_text('{"input_timezone_mode": "UTC"}', encoding='utf-8')
+    with pytest.raises(ValueError, match='Invalid report config schema'):
+        p.load_report_config(str(path))
+
+
+def test_report_config_invalid_timezone_mode_rejected(tmp_path):
+    path = tmp_path / "bad_mode.json"
+    cfg = p.create_default_report_config()
+    raw = cfg.__dict__.copy()
+    raw["input_timezone_mode"] = "Mars"
+    import json
+    path.write_text(json.dumps(raw), encoding='utf-8')
+    with pytest.raises(ValueError, match='input_timezone_mode'):
+        p.load_report_config(str(path))
+
+
+def test_report_config_invalid_numeric_values_rejected():
+    cfg = p.create_default_report_config()
+    cfg.max_plot_points = 0
+    with pytest.raises(ValueError, match='max_plot_points'):
+        p.validate_report_config(cfg)
+
+
+def test_startup_gating_helper_state():
+    tk = pytest.importorskip("tkinter")
+    root = None
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        app._set_actions_enabled(False)
+        assert str(app.plot_btn['state']) == tk.DISABLED
+        assert str(app.save_trim_btn['state']) == tk.DISABLED
+        assert str(app.pdf_btn['state']) == tk.DISABLED
+        assert str(app.select_range_btn['state']) == tk.DISABLED
+    finally:
+        root.destroy()
