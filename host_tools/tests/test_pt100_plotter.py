@@ -30,3 +30,37 @@ def test_temp_convert_and_downsample_spike_preservation():
     series = [pd.Series([1, 50, 2, -10, 3, 40, 4])]
     idx = p._downsample_positions_minmax(series, max_plot_points=4)
     assert 1 in idx and 3 in idx
+
+
+def test_fault_status_zero_classified_as_sensor_read_failure():
+    df = pd.DataFrame({"flags": [0x0013], "fault_status": [0x00]})
+    summary = p._format_fault_status_summary(df)
+    assert "Sensor read failure" in summary
+    assert "no MAX31865 fault byte" in summary
+
+
+def test_fault_status_nonzero_decodes_max31865_bits():
+    df = pd.DataFrame({"flags": [0x0013], "fault_status": [0x80]})
+    summary = p._format_fault_status_summary(df)
+    assert "RTD high threshold" in summary
+
+
+def test_fault_status_grouped_counts_mixed_zero_and_nonzero():
+    df = pd.DataFrame({"flags": [0x0013, 0x0013, 0x0013], "fault_status": [0x00, 0x80, 0x80]})
+    summary = p._format_fault_status_summary(df)
+    assert "Sensor read failure / no MAX31865 fault byte recorded: 1 row" in summary
+    assert "0x80: 2 rows" in summary
+
+
+def test_fault_status_detail_excludes_rows_without_sensor_fault_flag():
+    df = pd.DataFrame({"flags": [0x0003, 0x0013], "fault_status": [0x80, 0x80]})
+    summary = p._format_fault_status_summary(df)
+    assert "0x80: 1 row" in summary
+    assert "2 rows" not in summary
+
+
+def test_flags_summary_small_nonzero_percent_uses_two_decimals():
+    flags = [0x0013] * 20 + [0x0003] * (43601 - 20)
+    df = pd.DataFrame({"flags": flags})
+    summary = p._format_flags_summary(df, display_tz=None, time_source="device")
+    assert "Sensor fault: 20/43601 (0.05%)" in summary
