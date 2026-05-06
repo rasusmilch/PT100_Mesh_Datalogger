@@ -205,3 +205,43 @@ def test_startup_gating_helper_state():
         assert str(app.select_range_btn['state']) == tk.DISABLED
     finally:
         root.destroy()
+
+
+def test_options_apply_updates_in_memory_config():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        cfg = p.create_default_report_config()
+        app._apply_report_config_to_ui(cfg)
+        app.rolling_mean_divisor_text.set("22")
+        updated = app._build_report_config_from_ui()
+        assert updated.rolling_mean_divisor == 22
+    finally:
+        root.destroy()
+
+
+def test_save_config_writes_json(tmp_path):
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        cfg = p.create_default_report_config()
+        path = tmp_path / "c.json"
+        p.save_report_config(cfg, str(path))
+        app.config_path = str(path)
+        app._apply_report_config_to_ui(cfg)
+        app.max_plot_points.set(1234)
+        app.save_config()
+        loaded = p.load_report_config(str(path))
+        assert loaded.max_plot_points == 1234
+    finally:
+        root.destroy()
