@@ -1,0 +1,16 @@
+# Development/test dependencies for host_tools Python utilities.
+# Offline Codex environments may not be able to install these directly.
+# Provide a wheel cache or preinstalled environment when network access is unavailable.
+
+# Test tooling
+pytest
+
+# Runtime dependencies used by host_tools scripts
+colorama
+pyserial
+numpy
+pandas
+matplotlib
+reportlab
+python-dateutil
+scipy
