@@ -101,3 +101,4 @@ logs/*
 ~$*
 analysis/*
 !host_tools/requirements-dev.txt
+host_tools/*.json
