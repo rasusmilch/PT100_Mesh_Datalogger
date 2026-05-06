@@ -100,6 +100,20 @@ def test_build_status_flag_rows_includes_informational_and_counts():
     assert sensor_row.percent == pytest.approx(40.0)
 
 
+
+def test_filter_status_flag_rows_nonzero_default():
+    rows = [
+        p.FlagSummaryRow("SENSOR_FAULT", "Sensor fault", 2, 40.0, "bad", True, True),
+        p.FlagSummaryRow("FRAM_FULL", "FRAM full", 0, 0.0, "full", True, True),
+    ]
+    filtered = p._filter_status_flag_rows_for_display(rows)
+    assert [r.short_name for r in filtered] == ["SENSOR_FAULT"]
+
+
+def test_format_percent_for_status_table_small_nonzero():
+    assert p._format_percent_for_status_table(0.05) == "0.05%"
+
+
 def test_parse_nonnegative_float_accepts_and_defaults():
     assert p._parse_nonnegative_float("", "field", 0.10) == pytest.approx(0.10)
     assert p._parse_nonnegative_float("0", "field", 0.10) == pytest.approx(0.0)
@@ -126,5 +140,9 @@ def test_plotter_app_initializes_pdf_sensor_fault_threshold_text():
         app = p.PlotterApp(root)
         assert hasattr(app, "pdf_sensor_fault_threshold_text")
         assert app.pdf_sensor_fault_threshold_text.get() == "0.10"
+        from tkinter import ttk
+        assert isinstance(app.status_flags_tree, ttk.Treeview)
+        app._refresh_status_flags_table(pd.DataFrame({"flags": [0x0013]}))
+        assert len(app.status_flags_tree.get_children()) >= 1
     finally:
         root.destroy()

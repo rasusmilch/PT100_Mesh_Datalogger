@@ -33,7 +33,7 @@ import tempfile
 import zlib
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Sequence
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -1385,6 +1385,31 @@ def _build_status_flag_rows(df: pd.DataFrame) -> List[FlagSummaryRow]:
     return rows
 
 
+
+
+def _format_percent_for_status_table(percent: float) -> str:
+    """Format status percentage text for compact table display."""
+    if percent > 0 and percent < 0.1:
+        return f"{percent:.2f}%"
+    return f"{percent:.2f}%"
+
+
+def _filter_status_flag_rows_for_display(
+    rows: Sequence[FlagSummaryRow],
+    *,
+    show_zero_count: bool = False,
+) -> List[FlagSummaryRow]:
+    """Return rows for UI display, defaulting to nonzero/problem-focused rows."""
+    if show_zero_count:
+        return list(rows)
+    return [row for row in rows if row.count > 0]
+
+
+def _default_status_detail_message(rows: Sequence[FlagSummaryRow]) -> str:
+    if not rows:
+        return "Meaning: No flags detected in current dataset."
+    return f"Meaning: {rows[0].meaning or rows[0].label}"
+
 def _compute_basic_stats(series: pd.Series) -> Dict[str, str]:
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
@@ -2461,14 +2486,9 @@ class PlotterApp:
         row += 1
 
 
-        status_frame = tk.LabelFrame(frm, text="Data Quality / Status Flags", padx=8, pady=6)
-        status_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        tk.Label(status_frame, text="PDF sensor read failure threshold percent:").grid(row=0, column=0, sticky="w")
-        tk.Entry(status_frame, textvariable=self.pdf_sensor_fault_threshold_text, width=10).grid(row=0, column=1, sticky="w")
-        tk.Label(status_frame, text="Only include sensor read failure detail in the PDF if percentage is greater than or equal to this threshold.", justify="left").grid(row=1, column=0, columnspan=2, sticky="w")
-        tk.Label(status_frame, text="Sensor read failures remain visible here even when omitted from the PDF.", justify="left").grid(row=2, column=0, columnspan=2, sticky="w")
-        self.status_flags_text = tk.Text(status_frame, height=8, width=95, state=tk.DISABLED)
-        self.status_flags_text.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self._create_status_flags_section(frm, row)
+        row += 1
+
         row += 1
 
         tk.Label(frm, text="Max plot points:").grid(row=row, column=0, sticky="e", pady=(10, 0))
@@ -2507,16 +2527,57 @@ class PlotterApp:
         )
         self.note_label.grid(row=btn_row + 2, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
-    def _refresh_status_flags_view(self, df: Optional[pd.DataFrame]) -> None:
+    def _create_status_flags_section(self, parent: tk.Widget, row: int) -> None:
+        status_frame = tk.LabelFrame(parent, text="Data Quality / Status Flags", padx=8, pady=6)
+        status_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        status_frame.columnconfigure(0, weight=1)
+
+        threshold_row = tk.Frame(status_frame)
+        threshold_row.grid(row=0, column=0, sticky="w")
+        tk.Label(threshold_row, text="PDF sensor read failure threshold percent:").grid(row=0, column=0, sticky="w")
+        tk.Entry(threshold_row, textvariable=self.pdf_sensor_fault_threshold_text, width=10).grid(row=0, column=1, sticky="w", padx=(6, 0))
+
+        tk.Label(status_frame, text="Only include sensor read failure detail in the PDF if percentage is greater than or equal to this threshold.", justify="left").grid(row=1, column=0, sticky="w")
+        tk.Label(status_frame, text="Sensor read failures remain visible here even when omitted from the PDF.", justify="left").grid(row=2, column=0, sticky="w")
+
+        table_frame = tk.Frame(status_frame)
+        table_frame.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        table_frame.columnconfigure(0, weight=1)
+
+        columns = ("flag", "count", "percent", "meaning")
+        self.status_flags_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=6)
+        self.status_flags_tree.heading("flag", text="Flag", anchor="w")
+        self.status_flags_tree.heading("count", text="Count", anchor="e")
+        self.status_flags_tree.heading("percent", text="Percent", anchor="e")
+        self.status_flags_tree.heading("meaning", text="Meaning", anchor="w")
+        self.status_flags_tree.column("flag", width=130, minwidth=110, stretch=False, anchor="w")
+        self.status_flags_tree.column("count", width=80, minwidth=70, stretch=False, anchor="e")
+        self.status_flags_tree.column("percent", width=90, minwidth=80, stretch=False, anchor="e")
+        self.status_flags_tree.column("meaning", width=360, minwidth=250, stretch=True, anchor="w")
+        self.status_flags_tree.grid(row=0, column=0, sticky="ew")
+
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.status_flags_tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.status_flags_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.show_zero_status_flags = tk.BooleanVar(value=False)
+        tk.Checkbutton(status_frame, text="Show zero-count flags", variable=self.show_zero_status_flags, command=lambda: self._refresh_status_flags_table(self.loaded.dataframe if self.loaded else None)).grid(row=4, column=0, sticky="w", pady=(4, 0))
+
+    def _refresh_status_flags_table(self, df: Optional[pd.DataFrame]) -> None:
         rows = _build_status_flag_rows(df) if df is not None else []
-        lines = ["short_name | label | count | percent | meaning"]
-        for row in rows:
-            lines.append(f"{row.short_name} | {row.label} | {row.count} | {row.percent:.2f}% | {row.meaning}")
-        content = "\n".join(lines if rows else ["(no flag data loaded)"])
-        self.status_flags_text.config(state=tk.NORMAL)
-        self.status_flags_text.delete("1.0", tk.END)
-        self.status_flags_text.insert(tk.END, content)
-        self.status_flags_text.config(state=tk.DISABLED)
+        display_rows = _filter_status_flag_rows_for_display(rows, show_zero_count=self.show_zero_status_flags.get())
+        self.status_flags_tree.delete(*self.status_flags_tree.get_children())
+
+        if not rows:
+            self.status_flags_tree.insert("", tk.END, values=("(no data)", "", "", "No flag data loaded."))
+            return
+
+        if not display_rows:
+            self.status_flags_tree.insert("", tk.END, values=("NONE", 0, "0.00%", "No flags detected in current dataset."))
+            return
+
+        for row in display_rows:
+            self.status_flags_tree.insert("", tk.END, values=(row.short_name, row.count, _format_percent_for_status_table(row.percent), row.meaning or row.label))
 
     def _handle_scenario_change(self, _event: Optional[tk.Event] = None) -> None:
         if self.scenario_choice.get() == "Thermal cycling":
@@ -2719,7 +2780,7 @@ class PlotterApp:
         self.plot_btn.config(state=tk.NORMAL)
         self.save_trim_btn.config(state=tk.NORMAL)
         self.pdf_btn.config(state=tk.NORMAL)
-        self._refresh_status_flags_view(self.loaded.dataframe if self.loaded else None)
+        self._refresh_status_flags_table(self.loaded.dataframe if self.loaded else None)
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
         self.pdf_sensor_fault_threshold_text = tk.StringVar(value="0.10")
