@@ -1326,7 +1326,10 @@ def _format_flags_summary(
         return "n/a"
 
     def _pct(count: int) -> str:
-        return f"{(100.0 * float(count) / float(total)):.1f}%"
+        pct = 100.0 * float(count) / float(total)
+        if count > 0 and pct < 0.1:
+            return f"{pct:.2f}%"
+        return f"{pct:.1f}%"
 
     problem_lines: List[str] = []
 
@@ -1415,8 +1418,10 @@ def _format_fault_status_summary(df: pd.DataFrame) -> str:
     if not bool(fault_rows.any()):
         return "n/a"
 
-    fault_status_numeric = pd.to_numeric(df.loc[fault_rows, "fault_status"], errors="coerce").fillna(0).astype("int64")
-    nonzero = fault_status_numeric[fault_status_numeric != 0]
+    fault_status_raw = pd.to_numeric(df.loc[fault_rows, "fault_status"], errors="coerce")
+    parsed_mask = fault_status_raw.notna()
+    fault_status_numeric = fault_status_raw.fillna(0).astype("int64")
+    nonzero = fault_status_numeric[parsed_mask & (fault_status_numeric != 0)]
 
     lines: List[str] = []
     if not nonzero.empty:
@@ -1427,10 +1432,18 @@ def _format_fault_status_summary(df: pd.DataFrame) -> str:
             row_word = "row" if int(count) == 1 else "rows"
             lines.append(f"0x{code_int:02X}: {int(count)} {row_word} ({label})")
 
-    unknown_count = int((fault_status_numeric == 0).sum())
-    if unknown_count > 0:
-        row_word = "row" if unknown_count == 1 else "rows"
-        lines.append(f"unknown/unavailable fault_status: {unknown_count} {row_word}")
+    no_fault_byte_count = int((parsed_mask & (fault_status_numeric == 0)).sum())
+    if no_fault_byte_count > 0:
+        row_word = "row" if no_fault_byte_count == 1 else "rows"
+        lines.append(
+            "Sensor read failure / no MAX31865 fault byte recorded: "
+            f"{no_fault_byte_count} {row_word}"
+        )
+
+    unparseable_count = int((~parsed_mask).sum())
+    if unparseable_count > 0:
+        row_word = "row" if unparseable_count == 1 else "rows"
+        lines.append(f"Unparseable fault_status: {unparseable_count} {row_word}")
 
     return "\n".join(lines) if lines else "n/a"
 
