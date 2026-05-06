@@ -926,6 +926,33 @@ def _format_span_label(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> str:
     return " ".join(parts)
 
 
+def _format_time_range_for_display(
+    start_utc: pd.Timestamp,
+    end_utc: pd.Timestamp,
+    display_tz: Optional[datetime.tzinfo],
+) -> Tuple[str, str, str]:
+    """Return display start/end labels plus timezone name for plot/report headings."""
+    start_ts = pd.Timestamp(start_utc)
+    end_ts = pd.Timestamp(end_utc)
+    timezone_label = "UTC"
+
+    if display_tz is not None:
+        start_ts = start_ts.tz_convert(display_tz)
+        end_ts = end_ts.tz_convert(display_tz)
+        timezone_label = start_ts.tzname() or "Local"
+
+    return (
+        start_ts.strftime("%Y-%m-%d %H:%M"),
+        end_ts.strftime("%Y-%m-%d %H:%M"),
+        timezone_label,
+    )
+
+
+def _build_report_subtitle(node_label: str, start_label: str, end_label: str, timezone_label: str) -> str:
+    """Build a concise two-line report/plot subtitle."""
+    return f"Nodes: {node_label}\nTime range: {start_label} \u2192 {end_label} {timezone_label}"
+
+
 def _format_performed_utc_to_local_date(utc_text: str, display_tz: Optional[datetime.tzinfo]) -> str:
     """Convert a performed UTC timestamp string into a local YYYY-MM-DD date string."""
     if utc_text in ("", "n/a", "<unset>"):
@@ -1739,7 +1766,7 @@ def _build_figure(
     ax.set_title(plot_title)
 
     if suptitle:
-        fig.suptitle(suptitle, fontsize=10)
+        fig.suptitle(suptitle, fontsize=9)
 
     if time_column == "__time" and options.display_time_config.display_tz_label not in ("", "n/a"):
         ax.set_xlabel(f"{_human_time_label(time_column)} ({options.display_time_config.display_tz_label})")
@@ -1899,7 +1926,7 @@ def _build_figure(
 
     # Tight layout; reserve space if we used a suptitle.
     if suptitle:
-        fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
+        fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.90])
     else:
         fig.tight_layout()
 
@@ -2834,10 +2861,15 @@ class PlotterApp:
             smooth = False
 
         nodes = _node_ids_from_df(df)
-        range_label = f"selected {selected_label} | plotted {start_label} → {end_label} | Display: {display_config.display_tz_label}"
-
+        utc_times = pd.to_datetime(df[self.loaded.time_column], utc=True, errors="coerce")
+        display_start, display_end, timezone_label = _format_time_range_for_display(
+            utc_times.min(),
+            utc_times.max(),
+            display_config.display_tz,
+        )
         plot_title = _human_series_label(y_name_effective, temp_unit="F" if self.temp_f.get() else "C")
-        suptitle = f"Nodes: {nodes} — {range_label}" if nodes != "n/a" else range_label
+        node_label = nodes if nodes != "n/a" else "n/a"
+        suptitle = _build_report_subtitle(node_label, display_start, display_end, timezone_label)
 
         try:
             options = self._collect_plot_options(display_config, smooth=smooth, overlay_raw=overlay_raw)
@@ -2919,8 +2951,14 @@ class PlotterApp:
 
         nodes = _node_ids_from_df(df)
         title = "PT100 Temperature Log Report"
-        range_label = f"{start_label} → {end_label}"
-        subtitle = f"Nodes: {nodes} — selected {selected_label} | plotted {range_label}"
+        utc_times = pd.to_datetime(df[self.loaded.time_column], utc=True, errors="coerce")
+        display_start, display_end, timezone_label = _format_time_range_for_display(
+            utc_times.min(),
+            utc_times.max(),
+            display_config.display_tz,
+        )
+        node_label = nodes if nodes != "n/a" else "n/a"
+        subtitle = _build_report_subtitle(node_label, display_start, display_end, timezone_label)
 
         temp_unit = "F" if self.temp_f.get() else "C"
         plot_title = _human_series_label(y_name_effective, temp_unit=temp_unit)
@@ -2959,9 +2997,9 @@ class PlotterApp:
             start_ts = pd.to_datetime(display_series).min()
             end_ts = pd.to_datetime(display_series).max()
             span_str = _format_span_label(start_ts, end_ts)
-            data_range_value = f"{start_label} → {end_label} (span {span_str})"
+            data_range_value = f"{display_start} → {display_end} (span {span_str})"
         else:
-            data_range_value = f"{start_label} → {end_label} ({len(df):,} rows)"
+            data_range_value = f"{display_start} → {display_end} ({len(df):,} rows)"
         cal_points = _segment_header_value(self.loaded.audit_summary.segments, "cal_points_count")
         cal_last_utc = _segment_header_value(self.loaded.audit_summary.segments, "cal_last_utc")
         cal_due_utc = _segment_header_value(self.loaded.audit_summary.segments, "cal_due_utc")
