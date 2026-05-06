@@ -2803,7 +2803,7 @@ class PlotterApp:
         _, input_mode_label = _resolve_input_timezone(
             self.input_tz_mode_choice.get(),
             display_tz,
-            self.loaded.source_tz,
+            self.loaded.tzinfo,
         )
         tk.Label(
             label_frame,
@@ -2860,7 +2860,7 @@ class PlotterApp:
                 selected_end_utc=nearest_end_utc,
                 input_timezone_mode=self.input_tz_mode_choice.get(),
                 display_tz=display_tz,
-                source_tz=self.loaded.source_tz,
+                source_tz=self.loaded.tzinfo,
             )
             selector_window.destroy()
 

@@ -198,3 +198,9 @@ def test_open_range_selector_callback_defines_setter_before_registration():
     change_idx = source.find("def _on_slider_change")
     register_idx = source.find("slider.on_changed(_on_slider_change)")
     assert 0 <= set_idx < change_idx < register_idx
+
+def test_open_range_selector_uses_loaded_tzinfo_not_source_tz_attribute():
+    source = inspect.getsource(plotter.PlotterApp.open_range_selector)
+    assert "self.loaded.tzinfo" in source
+    assert "self.loaded.source_tz" not in source
+
