@@ -2528,72 +2528,61 @@ class PlotterApp:
         self.root.after(0, self._show_startup_dialog)
 
     def _build_ui(self) -> None:
-        frm = tk.Frame(self.root, padx=12, pady=12)
+        self.root.geometry("980x700")
+        frm = tk.Frame(self.root, padx=10, pady=10)
         frm.pack(fill="both", expand=True)
+        frm.columnconfigure(0, weight=1)
 
-        tk.Label(frm, text="PT100 log file(s):").grid(row=0, column=0, sticky="w")
-        self.file_label = tk.Label(frm, text="(none selected)", anchor="w", justify="left")
-        self.file_label.grid(row=0, column=1, sticky="w")
-
-        tk.Button(frm, text="Select Log Files", command=self.select_files).grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
-        )
-        tk.Button(frm, text="Select Folder (all *.ptlog/*.csv)", command=self.select_folder).grid(
-            row=1, column=1, sticky="w", pady=(6, 0)
-        )
-
-        row = 2
-        tk.Label(frm, text='Start time (YYYY-MM-DD HH:MM):').grid(row=row, column=0, sticky="w", pady=(12, 0))
-        self.start_time_entry = tk.Entry(frm, textvariable=self.start_time_text, width=26)
-        self.start_time_entry.grid(row=row, column=1, sticky="w", pady=(12, 0))
-        row += 1
-
-        tk.Label(frm, text='End time (YYYY-MM-DD HH:MM):').grid(row=row, column=0, sticky="w", pady=(6, 0))
-        self.end_time_entry = tk.Entry(frm, textvariable=self.end_time_text, width=26)
-        self.end_time_entry.grid(row=row, column=1, sticky="w", pady=(6, 0))
-        row += 1
-
-        self.select_range_btn = tk.Button(frm, text="Select range…", command=self.open_range_selector, state=tk.DISABLED)
-        self.select_range_btn.grid(row=row, column=1, sticky="w", pady=(4, 0))
-        row += 1
-
-        self.config_summary_label = tk.Label(frm, text="Config: (none loaded)", justify="left", anchor="w")
-        self.config_summary_label.grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        row += 1
-
-
-        self._create_status_flags_section(frm, row)
-        row += 1
-
-        row += 1
-
-        btn_row = row
-
-        self.plot_btn = tk.Button(frm, text="Plot", command=self.plot, state=tk.DISABLED)
-        self.plot_btn.grid(row=btn_row, column=0, sticky="w", pady=(15, 0))
-
-        self.save_trim_btn = tk.Button(frm, text="Save Trimmed CSV", command=self.save_trimmed_csv, state=tk.DISABLED)
-        self.save_trim_btn.grid(row=btn_row, column=1, sticky="w", pady=(15, 0))
-
-        self.pdf_btn = tk.Button(frm, text="Export PDF Report", command=self.export_pdf, state=tk.DISABLED)
-        self.pdf_btn.grid(row=btn_row + 1, column=0, sticky="w", pady=(8, 0))
-        tk.Button(frm, text="Load Config", command=self.load_config).grid(row=btn_row + 1, column=1, sticky="w", pady=(8, 0))
-        tk.Button(frm, text="Save Config", command=self.save_config).grid(row=btn_row + 2, column=0, sticky="w", pady=(8, 0))
-        tk.Button(frm, text="Edit Options", command=self.edit_options).grid(row=btn_row + 2, column=1, sticky="w", pady=(8, 0))
-
-        self.note_label = tk.Label(
-            frm,
-            text="Notes:\n"
-                 "• Trimming matches minute buckets present in the log.\n"
-                 "• Start/end filtering uses the selected input time zone.\n"
-                 "• Display time zone only changes axis labels unless 'Same as display' is selected.\n"
-                 "• X-axis labels are formatted without seconds.\n"
-                 "• Multi-day plots: select multiple daily CSV files, or select a folder.\n"
-                 "• Rows without usable timestamps are dropped (unless record_id fallback is used).",
+        config_frame = tk.LabelFrame(frm, text="1) Config", padx=8, pady=6)
+        config_frame.grid(row=0, column=0, sticky="ew")
+        config_frame.columnconfigure(1, weight=1)
+        tk.Label(config_frame, text="Config file:").grid(row=0, column=0, sticky="w")
+        self.config_summary_label = tk.Label(config_frame, text="(none loaded)", anchor="w", justify="left")
+        self.config_summary_label.grid(row=0, column=1, sticky="ew")
+        btns = tk.Frame(config_frame)
+        btns.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        tk.Button(btns, text="Load Config", command=self.load_config).pack(side="left")
+        tk.Button(btns, text="New Config", command=self._create_new_config).pack(side="left", padx=(6, 0))
+        tk.Button(btns, text="Edit Options", command=self.edit_options).pack(side="left", padx=(6, 0))
+        tk.Button(btns, text="Save Config", command=self.save_config).pack(side="left", padx=(6, 0))
+        self.config_details_label = tk.Label(
+            config_frame,
+            text="Input time zone: n/a\nDisplay time zone: n/a\nY-axis series: n/a",
             justify="left",
+            anchor="w",
         )
-        self.note_label.grid(row=btn_row + 3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        self.config_details_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
+        log_frame = tk.LabelFrame(frm, text="2) Log files", padx=8, pady=6)
+        log_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        log_frame.columnconfigure(1, weight=1)
+        tk.Label(log_frame, text="Selected:").grid(row=0, column=0, sticky="nw")
+        self.file_label = tk.Label(log_frame, text="(none selected)", anchor="w", justify="left")
+        self.file_label.grid(row=0, column=1, sticky="ew")
+        tk.Button(log_frame, text="Select Log Files", command=self.select_files).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        tk.Button(log_frame, text="Select Folder", command=self.select_folder).grid(row=1, column=1, sticky="w", pady=(6, 0))
+
+        range_frame = tk.LabelFrame(frm, text="3) Range", padx=8, pady=6)
+        range_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        tk.Label(range_frame, text='Start time (YYYY-MM-DD HH:MM):').grid(row=0, column=0, sticky="w")
+        self.start_time_entry = tk.Entry(range_frame, textvariable=self.start_time_text, width=22)
+        self.start_time_entry.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        tk.Label(range_frame, text='End time (YYYY-MM-DD HH:MM):').grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.end_time_entry = tk.Entry(range_frame, textvariable=self.end_time_text, width=22)
+        self.end_time_entry.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        self.select_range_btn = tk.Button(range_frame, text="Select range…", command=self.open_range_selector, state=tk.DISABLED)
+        self.select_range_btn.grid(row=0, column=2, rowspan=2, sticky="w", padx=(10, 0))
+
+        self._create_status_flags_section(frm, 3)
+
+        action_frame = tk.LabelFrame(frm, text="5) Actions", padx=8, pady=6)
+        action_frame.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.plot_btn = tk.Button(action_frame, text="Plot", command=self.plot, state=tk.DISABLED)
+        self.plot_btn.pack(side="left")
+        self.save_trim_btn = tk.Button(action_frame, text="Save Trimmed CSV", command=self.save_trimmed_csv, state=tk.DISABLED)
+        self.save_trim_btn.pack(side="left", padx=(6, 0))
+        self.pdf_btn = tk.Button(action_frame, text="Export PDF Report", command=self.export_pdf, state=tk.DISABLED)
+        self.pdf_btn.pack(side="left", padx=(6, 0))
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -2601,8 +2590,13 @@ class PlotterApp:
             btn.config(state=state)
     def _update_config_summary(self) -> None:
         name = os.path.basename(self.config_path) if self.config_path else "(none)"
-        self.config_summary_label.config(
-            text=f"Config: {name}\nSeries: {self.y_choice.get()}\nInput TZ: {self.input_tz_mode_choice.get()}\nDisplay TZ: {self.display_tz_choice.get()}"
+        self.config_summary_label.config(text=name)
+        self.config_details_label.config(
+            text=(
+                f"Input time zone: {self.input_tz_mode_choice.get()}\n"
+                f"Display time zone: {self.display_tz_choice.get()}\n"
+                f"Y-axis series: {self.y_choice.get()}"
+            )
         )
 
     def _apply_report_config_to_ui(self, config: ReportConfig) -> None:
@@ -2706,6 +2700,17 @@ class PlotterApp:
             pdf_sensor_fault_threshold_percent=float(self.pdf_sensor_fault_threshold_text.get() or "0.10"),
         )
 
+    def _create_new_config(self) -> None:
+        path = filedialog.asksaveasfilename(title="Create report config", defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        cfg = create_default_report_config()
+        save_report_config(cfg, path)
+        self.config_path = path
+        self.report_config_loaded = True
+        self._apply_report_config_to_ui(load_report_config(path))
+        self._set_actions_enabled(True)
+
     def load_config(self) -> None:
         if self._config_dirty and not messagebox.askyesno("Unsaved Changes", "Discard unsaved config changes and load another file?"):
             return
@@ -2802,16 +2807,14 @@ class PlotterApp:
         table_frame.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         table_frame.columnconfigure(0, weight=1)
 
-        columns = ("flag", "count", "percent", "meaning")
+        columns = ("flag", "count", "percent")
         self.status_flags_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=6)
         self.status_flags_tree.heading("flag", text="Flag", anchor="w")
         self.status_flags_tree.heading("count", text="Count", anchor="e")
         self.status_flags_tree.heading("percent", text="Percent", anchor="e")
-        self.status_flags_tree.heading("meaning", text="Meaning", anchor="w")
         self.status_flags_tree.column("flag", width=130, minwidth=110, stretch=False, anchor="w")
         self.status_flags_tree.column("count", width=80, minwidth=70, stretch=False, anchor="e")
         self.status_flags_tree.column("percent", width=90, minwidth=80, stretch=False, anchor="e")
-        self.status_flags_tree.column("meaning", width=360, minwidth=250, stretch=True, anchor="w")
         self.status_flags_tree.grid(row=0, column=0, sticky="ew")
 
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.status_flags_tree.yview)
@@ -2819,7 +2822,12 @@ class PlotterApp:
         self.status_flags_tree.configure(yscrollcommand=scrollbar.set)
 
         self.show_zero_status_flags = tk.BooleanVar(value=False)
-        tk.Checkbutton(status_frame, text="Show zero-count flags", variable=self.show_zero_status_flags, command=lambda: self._refresh_status_flags_table(self.loaded.dataframe if self.loaded else None)).grid(row=4, column=0, sticky="w", pady=(4, 0))
+        tk.Checkbutton(status_frame, text="Show zero-count flags", variable=self.show_zero_status_flags, command=lambda: self._refresh_status_from_current_range()).grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self.status_flags_tree.bind("<<TreeviewSelect>>", self._on_status_flag_selected)
+        self.status_summary_label = tk.Label(status_frame, text="Status: n/a", justify="left", anchor="w")
+        self.status_summary_label.grid(row=5, column=0, sticky="w", pady=(4, 0))
+        self.status_meaning_label = tk.Label(status_frame, text="Meaning: n/a", justify="left", anchor="w")
+        self.status_meaning_label.grid(row=6, column=0, sticky="w")
 
     def _refresh_status_flags_table(self, df: Optional[pd.DataFrame]) -> None:
         rows = _build_status_flag_rows(df) if df is not None else []
@@ -2827,15 +2835,32 @@ class PlotterApp:
         self.status_flags_tree.delete(*self.status_flags_tree.get_children())
 
         if not rows:
-            self.status_flags_tree.insert("", tk.END, values=("(no data)", "", "", "No flag data loaded."))
+            self.status_flags_tree.insert("", tk.END, values=("(no data)", "", ""))
+            self.status_summary_label.config(text="Status: No flag data loaded.")
+            self.status_meaning_label.config(text="Meaning: n/a")
             return
 
         if not display_rows:
-            self.status_flags_tree.insert("", tk.END, values=("NONE", 0, "0.00%", "No flags detected in current dataset."))
+            self.status_flags_tree.insert("", tk.END, values=("NONE", 0, "0.00%"))
+            self.status_summary_label.config(text="Status: No flags detected in current trimmed range.")
+            self.status_meaning_label.config(text="Meaning: No flags detected in current dataset.")
             return
 
         for row in display_rows:
-            self.status_flags_tree.insert("", tk.END, values=(row.short_name, row.count, _format_percent_for_status_table(row.percent), row.meaning or row.label))
+            self.status_flags_tree.insert("", tk.END, values=(row.short_name, row.count, _format_percent_for_status_table(row.percent)))
+        top = max(display_rows, key=lambda r: r.count)
+        self.status_summary_label.config(text=f"Status: {top.short_name} {top.count} rows, {_format_percent_for_status_table(top.percent)}.")
+        self.status_meaning_label.config(text=f"Meaning: {top.meaning or top.label}")
+
+    def _on_status_flag_selected(self, _event: Optional[tk.Event] = None) -> None:
+        selected = self.status_flags_tree.selection()
+        if not selected:
+            return
+        vals = self.status_flags_tree.item(selected[0], "values")
+        if not vals:
+            return
+        key = str(vals[0])
+        self.status_meaning_label.config(text=f"Meaning: {_FLAG_MEANINGS.get(key, key)}")
 
     def _handle_scenario_change(self, _event: Optional[tk.Event] = None) -> None:
         if self.scenario_choice.get() == "Thermal cycling":
@@ -2875,6 +2900,7 @@ class PlotterApp:
         self.start_time_text.set(start_text)
         self.end_time_text.set(end_text)
         self._has_manual_time_range = mark_manual
+        self._refresh_status_from_current_range()
         # Ensure main-window Entry widgets repaint before/around dialog teardown.
         self.start_time_entry.update_idletasks()
         self.end_time_entry.update_idletasks()
@@ -3005,7 +3031,7 @@ class PlotterApp:
             file_list += f"\n… ({len(self.selected_files)} total)"
         self.file_label.config(text=file_list)
 
-        self._refresh_status_flags_table(self.loaded.dataframe if self.loaded else None)
+        self._refresh_status_from_current_range()
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
         self._ensure_valid_y_choice()
@@ -3035,6 +3061,20 @@ class PlotterApp:
             messagebox.showerror("Load Error", "No .ptlog or .csv files found in the selected folder.")
             return
         self._load_paths(file_paths)
+
+    def _refresh_status_from_current_range(self) -> None:
+        if not self.loaded:
+            self._refresh_status_flags_table(None)
+            return
+        df = self.loaded.dataframe
+        if self.report_config_loaded:
+            try:
+                cfg = self._validate_loaded_config_for_action()
+                trimmed, *_ = self._get_trimmed_df(cfg)
+                df = trimmed
+            except Exception:
+                df = self.loaded.dataframe
+        self._refresh_status_flags_table(df)
 
     def open_range_selector(self) -> None:
         try:

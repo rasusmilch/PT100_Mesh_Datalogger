@@ -298,3 +298,101 @@ def test_validate_report_config_invalid_input_timezone_mode_blocks():
     cfg.input_timezone_mode = "BadMode"
     with pytest.raises(ValueError, match="input_timezone_mode"):
         p.validate_report_config(cfg)
+
+
+def test_main_window_action_buttons_exist():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        assert app.plot_btn.cget("text") == "Plot"
+        assert app.save_trim_btn.cget("text") == "Save Trimmed CSV"
+        assert app.pdf_btn.cget("text") == "Export PDF Report"
+    finally:
+        root.destroy()
+
+
+def test_config_labels_update_after_apply_report_config():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        cfg = p.create_default_report_config()
+        cfg.display_timezone = "UTC"
+        cfg.y_axis_series = "cal_temp_c"
+        app.config_path = "/tmp/demo_config.json"
+        app._apply_report_config_to_ui(cfg)
+        assert "demo_config.json" in app.config_summary_label.cget("text")
+        details = app.config_details_label.cget("text")
+        assert "Input time zone:" in details
+        assert "Display time zone: UTC" in details
+        assert "Y-axis series: cal_temp_c" in details
+    finally:
+        root.destroy()
+
+
+def test_status_rows_based_on_trimmed_range():
+    df = pd.DataFrame({
+        "__time": pd.to_datetime([
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:01:00Z",
+            "2026-01-01T00:02:00Z",
+        ]),
+        "flags": [0x0003, 0x0013, 0x0003],
+        "cal_temp_c": [1.0, 1.1, 1.2],
+    })
+    cfg = p.create_default_report_config()
+    trimmed, *_ = p._validate_and_trim_by_minute(
+        df=df,
+        time_column="__time",
+        start_text="2026-01-01 00:01",
+        end_text="2026-01-01 00:01",
+        time_series_utc=df["__time"],
+        input_timezone_mode="UTC",
+        display_tz=datetime.timezone.utc,
+        source_tz=None,
+    )
+    rows = p._build_status_flag_rows(trimmed)
+    sensor = next(r for r in rows if r.short_name == "SENSOR_FAULT")
+    assert sensor.count == 1
+
+
+def test_status_meaning_updates_from_selected_row():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        app._refresh_status_flags_table(pd.DataFrame({"flags": [0x0013]}))
+        item = app.status_flags_tree.get_children()[0]
+        app.status_flags_tree.selection_set(item)
+        app._on_status_flag_selected()
+        assert "Meaning:" in app.status_meaning_label.cget("text")
+    finally:
+        root.destroy()
+
+
+def test_plot_export_paths_do_not_require_legacy_direct_vars():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        assert not hasattr(app, "csv_path_var")
+        assert not hasattr(app, "pdf_path_var")
+    finally:
+        root.destroy()
