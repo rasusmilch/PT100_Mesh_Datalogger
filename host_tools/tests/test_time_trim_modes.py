@@ -1,6 +1,7 @@
 import pytest
 pd = pytest.importorskip("pandas")
 import datetime
+import inspect
 
 from host_tools import pt100_plotter as plotter
 
@@ -169,3 +170,31 @@ def test_range_dialog_path_writes_input_timezone_values_that_validate():
         source_tz=datetime.timezone(datetime.timedelta(hours=-5)),
     )
     assert len(trimmed) == 4
+
+
+def test_build_input_range_text_from_selected_utc_same_as_display_mode():
+    start_utc = pd.Timestamp("2026-05-06 12:30:00+00:00")
+    end_utc = pd.Timestamp("2026-05-06 12:33:00+00:00")
+    display_tz = datetime.timezone(datetime.timedelta(hours=-5))
+    start_text, end_text = plotter._build_input_range_text_from_selected_utc(
+        start_utc,
+        end_utc,
+        input_timezone_mode="Same as display",
+        display_tz=display_tz,
+        source_tz=datetime.timezone.utc,
+    )
+    assert (start_text, end_text) == ("2026-05-06 07:30", "2026-05-06 07:33")
+
+
+def test_open_range_selector_uses_input_tz_mode_choice_variable_name():
+    source = inspect.getsource(plotter.PlotterApp.open_range_selector)
+    assert "self.input_tz_mode_choice.get()" in source
+    assert "self.input_tz_choice.get()" not in source
+
+
+def test_open_range_selector_callback_defines_setter_before_registration():
+    source = inspect.getsource(plotter.PlotterApp.open_range_selector)
+    set_idx = source.find("def _set_selected_utc_from_slider")
+    change_idx = source.find("def _on_slider_change")
+    register_idx = source.find("slider.on_changed(_on_slider_change)")
+    assert 0 <= set_idx < change_idx < register_idx
