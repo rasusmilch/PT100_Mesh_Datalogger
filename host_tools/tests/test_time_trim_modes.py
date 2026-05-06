@@ -1,5 +1,6 @@
+import pytest
+pd = pytest.importorskip("pandas")
 import datetime
-import pandas as pd
 
 from host_tools import pt100_plotter as plotter
 
