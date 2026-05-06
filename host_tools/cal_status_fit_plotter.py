@@ -21,7 +21,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     Image,
@@ -447,9 +447,12 @@ def _build_curve_fallback(
     return x_values[sort_indices], model_values[sort_indices]
 
 
-def _figure_footer_text(page_number: int) -> str:
-    """Return a standardized page-footer text string."""
-    return f"Page {page_number}"
+def _display_source_name(report: CalibrationReport) -> str:
+    """Return a cleaner source label for chart and PDF titles."""
+    source_name = (report.source_name or "").strip()
+    if not source_name or source_name == "<pasted text>":
+        return "Pasted cal status input"
+    return Path(source_name).stem
 
 
 def _style_plot_axes(ax: plt.Axes) -> None:
@@ -474,7 +477,7 @@ def _build_curve_figure(report: CalibrationReport) -> plt.Figure:
         curve_x, curve_y = polynomial_curve
         curve_label = "Model fit"
 
-    figure = plt.figure(figsize=(11.0, 8.5))
+    figure = plt.figure(figsize=(7.2, 5.2))
     axes = figure.add_subplot(1, 1, 1)
     axes.plot(curve_x, curve_y, linewidth=2.0, label=curve_label)
     axes.scatter(
@@ -507,23 +510,16 @@ def _build_curve_figure(report: CalibrationReport) -> plt.Figure:
             str(row.point_index),
             (x_value, y_value),
             textcoords="offset points",
-            xytext=(6, 6),
+            xytext=(5, 5),
             fontsize=9,
         )
 
-    axes.set_title("Calibration Curve")
+    axes.set_title("Calibration curve - target points and fitted model", pad=10)
     axes.set_xlabel(_raw_domain_label(report))
     axes.set_ylabel(_corrected_domain_label(report))
     _style_plot_axes(axes)
-    axes.legend(loc="best")
-    figure.suptitle(
-        f"PT100 Calibration Fit Report\n{report.source_name}",
-        fontsize=13,
-        fontweight="bold",
-        y=0.97,
-    )
-    figure.tight_layout(rect=(0.03, 0.05, 0.98, 0.93))
-    figure.text(0.5, 0.015, _figure_footer_text(1), ha="center", fontsize=9)
+    axes.legend(loc="best", fontsize=9)
+    figure.tight_layout(rect=(0.06, 0.08, 0.98, 0.96))
     return figure
 
 
@@ -565,7 +561,7 @@ def _build_residuals_figure(report: CalibrationReport, use_symlog: bool) -> plt.
                 (row.target_temp_c, compact_point.capture_residual_res_ohm)
             )
 
-    figure = plt.figure(figsize=(11.0, 8.5))
+    figure = plt.figure(figsize=(7.2, 6.1))
     top_axes = figure.add_subplot(2, 1, 1)
     bottom_axes = figure.add_subplot(2, 1, 2, sharex=top_axes)
 
@@ -588,11 +584,11 @@ def _build_residuals_figure(report: CalibrationReport, use_symlog: bool) -> plt.
             label="Captured temp residual",
         )
     top_axes.set_ylabel("Residual (C)")
-    top_axes.set_title("Residuals vs reference temperature")
+    top_axes.set_title("Residuals vs Reference Temperature", pad=8)
     _set_residual_axis_scale(top_axes, use_symlog)
     _style_plot_axes(top_axes)
     if model_temp_pairs or capture_temp_pairs:
-        top_axes.legend(loc="best")
+        top_axes.legend(loc="best", fontsize=9)
 
     if model_ohm_pairs:
         model_ohm_array = np.asarray(model_ohm_pairs, dtype=float)
@@ -612,21 +608,14 @@ def _build_residuals_figure(report: CalibrationReport, use_symlog: bool) -> plt.
             linestyle=":",
             label="Captured ohm residual",
         )
-    bottom_axes.set_xlabel("Reference temperature (C)")
+    bottom_axes.set_xlabel("Reference Temperature (C)")
     bottom_axes.set_ylabel("Residual (ohm)")
     _set_residual_axis_scale(bottom_axes, use_symlog)
     _style_plot_axes(bottom_axes)
     if model_ohm_pairs or capture_ohm_pairs:
-        bottom_axes.legend(loc="best")
+        bottom_axes.legend(loc="best", fontsize=9)
 
-    figure.suptitle(
-        f"PT100 Calibration Residuals\n{report.source_name}",
-        fontsize=13,
-        fontweight="bold",
-        y=0.97,
-    )
-    figure.tight_layout(rect=(0.03, 0.05, 0.98, 0.93))
-    figure.text(0.5, 0.015, _figure_footer_text(2), ha="center", fontsize=9)
+    figure.tight_layout(rect=(0.08, 0.07, 0.98, 0.96))
     return figure
 
 
@@ -678,9 +667,13 @@ def _page_footer(canvas, doc) -> None:  # type: ignore[no-untyped-def]
     canvas.restoreState()
 
 
-def _render_figure_to_png(figure: plt.Figure, temp_dir: str, file_stem: str) -> str:
-    """Save a figure to a temporary PNG file and return its path."""
-    output_path = os.path.join(temp_dir, f"{file_stem}.png")
+def _render_figure_to_png(
+    figure: plt.Figure,
+    output_dir: str,
+    file_stem: str,
+) -> str:
+    """Save a figure PNG in the requested directory and return its path."""
+    output_path = os.path.join(output_dir, f"{file_stem}.png")
     figure.savefig(output_path, dpi=220, bbox_inches="tight")
     return output_path
 
@@ -689,7 +682,7 @@ def _build_summary_rows(report: CalibrationReport) -> List[List[str]]:
     """Build the summary statistics table."""
     summary_rows: List[List[str]] = [
         ["Item", "Value"],
-        ["Input source", report.source_name],
+        ["Input source", _display_source_name(report)],
         ["Calibration equation", report.calibration_equation or "n/a"],
         ["Fit domain", report.fit_domain or "n/a"],
         ["Model type", report.model_type or "n/a"],
@@ -778,21 +771,96 @@ def _build_point_rows(report: CalibrationReport) -> List[List[str]]:
     return rows
 
 
+def _build_point_value_rows(report: CalibrationReport) -> List[List[str]]:
+    """Build a portrait-friendly point-value table."""
+    rows: List[List[str]] = [
+        [
+            "Pt",
+            "Target C",
+            "Target ohm",
+            "Captured C",
+            "Captured ohm",
+            "Model C",
+            "Model ohm",
+        ]
+    ]
+    for row in report.fit_rows:
+        rows.append(
+            [
+                str(row.point_index),
+                _format_value(row.target_temp_c, 3),
+                _format_value(row.target_res_ohm, 3),
+                _format_value(row.captured_temp_c, 3),
+                _format_value(row.captured_res_ohm, 3),
+                _format_value(row.model_temp_c, 3),
+                _format_value(row.model_res_ohm, 3),
+            ]
+        )
+    return rows
+
+
+def _build_point_residual_rows(report: CalibrationReport) -> List[List[str]]:
+    """Build a portrait-friendly residual and correction table."""
+    compact_by_index = {point.point_index: point for point in report.compact_points}
+    rows: List[List[str]] = [
+        [
+            "Pt",
+            "Model res C",
+            "Model res ohm",
+            "Capture res C",
+            "Capture res ohm",
+            _correction_label(report),
+        ]
+    ]
+    for row in report.fit_rows:
+        compact_point = compact_by_index.get(row.point_index)
+        rows.append(
+            [
+                str(row.point_index),
+                _format_value(row.temp_residual_c, 6),
+                _format_value(row.ohm_residual_ohm, 6),
+                _format_value(
+                    compact_point.capture_residual_temp_c if compact_point else None, 6
+                ),
+                _format_value(
+                    compact_point.capture_residual_res_ohm if compact_point else None, 6
+                ),
+                _format_value(row.correction_fit_domain, 6),
+            ]
+        )
+    return rows
+
+
 def export_pdf_report(
     report: CalibrationReport,
     save_path: str,
     *,
     use_symlog_residual_axis: bool,
+    keep_exported_figures: bool,
 ) -> None:
     """Create a concise, professional multi-page PDF report."""
     curve_figure = _build_curve_figure(report)
     residuals_figure = _build_residuals_figure(report, use_symlog_residual_axis)
 
-    temp_dir = tempfile.mkdtemp(prefix="cal_status_fit_report_")
+    save_path_obj = Path(save_path)
+    output_dir = str(save_path_obj.parent)
+    pdf_stem = save_path_obj.stem
+
+    if keep_exported_figures:
+        figure_output_dir = output_dir
+        curve_file_stem = f"{pdf_stem}_curve"
+        residuals_file_stem = f"{pdf_stem}_residuals"
+        cleanup_dir: Optional[str] = None
+    else:
+        figure_output_dir = tempfile.mkdtemp(prefix="cal_status_fit_report_")
+        curve_file_stem = "curve"
+        residuals_file_stem = "residuals"
+        cleanup_dir = figure_output_dir
+
     try:
-        curve_png_path = _render_figure_to_png(curve_figure, temp_dir, "curve")
+        curve_png_path = _render_figure_to_png(curve_figure, figure_output_dir, curve_file_stem)
         residuals_png_path = _render_figure_to_png(
-            residuals_figure, temp_dir, "residuals"
+            residuals_figure, figure_output_dir, residuals_file_stem
         )
     finally:
         plt.close(curve_figure)
@@ -800,7 +868,13 @@ def export_pdf_report(
 
     styles = getSampleStyleSheet()
     title_style = styles["Title"]
-    heading_style = styles["Heading2"]
+    heading_style = ParagraphStyle(
+        "ReportHeading",
+        parent=styles["Heading2"],
+        spaceBefore=0,
+        spaceAfter=8,
+        keepWithNext=True,
+    )
     body_style = ParagraphStyle(
         "BodyStyle",
         parent=styles["BodyText"],
@@ -810,62 +884,70 @@ def export_pdf_report(
         spaceAfter=6,
     )
 
+    display_source_name = _display_source_name(report)
+    summary_table = _make_table(_build_summary_rows(report), [2.0 * inch, 4.9 * inch])
+    metric_table = _make_table(_build_metric_rows(report), [3.05 * inch, 3.35 * inch])
+    point_values_table = _make_table(
+        _build_point_value_rows(report),
+        [0.45 * inch, 0.82 * inch, 0.90 * inch, 0.90 * inch, 0.98 * inch, 0.82 * inch, 0.90 * inch],
+    )
+    point_residuals_table = _make_table(
+        _build_point_residual_rows(report),
+        [0.45 * inch, 1.08 * inch, 1.12 * inch, 1.10 * inch, 1.22 * inch, 1.18 * inch],
+    )
+
     elements = [
         Paragraph("PT100 Calibration Fit Report", title_style),
+        Paragraph(f"<b>Input source:</b> {display_source_name}", body_style),
+        Spacer(1, 0.08 * inch),
+        Paragraph("Summary", heading_style),
+        summary_table,
+        PageBreak(),
+
+        Paragraph("Calibration Curve", heading_style),
         Paragraph(
-            f"<b>Input source:</b> {report.source_name}",
+            "Polynomial fit with calibration target points and model values at each point.",
             body_style,
         ),
-        Spacer(1, 0.10 * inch),
-        Paragraph("Summary", heading_style),
-        _make_table(_build_summary_rows(report), [2.1 * inch, 4.9 * inch]),
-        Spacer(1, 0.14 * inch),
-        Paragraph("Calibration Curve", heading_style),
-        Image(curve_png_path, width=9.0 * inch, height=5.45 * inch),
+        Image(curve_png_path, width=6.7 * inch, height=4.95 * inch),
         PageBreak(),
+
         Paragraph("Residuals", heading_style),
-        Image(residuals_png_path, width=9.0 * inch, height=5.45 * inch),
-        Spacer(1, 0.10 * inch),
-        Paragraph("Model Fit Statistics", heading_style),
-        _make_table(_build_metric_rows(report), [3.1 * inch, 3.9 * inch]),
-        PageBreak(),
-        Paragraph("Calibration Point Detail", heading_style),
-        _make_table(
-            _build_point_rows(report),
-            [
-                0.35 * inch,
-                0.65 * inch,
-                0.75 * inch,
-                0.75 * inch,
-                0.80 * inch,
-                0.65 * inch,
-                0.75 * inch,
-                0.75 * inch,
-                0.80 * inch,
-                0.75 * inch,
-                0.85 * inch,
-                0.85 * inch,
-            ],
+        Paragraph(
+            "Model-fit and captured residuals plotted against reference temperature.",
+            body_style,
         ),
+        Image(residuals_png_path, width=6.7 * inch, height=5.55 * inch),
+        PageBreak(),
+
+        Paragraph("Model Fit Statistics", heading_style),
+        metric_table,
+        Spacer(1, 0.16 * inch),
+        Paragraph("Calibration Point Values", heading_style),
+        point_values_table,
+        Spacer(1, 0.16 * inch),
+        Paragraph("Residuals and Applied Corrections", heading_style),
+        point_residuals_table,
     ]
 
     document = SimpleDocTemplate(
         save_path,
-        pagesize=landscape(letter),
-        rightMargin=0.55 * inch,
-        leftMargin=0.55 * inch,
-        topMargin=0.55 * inch,
-        bottomMargin=0.70 * inch,
+        pagesize=letter,
+        rightMargin=0.6 * inch,
+        leftMargin=0.6 * inch,
+        topMargin=0.6 * inch,
+        bottomMargin=0.7 * inch,
         title="PT100 Calibration Fit Report",
         author="OpenAI ChatGPT",
     )
     document.build(elements, onFirstPage=_page_footer, onLaterPages=_page_footer)
 
-    for png_path in [curve_png_path, residuals_png_path]:
-        if os.path.exists(png_path):
-            os.remove(png_path)
-    if os.path.isdir(temp_dir):
-        os.rmdir(temp_dir)
+    if not keep_exported_figures:
+        for png_path in [curve_png_path, residuals_png_path]:
+            if os.path.exists(png_path):
+                os.remove(png_path)
+        if cleanup_dir is not None and os.path.isdir(cleanup_dir):
+            os.rmdir(cleanup_dir)
 
 
 class PasteTextDialog(simpledialog.Dialog):
@@ -900,6 +982,7 @@ class CalibrationFitGui:
         self.preview_canvas: Optional[FigureCanvasTkAgg] = None
 
         self.use_symlog_residual_axis = tk.BooleanVar(value=False)
+        self.keep_exported_figures = tk.BooleanVar(value=False)
         self.status_text = tk.StringVar(value="No cal status text loaded.")
 
         self._build_ui()
@@ -941,6 +1024,11 @@ class CalibrationFitGui:
             text="Use symlog axis for residual plots",
             variable=self.use_symlog_residual_axis,
         ).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            options_frame,
+            text="Keep exported figures next to PDF",
+            variable=self.keep_exported_figures,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         ttk.Label(
             main_frame,
@@ -1104,11 +1192,21 @@ class CalibrationFitGui:
                 self.report,
                 save_path,
                 use_symlog_residual_axis=self.use_symlog_residual_axis.get(),
+                keep_exported_figures=self.keep_exported_figures.get(),
             )
         except Exception as exc:
             messagebox.showerror("PDF error", str(exc))
             return
-        messagebox.showinfo("Success", f"PDF report saved:\n{save_path}")
+        saved_message = f"PDF report saved:\n{save_path}"
+        if self.keep_exported_figures.get():
+            pdf_stem = Path(save_path).stem
+            output_dir = Path(save_path).parent
+            saved_message += (
+                f"\n\nSaved figures:\n"
+                f"{output_dir / (pdf_stem + '_curve.png')}\n"
+                f"{output_dir / (pdf_stem + '_residuals.png')}"
+            )
+        messagebox.showinfo("Success", saved_message)
 
 
 def main() -> None:

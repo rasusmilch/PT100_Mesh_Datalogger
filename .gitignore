@@ -95,8 +95,9 @@ dependencies.yml
 # *.csv
 main/console
 *.txt
-host_tools/*.txt
-host_tools/*.log
-host_tools/logs/*
+*.txt
+*.log
+logs/*
 ~$*
-host_tools/analysis/*
+analysis/*
+!host_tools/requirements-dev.txt
