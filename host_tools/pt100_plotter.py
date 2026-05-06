@@ -2522,6 +2522,7 @@ class PlotterApp:
         self.report_config: Optional[ReportConfig] = None
         self._config_dirty = False
         self.pdf_sensor_fault_threshold_text = tk.StringVar(value="0.10")
+        self._range_validation_error: Optional[str] = None
 
         self._build_ui()
         self._set_actions_enabled(False)
@@ -2572,6 +2573,8 @@ class PlotterApp:
         self.end_time_entry.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
         self.select_range_btn = tk.Button(range_frame, text="Select range…", command=self.open_range_selector, state=tk.DISABLED)
         self.select_range_btn.grid(row=0, column=2, rowspan=2, sticky="w", padx=(10, 0))
+        self.start_time_text.trace_add("write", self._on_range_text_changed)
+        self.end_time_text.trace_add("write", self._on_range_text_changed)
 
         self._create_status_flags_section(frm, 3)
 
@@ -2585,9 +2588,15 @@ class PlotterApp:
         self.pdf_btn.pack(side="left", padx=(6, 0))
 
     def _set_actions_enabled(self, enabled: bool) -> None:
-        state = tk.NORMAL if enabled else tk.DISABLED
-        for btn in (self.plot_btn, self.save_trim_btn, self.pdf_btn, self.select_range_btn):
-            btn.config(state=state)
+        if not enabled:
+            for btn in (self.plot_btn, self.save_trim_btn, self.pdf_btn, self.select_range_btn):
+                btn.config(state=tk.DISABLED)
+            return
+        self.select_range_btn.config(state=tk.NORMAL)
+        range_ok = self._range_validation_error is None
+        action_state = tk.NORMAL if range_ok else tk.DISABLED
+        for btn in (self.plot_btn, self.save_trim_btn, self.pdf_btn):
+            btn.config(state=action_state)
     def _update_config_summary(self) -> None:
         name = os.path.basename(self.config_path) if self.config_path else "(none)"
         self.config_summary_label.config(text=name)
@@ -3062,19 +3071,46 @@ class PlotterApp:
             return
         self._load_paths(file_paths)
 
+    def _on_range_text_changed(self, *_args: object) -> None:
+        if not self.root.winfo_exists():
+            return
+        self._refresh_status_from_current_range()
+
+    def _status_summary_for_rows(self, rows: Sequence[FlagSummaryRow], *, threshold_percent: float) -> str:
+        nonzero_rows = [row for row in rows if row.count > 0]
+        if not nonzero_rows:
+            return "Status: No nonzero status flags in selected range."
+        top = max(nonzero_rows, key=lambda r: r.count)
+        summary = f"Status: {top.short_name} {top.count} rows, {_format_percent_for_status_table(top.percent)}."
+        if top.short_name == "SENSOR_FAULT":
+            relation = "Below" if top.percent < threshold_percent else "Included in PDF at/above"
+            summary = f"{summary} {relation} threshold {_format_percent_for_status_table(threshold_percent)}."
+        return summary
+
     def _refresh_status_from_current_range(self) -> None:
+        self._range_validation_error = None
         if not self.loaded:
             self._refresh_status_flags_table(None)
+            self._set_actions_enabled(self.report_config_loaded)
             return
-        df = self.loaded.dataframe
-        if self.report_config_loaded:
-            try:
-                cfg = self._validate_loaded_config_for_action()
-                trimmed, *_ = self._get_trimmed_df(cfg)
-                df = trimmed
-            except Exception:
-                df = self.loaded.dataframe
-        self._refresh_status_flags_table(df)
+        if not self.report_config_loaded:
+            self._refresh_status_flags_table(self.loaded.dataframe)
+            self._set_actions_enabled(False)
+            return
+        try:
+            cfg = self._validate_loaded_config_for_action()
+            trimmed, *_ = self._get_trimmed_df(cfg)
+            self._refresh_status_flags_table(trimmed)
+            rows = _build_status_flag_rows(trimmed)
+            self.status_summary_label.config(
+                text=self._status_summary_for_rows(rows, threshold_percent=float(cfg.pdf_sensor_fault_threshold_percent))
+            )
+        except Exception as exc:
+            self._range_validation_error = str(exc)
+            self._refresh_status_flags_table(None)
+            self.status_summary_label.config(text="Status: Range is invalid. Fix Start and End before plotting or exporting.")
+            self.status_meaning_label.config(text=f"Meaning: {exc}")
+        self._set_actions_enabled(True)
 
     def open_range_selector(self) -> None:
         try:
