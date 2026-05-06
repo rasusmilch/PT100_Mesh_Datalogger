@@ -115,6 +115,23 @@ def test_filter_status_flag_rows_nonzero_default():
 def test_format_percent_for_status_table_small_nonzero():
     assert p._format_percent_for_status_table(0.05) == "0.05%"
 
+def test_human_config_label_mappings():
+    assert p._human_config_label("display_temperature_f") == "Display temperature in degrees F"
+    assert p._human_config_label("rolling_mean_divisor") == "Rolling mean divisor"
+    assert p._human_config_label("show_std_band") == "Show standard deviation band"
+    assert p._human_config_label("highlight_outside_std") == "Highlight outside mean plus or minus 1 sigma"
+
+
+def test_status_table_values_only_flag_count_percent():
+    row = p.FlagSummaryRow("SENSOR_FAULT", "Sensor fault", 11, 0.04, "Sensor read failed or sensor fault was detected.", True, True)
+    values = p._status_table_values(row)
+    assert values == ("SENSOR_FAULT", 11, "0.04%")
+    assert "Sensor read failed" not in values
+
+
+def test_status_flag_meaning_for_key_selected_row():
+    assert p._status_flag_meaning_for_key("SENSOR_FAULT") == "Sensor read failed or sensor fault was detected."
+
 
 def test_parse_nonnegative_float_accepts_and_defaults():
     assert p._parse_nonnegative_float("", "field", 0.10) == pytest.approx(0.10)
@@ -361,6 +378,45 @@ def test_options_dialog_collection_disabled_highlights_store_none():
         cfg = app._collect_report_config_from_options_dialog(vars_map)
         assert cfg.highlight_above_value is None
         assert cfg.highlight_below_value is None
+    finally:
+        root.destroy()
+
+
+def test_options_dialog_collection_highlight_enabled_requires_numeric():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        vars_map = {
+            "input_timezone_mode": tk.StringVar(value="UTC"),
+            "display_timezone": tk.StringVar(value="UTC"),
+            "y_axis_series": tk.StringVar(value="cal_temp_c"),
+            "display_temperature_f": tk.BooleanVar(value=False),
+            "overlay_raw_temp_c": tk.BooleanVar(value=False),
+            "smooth_enabled": tk.BooleanVar(value=True),
+            "rolling_mean_divisor": tk.StringVar(value="1"),
+            "downsample_enabled": tk.BooleanVar(value=True),
+            "max_plot_points": tk.StringVar(value="10"),
+            "pdf_plot_dpi": tk.StringVar(value="300"),
+            "vector_pdf": tk.BooleanVar(value=False),
+            "show_minimum": tk.BooleanVar(value=False),
+            "show_maximum": tk.BooleanVar(value=False),
+            "show_average": tk.BooleanVar(value=False),
+            "show_std_band": tk.BooleanVar(value=False),
+            "highlight_outside_std": tk.BooleanVar(value=False),
+            "highlight_mask_from_rolling_mean": tk.BooleanVar(value=False),
+            "highlight_above_enabled": tk.BooleanVar(value=True),
+            "highlight_above_value": tk.StringVar(value=""),
+            "highlight_below_enabled": tk.BooleanVar(value=True),
+            "highlight_below_value": tk.StringVar(value=""),
+            "pdf_sensor_fault_threshold_percent": tk.StringVar(value="0.1"),
+        }
+        with pytest.raises(ValueError):
+            app._collect_report_config_from_options_dialog(vars_map)
     finally:
         root.destroy()
 
