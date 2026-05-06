@@ -101,6 +101,31 @@ _FLAG_MEANINGS: Dict[str, str] = {
     "TIME_JUMP_BACK": "RTC or timestamp moved backward. Review time continuity.",
 }
 
+_CONFIG_LABELS: Dict[str, str] = {
+    "input_timezone_mode": "Input time zone",
+    "display_timezone": "Display time zone",
+    "y_axis_series": "Y-axis series",
+    "display_temperature_f": "Display temperature in degrees F",
+    "overlay_raw_temp_c": "Overlay raw temperature",
+    "smooth_enabled": "Smooth data with rolling mean",
+    "rolling_mean_divisor": "Rolling mean divisor",
+    "downsample_enabled": "Downsample large datasets",
+    "max_plot_points": "Maximum plot points",
+    "pdf_plot_dpi": "PDF plot DPI",
+    "vector_pdf": "Vector PDF output",
+    "show_minimum": "Show minimum line",
+    "show_maximum": "Show maximum line",
+    "show_average": "Show average line",
+    "show_std_band": "Show standard deviation band",
+    "highlight_outside_std": "Highlight outside mean plus or minus 1 sigma",
+    "highlight_mask_from_rolling_mean": "Apply highlight mask to rolling mean",
+    "highlight_above_enabled": "Highlight above limit",
+    "highlight_above_value": "Upper limit",
+    "highlight_below_enabled": "Highlight below limit",
+    "highlight_below_value": "Lower limit",
+    "pdf_sensor_fault_threshold_percent": "PDF sensor fault threshold percent",
+}
+
 
 @dataclass
 class FlagSummaryRow:
@@ -1583,6 +1608,18 @@ def _default_status_detail_message(rows: Sequence[FlagSummaryRow]) -> str:
         return "Meaning: No flags detected in current dataset."
     return f"Meaning: {rows[0].meaning or rows[0].label}"
 
+
+def _human_config_label(key: str) -> str:
+    return _CONFIG_LABELS.get(key, key.replace("_", " ").title())
+
+
+def _status_table_values(row: FlagSummaryRow) -> Tuple[str, int, str]:
+    return row.short_name, row.count, _format_percent_for_status_table(row.percent)
+
+
+def _status_flag_meaning_for_key(key: str) -> str:
+    return _FLAG_MEANINGS.get(key, key)
+
 def _compute_basic_stats(series: pd.Series) -> Dict[str, str]:
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
@@ -2564,10 +2601,11 @@ class PlotterApp:
         self.root.after(0, self._show_startup_dialog)
 
     def _build_ui(self) -> None:
-        self.root.geometry("760x820")
+        self.root.geometry("860x700")
         frm = tk.Frame(self.root, padx=10, pady=10)
         frm.pack(fill="both", expand=True)
-        frm.columnconfigure(0, weight=1)
+        frm.columnconfigure(0, weight=3)
+        frm.columnconfigure(1, weight=2)
 
         config_frame = tk.LabelFrame(frm, text="1) Config", padx=8, pady=6)
         config_frame.grid(row=0, column=0, sticky="ew")
@@ -2613,7 +2651,7 @@ class PlotterApp:
 
         action_frame = tk.LabelFrame(frm, text="4) Actions", padx=8, pady=6)
         action_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        self._create_status_flags_section(frm, 4)
+        self._create_status_flags_section(frm, 0, 1)
         self.plot_btn = tk.Button(action_frame, text="Plot", command=self.plot, state=tk.DISABLED)
         self.plot_btn.pack(side="left")
         self.save_trim_btn = tk.Button(action_frame, text="Save Trimmed CSV", command=self.save_trimmed_csv, state=tk.DISABLED)
@@ -2843,6 +2881,9 @@ class PlotterApp:
             pdf_sensor_fault_threshold_percent=float(str(vars_map["pdf_sensor_fault_threshold_percent"].get()).strip()),
         )
 
+    def _set_widget_enabled(self, widget: tk.Widget, enabled: bool) -> None:
+        widget.config(state=tk.NORMAL if enabled else tk.DISABLED)
+
     def _create_options_dialog(self) -> None:
         cfg = self.report_config if self.report_config is not None else self._build_report_config_from_ui()
         dialog = tk.Toplevel(self.root)
@@ -2875,35 +2916,45 @@ class PlotterApp:
         }
         r = 0
         sec = tk.LabelFrame(body, text="Time and series", padx=8, pady=6); sec.grid(row=r, column=0, sticky="ew"); r += 1
-        ttk.Combobox(sec, textvariable=vars_map["input_timezone_mode"], state="readonly", values=["Log/source time", "UTC", "Local", "Same as display"], width=24).grid(row=0, column=1, sticky="w")
-        tk.Label(sec, text="Input timezone mode").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(sec, textvariable=vars_map["display_timezone"], values=["Local", "UTC", "America/Chicago"], width=24).grid(row=1, column=1, sticky="w", pady=(4, 0))
-        tk.Label(sec, text="Display timezone").grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Combobox(sec, textvariable=vars_map["y_axis_series"], values=self._available_y_axis_series(cfg), width=24).grid(row=2, column=1, sticky="w", pady=(4, 0))
-        tk.Label(sec, text="Y-axis series").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        sec.columnconfigure(1, weight=1)
+        ttk.Combobox(sec, textvariable=vars_map["input_timezone_mode"], state="readonly", values=["Log/source time", "UTC", "Local", "Same as display"], width=26).grid(row=0, column=1, sticky="w")
+        tk.Label(sec, text=_human_config_label("input_timezone_mode")).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Combobox(sec, textvariable=vars_map["display_timezone"], values=["Local", "UTC", "America/Chicago"], width=26).grid(row=1, column=1, sticky="w", pady=(4, 0))
+        tk.Label(sec, text=_human_config_label("display_timezone")).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(4, 0))
+        ttk.Combobox(sec, textvariable=vars_map["y_axis_series"], values=self._available_y_axis_series(cfg), width=26).grid(row=2, column=1, sticky="w", pady=(4, 0))
+        tk.Label(sec, text=_human_config_label("y_axis_series")).grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(4, 0))
         sec2 = tk.LabelFrame(body, text="Temperature and plotting", padx=8, pady=6); sec2.grid(row=r, column=0, sticky="ew", pady=(6, 0)); r += 1
+        sec2.columnconfigure(0, weight=1)
+        sec2.columnconfigure(1, weight=0)
         for i, key in enumerate(["display_temperature_f", "overlay_raw_temp_c", "smooth_enabled", "downsample_enabled"]):
-            tk.Checkbutton(sec2, text=key, variable=vars_map[key]).grid(row=i, column=0, sticky="w")
-        tk.Label(sec2, text="rolling_mean_divisor").grid(row=0, column=1, sticky="w"); tk.Entry(sec2, textvariable=vars_map["rolling_mean_divisor"], width=10).grid(row=0, column=2, sticky="w")
-        tk.Label(sec2, text="max_plot_points").grid(row=1, column=1, sticky="w"); tk.Entry(sec2, textvariable=vars_map["max_plot_points"], width=10).grid(row=1, column=2, sticky="w")
+            tk.Checkbutton(sec2, text=_human_config_label(key), variable=vars_map[key]).grid(row=i, column=0, sticky="w")
+        tk.Label(sec2, text=_human_config_label("rolling_mean_divisor")).grid(row=0, column=1, sticky="w", padx=(16, 6))
+        tk.Entry(sec2, textvariable=vars_map["rolling_mean_divisor"], width=10).grid(row=0, column=2, sticky="w")
+        tk.Label(sec2, text=_human_config_label("max_plot_points")).grid(row=1, column=1, sticky="w", padx=(16, 6))
+        tk.Entry(sec2, textvariable=vars_map["max_plot_points"], width=10).grid(row=1, column=2, sticky="w")
         sec3 = tk.LabelFrame(body, text="Statistics", padx=8, pady=6); sec3.grid(row=r, column=0, sticky="ew", pady=(6, 0)); r += 1
-        for i, key in enumerate(["show_minimum", "show_maximum", "show_average", "show_std_band"]):
-            tk.Checkbutton(sec3, text=key, variable=vars_map[key]).grid(row=i, column=0, sticky="w")
+        stats_keys = ["show_minimum", "show_maximum", "show_average", "show_std_band"]
+        for i, key in enumerate(stats_keys):
+            tk.Checkbutton(sec3, text=_human_config_label(key), variable=vars_map[key]).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 12))
         sec4 = tk.LabelFrame(body, text="Out of bounds highlighting", padx=8, pady=6); sec4.grid(row=r, column=0, sticky="ew", pady=(6, 0)); r += 1
-        tk.Checkbutton(sec4, text="highlight_outside_std", variable=vars_map["highlight_outside_std"]).grid(row=0, column=0, sticky="w")
-        tk.Checkbutton(sec4, text="highlight_mask_from_rolling_mean", variable=vars_map["highlight_mask_from_rolling_mean"]).grid(row=1, column=0, sticky="w")
+        tk.Checkbutton(sec4, text=_human_config_label("highlight_outside_std"), variable=vars_map["highlight_outside_std"]).grid(row=0, column=0, sticky="w", columnspan=2)
+        tk.Checkbutton(sec4, text=_human_config_label("highlight_mask_from_rolling_mean"), variable=vars_map["highlight_mask_from_rolling_mean"]).grid(row=1, column=0, sticky="w", columnspan=2)
         e_above = tk.Entry(sec4, textvariable=vars_map["highlight_above_value"], width=10); e_below = tk.Entry(sec4, textvariable=vars_map["highlight_below_value"], width=10)
-        tk.Checkbutton(sec4, text="highlight_above_enabled", variable=vars_map["highlight_above_enabled"]).grid(row=2, column=0, sticky="w"); e_above.grid(row=2, column=1, sticky="w")
-        tk.Checkbutton(sec4, text="highlight_below_enabled", variable=vars_map["highlight_below_enabled"]).grid(row=3, column=0, sticky="w"); e_below.grid(row=3, column=1, sticky="w")
+        tk.Checkbutton(sec4, text=_human_config_label("highlight_above_enabled"), variable=vars_map["highlight_above_enabled"]).grid(row=2, column=0, sticky="w")
+        tk.Label(sec4, text=_human_config_label("highlight_above_value")).grid(row=2, column=1, sticky="e", padx=(6, 4)); e_above.grid(row=2, column=2, sticky="w")
+        tk.Checkbutton(sec4, text=_human_config_label("highlight_below_enabled"), variable=vars_map["highlight_below_enabled"]).grid(row=3, column=0, sticky="w")
+        tk.Label(sec4, text=_human_config_label("highlight_below_value")).grid(row=3, column=1, sticky="e", padx=(6, 4)); e_below.grid(row=3, column=2, sticky="w")
         def _sync_limits(*_args: object) -> None:
-            e_above.config(state=tk.NORMAL if bool(vars_map["highlight_above_enabled"].get()) else tk.DISABLED)
-            e_below.config(state=tk.NORMAL if bool(vars_map["highlight_below_enabled"].get()) else tk.DISABLED)
+            self._set_widget_enabled(e_above, bool(vars_map["highlight_above_enabled"].get()))
+            self._set_widget_enabled(e_below, bool(vars_map["highlight_below_enabled"].get()))
         vars_map["highlight_above_enabled"].trace_add("write", _sync_limits); vars_map["highlight_below_enabled"].trace_add("write", _sync_limits); _sync_limits()
         sec5 = tk.LabelFrame(body, text="PDF and output", padx=8, pady=6); sec5.grid(row=r, column=0, sticky="ew", pady=(6, 0)); r += 1
-        tk.Label(sec5, text="pdf_plot_dpi").grid(row=0, column=0, sticky="w"); tk.Entry(sec5, textvariable=vars_map["pdf_plot_dpi"], width=10).grid(row=0, column=1, sticky="w")
-        tk.Checkbutton(sec5, text="vector_pdf", variable=vars_map["vector_pdf"]).grid(row=1, column=0, sticky="w")
+        tk.Label(sec5, text=_human_config_label("pdf_plot_dpi")).grid(row=0, column=0, sticky="w"); tk.Entry(sec5, textvariable=vars_map["pdf_plot_dpi"], width=10).grid(row=0, column=1, sticky="w")
+        tk.Checkbutton(sec5, text=_human_config_label("vector_pdf"), variable=vars_map["vector_pdf"]).grid(row=0, column=2, sticky="w", padx=(12, 0))
         sec6 = tk.LabelFrame(body, text="Data quality", padx=8, pady=6); sec6.grid(row=r, column=0, sticky="ew", pady=(6, 0)); r += 1
-        tk.Label(sec6, text="pdf_sensor_fault_threshold_percent").grid(row=0, column=0, sticky="w"); tk.Entry(sec6, textvariable=vars_map["pdf_sensor_fault_threshold_percent"], width=10).grid(row=0, column=1, sticky="w")
+        tk.Label(sec6, text=_human_config_label("pdf_sensor_fault_threshold_percent")).grid(row=0, column=0, sticky="w")
+        tk.Entry(sec6, textvariable=vars_map["pdf_sensor_fault_threshold_percent"], width=10).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        tk.Label(sec6, text="Sensor read failures below this percentage are omitted from the PDF but remain visible in the status table.", justify="left", wraplength=540).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
         def _apply_options(close_after: bool) -> None:
             try:
                 new_cfg = self._collect_report_config_from_options_dialog(vars_map)
@@ -2927,21 +2978,20 @@ class PlotterApp:
         tk.Button(button_row, text="Save", command=lambda: _apply_options(True)).pack(side="left", padx=(0, 6))
         tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left")
 
-    def _create_status_flags_section(self, parent: tk.Widget, row: int) -> None:
+    def _create_status_flags_section(self, parent: tk.Widget, row: int, column: int = 0) -> None:
         status_frame = tk.LabelFrame(parent, text="Data Quality / Status Flags", padx=8, pady=6)
-        status_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        status_frame.grid(row=row, column=column, sticky="nsew", pady=(0, 0), padx=(8, 0))
         status_frame.columnconfigure(0, weight=1)
 
         threshold_row = tk.Frame(status_frame)
         threshold_row.grid(row=0, column=0, sticky="w")
-        tk.Label(threshold_row, text="PDF sensor read failure threshold percent:").grid(row=0, column=0, sticky="w")
+        tk.Label(threshold_row, text="PDF sensor fault threshold percent:").grid(row=0, column=0, sticky="w")
         tk.Entry(threshold_row, textvariable=self.pdf_sensor_fault_threshold_text, width=10).grid(row=0, column=1, sticky="w", padx=(6, 0))
 
-        tk.Label(status_frame, text="Only include sensor read failure detail in the PDF if percentage is greater than or equal to this threshold.", justify="left").grid(row=1, column=0, sticky="w")
-        tk.Label(status_frame, text="Sensor read failures remain visible here even when omitted from the PDF.", justify="left").grid(row=2, column=0, sticky="w")
+        tk.Label(status_frame, text="Sensor read failures below this threshold are hidden from the PDF but shown here.", justify="left", wraplength=340).grid(row=1, column=0, sticky="w")
 
         table_frame = tk.Frame(status_frame)
-        table_frame.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        table_frame.grid(row=2, column=0, sticky="ew", pady=(4, 0))
         table_frame.columnconfigure(0, weight=1)
 
         columns = ("flag", "count", "percent")
@@ -2959,12 +3009,11 @@ class PlotterApp:
         self.status_flags_tree.configure(yscrollcommand=scrollbar.set)
 
         self.show_zero_status_flags = tk.BooleanVar(value=False)
-        tk.Checkbutton(status_frame, text="Show zero-count flags", variable=self.show_zero_status_flags, command=lambda: self._refresh_status_from_current_range()).grid(row=4, column=0, sticky="w", pady=(4, 0))
         self.status_flags_tree.bind("<<TreeviewSelect>>", self._on_status_flag_selected)
         self.status_summary_label = tk.Label(status_frame, text="Status: n/a", justify="left", anchor="w")
-        self.status_summary_label.grid(row=5, column=0, sticky="w", pady=(4, 0))
+        self.status_summary_label.grid(row=3, column=0, sticky="w", pady=(4, 0))
         self.status_meaning_label = tk.Label(status_frame, text="Meaning: n/a", justify="left", anchor="w")
-        self.status_meaning_label.grid(row=6, column=0, sticky="w")
+        self.status_meaning_label.grid(row=4, column=0, sticky="w")
 
     def _refresh_status_flags_table(self, df: Optional[pd.DataFrame]) -> None:
         rows = _build_status_flag_rows(df) if df is not None else []
@@ -2984,7 +3033,7 @@ class PlotterApp:
             return
 
         for row in display_rows:
-            self.status_flags_tree.insert("", tk.END, values=(row.short_name, row.count, _format_percent_for_status_table(row.percent)))
+            self.status_flags_tree.insert("", tk.END, values=_status_table_values(row))
         top = max(display_rows, key=lambda r: r.count)
         self.status_summary_label.config(text=f"Status: {top.short_name} {top.count} rows, {_format_percent_for_status_table(top.percent)}.")
         self.status_meaning_label.config(text=f"Meaning: {top.meaning or top.label}")
@@ -2997,7 +3046,7 @@ class PlotterApp:
         if not vals:
             return
         key = str(vals[0])
-        self.status_meaning_label.config(text=f"Meaning: {_FLAG_MEANINGS.get(key, key)}")
+        self.status_meaning_label.config(text=f"Meaning: {_status_flag_meaning_for_key(key)}")
 
     def _handle_scenario_change(self, _event: Optional[tk.Event] = None) -> None:
         if self.scenario_choice.get() == "Thermal cycling":
