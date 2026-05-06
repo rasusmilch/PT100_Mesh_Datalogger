@@ -2,6 +2,7 @@ import pytest
 serial = pytest.importorskip("serial")
 from pathlib import Path
 import importlib.util
+import sys
 import host_tools.logger as logger
 
 
@@ -26,8 +27,12 @@ def test_format_host_prefix_toggle():
 
 def test_module_import_no_file_side_effects(tmp_path):
     before = set(tmp_path.iterdir())
-    spec = importlib.util.spec_from_file_location("logger_module", Path("host_tools/logger.py"))
+    spec = importlib.util.spec_from_file_location("host_tools.logger", Path("host_tools/logger.py"))
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
     after = set(tmp_path.iterdir())
     assert before == after

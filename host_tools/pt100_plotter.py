@@ -650,7 +650,7 @@ def _resolve_input_timezone(
         return display_tz, "Same as display"
     if mode == "log/source time":
         return source_tz, "Log/source time"
-    return source_tz, "Log/source time"
+    raise ValueError(f"Unknown input timezone mode: {input_timezone_mode}")
 
 
 def _parse_user_time_in_zone(

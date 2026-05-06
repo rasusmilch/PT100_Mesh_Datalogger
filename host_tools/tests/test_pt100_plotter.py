@@ -12,7 +12,7 @@ def test_canonical_time_selection_independent_of_display_tz():
     local_tz = datetime.timezone(datetime.timedelta(hours=-5))
     local_start = '2025-12-31 19:01'
     local_end = '2025-12-31 19:03'
-    trimmed_local, *_ = p._validate_and_trim_by_minute(df, '__time', local_start, local_end, time_series_utc=utc, input_timezone_mode='Display time zone', display_tz=local_tz)
+    trimmed_local, *_ = p._validate_and_trim_by_minute(df, '__time', local_start, local_end, time_series_utc=utc, input_timezone_mode='Same as display', display_tz=local_tz)
     assert trimmed_utc.index.tolist() == trimmed_local.index.tolist() == [1,2,3]
 
 
