@@ -689,6 +689,50 @@ def _format_timestamp_for_input_timezone(
     return ts_utc.tz_convert(tzinfo).strftime("%Y-%m-%d %H:%M")
 
 
+def _build_input_range_text_from_selected_utc(
+    selected_start_utc: pd.Timestamp,
+    selected_end_utc: pd.Timestamp,
+    *,
+    input_timezone_mode: str,
+    display_tz: Optional[datetime.tzinfo],
+    source_tz: Optional[datetime.tzinfo],
+    ) -> Tuple[str, str]:
+    """Format selected UTC range endpoints for the main Start/End input fields."""
+    start_text = _format_timestamp_for_input_timezone(
+        selected_start_utc,
+        input_timezone_mode=input_timezone_mode,
+        display_tz=display_tz,
+        source_tz=source_tz,
+    )
+    end_text = _format_timestamp_for_input_timezone(
+        selected_end_utc,
+        input_timezone_mode=input_timezone_mode,
+        display_tz=display_tz,
+        source_tz=source_tz,
+    )
+    return start_text, end_text
+
+
+def _apply_range_selection_to_main_form(
+    apply_callback,
+    *,
+    selected_start_utc: pd.Timestamp,
+    selected_end_utc: pd.Timestamp,
+    input_timezone_mode: str,
+    display_tz: Optional[datetime.tzinfo],
+    source_tz: Optional[datetime.tzinfo],
+) -> None:
+    """Apply selected UTC endpoints to main Start/End inputs via callback."""
+    start_text, end_text = _build_input_range_text_from_selected_utc(
+        selected_start_utc,
+        selected_end_utc,
+        input_timezone_mode=input_timezone_mode,
+        display_tz=display_tz,
+        source_tz=source_tz,
+    )
+    apply_callback(start_text, end_text, mark_manual=True)
+
+
 def _parse_positive_int(raw_text: str, field_label: str, default_value: int) -> int:
     text = (raw_text or "").strip()
     if not text:
@@ -2758,6 +2802,7 @@ class PlotterApp:
             else:
                 ax.set_xlim(val)
             _update_labels(val)
+            _set_selected_utc_from_slider(val)
             slider.valtext.set_text("")
             canvas.draw_idle()
 
@@ -2776,8 +2821,24 @@ class PlotterApp:
         )
         tk.Label(
             label_frame,
-            text=f"Selected range will be written as: {input_mode_label}",
+            text=f"Applies using: {input_mode_label}",
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        selected_start_utc: Optional[pd.Timestamp] = None
+        selected_end_utc: Optional[pd.Timestamp] = None
+
+        def _set_selected_utc_from_slider(val: Tuple[float, float]) -> None:
+            nonlocal selected_start_utc, selected_end_utc
+            if time_column != "__time" or display_tz is None:
+                selected_start_utc = None
+                selected_end_utc = None
+                return
+            start_dt = mdates.num2date(val[0], tz=display_tz)
+            end_dt = mdates.num2date(val[1], tz=display_tz)
+            selected_start_utc = pd.Timestamp(start_dt).tz_convert(datetime.timezone.utc)
+            selected_end_utc = pd.Timestamp(end_dt).tz_convert(datetime.timezone.utc)
+
+        _set_selected_utc_from_slider(slider.val)
 
         def _apply_range() -> None:
             if time_column != "__time" or present_minutes is None:
@@ -2788,31 +2849,30 @@ class PlotterApp:
                 )
                 selector_window.destroy()
                 return
-            start_dt = mdates.num2date(slider.val[0], tz=display_tz)
-            end_dt = mdates.num2date(slider.val[1], tz=display_tz)
-            start_utc = pd.Timestamp(start_dt).tz_convert(datetime.timezone.utc)
-            end_utc = pd.Timestamp(end_dt).tz_convert(datetime.timezone.utc)
-            nearest_start_utc = present_minutes_index[present_minutes_index.get_indexer([start_utc], method="nearest")[0]]
-            nearest_end_utc = present_minutes_index[present_minutes_index.get_indexer([end_utc], method="nearest")[0]]
-            start_text = _format_timestamp_for_input_timezone(
-                nearest_start_utc,
+            if selected_start_utc is None or selected_end_utc is None:
+                messagebox.showerror("Range Selector", "Unable to resolve selected time range.")
+                return
+            nearest_start_utc = present_minutes_index[present_minutes_index.get_indexer([selected_start_utc], method="nearest")[0]]
+            nearest_end_utc = present_minutes_index[present_minutes_index.get_indexer([selected_end_utc], method="nearest")[0]]
+            _apply_range_selection_to_main_form(
+                self._apply_selected_time_range,
+                selected_start_utc=nearest_start_utc,
+                selected_end_utc=nearest_end_utc,
                 input_timezone_mode=self.input_tz_choice.get(),
                 display_tz=display_tz,
                 source_tz=self.loaded.source_tz,
             )
-            end_text = _format_timestamp_for_input_timezone(
-                nearest_end_utc,
-                input_timezone_mode=self.input_tz_choice.get(),
-                display_tz=display_tz,
-                source_tz=self.loaded.source_tz,
-            )
-            self._apply_selected_time_range(start_text, end_text, mark_manual=True)
             selector_window.destroy()
 
         action_frame = tk.Frame(selector_window, padx=8, pady=6)
         action_frame.pack(fill="x")
-        tk.Button(action_frame, text="Apply range", command=_apply_range).pack(side="left")
-        tk.Button(action_frame, text="Close", command=selector_window.destroy).pack(side="left", padx=6)
+        def _cancel_range() -> None:
+            selector_window.destroy()
+
+        selector_window.protocol("WM_DELETE_WINDOW", _cancel_range)
+
+        tk.Button(action_frame, text="Apply", command=_apply_range).pack(side="left")
+        tk.Button(action_frame, text="Cancel", command=_cancel_range).pack(side="left", padx=6)
 
     def _get_trimmed_df(self) -> Tuple[pd.DataFrame, str, str, str, str, DisplayTimeConfig, Optional[pd.Series]]:
         if not self.loaded:
