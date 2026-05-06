@@ -245,3 +245,56 @@ def test_save_config_writes_json(tmp_path):
         assert loaded.max_plot_points == 1234
     finally:
         root.destroy()
+
+def _mk_loaded_log(df):
+    return p.LoadedLog(
+        dataframe=df,
+        time_column="__time",
+        time_source="epoch_utc",
+        tzinfo=datetime.timezone.utc,
+        source_files=[],
+        dropped_no_time_rows=0,
+        file_headers={},
+        audit_summary=p.AuditSummary([], [], "", "", "", None, "", "", None),
+    )
+
+
+def test_build_plot_options_from_config_maps_fields():
+    cfg = p.create_default_report_config()
+    cfg.display_temperature_f = True
+    cfg.rolling_mean_divisor = 9
+    cfg.downsample_enabled = False
+    cfg.max_plot_points = 123
+    cfg.highlight_above_enabled = True
+    cfg.highlight_above_value = 10.5
+    cfg.show_std_band = True
+    df = pd.DataFrame({"cal_temp_c": [1.0, 2.0]})
+    opts = p.build_plot_options_from_config(cfg, _mk_loaded_log(df), df, p.DisplayTimeConfig(None, "n/a"))
+    assert opts.temp_unit == "F"
+    assert opts.rolling_mean_divisor == 9
+    assert opts.enable_downsample is False
+    assert opts.max_plot_points == 123
+    assert opts.highlights.highlight_above is True
+    assert opts.highlights.upper_limit == pytest.approx(10.5)
+
+
+def test_build_plot_options_missing_series_raises_clear_error():
+    cfg = p.create_default_report_config()
+    cfg.y_axis_series = "raw_temp_c"
+    df = pd.DataFrame({"cal_temp_c": [1.0]})
+    with pytest.raises(ValueError, match="Configured y_axis_series not found"):
+        p.build_plot_options_from_config(cfg, _mk_loaded_log(df), df, p.DisplayTimeConfig(None, "n/a"))
+
+
+def test_build_plot_options_invalid_display_timezone_blocks():
+    cfg = p.create_default_report_config()
+    cfg.display_timezone = "Bad/Timezone"
+    with pytest.raises(ValueError, match="display_timezone"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_invalid_input_timezone_mode_blocks():
+    cfg = p.create_default_report_config()
+    cfg.input_timezone_mode = "BadMode"
+    with pytest.raises(ValueError, match="input_timezone_mode"):
+        p.validate_report_config(cfg)

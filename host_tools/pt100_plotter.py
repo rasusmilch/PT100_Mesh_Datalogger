@@ -226,6 +226,44 @@ def load_report_config(path: str) -> ReportConfig:
     return config
 
 
+def build_plot_options_from_config(
+    config: ReportConfig,
+    loaded_log: LoadedLog,
+    trimmed_dataframe: pd.DataFrame,
+    display_time_config: DisplayTimeConfig,
+) -> PlotOptions:
+    validate_report_config(config)
+    if config.y_axis_series not in trimmed_dataframe.columns:
+        raise ValueError(f"Configured y_axis_series not found in loaded data: {config.y_axis_series}")
+
+    stats = StatsOptions(
+        show_min=config.show_minimum,
+        show_max=config.show_maximum,
+        show_avg=config.show_average,
+        show_std_band=config.show_std_band,
+    )
+    highlights = HighlightOptions(
+        highlight_outside_std=config.highlight_outside_std and stats.show_std_band,
+        upper_limit=config.highlight_above_value,
+        lower_limit=config.highlight_below_value,
+        highlight_above=config.highlight_above_enabled,
+        highlight_below=config.highlight_below_enabled,
+        apply_to_rolling_mean=config.highlight_mask_from_rolling_mean,
+    )
+    temp_unit = "F" if config.display_temperature_f else "C"
+    return PlotOptions(
+        overlay_raw_temp=config.overlay_raw_temp_c,
+        smooth=config.smooth_enabled,
+        rolling_mean_divisor=int(config.rolling_mean_divisor),
+        enable_downsample=config.downsample_enabled,
+        max_plot_points=int(config.max_plot_points),
+        temp_unit=temp_unit,
+        stats=stats,
+        highlights=highlights,
+        display_time_config=display_time_config,
+        time_source=loaded_log.time_source,
+    )
+
 
 def _load_flag_definitions_from_header() -> List[Tuple[int, str]]:
     """Load log record flag bitmasks from the ESP32 project's header.
@@ -2644,7 +2682,7 @@ class PlotterApp:
 
     def _build_report_config_from_ui(self) -> ReportConfig:
         return ReportConfig(
-            input_timezone_mode=self.input_tz_mode_choice.get(),
+            input_timezone_mode=cfg.input_timezone_mode,
             display_timezone=self.display_tz_choice.get(),
             y_axis_series=self.y_choice.get(),
             display_temperature_f=self.temp_f.get(),
@@ -2878,52 +2916,22 @@ class PlotterApp:
         median_seconds = diffs.dt.total_seconds().median()
         return bool(median_seconds >= 60)
 
-    def _collect_plot_options(
-        self,
-        display_time_config: DisplayTimeConfig,
-        smooth: bool,
-        overlay_raw: bool,
-    ) -> PlotOptions:
-        if smooth:
-            rolling_mean_divisor = _parse_positive_int(
-                self.rolling_mean_divisor_text.get(),
-                "Rolling-mean window divisor",
-                _DEFAULT_ROLLING_MEAN_DIVISOR,
-            )
-            if not self.rolling_mean_divisor_text.get().strip():
-                self.rolling_mean_divisor_text.set(str(_DEFAULT_ROLLING_MEAN_DIVISOR))
-        else:
-            rolling_mean_divisor = _DEFAULT_ROLLING_MEAN_DIVISOR
-
-        stats = StatsOptions(
-            show_min=self.stats_show_min.get(),
-            show_max=self.stats_show_max.get(),
-            show_avg=self.stats_show_avg.get(),
-            show_std_band=self.stats_show_std.get(),
-        )
-        highlight_upper = self._parse_optional_float(self.highlight_upper_limit.get(), "upper")
-        highlight_lower = self._parse_optional_float(self.highlight_lower_limit.get(), "lower")
-        highlights = HighlightOptions(
-            highlight_outside_std=self.highlight_outside_std.get() and stats.show_std_band,
-            upper_limit=highlight_upper,
-            lower_limit=highlight_lower,
-            highlight_above=self.highlight_above.get(),
-            highlight_below=self.highlight_below.get(),
-            apply_to_rolling_mean=self.highlight_apply_to_rolling_mean.get(),
-        )
-        temp_unit = "F" if self.temp_f.get() else "C"
-        return PlotOptions(
-            overlay_raw_temp=overlay_raw,
-            smooth=smooth,
-            rolling_mean_divisor=rolling_mean_divisor,
-            enable_downsample=self.enable_downsample.get(),
-            max_plot_points=int(self.max_plot_points.get()),
-            temp_unit=temp_unit,
-            stats=stats,
-            highlights=highlights,
-            display_time_config=display_time_config,
-            time_source=self.loaded.time_source if self.loaded else "unknown",
-        )
+    def _validate_loaded_config_for_action(self) -> ReportConfig:
+        if not self.report_config_loaded or self.report_config is None:
+            raise ValueError("Load a report configuration before this action.")
+        cfg = self.report_config
+        validate_report_config(cfg)
+        if not self.loaded:
+            raise ValueError("No data loaded.")
+        if cfg.y_axis_series not in self.loaded.dataframe.columns:
+            raise ValueError(f"Configured y_axis_series not found in loaded data: {cfg.y_axis_series}")
+        display_tz = _resolve_display_tz(cfg.display_timezone)
+        if display_tz is None:
+            raise ValueError(f"Configured display_timezone is invalid: {cfg.display_timezone}")
+        input_tz, _ = _resolve_input_timezone(cfg.input_timezone_mode, display_tz, self.loaded.tzinfo)
+        if input_tz is None:
+            raise ValueError(f"Configured input_timezone_mode cannot be resolved: {cfg.input_timezone_mode}")
+        return cfg
 
     def _dataset_is_calibrated(self) -> bool:
         if not self.loaded:
@@ -3029,19 +3037,21 @@ class PlotterApp:
         self._load_paths(file_paths)
 
     def open_range_selector(self) -> None:
-        if not self.loaded:
-            messagebox.showerror("Range Selector", "No data loaded.")
+        try:
+            cfg = self._validate_loaded_config_for_action()
+        except Exception as exc:
+            messagebox.showerror("Range Selector", str(exc))
             return
 
         df = self.loaded.dataframe
         time_column = self.loaded.time_column
-        y_name = self.y_choice.get()
+        y_name = cfg.y_axis_series
         y_series = pd.to_numeric(df.get(y_name, pd.Series(dtype=float)), errors="coerce")
 
-        display_tz = _resolve_display_tz(self.display_tz_choice.get())
+        display_tz = _resolve_display_tz(cfg.display_timezone)
         if time_column == "__time":
             if display_tz is None:
-                messagebox.showerror("Range Selector", f"Invalid time zone: {self.display_tz_choice.get()}")
+                messagebox.showerror("Range Selector", f"Invalid time zone: {cfg.display_timezone}")
                 return
             display_series = _convert_time_series_to_display_tz(
                 df[time_column],
@@ -3081,7 +3091,7 @@ class PlotterApp:
         ax = fig.add_subplot(111)
         ax.plot(x_plot, y_series, linewidth=0.8, alpha=0.8, label="preview")
         ax.set_xlabel(x_label)
-        ax.set_ylabel(_human_series_label(y_name, temp_unit="F" if self.temp_f.get() else "C"))
+        ax.set_ylabel(_human_series_label(y_name, temp_unit="F" if cfg.display_temperature_f else "C"))
         ax.grid(True)
         if time_column == "__time":
             locator = mdates.AutoDateLocator(minticks=4, maxticks=10)
@@ -3147,7 +3157,7 @@ class PlotterApp:
         tk.Label(label_frame, text="End:").grid(row=1, column=0, sticky="w")
         tk.Label(label_frame, textvariable=end_label_var).grid(row=1, column=1, sticky="w")
         _, input_mode_label = _resolve_input_timezone(
-            self.input_tz_mode_choice.get(),
+            cfg.input_timezone_mode,
             display_tz,
             self.loaded.tzinfo,
         )
@@ -3204,7 +3214,7 @@ class PlotterApp:
                 self._apply_selected_time_range,
                 selected_start_utc=nearest_start_utc,
                 selected_end_utc=nearest_end_utc,
-                input_timezone_mode=self.input_tz_mode_choice.get(),
+                input_timezone_mode=cfg.input_timezone_mode,
                 display_tz=display_tz,
                 source_tz=self.loaded.tzinfo,
             )
@@ -3220,16 +3230,16 @@ class PlotterApp:
         tk.Button(action_frame, text="Apply", command=_apply_range).pack(side="left")
         tk.Button(action_frame, text="Cancel", command=_cancel_range).pack(side="left", padx=6)
 
-    def _get_trimmed_df(self) -> Tuple[pd.DataFrame, str, str, str, str, DisplayTimeConfig, Optional[pd.Series]]:
+    def _get_trimmed_df(self, cfg: ReportConfig) -> Tuple[pd.DataFrame, str, str, str, str, DisplayTimeConfig, Optional[pd.Series]]:
         if not self.loaded:
             raise ValueError("No data loaded.")
         display_series = None
         display_tz = None
         time_series_utc = None
         if self.loaded.time_column == "__time":
-            display_tz = _resolve_display_tz(self.display_tz_choice.get())
+            display_tz = _resolve_display_tz(cfg.display_timezone)
             if display_tz is None:
-                raise ValueError(f"Invalid time zone: {self.display_tz_choice.get()}")
+                raise ValueError(f"Configured display_timezone is invalid: {cfg.display_timezone}")
             time_series_utc = _canonicalize_time_to_utc(
                 self.loaded.dataframe[self.loaded.time_column],
                 time_source=self.loaded.time_source,
@@ -3246,7 +3256,7 @@ class PlotterApp:
             start_text=self.start_time_text.get(),
             end_text=self.end_time_text.get(),
             time_series_utc=time_series_utc,
-            input_timezone_mode=self.input_tz_mode_choice.get(),
+            input_timezone_mode=cfg.input_timezone_mode,
             display_tz=display_tz,
             source_tz=self.loaded.tzinfo,
         )
@@ -3259,23 +3269,12 @@ class PlotterApp:
         else:
             display_config = DisplayTimeConfig(display_tz=None, display_tz_label="n/a")
 
-        if (
-            self.y_choice.get() == "raw_temp_c"
-            and "cal_temp_c" in trimmed.columns
-            and _is_fully_calibrated(trimmed)
-            and not self._auto_selected_cal_series
-        ):
-            self.y_choice.set("cal_temp_c")
-            self._auto_selected_cal_series = True
-
         return trimmed, start_label, end_label, summary, selected_label, display_config, display_series
 
     def save_trimmed_csv(self) -> None:
-        if not self.loaded:
-            messagebox.showerror("Save Error", "No data loaded.")
-            return
         try:
-            trimmed, start_label, end_label, summary, _selected_label, _display_config, _display_series = self._get_trimmed_df()
+            cfg = self._validate_loaded_config_for_action()
+            trimmed, start_label, end_label, summary, _selected_label, _display_config, _display_series = self._get_trimmed_df(cfg)
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -3298,16 +3297,14 @@ class PlotterApp:
         messagebox.showinfo("Saved", f"Saved trimmed CSV:\n{save_path}\n\n{summary}")
 
     def plot(self) -> None:
-        if not self.loaded:
-            messagebox.showerror("Plot Error", "No data loaded.")
-            return
         try:
-            df, start_label, end_label, _summary, selected_label, display_config, display_series = self._get_trimmed_df()
+            cfg = self._validate_loaded_config_for_action()
+            df, start_label, end_label, _summary, selected_label, display_config, display_series = self._get_trimmed_df(cfg)
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
 
-        requested_y_name = self.y_choice.get()
+        requested_y_name = cfg.y_axis_series
         y_name_effective = requested_y_name
 
         dataset_is_calibrated = self._dataset_is_calibrated()
@@ -3319,13 +3316,13 @@ class PlotterApp:
             messagebox.showerror("Plot Error", f"Column not found: {y_name_effective}")
             return
 
-        overlay_raw = self.overlay_raw.get()
+        overlay_raw = cfg.overlay_raw_temp_c
         if overlay_raw and "raw_temp_c" not in df.columns:
             self.overlay_raw.set(False)
             overlay_raw = False
             messagebox.showinfo("Overlay Disabled", "raw_temp_c is not available in this dataset.")
 
-        smooth = self.smooth.get()
+        smooth = cfg.smooth_enabled
         if display_series is not None and self._detect_aggregated(display_series):
             if smooth and not self._warned_aggregated:
                 messagebox.showinfo("Smoothing Disabled", "Input appears aggregated; smoothing disabled.")
@@ -3339,12 +3336,14 @@ class PlotterApp:
             utc_times.max(),
             display_config.display_tz,
         )
-        plot_title = _human_series_label(y_name_effective, temp_unit="F" if self.temp_f.get() else "C")
+        plot_title = _human_series_label(y_name_effective, temp_unit="F" if cfg.display_temperature_f else "C")
         node_label = nodes if nodes != "n/a" else "n/a"
         suptitle = _build_report_subtitle(node_label, display_start, display_end, timezone_label)
 
         try:
-            options = self._collect_plot_options(display_config, smooth=smooth, overlay_raw=overlay_raw)
+            options = build_plot_options_from_config(cfg, self.loaded, df, display_config)
+            options.smooth = smooth
+            options.overlay_raw_temp = overlay_raw
         except Exception as exc:
             messagebox.showerror("Plot Error", str(exc))
             return
@@ -3360,16 +3359,14 @@ class PlotterApp:
         plt.show()
 
     def export_pdf(self) -> None:
-        if not self.loaded:
-            messagebox.showerror("PDF Error", "No data loaded.")
-            return
         try:
-            df, start_label, end_label, summary, selected_label, display_config, display_series = self._get_trimmed_df()
+            cfg = self._validate_loaded_config_for_action()
+            df, start_label, end_label, summary, selected_label, display_config, display_series = self._get_trimmed_df(cfg)
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
 
-        requested_y_name = self.y_choice.get()
+        requested_y_name = cfg.y_axis_series
         y_name_effective = requested_y_name
 
         dataset_is_calibrated = self._dataset_is_calibrated()
@@ -3390,13 +3387,13 @@ class PlotterApp:
             messagebox.showerror("PDF Error", f"Column not found: {y_name_effective}")
             return
 
-        overlay_raw = self.overlay_raw.get()
+        overlay_raw = cfg.overlay_raw_temp_c
         if overlay_raw and "raw_temp_c" not in df.columns:
             self.overlay_raw.set(False)
             overlay_raw = False
             messagebox.showinfo("Overlay Disabled", "raw_temp_c is not available in this dataset.")
 
-        smooth = self.smooth.get()
+        smooth = cfg.smooth_enabled
         if display_series is not None and self._detect_aggregated(display_series):
             if smooth and not self._warned_aggregated:
                 messagebox.showinfo("Smoothing Disabled", "Input appears aggregated; smoothing disabled.")
@@ -3413,7 +3410,7 @@ class PlotterApp:
         if not save_path:
             return
 
-        use_vector_pdf = bool(self.pdf_vector.get())
+        use_vector_pdf = bool(cfg.vector_pdf)
 
         tmp_dir: Optional[str] = None
         fig_png_path: Optional[str] = None
@@ -3432,11 +3429,13 @@ class PlotterApp:
         node_label = nodes if nodes != "n/a" else "n/a"
         subtitle = None
 
-        temp_unit = "F" if self.temp_f.get() else "C"
+        temp_unit = "F" if cfg.display_temperature_f else "C"
         plot_title = _human_series_label(y_name_effective, temp_unit=temp_unit)
 
         try:
-            options = self._collect_plot_options(display_config, smooth=smooth, overlay_raw=overlay_raw)
+            options = build_plot_options_from_config(cfg, self.loaded, df, display_config)
+            options.smooth = smooth
+            options.overlay_raw_temp = overlay_raw
         except Exception as exc:
             messagebox.showerror("PDF Error", str(exc))
             return
@@ -3459,7 +3458,7 @@ class PlotterApp:
         stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name_effective)
         stats = _compute_basic_stats(stats_series)
         sensor_fault_threshold_percent = _parse_nonnegative_float(
-            self.pdf_sensor_fault_threshold_text.get(),
+            str(cfg.pdf_sensor_fault_threshold_percent),
             "PDF sensor read failure threshold percent",
             0.10,
         )
@@ -3553,7 +3552,7 @@ class PlotterApp:
                 )
             else:
                 assert fig_png_path is not None
-                fig.savefig(fig_png_path, dpi=int(self.pdf_plot_dpi.get()))
+                fig.savefig(fig_png_path, dpi=int(cfg.pdf_plot_dpi))
                 _export_pdf_report(
                     save_path=save_path,
                     fig_png_path=fig_png_path,
