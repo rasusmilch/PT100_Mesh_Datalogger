@@ -55,3 +55,63 @@ def test_local_input_equivalent_utc_instants():
         time_series_utc=utc_series, input_timezone_mode='UTC', display_tz=datetime.timezone.utc, source_tz=datetime.timezone.utc
     )
     assert list(trimmed_local_mode.index) == list(trimmed_utc_mode.index)
+
+
+def test_format_timestamp_for_input_timezone_utc():
+    ts_utc = pd.Timestamp("2026-05-06 12:33:00+00:00")
+    out = plotter._format_timestamp_for_input_timezone(
+        ts_utc,
+        input_timezone_mode="UTC",
+        display_tz=datetime.timezone(datetime.timedelta(hours=-5)),
+        source_tz=datetime.timezone(datetime.timedelta(hours=-5)),
+    )
+    assert out == "2026-05-06 12:33"
+
+
+def test_format_timestamp_for_input_timezone_source_tz():
+    ts_utc = pd.Timestamp("2026-05-06 12:33:00+00:00")
+    src_tz = datetime.timezone(datetime.timedelta(hours=-5))
+    out = plotter._format_timestamp_for_input_timezone(
+        ts_utc,
+        input_timezone_mode="Log/source time",
+        display_tz=datetime.timezone.utc,
+        source_tz=src_tz,
+    )
+    assert out == "2026-05-06 07:33"
+
+
+def test_format_timestamp_for_input_timezone_same_as_display():
+    ts_utc = pd.Timestamp("2026-05-06 12:33:00+00:00")
+    display_tz = datetime.timezone(datetime.timedelta(hours=-5))
+    out = plotter._format_timestamp_for_input_timezone(
+        ts_utc,
+        input_timezone_mode="Same as display",
+        display_tz=display_tz,
+        source_tz=datetime.timezone.utc,
+    )
+    assert out == "2026-05-06 07:33"
+
+
+def test_range_dialog_path_writes_input_timezone_values_that_validate():
+    utc_series = pd.Series(pd.date_range("2026-05-06 12:30:00+00:00", periods=5, freq="min"))
+    df = pd.DataFrame({"__time": utc_series, "value": range(5)})
+    present_minutes = pd.DatetimeIndex(utc_series.dt.floor("min").unique()).sort_values()
+    selected_end_display_utc = pd.Timestamp("2026-05-06 12:33:23+00:00")
+    nearest_end_utc = present_minutes[present_minutes.get_indexer([selected_end_display_utc], method="nearest")[0]]
+    end_text = plotter._format_timestamp_for_input_timezone(
+        nearest_end_utc,
+        input_timezone_mode="Log/source time",
+        display_tz=datetime.timezone.utc,
+        source_tz=datetime.timezone(datetime.timedelta(hours=-5)),
+    )
+    trimmed, *_ = plotter._validate_and_trim_by_minute(
+        df,
+        "__time",
+        "",
+        end_text,
+        time_series_utc=utc_series,
+        input_timezone_mode="Log/source time",
+        display_tz=datetime.timezone.utc,
+        source_tz=datetime.timezone(datetime.timedelta(hours=-5)),
+    )
+    assert len(trimmed) == 4
