@@ -28,14 +28,14 @@ def test_utc_input_same_rows_across_display_tz():
 def test_same_as_display_can_change_rows():
     df = _sample_df()
     utc_series = plotter._canonicalize_time_to_utc(df['__time'], 'epoch_utc', datetime.timezone.utc)
-    local_tz = plotter._get_local_tz()
+    utc_minus_5 = datetime.timezone(datetime.timedelta(hours=-5), name="UTC-05")
     trimmed_utc, *_ = plotter._validate_and_trim_by_minute(
-        df, '__time', '2026-05-05 12:35', '2026-05-06 04:57',
+        df, '__time', '2026-05-05 00:35', '2026-05-05 00:57',
         time_series_utc=utc_series, input_timezone_mode='Same as display', display_tz=datetime.timezone.utc, source_tz=datetime.timezone.utc
     )
     trimmed_local, *_ = plotter._validate_and_trim_by_minute(
-        df, '__time', '2026-05-05 12:35', '2026-05-06 04:57',
-        time_series_utc=utc_series, input_timezone_mode='Same as display', display_tz=local_tz, source_tz=datetime.timezone.utc
+        df, '__time', '2026-05-05 00:35', '2026-05-05 00:57',
+        time_series_utc=utc_series, input_timezone_mode='Same as display', display_tz=utc_minus_5, source_tz=datetime.timezone.utc
     )
     assert len(trimmed_utc) != len(trimmed_local) or trimmed_utc.index[0] != trimmed_local.index[0]
 
