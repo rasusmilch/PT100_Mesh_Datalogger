@@ -696,3 +696,42 @@ def test_compact_main_window_uses_no_legacy_tk_variables():
             assert not hasattr(app, legacy)
     finally:
         root.destroy()
+
+def test_get_available_y_axis_series_choices_defaults_when_unloaded():
+    app = p.PlotterApp.__new__(p.PlotterApp)
+    app.loaded = None
+    cfg = p.create_default_report_config()
+    choices = p.PlotterApp._get_available_y_axis_series_choices(app, cfg)
+    assert choices[:3] == ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms"]
+
+
+def test_get_available_y_axis_series_choices_uses_numeric_loaded_columns():
+    app = p.PlotterApp.__new__(p.PlotterApp)
+    app.loaded = SimpleNamespace(dataframe=pd.DataFrame({
+        "__time": pd.date_range("2026-01-01", periods=3, tz="UTC"),
+        "cal_temp_c": [1.0, 2.0, 3.0],
+        "raw_temp_c": [2.0, 3.0, 4.0],
+        "raw_rtd_ohms": [100.0, 101.0, 102.0],
+        "custom_metric": [9.0, 8.0, 7.0],
+        "flags": [0, 0, 0],
+    }))
+    cfg = p.create_default_report_config()
+    cfg.y_axis_series = "raw_temp_c"
+    choices = p.PlotterApp._get_available_y_axis_series_choices(app, cfg)
+    assert choices[:3] == ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms"]
+    assert "custom_metric" in choices
+    assert "flags" not in choices
+
+
+def test_invalid_configured_y_axis_series_blocks_action_with_clear_error():
+    app = p.PlotterApp.__new__(p.PlotterApp)
+    cfg = p.create_default_report_config()
+    cfg.y_axis_series = "does_not_exist"
+    app.report_config_loaded = True
+    app.report_config = cfg
+    app.loaded = SimpleNamespace(
+        dataframe=pd.DataFrame({"cal_temp_c": [1.0], "flags": [0], "fault_status": [0]}),
+        tzinfo=datetime.timezone.utc,
+    )
+    with pytest.raises(ValueError, match="Configured y-axis series does_not_exist is not present"):
+        p.PlotterApp._validate_loaded_config_for_action(app)

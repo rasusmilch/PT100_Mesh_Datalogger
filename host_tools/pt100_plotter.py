@@ -2567,8 +2567,8 @@ class PlotterApp:
         self.display_tz_choice = tk.StringVar(value="Local")
         self.input_tz_mode_choice = tk.StringVar(value="Log/source time")
 
-        self.y_choice = tk.StringVar(value="raw_temp_c")
-        self.series_choices = ["raw_temp_c", "raw_rtd_ohms"]
+        self.y_choice = tk.StringVar(value="cal_temp_c")
+        self.series_choices = ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms"]
         self.temp_f = tk.BooleanVar(value=False)
         self.overlay_raw = tk.BooleanVar(value=False)
         self.smooth = tk.BooleanVar(value=True)
@@ -2601,11 +2601,10 @@ class PlotterApp:
         self.root.after(0, self._show_startup_dialog)
 
     def _build_ui(self) -> None:
-        self.root.geometry("860x700")
+        self.root.geometry("640x760")
         frm = tk.Frame(self.root, padx=10, pady=10)
         frm.pack(fill="both", expand=True)
-        frm.columnconfigure(0, weight=3)
-        frm.columnconfigure(1, weight=2)
+        frm.columnconfigure(0, weight=1)
 
         config_frame = tk.LabelFrame(frm, text="1) Config", padx=8, pady=6)
         config_frame.grid(row=0, column=0, sticky="ew")
@@ -2651,7 +2650,7 @@ class PlotterApp:
 
         action_frame = tk.LabelFrame(frm, text="4) Actions", padx=8, pady=6)
         action_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        self._create_status_flags_section(frm, 0, 1)
+        self._create_status_flags_section(frm, 4, 0)
         self.plot_btn = tk.Button(action_frame, text="Plot", command=self.plot, state=tk.DISABLED)
         self.plot_btn.pack(side="left")
         self.save_trim_btn = tk.Button(action_frame, text="Save Trimmed CSV", command=self.save_trimmed_csv, state=tk.DISABLED)
@@ -2831,7 +2830,7 @@ class PlotterApp:
             return
         self._create_options_dialog()
 
-    def _available_y_axis_series(self, cfg: ReportConfig) -> List[str]:
+    def _get_available_y_axis_series_choices(self, cfg: Optional[ReportConfig] = None) -> List[str]:
         defaults = ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms"]
         if self.loaded is None:
             choices = defaults[:]
@@ -2841,7 +2840,7 @@ class PlotterApp:
             for d in defaults:
                 if d not in choices:
                     choices.append(d)
-        if cfg.y_axis_series not in choices:
+        if cfg is not None and cfg.y_axis_series and cfg.y_axis_series not in choices:
             choices.append(cfg.y_axis_series)
         return choices
 
@@ -2921,7 +2920,7 @@ class PlotterApp:
         tk.Label(sec, text=_human_config_label("input_timezone_mode")).grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Combobox(sec, textvariable=vars_map["display_timezone"], values=["Local", "UTC", "America/Chicago"], width=26).grid(row=1, column=1, sticky="w", pady=(4, 0))
         tk.Label(sec, text=_human_config_label("display_timezone")).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(4, 0))
-        ttk.Combobox(sec, textvariable=vars_map["y_axis_series"], values=self._available_y_axis_series(cfg), width=26).grid(row=2, column=1, sticky="w", pady=(4, 0))
+        ttk.Combobox(sec, textvariable=vars_map["y_axis_series"], values=self._get_available_y_axis_series_choices(cfg), width=26).grid(row=2, column=1, sticky="w", pady=(4, 0))
         tk.Label(sec, text=_human_config_label("y_axis_series")).grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(4, 0))
         sec2 = tk.LabelFrame(body, text="Temperature and plotting", padx=8, pady=6); sec2.grid(row=r, column=0, sticky="ew", pady=(6, 0)); r += 1
         sec2.columnconfigure(0, weight=1)
@@ -2980,15 +2979,15 @@ class PlotterApp:
 
     def _create_status_flags_section(self, parent: tk.Widget, row: int, column: int = 0) -> None:
         status_frame = tk.LabelFrame(parent, text="Data Quality / Status Flags", padx=8, pady=6)
-        status_frame.grid(row=row, column=column, sticky="nsew", pady=(0, 0), padx=(8, 0))
+        status_frame.grid(row=row, column=column, sticky="ew", pady=(8, 0))
         status_frame.columnconfigure(0, weight=1)
 
         threshold_row = tk.Frame(status_frame)
         threshold_row.grid(row=0, column=0, sticky="w")
         tk.Label(threshold_row, text="PDF sensor fault threshold percent:").grid(row=0, column=0, sticky="w")
-        tk.Entry(threshold_row, textvariable=self.pdf_sensor_fault_threshold_text, width=10).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        tk.Label(threshold_row, textvariable=self.pdf_sensor_fault_threshold_text).grid(row=0, column=1, sticky="w", padx=(6, 0))
 
-        tk.Label(status_frame, text="Sensor read failures below this threshold are hidden from the PDF but shown here.", justify="left", wraplength=340).grid(row=1, column=0, sticky="w")
+        tk.Label(status_frame, text="Sensor read failures below this threshold are hidden from the PDF but shown here.", justify="left", wraplength=520).grid(row=1, column=0, sticky="w")
 
         table_frame = tk.Frame(status_frame)
         table_frame.grid(row=2, column=0, sticky="ew", pady=(4, 0))
@@ -3136,7 +3135,10 @@ class PlotterApp:
         if not self.loaded:
             raise ValueError("No data loaded.")
         if cfg.y_axis_series not in self.loaded.dataframe.columns:
-            raise ValueError(f"Configured y_axis_series not found in loaded data: {cfg.y_axis_series}")
+            raise ValueError(
+                f"Configured y-axis series {cfg.y_axis_series} is not present in the selected log files. "
+                "Open Edit Options and choose a series that exists in the loaded logs."
+            )
         display_tz = _resolve_display_tz(cfg.display_timezone)
         if display_tz is None:
             raise ValueError(f"Configured display_timezone is invalid: {cfg.display_timezone}")
@@ -3155,51 +3157,6 @@ class PlotterApp:
         if fraction is not None:
             return fraction > 0.0
         return self.loaded.audit_summary.calibration_status == _CAL_STATUS_CALIBRATED
-
-    def _refresh_series_menu(self) -> None:
-        base_choices = ["raw_temp_c", "raw_rtd_ohms"]
-        choices = list(base_choices)
-        if self._dataset_is_calibrated():
-            choices.insert(0, "cal_temp_c")
-        if self.loaded:
-            choices = [name for name in choices if name in self.loaded.dataframe.columns]
-        if not choices:
-            choices = ["raw_temp_c"]
-        self.series_choices = choices
-
-        menu = self.y_menu["menu"]
-        menu.delete(0, "end")
-        for choice in choices:
-            menu.add_command(label=choice, command=self._build_series_menu_callback(choice))
-
-    def _build_series_menu_callback(self, choice: str):
-        def _on_select() -> None:
-            self._auto_selected_cal_series = True
-            self.y_choice.set(choice)
-
-        return _on_select
-
-    def _ensure_valid_y_choice(self) -> None:
-        self._refresh_series_menu()
-        available = list(self.series_choices)
-        if not available:
-            return
-
-        if self.loaded and "cal_temp_c" in available and _is_fully_calibrated(self.loaded.dataframe):
-            preferred = "cal_temp_c"
-        elif "raw_temp_c" in available:
-            preferred = "raw_temp_c"
-        else:
-            preferred = available[0]
-
-        current = self.y_choice.get()
-        if preferred == "cal_temp_c" and current == "raw_temp_c" and not self._auto_selected_cal_series:
-            self.y_choice.set("cal_temp_c")
-            self._auto_selected_cal_series = True
-            return
-
-        if current not in available or (current == "cal_temp_c" and not self._dataset_is_calibrated()):
-            self.y_choice.set(preferred)
 
     def _load_paths(self, file_paths: List[str]) -> None:
         if not file_paths:
@@ -3220,7 +3177,6 @@ class PlotterApp:
         self._refresh_status_from_current_range()
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
-        self._ensure_valid_y_choice()
         self._has_manual_time_range = False
         self._autofill_time_range(force=True)
 
