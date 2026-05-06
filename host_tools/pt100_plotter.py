@@ -1997,6 +1997,7 @@ def _export_pdf_report(
 
     elements: List[object] = []
     elements.append(Paragraph(title, styles_title))
+    elements.append(Spacer(1, 0.12 * inch))
     if subtitle:
         elements.append(Paragraph(subtitle, styles_sub))
     if warning_text:
