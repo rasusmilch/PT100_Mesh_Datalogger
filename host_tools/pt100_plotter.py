@@ -25,6 +25,7 @@ Run:
 from __future__ import annotations
 
 import re
+import json
 import datetime
 import glob
 import math
@@ -32,7 +33,7 @@ import os
 import tempfile
 import zlib
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Tuple, Sequence
 
 import tkinter as tk
@@ -126,6 +127,104 @@ _FALLBACK_FLAG_DEFS: List[Tuple[int, str]] = [
 ]
 
 _DEFAULT_ROLLING_MEAN_DIVISOR = 40
+
+
+@dataclass
+class ReportConfig:
+    input_timezone_mode: str
+    display_timezone: str
+    y_axis_series: str
+    display_temperature_f: bool
+    overlay_raw_temp_c: bool
+    smooth_enabled: bool
+    rolling_mean_divisor: int
+    downsample_enabled: bool
+    max_plot_points: int
+    pdf_plot_dpi: int
+    vector_pdf: bool
+    show_minimum: bool
+    show_maximum: bool
+    show_average: bool
+    show_std_band: bool
+    highlight_outside_std: bool
+    highlight_mask_from_rolling_mean: bool
+    highlight_above_enabled: bool
+    highlight_above_value: Optional[float]
+    highlight_below_enabled: bool
+    highlight_below_value: Optional[float]
+    pdf_sensor_fault_threshold_percent: float
+
+
+def create_default_report_config() -> ReportConfig:
+    return ReportConfig(
+        input_timezone_mode="Log/source time",
+        display_timezone="Local",
+        y_axis_series="cal_temp_c",
+        display_temperature_f=False,
+        overlay_raw_temp_c=False,
+        smooth_enabled=True,
+        rolling_mean_divisor=40,
+        downsample_enabled=True,
+        max_plot_points=20000,
+        pdf_plot_dpi=600,
+        vector_pdf=False,
+        show_minimum=False,
+        show_maximum=False,
+        show_average=False,
+        show_std_band=False,
+        highlight_outside_std=False,
+        highlight_mask_from_rolling_mean=False,
+        highlight_above_enabled=False,
+        highlight_above_value=None,
+        highlight_below_enabled=False,
+        highlight_below_value=None,
+        pdf_sensor_fault_threshold_percent=0.10,
+    )
+
+
+def validate_report_config(config: ReportConfig) -> None:
+    allowed_input_modes = {"Log/source time", "UTC", "Local", "Same as display"}
+    if config.input_timezone_mode not in allowed_input_modes:
+        raise ValueError("input_timezone_mode must be one of: Log/source time, UTC, Local, Same as display")
+    if config.display_timezone not in {"Local", "UTC"}:
+        if ZoneInfo is None:
+            raise ValueError("display_timezone requires zoneinfo support")
+        try:
+            ZoneInfo(config.display_timezone)
+        except Exception as exc:
+            raise ValueError(f"display_timezone is not resolvable: {config.display_timezone}") from exc
+    if not isinstance(config.y_axis_series, str) or not config.y_axis_series.strip():
+        raise ValueError("y_axis_series must be a non-empty string")
+    if int(config.rolling_mean_divisor) < 1:
+        raise ValueError("rolling_mean_divisor must be >= 1")
+    if int(config.max_plot_points) < 1:
+        raise ValueError("max_plot_points must be >= 1")
+    if int(config.pdf_plot_dpi) < 72:
+        raise ValueError("pdf_plot_dpi must be >= 72")
+    if float(config.pdf_sensor_fault_threshold_percent) < 0:
+        raise ValueError("pdf_sensor_fault_threshold_percent must be non-negative")
+    if (not config.highlight_above_enabled) and (config.highlight_above_value is not None):
+        raise ValueError("highlight_above_value must be null when highlight_above_enabled is false")
+    if (not config.highlight_below_enabled) and (config.highlight_below_value is not None):
+        raise ValueError("highlight_below_value must be null when highlight_below_enabled is false")
+
+
+def save_report_config(config: ReportConfig, path: str) -> None:
+    validate_report_config(config)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(asdict(config), f, indent=2)
+
+
+def load_report_config(path: str) -> ReportConfig:
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    try:
+        config = ReportConfig(**raw)
+    except TypeError as exc:
+        raise ValueError(f"Invalid report config schema: {exc}") from exc
+    validate_report_config(config)
+    return config
+
 
 
 def _load_flag_definitions_from_header() -> List[Tuple[int, str]]:
@@ -2345,7 +2444,8 @@ def _export_pdf_report_vector(
 class PlotterApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("PT100 Log Plotter + PDF Report")
+        self._base_title = "PT100 Log Plotter + PDF Report"
+        self.root.title(self._base_title)
 
         self.selected_files: List[str] = []
         self.loaded: Optional[LoadedLog] = None
@@ -2379,9 +2479,12 @@ class PlotterApp:
         self.highlight_lower_limit = tk.StringVar(value="")
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
-        self.pdf_sensor_fault_threshold_text = tk.StringVar(value="0.10")
+        self.config_path: Optional[str] = None
+        self.report_config_loaded = False
 
         self._build_ui()
+        self._set_actions_enabled(False)
+        self.root.after(0, self._show_startup_dialog)
 
     def _build_ui(self) -> None:
         frm = tk.Frame(self.root, padx=12, pady=12)
@@ -2409,7 +2512,8 @@ class PlotterApp:
         self.end_time_entry.grid(row=row, column=1, sticky="w", pady=(6, 0))
         row += 1
 
-        tk.Button(frm, text="Select range…", command=self.open_range_selector).grid(row=row, column=1, sticky="w", pady=(4, 0))
+        self.select_range_btn = tk.Button(frm, text="Select range…", command=self.open_range_selector, state=tk.DISABLED)
+        self.select_range_btn.grid(row=row, column=1, sticky="w", pady=(4, 0))
         row += 1
 
         tk.Label(frm, text="Input start/end time zone:").grid(row=row, column=0, sticky="w", pady=(10, 0))
@@ -2526,6 +2630,84 @@ class PlotterApp:
             justify="left",
         )
         self.note_label.grid(row=btn_row + 2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+
+    def _set_actions_enabled(self, enabled: bool) -> None:
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for btn in (self.plot_btn, self.save_trim_btn, self.pdf_btn, self.select_range_btn):
+            btn.config(state=state)
+
+    def _apply_report_config_to_ui(self, config: ReportConfig) -> None:
+        self.input_tz_mode_choice.set(config.input_timezone_mode)
+        self.display_tz_choice.set(config.display_timezone)
+        self.y_choice.set(config.y_axis_series)
+        self.temp_f.set(config.display_temperature_f)
+        self.overlay_raw.set(config.overlay_raw_temp_c)
+        self.smooth.set(config.smooth_enabled)
+        self.rolling_mean_divisor_text.set(str(config.rolling_mean_divisor))
+        self.enable_downsample.set(config.downsample_enabled)
+        self.max_plot_points.set(config.max_plot_points)
+        self.pdf_plot_dpi.set(config.pdf_plot_dpi)
+        self.pdf_vector.set(config.vector_pdf)
+        self.stats_show_min.set(config.show_minimum)
+        self.stats_show_max.set(config.show_maximum)
+        self.stats_show_avg.set(config.show_average)
+        self.stats_show_std.set(config.show_std_band)
+        self.highlight_outside_std.set(config.highlight_outside_std)
+        self.highlight_apply_to_rolling_mean.set(config.highlight_mask_from_rolling_mean)
+        self.highlight_above.set(config.highlight_above_enabled)
+        self.highlight_upper_limit.set("" if config.highlight_above_value is None else str(config.highlight_above_value))
+        self.highlight_below.set(config.highlight_below_enabled)
+        self.highlight_lower_limit.set("" if config.highlight_below_value is None else str(config.highlight_below_value))
+        self.pdf_sensor_fault_threshold_text.set(str(config.pdf_sensor_fault_threshold_percent))
+
+    def _show_startup_dialog(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Report Configuration")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        tk.Label(dialog, text="Load or create a report configuration to continue.").pack(padx=12, pady=(12, 8))
+
+        def _load() -> None:
+            path = filedialog.askopenfilename(title="Load report config", filetypes=[("JSON", "*.json"), ("All Files", "*.*")])
+            if not path:
+                return
+            try:
+                cfg = load_report_config(path)
+            except Exception as exc:
+                messagebox.showerror("Config Error", f"Failed to load config: {exc}")
+                return
+            self.config_path = path
+            self.report_config_loaded = True
+            self._apply_report_config_to_ui(cfg)
+            self.root.title(f"{self._base_title} - {os.path.basename(path)}")
+            self._set_actions_enabled(True)
+            dialog.destroy()
+
+        def _create() -> None:
+            path = filedialog.asksaveasfilename(title="Create report config", defaultextension=".json", filetypes=[("JSON", "*.json")])
+            if not path:
+                return
+            cfg = create_default_report_config()
+            try:
+                save_report_config(cfg, path)
+                loaded_cfg = load_report_config(path)
+            except Exception as exc:
+                messagebox.showerror("Config Error", f"Failed to create config: {exc}")
+                return
+            self.config_path = path
+            self.report_config_loaded = True
+            self._apply_report_config_to_ui(loaded_cfg)
+            self.root.title(f"{self._base_title} - {os.path.basename(path)}")
+            self._set_actions_enabled(True)
+            dialog.destroy()
+
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(padx=12, pady=(0, 12))
+        tk.Button(button_frame, text="Load Config", command=_load).pack(side="left")
+        tk.Button(button_frame, text="Create New Config", command=_create).pack(side="left", padx=6)
+        tk.Button(button_frame, text="Exit", command=self.root.destroy).pack(side="left")
 
     def _create_status_flags_section(self, parent: tk.Widget, row: int) -> None:
         status_frame = tk.LabelFrame(parent, text="Data Quality / Status Flags", padx=8, pady=6)
@@ -2777,13 +2959,9 @@ class PlotterApp:
             file_list += f"\n… ({len(self.selected_files)} total)"
         self.file_label.config(text=file_list)
 
-        self.plot_btn.config(state=tk.NORMAL)
-        self.save_trim_btn.config(state=tk.NORMAL)
-        self.pdf_btn.config(state=tk.NORMAL)
         self._refresh_status_flags_table(self.loaded.dataframe if self.loaded else None)
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
-        self.pdf_sensor_fault_threshold_text = tk.StringVar(value="0.10")
         self._ensure_valid_y_choice()
         self._has_manual_time_range = False
         self._autofill_time_range(force=True)
