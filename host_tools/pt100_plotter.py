@@ -2794,20 +2794,6 @@ class PlotterApp:
             start_label_var.set(_format_dt_label(val[0]))
             end_label_var.set(_format_dt_label(val[1]))
 
-        def _on_slider_change(val: Tuple[float, float]) -> None:
-            if time_column == "__time":
-                x0_dt = mdates.num2date(val[0], tz=display_tz)
-                x1_dt = mdates.num2date(val[1], tz=display_tz)
-                ax.set_xlim(x0_dt, x1_dt)
-            else:
-                ax.set_xlim(val)
-            _update_labels(val)
-            _set_selected_utc_from_slider(val)
-            slider.valtext.set_text("")
-            canvas.draw_idle()
-
-        slider.on_changed(_on_slider_change)
-
         label_frame = tk.Frame(selector_window, padx=8, pady=6)
         label_frame.pack(fill="x")
         tk.Label(label_frame, text="Start:").grid(row=0, column=0, sticky="w")
@@ -2815,7 +2801,7 @@ class PlotterApp:
         tk.Label(label_frame, text="End:").grid(row=1, column=0, sticky="w")
         tk.Label(label_frame, textvariable=end_label_var).grid(row=1, column=1, sticky="w")
         _, input_mode_label = _resolve_input_timezone(
-            self.input_tz_choice.get(),
+            self.input_tz_mode_choice.get(),
             display_tz,
             self.loaded.source_tz,
         )
@@ -2840,6 +2826,20 @@ class PlotterApp:
 
         _set_selected_utc_from_slider(slider.val)
 
+        def _on_slider_change(val: Tuple[float, float]) -> None:
+            if time_column == "__time":
+                x0_dt = mdates.num2date(val[0], tz=display_tz)
+                x1_dt = mdates.num2date(val[1], tz=display_tz)
+                ax.set_xlim(x0_dt, x1_dt)
+            else:
+                ax.set_xlim(val)
+            _update_labels(val)
+            _set_selected_utc_from_slider(val)
+            slider.valtext.set_text("")
+            canvas.draw_idle()
+
+        slider.on_changed(_on_slider_change)
+
         def _apply_range() -> None:
             if time_column != "__time" or present_minutes is None:
                 self._apply_selected_time_range("", "", mark_manual=False)
@@ -2858,7 +2858,7 @@ class PlotterApp:
                 self._apply_selected_time_range,
                 selected_start_utc=nearest_start_utc,
                 selected_end_utc=nearest_end_utc,
-                input_timezone_mode=self.input_tz_choice.get(),
+                input_timezone_mode=self.input_tz_mode_choice.get(),
                 display_tz=display_tz,
                 source_tz=self.loaded.source_tz,
             )
