@@ -62,5 +62,53 @@ def test_fault_status_detail_excludes_rows_without_sensor_fault_flag():
 def test_flags_summary_small_nonzero_percent_uses_two_decimals():
     flags = [0x0013] * 20 + [0x0003] * (43601 - 20)
     df = pd.DataFrame({"flags": flags})
-    summary = p._format_flags_summary(df, display_tz=None, time_source="device")
+    summary = p._format_flags_summary(df, display_tz=None, time_source="device", sensor_fault_threshold_percent=0.01)
     assert "Sensor fault: 20/43601 (0.05%)" in summary
+
+
+def test_sensor_fault_below_threshold_omitted_from_pdf_summary():
+    flags = [0x0013] * 20 + [0x0003] * (43601 - 20)
+    df = pd.DataFrame({"flags": flags, "fault_status": [0x00] * 43601})
+    summary = p._format_flags_summary(df, display_tz=None, time_source="device", sensor_fault_threshold_percent=0.10)
+    assert "Sensor fault" not in summary
+    detail = p._format_fault_status_summary(df, include_zero_fault_status=False)
+    assert detail == "n/a"
+
+
+def test_sensor_fault_above_threshold_included_in_pdf_summary():
+    flags = [0x0013] * 20 + [0x0003] * (43601 - 20)
+    df = pd.DataFrame({"flags": flags})
+    summary = p._format_flags_summary(df, display_tz=None, time_source="device", sensor_fault_threshold_percent=0.01)
+    assert "Sensor fault: 20/43601 (0.05%)" in summary
+
+
+def test_sensor_fault_nonzero_included_regardless_of_threshold():
+    df = pd.DataFrame({"flags": [0x0013], "fault_status": [0x80]})
+    summary = p._format_fault_status_summary(df, include_zero_fault_status=False)
+    assert "RTD high threshold" in summary
+
+
+def test_build_status_flag_rows_includes_informational_and_counts():
+    flags = [0x0013] * 2 + [0x004B] * 3
+    df = pd.DataFrame({"flags": flags})
+    rows = p._build_status_flag_rows(df)
+    names = {r.short_name for r in rows}
+    assert "MESH_CONNECTED" in names
+    assert "RTD_EMA" in names
+    sensor_row = next(r for r in rows if r.short_name == "SENSOR_FAULT")
+    assert sensor_row.count == 2
+    assert sensor_row.percent == pytest.approx(40.0)
+
+
+def test_parse_nonnegative_float_accepts_and_defaults():
+    assert p._parse_nonnegative_float("", "field", 0.10) == pytest.approx(0.10)
+    assert p._parse_nonnegative_float("0", "field", 0.10) == pytest.approx(0.0)
+    assert p._parse_nonnegative_float("0.10", "field", 0.10) == pytest.approx(0.10)
+    assert p._parse_nonnegative_float("1.5", "field", 0.10) == pytest.approx(1.5)
+
+
+def test_parse_nonnegative_float_rejects_negative_and_nonnumeric():
+    with pytest.raises(ValueError):
+        p._parse_nonnegative_float("-0.1", "field", 0.10)
+    with pytest.raises(ValueError):
+        p._parse_nonnegative_float("abc", "field", 0.10)

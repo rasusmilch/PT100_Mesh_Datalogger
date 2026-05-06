@@ -89,6 +89,30 @@ _FLAG_LABELS: Dict[str, str] = {
 # Flags that represent an error condition when set.
 _ERROR_FLAG_SHORT_NAMES = {"SD_ERROR", "SENSOR_FAULT", "FRAM_FULL"}
 
+_FLAG_MEANINGS: Dict[str, str] = {
+    "TIME_VALID": "Timestamp was considered valid.",
+    "CAL_VALID": "Calibrated value was considered valid.",
+    "SD_ERROR": "SD write or flush error was flagged.",
+    "MESH_CONNECTED": "Node reported mesh connection status. Informational.",
+    "SENSOR_FAULT": "Sensor read failed or sensor fault was detected.",
+    "FRAM_FULL": "FRAM storage reached capacity.",
+    "RTD_EMA": "RTD exponential moving average was used. Informational.",
+    "TIME_JUMP_BACK": "RTC or timestamp moved backward. Review time continuity.",
+}
+
+
+@dataclass
+class FlagSummaryRow:
+    short_name: str
+    label: str
+    count: int
+    percent: float
+    meaning: str
+    is_problem: bool
+    include_in_pdf_by_default: bool
+
+
+
 # Built-in fallback definitions (mask -> short name).
 _FALLBACK_FLAG_DEFS: List[Tuple[int, str]] = [
     (1 << 0, "TIME_VALID"),
@@ -1319,6 +1343,48 @@ def _load_log_files(file_paths: List[str]) -> LoadedLog:
     )
 
 
+def _parse_nonnegative_float(raw_text: str, field_label: str, default_value: float) -> float:
+    text = (raw_text or "").strip()
+    if not text:
+        return float(default_value)
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise ValueError(f"Invalid {field_label}: {text}") from exc
+    if value < 0:
+        raise ValueError(f"{field_label} must be non-negative.")
+    return value
+
+
+def _build_status_flag_rows(df: pd.DataFrame) -> List[FlagSummaryRow]:
+    if "flags" not in df.columns:
+        return []
+    flags_numeric = pd.to_numeric(df["flags"], errors="coerce")
+    flags_int = flags_numeric.dropna().astype("int64")
+    total = int(flags_int.shape[0])
+    if total <= 0:
+        return []
+
+    rows: List[FlagSummaryRow] = []
+    for mask, short_name in _LOG_RECORD_FLAG_DEFS:
+        set_count = int(((flags_int & mask) != 0).sum())
+        if short_name in {"TIME_VALID", "CAL_VALID"}:
+            count = total - set_count
+        else:
+            count = set_count
+        percent = 100.0 * float(count) / float(total)
+        rows.append(FlagSummaryRow(
+            short_name=short_name,
+            label=_FLAG_LABELS.get(short_name, short_name.replace("_", " ").title()),
+            count=count,
+            percent=percent,
+            meaning=_FLAG_MEANINGS.get(short_name, ""),
+            is_problem=short_name in _ERROR_FLAG_SHORT_NAMES or short_name in {"TIME_VALID", "CAL_VALID", "TIME_JUMP_BACK"},
+            include_in_pdf_by_default=short_name in {"SD_ERROR", "FRAM_FULL", "TIME_JUMP_BACK", "TIME_VALID", "CAL_VALID"},
+        ))
+    return rows
+
+
 def _compute_basic_stats(series: pd.Series) -> Dict[str, str]:
     numeric = pd.to_numeric(series, errors="coerce").dropna()
     if numeric.empty:
@@ -1337,6 +1403,7 @@ def _format_flags_summary(
     *,
     display_tz: Optional[datetime.tzinfo],
     time_source: str,
+    sensor_fault_threshold_percent: float = 0.10,
 ) -> str:
     """Build a concise summary of *problem* log_record flags.
 
@@ -1351,23 +1418,12 @@ def _format_flags_summary(
         A multi-line string suitable for the PDF summary table, or 'n/a' if the
         CSV does not contain usable flags or if no problems are present.
     """
-    if "flags" not in df.columns:
+    rows = _build_status_flag_rows(df)
+    if not rows:
         return "n/a"
 
-    flags_series = df["flags"]
-    if flags_series is None:
-        return "n/a"
-
-    # Normalize to nullable integers.
-    try:
-        flags_numeric = pd.to_numeric(flags_series, errors="coerce")
-    except Exception:
-        return "n/a"
-
-    flags_int = flags_numeric.dropna().astype("int64")
-    total = int(flags_int.shape[0])
-    if total <= 0:
-        return "n/a"
+    total = int(pd.to_numeric(df["flags"], errors="coerce").dropna().shape[0])
+    flags_int = pd.to_numeric(df["flags"], errors="coerce").dropna().astype("int64")
 
     def _pct(count: int) -> str:
         pct = 100.0 * float(count) / float(total)
@@ -1377,33 +1433,21 @@ def _format_flags_summary(
 
     problem_lines: List[str] = []
 
-    for mask, short_name in _LOG_RECORD_FLAG_DEFS:
-        # Explicitly ignore mesh-connected status; it's not actionable in reports.
-        if short_name == "MESH_CONNECTED":
+    for row in rows:
+        short_name = row.short_name
+        if short_name == "MESH_CONNECTED" or short_name == "RTD_EMA":
             continue
-
-        set_count = int(((flags_int & mask) != 0).sum())
-
-        if short_name == "TIME_VALID":
-            invalid = total - set_count
-            if invalid:
-                problem_lines.append(f"Time invalid: {invalid}/{total} ({_pct(invalid)})")
+        if short_name == "SENSOR_FAULT" and row.count > 0 and row.percent < sensor_fault_threshold_percent:
             continue
-
-        if short_name == "CAL_VALID":
-            invalid = total - set_count
-            if invalid:
-                problem_lines.append(f"Calibration invalid: {invalid}/{total} ({_pct(invalid)})")
+        if short_name == "TIME_VALID" and row.count:
+            problem_lines.append(f"Time invalid: {row.count}/{total} ({_pct(row.count)})")
             continue
-
-        if short_name in _ERROR_FLAG_SHORT_NAMES:
-            if set_count:
-                label = _FLAG_LABELS.get(short_name, short_name)
-                problem_lines.append(f"{label}: {set_count}/{total} ({_pct(set_count)})")
+        if short_name == "CAL_VALID" and row.count:
+            problem_lines.append(f"Calibration invalid: {row.count}/{total} ({_pct(row.count)})")
             continue
-
-        # Hide non-problem/informational flags (e.g., RTD_EMA).
-        continue
+        if short_name in _ERROR_FLAG_SHORT_NAMES and row.count:
+            label = _FLAG_LABELS.get(short_name, short_name)
+            problem_lines.append(f"{label}: {row.count}/{total} ({_pct(row.count)})")
 
     time_jump_mask = _get_time_jump_back_mask(df)
     time_jump_count = int(time_jump_mask.sum())
@@ -1448,7 +1492,7 @@ def _decode_max31865_fault_status(fault_status: int) -> str:
     return f"unknown(0x{fault_status:02X})"
 
 
-def _format_fault_status_summary(df: pd.DataFrame) -> str:
+def _format_fault_status_summary(df: pd.DataFrame, *, include_zero_fault_status: bool = True) -> str:
     """Build a fault-status summary for rows flagged with SENSOR_FAULT."""
     if "flags" not in df.columns or "fault_status" not in df.columns:
         return "n/a"
@@ -1477,7 +1521,7 @@ def _format_fault_status_summary(df: pd.DataFrame) -> str:
             lines.append(f"0x{code_int:02X}: {int(count)} {row_word} ({label})")
 
     no_fault_byte_count = int((parsed_mask & (fault_status_numeric == 0)).sum())
-    if no_fault_byte_count > 0:
+    if include_zero_fault_status and no_fault_byte_count > 0:
         row_word = "row" if no_fault_byte_count == 1 else "rows"
         lines.append(
             "Sensor read failure / no MAX31865 fault byte recorded: "
@@ -2310,6 +2354,7 @@ class PlotterApp:
         self.highlight_lower_limit = tk.StringVar(value="")
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
+        self.pdf_sensor_fault_threshold_text.set("0.10")
 
         self._build_ui()
 
@@ -2415,6 +2460,17 @@ class PlotterApp:
         tk.Entry(highlight_frame, textvariable=self.highlight_lower_limit, width=10).grid(row=3, column=1, sticky="w")
         row += 1
 
+
+        status_frame = tk.LabelFrame(frm, text="Data Quality / Status Flags", padx=8, pady=6)
+        status_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        tk.Label(status_frame, text="PDF sensor read failure threshold percent:").grid(row=0, column=0, sticky="w")
+        tk.Entry(status_frame, textvariable=self.pdf_sensor_fault_threshold_text, width=10).grid(row=0, column=1, sticky="w")
+        tk.Label(status_frame, text="Only include sensor read failure detail in the PDF if percentage is greater than or equal to this threshold.", justify="left").grid(row=1, column=0, columnspan=2, sticky="w")
+        tk.Label(status_frame, text="Sensor read failures remain visible here even when omitted from the PDF.", justify="left").grid(row=2, column=0, columnspan=2, sticky="w")
+        self.status_flags_text = tk.Text(status_frame, height=8, width=95, state=tk.DISABLED)
+        self.status_flags_text.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        row += 1
+
         tk.Label(frm, text="Max plot points:").grid(row=row, column=0, sticky="e", pady=(10, 0))
         tk.Entry(frm, textvariable=self.max_plot_points, width=10).grid(row=row, column=1, sticky="w", pady=(10, 0))
         row += 1
@@ -2450,6 +2506,17 @@ class PlotterApp:
             justify="left",
         )
         self.note_label.grid(row=btn_row + 2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+    def _refresh_status_flags_view(self, df: Optional[pd.DataFrame]) -> None:
+        rows = _build_status_flag_rows(df) if df is not None else []
+        lines = ["short_name | label | count | percent | meaning"]
+        for row in rows:
+            lines.append(f"{row.short_name} | {row.label} | {row.count} | {row.percent:.2f}% | {row.meaning}")
+        content = "\n".join(lines if rows else ["(no flag data loaded)"])
+        self.status_flags_text.config(state=tk.NORMAL)
+        self.status_flags_text.delete("1.0", tk.END)
+        self.status_flags_text.insert(tk.END, content)
+        self.status_flags_text.config(state=tk.DISABLED)
 
     def _handle_scenario_change(self, _event: Optional[tk.Event] = None) -> None:
         if self.scenario_choice.get() == "Thermal cycling":
@@ -2652,8 +2719,10 @@ class PlotterApp:
         self.plot_btn.config(state=tk.NORMAL)
         self.save_trim_btn.config(state=tk.NORMAL)
         self.pdf_btn.config(state=tk.NORMAL)
+        self._refresh_status_flags_view(self.loaded.dataframe if self.loaded else None)
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
+        self.pdf_sensor_fault_threshold_text.set("0.10")
         self._ensure_valid_y_choice()
         self._has_manual_time_range = False
         self._autofill_time_range(force=True)
@@ -3112,6 +3181,11 @@ class PlotterApp:
         )
         stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name_effective)
         stats = _compute_basic_stats(stats_series)
+        sensor_fault_threshold_percent = _parse_nonnegative_float(
+            self.pdf_sensor_fault_threshold_text.get(),
+            "PDF sensor read failure threshold percent",
+            0.10,
+        )
         flags_summary = _format_flags_summary(
             df,
             display_tz=display_config.display_tz,
@@ -3165,7 +3239,10 @@ class PlotterApp:
         ]
         if flags_summary != "n/a":
             summary_rows.append(["Data quality flags", flags_summary])
-        fault_status_summary = _format_fault_status_summary(df)
+        fault_status_summary = _format_fault_status_summary(
+            df,
+            include_zero_fault_status=("Sensor fault:" in flags_summary),
+        )
         if fault_status_summary != "n/a":
             summary_rows.append(["Sensor fault detail", fault_status_summary])
         if stats_notes:
