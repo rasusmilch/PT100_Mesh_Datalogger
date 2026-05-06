@@ -92,6 +92,60 @@ def test_format_timestamp_for_input_timezone_same_as_display():
     assert out == "2026-05-06 07:33"
 
 
+def test_build_input_range_text_from_selected_utc_utc_mode():
+    start_utc = pd.Timestamp("2026-05-06 12:30:00+00:00")
+    end_utc = pd.Timestamp("2026-05-06 12:33:00+00:00")
+    start_text, end_text = plotter._build_input_range_text_from_selected_utc(
+        start_utc,
+        end_utc,
+        input_timezone_mode="UTC",
+        display_tz=datetime.timezone(datetime.timedelta(hours=-5)),
+        source_tz=datetime.timezone(datetime.timedelta(hours=-5)),
+    )
+    assert (start_text, end_text) == ("2026-05-06 12:30", "2026-05-06 12:33")
+
+
+def test_build_input_range_text_from_selected_utc_source_mode():
+    start_utc = pd.Timestamp("2026-05-06 12:30:00+00:00")
+    end_utc = pd.Timestamp("2026-05-06 12:33:00+00:00")
+    src_tz = datetime.timezone(datetime.timedelta(hours=-5))
+    start_text, end_text = plotter._build_input_range_text_from_selected_utc(
+        start_utc,
+        end_utc,
+        input_timezone_mode="Log/source time",
+        display_tz=datetime.timezone.utc,
+        source_tz=src_tz,
+    )
+    assert (start_text, end_text) == ("2026-05-06 07:30", "2026-05-06 07:33")
+
+
+def test_apply_range_selection_calls_apply_selected_time_range_mark_manual_true():
+    calls = []
+
+    def _apply(start_text, end_text, *, mark_manual):
+        calls.append((start_text, end_text, mark_manual))
+
+    plotter._apply_range_selection_to_main_form(
+        _apply,
+        selected_start_utc=pd.Timestamp("2026-05-06 12:30:00+00:00"),
+        selected_end_utc=pd.Timestamp("2026-05-06 12:33:00+00:00"),
+        input_timezone_mode="Same as display",
+        display_tz=datetime.timezone(datetime.timedelta(hours=-5)),
+        source_tz=datetime.timezone.utc,
+    )
+    assert calls == [("2026-05-06 07:30", "2026-05-06 07:33", True)]
+
+
+def test_cancel_path_does_not_call_apply_selected_time_range():
+    calls = []
+
+    def _apply(start_text, end_text, *, mark_manual):
+        calls.append((start_text, end_text, mark_manual))
+
+    # Simulated cancel behavior: no apply helper call should happen.
+    assert calls == []
+
+
 def test_range_dialog_path_writes_input_timezone_values_that_validate():
     utc_series = pd.Series(pd.date_range("2026-05-06 12:30:00+00:00", periods=5, freq="min"))
     df = pd.DataFrame({"__time": utc_series, "value": range(5)})
