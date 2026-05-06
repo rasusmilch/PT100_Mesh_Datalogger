@@ -251,6 +251,13 @@ class DisplayTimeConfig:
 
 
 @dataclass
+class TrimTimeConfig:
+    input_timezone_mode: str
+    input_timezone_label: str
+    source_tz: Optional[datetime.tzinfo]
+
+
+@dataclass
 class StatsOptions:
     show_min: bool
     show_max: bool
@@ -395,6 +402,39 @@ def _convert_time_series_to_display_tz(
         return localized.dt.tz_convert(display_tz)
 
     return parsed
+
+
+def _canonicalize_time_to_utc(
+    time_series: pd.Series,
+    time_source: str,
+    source_tz: Optional[datetime.tzinfo],
+) -> pd.Series:
+    """Convert a source timestamp series into an aware UTC series.
+
+    Args:
+        time_series: Source timestamp series (aware or naive).
+        time_source: Source mode label from _pick_time_source().
+        source_tz: Preferred source timezone for naive timestamps.
+
+    Returns:
+        pandas Series of timezone-aware UTC timestamps.
+    """
+    parsed = pd.to_datetime(time_series, errors="coerce")
+    if parsed.isna().all():
+        return parsed
+    if getattr(parsed.dt, "tz", None) is not None:
+        return parsed.dt.tz_convert(datetime.timezone.utc)
+
+    tz_for_localize = source_tz
+    if tz_for_localize is None:
+        if time_source == "epoch_utc":
+            tz_for_localize = datetime.timezone.utc
+        else:
+            tz_for_localize = _get_local_tz()
+    if tz_for_localize is None:
+        raise ValueError("Unable to resolve timezone for naive timestamps.")
+    localized = parsed.dt.tz_localize(tz_for_localize)
+    return localized.dt.tz_convert(datetime.timezone.utc)
 
 def _convert_temperature_series(series_c: pd.Series, temp_unit: str) -> pd.Series:
     """Convert a temperature series from °C to the desired display unit.
@@ -592,6 +632,45 @@ def _parse_user_time(text: str) -> Optional[datetime.datetime]:
     raise ValueError('Invalid time format. Use "YYYY-MM-DD HH:MM" (minutes only).')
 
 
+def _resolve_input_timezone(
+    input_timezone_mode: str,
+    display_tz: Optional[datetime.tzinfo],
+    source_tz: Optional[datetime.tzinfo],
+) -> Tuple[Optional[datetime.tzinfo], str]:
+    """Resolve the timezone used to interpret GUI start/end values."""
+    mode = (input_timezone_mode or "").strip().lower()
+    if mode == "utc":
+        return datetime.timezone.utc, "UTC"
+    if mode == "local":
+        local_tz = _get_local_tz()
+        if local_tz is None:
+            return None, "Local"
+        return local_tz, "Local"
+    if mode == "same as display":
+        return display_tz, "Same as display"
+    if mode == "log/source time":
+        return source_tz, "Log/source time"
+    return source_tz, "Log/source time"
+
+
+def _parse_user_time_in_zone(
+    text: str,
+    input_timezone_mode: str,
+    display_tz: Optional[datetime.tzinfo],
+    source_tz: Optional[datetime.tzinfo],
+) -> Optional[pd.Timestamp]:
+    """Parse GUI text as an aware UTC timestamp based on selected input mode."""
+    parsed = _parse_user_time(text)
+    if parsed is None:
+        return None
+    tzinfo, label = _resolve_input_timezone(input_timezone_mode, display_tz, source_tz)
+    if tzinfo is None:
+        raise ValueError(f"Cannot interpret time for input mode '{label}' because its timezone is unavailable.")
+    naive_ts = pd.Timestamp(parsed)
+    aware = naive_ts.tz_localize(tzinfo)
+    return aware.tz_convert(datetime.timezone.utc)
+
+
 def _parse_positive_int(raw_text: str, field_label: str, default_value: int) -> int:
     text = (raw_text or "").strip()
     if not text:
@@ -622,8 +701,11 @@ def _validate_and_trim_by_minute(
     time_column: str,
     start_text: str,
     end_text: str,
-    time_series: Optional[pd.Series] = None,
-) -> Tuple[pd.DataFrame, str, str, str]:
+    time_series_utc: Optional[pd.Series] = None,
+    input_timezone_mode: str = "Log/source time",
+    display_tz: Optional[datetime.tzinfo] = None,
+    source_tz: Optional[datetime.tzinfo] = None,
+) -> Tuple[pd.DataFrame, str, str, str, str]:
     """Trim strictly against minute buckets that exist in the log.
 
     If the X axis is record_id-based (time_column == '__x'), trimming-by-time is not
@@ -643,16 +725,26 @@ def _validate_and_trim_by_minute(
         summary = f"{start_label} → {end_label} ({len(df):,} rows)"
         return df.copy(), start_label, end_label, summary
 
-    if time_series is None:
-        time_series = pd.to_datetime(df[time_column], errors="coerce")
-    if time_series.isna().all():
+    if time_series_utc is None:
+        time_series_utc = pd.to_datetime(df[time_column], errors="coerce", utc=True)
+    if time_series_utc.isna().all():
         raise ValueError("Time column could not be parsed.")
 
-    minutes = time_series.dt.floor("min")
+    minutes = time_series_utc.dt.floor("min")
     present_minutes = pd.DatetimeIndex(minutes.unique()).sort_values()
 
-    user_start = _parse_user_time(start_text)
-    user_end = _parse_user_time(end_text)
+    user_start = _parse_user_time_in_zone(
+        start_text,
+        input_timezone_mode=input_timezone_mode,
+        display_tz=display_tz,
+        source_tz=source_tz,
+    )
+    user_end = _parse_user_time_in_zone(
+        end_text,
+        input_timezone_mode=input_timezone_mode,
+        display_tz=display_tz,
+        source_tz=source_tz,
+    )
 
     if user_start and user_end and user_end < user_start:
         raise ValueError("End time is earlier than start time.")
@@ -662,19 +754,17 @@ def _validate_and_trim_by_minute(
 
     if user_start:
         start_ts = pd.Timestamp(user_start)
-        if present_minutes.tz is not None and start_ts.tzinfo is None:
-            start_ts = start_ts.tz_localize(present_minutes.tz)
         if start_ts not in present_minutes:
-            nearest = _nearest_minute_string(present_minutes, user_start)
+            nearest_utc = present_minutes[present_minutes.get_indexer([start_ts], method="nearest")[0]]
+            nearest = nearest_utc.tz_convert(_resolve_input_timezone(input_timezone_mode, display_tz, source_tz)[0]).strftime("%Y-%m-%d %H:%M")
             raise ValueError(f"Start time not in log minutes. Nearest valid minute: {nearest}")
         start_minute = start_ts
 
     if user_end:
         end_ts = pd.Timestamp(user_end)
-        if present_minutes.tz is not None and end_ts.tzinfo is None:
-            end_ts = end_ts.tz_localize(present_minutes.tz)
         if end_ts not in present_minutes:
-            nearest = _nearest_minute_string(present_minutes, user_end)
+            nearest_utc = present_minutes[present_minutes.get_indexer([end_ts], method="nearest")[0]]
+            nearest = nearest_utc.tz_convert(_resolve_input_timezone(input_timezone_mode, display_tz, source_tz)[0]).strftime("%Y-%m-%d %H:%M")
             raise ValueError(f"End time not in log minutes. Nearest valid minute: {nearest}")
         end_minute = end_ts
 
@@ -688,13 +778,16 @@ def _validate_and_trim_by_minute(
     if trimmed.empty:
         raise ValueError("Trimming resulted in 0 rows.")
 
-    trimmed_times = time_series.loc[trimmed.index]
+    trimmed_times = time_series_utc.loc[trimmed.index]
     actual_start = pd.to_datetime(trimmed_times).min()
     actual_end = pd.to_datetime(trimmed_times).max()
     start_label = actual_start.strftime("%Y-%m-%d %H:%M")
     end_label = actual_end.strftime("%Y-%m-%d %H:%M")
     summary = f"{start_label} → {end_label} ({len(trimmed):,} rows)"
-    return trimmed, start_label, end_label, summary
+    selected_label = "full range"
+    if user_start is not None or user_end is not None:
+        selected_label = f"{(start_text or '').strip() or 'min'} → {(end_text or '').strip() or 'max'} ({input_timezone_mode})"
+    return trimmed, start_label, end_label, summary, selected_label
 
 
 
@@ -2078,6 +2171,7 @@ class PlotterApp:
         self.end_time_text = tk.StringVar(value="")
         self._has_manual_time_range = False
         self.display_tz_choice = tk.StringVar(value="Local")
+        self.input_tz_mode_choice = tk.StringVar(value="Log/source time")
         self.scenario_choice = tk.StringVar(value="General")
 
         self.y_choice = tk.StringVar(value="raw_temp_c")
@@ -2134,10 +2228,16 @@ class PlotterApp:
         tk.Button(frm, text="Select range…", command=self.open_range_selector).grid(row=row, column=1, sticky="w", pady=(4, 0))
         row += 1
 
-        tk.Label(frm, text="Display time zone:").grid(row=row, column=0, sticky="w", pady=(10, 0))
+        tk.Label(frm, text="Input start/end time zone:").grid(row=row, column=0, sticky="w", pady=(10, 0))
+        input_tz_choices = ["Log/source time", "UTC", "Local", "Same as display"]
+        input_tz_combo = ttk.Combobox(frm, textvariable=self.input_tz_mode_choice, values=input_tz_choices, width=24)
+        input_tz_combo.grid(row=row, column=1, sticky="w", pady=(10, 0))
+        row += 1
+
+        tk.Label(frm, text="Display plot time zone:").grid(row=row, column=0, sticky="w", pady=(6, 0))
         tz_choices = ["Local", "UTC"]
         tz_combo = ttk.Combobox(frm, textvariable=self.display_tz_choice, values=tz_choices, width=24)
-        tz_combo.grid(row=row, column=1, sticky="w", pady=(10, 0))
+        tz_combo.grid(row=row, column=1, sticky="w", pady=(6, 0))
         row += 1
 
         tk.Label(frm, text="Scenario:").grid(row=row, column=0, sticky="w", pady=(6, 0))
@@ -2228,6 +2328,8 @@ class PlotterApp:
             frm,
             text="Notes:\n"
                  "• Trimming matches minute buckets present in the log.\n"
+                 "• Start/end filtering uses the selected input time zone.\n"
+                 "• Display time zone only changes axis labels unless 'Same as display' is selected.\n"
                  "• X-axis labels are formatted without seconds.\n"
                  "• Multi-day plots: select multiple daily CSV files, or select a folder.\n"
                  "• Rows without usable timestamps are dropped (unless record_id fallback is used).",
@@ -2619,26 +2721,35 @@ class PlotterApp:
         tk.Button(action_frame, text="Apply range", command=_apply_range).pack(side="left")
         tk.Button(action_frame, text="Close", command=selector_window.destroy).pack(side="left", padx=6)
 
-    def _get_trimmed_df(self) -> Tuple[pd.DataFrame, str, str, str, DisplayTimeConfig, Optional[pd.Series]]:
+    def _get_trimmed_df(self) -> Tuple[pd.DataFrame, str, str, str, str, DisplayTimeConfig, Optional[pd.Series]]:
         if not self.loaded:
             raise ValueError("No data loaded.")
         display_series = None
         display_tz = None
+        time_series_utc = None
         if self.loaded.time_column == "__time":
             display_tz = _resolve_display_tz(self.display_tz_choice.get())
             if display_tz is None:
                 raise ValueError(f"Invalid time zone: {self.display_tz_choice.get()}")
-            display_series = _convert_time_series_to_display_tz(
+            time_series_utc = _canonicalize_time_to_utc(
                 self.loaded.dataframe[self.loaded.time_column],
-                display_tz=display_tz,
                 time_source=self.loaded.time_source,
+                source_tz=self.loaded.tzinfo,
             )
-        trimmed, start_label, end_label, summary = _validate_and_trim_by_minute(
+            display_series = _convert_time_series_to_display_tz(
+                time_series_utc,
+                display_tz=display_tz,
+                time_source="epoch_utc",
+            )
+        trimmed, start_label, end_label, summary, selected_label = _validate_and_trim_by_minute(
             df=self.loaded.dataframe,
             time_column=self.loaded.time_column,
             start_text=self.start_time_text.get(),
             end_text=self.end_time_text.get(),
-            time_series=display_series,
+            time_series_utc=time_series_utc,
+            input_timezone_mode=self.input_tz_mode_choice.get(),
+            display_tz=display_tz,
+            source_tz=self.loaded.tzinfo,
         )
         if display_series is not None:
             display_series = display_series.loc[trimmed.index]
@@ -2658,14 +2769,14 @@ class PlotterApp:
             self.y_choice.set("cal_temp_c")
             self._auto_selected_cal_series = True
 
-        return trimmed, start_label, end_label, summary, display_config, display_series
+        return trimmed, start_label, end_label, summary, selected_label, display_config, display_series
 
     def save_trimmed_csv(self) -> None:
         if not self.loaded:
             messagebox.showerror("Save Error", "No data loaded.")
             return
         try:
-            trimmed, start_label, end_label, summary, _display_config, _display_series = self._get_trimmed_df()
+            trimmed, start_label, end_label, summary, _selected_label, _display_config, _display_series = self._get_trimmed_df()
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -2692,7 +2803,7 @@ class PlotterApp:
             messagebox.showerror("Plot Error", "No data loaded.")
             return
         try:
-            df, start_label, end_label, _summary, display_config, display_series = self._get_trimmed_df()
+            df, start_label, end_label, _summary, selected_label, display_config, display_series = self._get_trimmed_df()
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -2723,7 +2834,7 @@ class PlotterApp:
             smooth = False
 
         nodes = _node_ids_from_df(df)
-        range_label = f"{start_label} → {end_label}"
+        range_label = f"selected {selected_label} | plotted {start_label} → {end_label} | Display: {display_config.display_tz_label}"
 
         plot_title = _human_series_label(y_name_effective, temp_unit="F" if self.temp_f.get() else "C")
         suptitle = f"Nodes: {nodes} — {range_label}" if nodes != "n/a" else range_label
@@ -2749,7 +2860,7 @@ class PlotterApp:
             messagebox.showerror("PDF Error", "No data loaded.")
             return
         try:
-            df, start_label, end_label, summary, display_config, display_series = self._get_trimmed_df()
+            df, start_label, end_label, summary, selected_label, display_config, display_series = self._get_trimmed_df()
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -2809,7 +2920,7 @@ class PlotterApp:
         nodes = _node_ids_from_df(df)
         title = "PT100 Temperature Log Report"
         range_label = f"{start_label} → {end_label}"
-        subtitle = f"Nodes: {nodes} — {range_label}"
+        subtitle = f"Nodes: {nodes} — selected {selected_label} | plotted {range_label}"
 
         temp_unit = "F" if self.temp_f.get() else "C"
         plot_title = _human_series_label(y_name_effective, temp_unit=temp_unit)
