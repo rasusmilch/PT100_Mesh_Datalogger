@@ -671,6 +671,24 @@ def _parse_user_time_in_zone(
     return aware.tz_convert(datetime.timezone.utc)
 
 
+def _format_timestamp_for_input_timezone(
+    timestamp_utc: pd.Timestamp,
+    input_timezone_mode: str,
+    display_tz: Optional[datetime.tzinfo],
+    source_tz: Optional[datetime.tzinfo],
+) -> str:
+    """Format a UTC timestamp for insertion into GUI Start/End fields."""
+    tzinfo, label = _resolve_input_timezone(input_timezone_mode, display_tz, source_tz)
+    if tzinfo is None:
+        raise ValueError(f"Cannot format time for input mode '{label}' because its timezone is unavailable.")
+    ts_utc = pd.Timestamp(timestamp_utc)
+    if ts_utc.tzinfo is None:
+        ts_utc = ts_utc.tz_localize(datetime.timezone.utc)
+    else:
+        ts_utc = ts_utc.tz_convert(datetime.timezone.utc)
+    return ts_utc.tz_convert(tzinfo).strftime("%Y-%m-%d %H:%M")
+
+
 def _parse_positive_int(raw_text: str, field_label: str, default_value: int) -> int:
     text = (raw_text or "").strip()
     if not text:
@@ -756,7 +774,12 @@ def _validate_and_trim_by_minute(
         start_ts = pd.Timestamp(user_start)
         if start_ts not in present_minutes:
             nearest_utc = present_minutes[present_minutes.get_indexer([start_ts], method="nearest")[0]]
-            nearest = nearest_utc.tz_convert(_resolve_input_timezone(input_timezone_mode, display_tz, source_tz)[0]).strftime("%Y-%m-%d %H:%M")
+            nearest = _format_timestamp_for_input_timezone(
+                nearest_utc,
+                input_timezone_mode=input_timezone_mode,
+                display_tz=display_tz,
+                source_tz=source_tz,
+            )
             raise ValueError(f"Start time not in log minutes. Nearest valid minute: {nearest}")
         start_minute = start_ts
 
@@ -764,7 +787,12 @@ def _validate_and_trim_by_minute(
         end_ts = pd.Timestamp(user_end)
         if end_ts not in present_minutes:
             nearest_utc = present_minutes[present_minutes.get_indexer([end_ts], method="nearest")[0]]
-            nearest = nearest_utc.tz_convert(_resolve_input_timezone(input_timezone_mode, display_tz, source_tz)[0]).strftime("%Y-%m-%d %H:%M")
+            nearest = _format_timestamp_for_input_timezone(
+                nearest_utc,
+                input_timezone_mode=input_timezone_mode,
+                display_tz=display_tz,
+                source_tz=source_tz,
+            )
             raise ValueError(f"End time not in log minutes. Nearest valid minute: {nearest}")
         end_minute = end_ts
 
@@ -2728,6 +2756,15 @@ class PlotterApp:
         tk.Label(label_frame, textvariable=start_label_var).grid(row=0, column=1, sticky="w")
         tk.Label(label_frame, text="End:").grid(row=1, column=0, sticky="w")
         tk.Label(label_frame, textvariable=end_label_var).grid(row=1, column=1, sticky="w")
+        _, input_mode_label = _resolve_input_timezone(
+            self.input_tz_choice.get(),
+            display_tz,
+            self.loaded.source_tz,
+        )
+        tk.Label(
+            label_frame,
+            text=f"Selected range will be written as: {input_mode_label}",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         def _apply_range() -> None:
             if time_column != "__time" or present_minutes is None:
@@ -2740,8 +2777,22 @@ class PlotterApp:
                 return
             start_dt = mdates.num2date(slider.val[0], tz=display_tz)
             end_dt = mdates.num2date(slider.val[1], tz=display_tz)
-            start_text = _nearest_minute_string(present_minutes_index, start_dt)
-            end_text = _nearest_minute_string(present_minutes_index, end_dt)
+            start_utc = pd.Timestamp(start_dt).tz_convert(datetime.timezone.utc)
+            end_utc = pd.Timestamp(end_dt).tz_convert(datetime.timezone.utc)
+            nearest_start_utc = present_minutes_index[present_minutes_index.get_indexer([start_utc], method="nearest")[0]]
+            nearest_end_utc = present_minutes_index[present_minutes_index.get_indexer([end_utc], method="nearest")[0]]
+            start_text = _format_timestamp_for_input_timezone(
+                nearest_start_utc,
+                input_timezone_mode=self.input_tz_choice.get(),
+                display_tz=display_tz,
+                source_tz=self.loaded.source_tz,
+            )
+            end_text = _format_timestamp_for_input_timezone(
+                nearest_end_utc,
+                input_timezone_mode=self.input_tz_choice.get(),
+                display_tz=display_tz,
+                source_tz=self.loaded.source_tz,
+            )
             self._apply_selected_time_range(start_text, end_text, mark_manual=True)
             selector_window.destroy()
 
