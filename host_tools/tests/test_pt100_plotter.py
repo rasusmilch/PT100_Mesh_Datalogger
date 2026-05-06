@@ -278,6 +278,92 @@ def test_save_config_writes_json(tmp_path):
     finally:
         root.destroy()
 
+
+def test_options_dialog_collection_includes_stats_and_highlighting():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        vars_map = {
+            "input_timezone_mode": tk.StringVar(value="UTC"),
+            "display_timezone": tk.StringVar(value="Local"),
+            "y_axis_series": tk.StringVar(value="cal_temp_c"),
+            "display_temperature_f": tk.BooleanVar(value=False),
+            "overlay_raw_temp_c": tk.BooleanVar(value=False),
+            "smooth_enabled": tk.BooleanVar(value=True),
+            "rolling_mean_divisor": tk.StringVar(value="40"),
+            "downsample_enabled": tk.BooleanVar(value=True),
+            "max_plot_points": tk.StringVar(value="20000"),
+            "pdf_plot_dpi": tk.StringVar(value="600"),
+            "vector_pdf": tk.BooleanVar(value=False),
+            "show_minimum": tk.BooleanVar(value=True),
+            "show_maximum": tk.BooleanVar(value=True),
+            "show_average": tk.BooleanVar(value=True),
+            "show_std_band": tk.BooleanVar(value=True),
+            "highlight_outside_std": tk.BooleanVar(value=True),
+            "highlight_mask_from_rolling_mean": tk.BooleanVar(value=True),
+            "highlight_above_enabled": tk.BooleanVar(value=True),
+            "highlight_above_value": tk.StringVar(value="12.3"),
+            "highlight_below_enabled": tk.BooleanVar(value=True),
+            "highlight_below_value": tk.StringVar(value="-1.2"),
+            "pdf_sensor_fault_threshold_percent": tk.StringVar(value="0.10"),
+        }
+        cfg = app._collect_report_config_from_options_dialog(vars_map)
+        assert cfg.show_minimum is True and cfg.show_maximum is True
+        assert cfg.show_average is True and cfg.show_std_band is True
+        assert cfg.highlight_outside_std is True
+        assert cfg.highlight_mask_from_rolling_mean is True
+        assert cfg.highlight_above_enabled is True
+        assert cfg.highlight_above_value == pytest.approx(12.3)
+        assert cfg.highlight_below_enabled is True
+        assert cfg.highlight_below_value == pytest.approx(-1.2)
+    finally:
+        root.destroy()
+
+
+def test_options_dialog_collection_disabled_highlights_store_none():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        vars_map = {
+            "input_timezone_mode": tk.StringVar(value="UTC"),
+            "display_timezone": tk.StringVar(value="UTC"),
+            "y_axis_series": tk.StringVar(value="cal_temp_c"),
+            "display_temperature_f": tk.BooleanVar(value=False),
+            "overlay_raw_temp_c": tk.BooleanVar(value=False),
+            "smooth_enabled": tk.BooleanVar(value=True),
+            "rolling_mean_divisor": tk.StringVar(value="1"),
+            "downsample_enabled": tk.BooleanVar(value=True),
+            "max_plot_points": tk.StringVar(value="10"),
+            "pdf_plot_dpi": tk.StringVar(value="300"),
+            "vector_pdf": tk.BooleanVar(value=False),
+            "show_minimum": tk.BooleanVar(value=False),
+            "show_maximum": tk.BooleanVar(value=False),
+            "show_average": tk.BooleanVar(value=False),
+            "show_std_band": tk.BooleanVar(value=False),
+            "highlight_outside_std": tk.BooleanVar(value=False),
+            "highlight_mask_from_rolling_mean": tk.BooleanVar(value=False),
+            "highlight_above_enabled": tk.BooleanVar(value=False),
+            "highlight_above_value": tk.StringVar(value="99"),
+            "highlight_below_enabled": tk.BooleanVar(value=False),
+            "highlight_below_value": tk.StringVar(value="-99"),
+            "pdf_sensor_fault_threshold_percent": tk.StringVar(value="0.1"),
+        }
+        cfg = app._collect_report_config_from_options_dialog(vars_map)
+        assert cfg.highlight_above_value is None
+        assert cfg.highlight_below_value is None
+    finally:
+        root.destroy()
+
 def _mk_loaded_log(df):
     return p.LoadedLog(
         dataframe=df,
