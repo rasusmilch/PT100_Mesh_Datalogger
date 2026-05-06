@@ -1,4 +1,6 @@
 import datetime
+from types import SimpleNamespace
+
 import pytest
 pd = pytest.importorskip('pandas')
 pytest.importorskip('numpy')
@@ -477,5 +479,78 @@ def test_invalid_range_blocks_plot_and_export_pdf_buttons():
         assert "Range is invalid" in app.status_summary_label.cget("text")
         assert str(app.plot_btn["state"]) == tk.DISABLED
         assert str(app.pdf_btn["state"]) == tk.DISABLED
+    finally:
+        root.destroy()
+
+
+def test_actions_without_config_are_blocked():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        messages = []
+        original = p.messagebox.showerror
+        p.messagebox.showerror = lambda title, msg: messages.append((title, msg))
+        try:
+            app.plot()
+            app.export_pdf()
+            app.save_trimmed_csv()
+        finally:
+            p.messagebox.showerror = original
+        assert len(messages) == 3
+        assert all("Load a report configuration" in msg for _title, msg in messages)
+    finally:
+        root.destroy()
+
+
+def test_get_trimmed_df_uses_config_input_timezone_mode():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        cfg = p.create_default_report_config()
+        cfg.input_timezone_mode = "UTC"
+        cfg.display_timezone = "UTC"
+        app._apply_report_config_to_ui(cfg)
+        df = pd.DataFrame({"__time": pd.to_datetime(["2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z"]), "flags":[0,0], "cal_temp_c":[1.0,2.0]})
+        app.loaded = _mk_loaded_log(df)
+        app.start_time_text.set("2026-01-01 00:00")
+        app.end_time_text.set("2026-01-01 00:00")
+        trimmed, *_ = app._get_trimmed_df(cfg)
+        assert len(trimmed) == 1
+    finally:
+        root.destroy()
+
+
+def test_plot_and_pdf_share_same_settings_object():
+    cfg = p.create_default_report_config()
+    cfg.y_axis_series = "cal_temp_c"
+    df = pd.DataFrame({"cal_temp_c":[1.0], "raw_temp_c":[1.0], "flags":[0], "fault_status":[0]})
+    loaded = _mk_loaded_log(df)
+    display = p.DisplayTimeConfig(datetime.timezone.utc, "UTC")
+    opts1 = p.build_plot_options_from_config(cfg, loaded, df, display)
+    opts2 = p.build_plot_options_from_config(cfg, loaded, df, display)
+    assert opts1 == opts2
+
+
+def test_compact_main_window_uses_no_legacy_tk_variables():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        for legacy in ("scenario_choice", "csv_path_var", "pdf_path_var"):
+            assert not hasattr(app, legacy)
     finally:
         root.destroy()

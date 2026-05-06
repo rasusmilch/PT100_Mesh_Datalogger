@@ -2529,7 +2529,6 @@ class PlotterApp:
         self._has_manual_time_range = False
         self.display_tz_choice = tk.StringVar(value="Local")
         self.input_tz_mode_choice = tk.StringVar(value="Log/source time")
-        self.scenario_choice = tk.StringVar(value="General")
 
         self.y_choice = tk.StringVar(value="raw_temp_c")
         self.series_choices = ["raw_temp_c", "raw_rtd_ohms"]
@@ -2721,7 +2720,7 @@ class PlotterApp:
 
     def _build_report_config_from_ui(self) -> ReportConfig:
         return ReportConfig(
-            input_timezone_mode=cfg.input_timezone_mode,
+            input_timezone_mode=self.input_tz_mode_choice.get(),
             display_timezone=self.display_tz_choice.get(),
             y_axis_series=self.y_choice.get(),
             display_temperature_f=self.temp_f.get(),
@@ -3339,7 +3338,7 @@ class PlotterApp:
                 self._apply_selected_time_range,
                 selected_start_utc=nearest_start_utc,
                 selected_end_utc=nearest_end_utc,
-                input_timezone_mode=cfg.input_timezone_mode,
+                input_timezone_mode=self.input_tz_mode_choice.get(),
                 display_tz=display_tz,
                 source_tz=self.loaded.tzinfo,
             )
@@ -3381,7 +3380,7 @@ class PlotterApp:
             start_text=self.start_time_text.get(),
             end_text=self.end_time_text.get(),
             time_series_utc=time_series_utc,
-            input_timezone_mode=cfg.input_timezone_mode,
+            input_timezone_mode=self.input_tz_mode_choice.get(),
             display_tz=display_tz,
             source_tz=self.loaded.tzinfo,
         )
