@@ -188,7 +188,7 @@ def test_build_input_range_text_from_selected_utc_same_as_display_mode():
 
 def test_open_range_selector_uses_input_tz_mode_choice_variable_name():
     source = inspect.getsource(plotter.PlotterApp.open_range_selector)
-    assert "self.input_tz_mode_choice.get()" in source
+    assert "cfg.input_timezone_mode" in source
     assert "self.input_tz_choice.get()" not in source
 
 
