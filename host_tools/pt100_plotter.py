@@ -1950,7 +1950,7 @@ def _export_pdf_report(
     summary_rows: List[List[str]],
     calibration_rows: List[List[str]],
     title: str,
-    subtitle: str,
+    subtitle: Optional[str],
     warning_text: Optional[str] = None,
 ) -> None:
     half_inch = 0.5 * inch
@@ -1997,7 +1997,8 @@ def _export_pdf_report(
 
     elements: List[object] = []
     elements.append(Paragraph(title, styles_title))
-    elements.append(Paragraph(subtitle, styles_sub))
+    if subtitle:
+        elements.append(Paragraph(subtitle, styles_sub))
     if warning_text:
         warning_html = warning_text.replace("\n", "<br/>")
         elements.append(Paragraph(warning_html, styles_warn))
@@ -2958,7 +2959,7 @@ class PlotterApp:
             display_config.display_tz,
         )
         node_label = nodes if nodes != "n/a" else "n/a"
-        subtitle = _build_report_subtitle(node_label, display_start, display_end, timezone_label)
+        subtitle = None
 
         temp_unit = "F" if self.temp_f.get() else "C"
         plot_title = _human_series_label(y_name_effective, temp_unit=temp_unit)
@@ -3030,6 +3031,7 @@ class PlotterApp:
 
         summary_rows = [
             ["Metric", "Result"],
+            ["Node ID", node_label],
             ["Reporting time zone", display_config.display_tz_label],
             ["Measurement window", data_range_value],
             ["Plotted series", series_label],

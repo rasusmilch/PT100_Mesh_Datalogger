@@ -43,3 +43,60 @@ def test_measurement_window_fixed_offset_labels_when_display_is_localized():
     assert start_label == '2026-05-04 19:00'
     assert end_label == '2026-05-06 07:33'
     assert tz_label == 'UTC-05'
+
+
+def test_pdf_summary_rows_put_node_id_first_and_keep_measurement_window():
+    summary_rows = [
+        ["Metric", "Result"],
+        ["Node ID", "98:A3:16:12:57:B0"],
+        ["Reporting time zone", "Central Daylight Time (UTC-05:00)"],
+        ["Measurement window", "2026-05-04 19:00 → 2026-05-05 18:59 (span 23h 59m)"],
+    ]
+    assert summary_rows[1][0] == "Node ID"
+    assert summary_rows[1][1] == "98:A3:16:12:57:B0"
+    assert any(row[0] == "Measurement window" for row in summary_rows)
+
+
+def test_export_pdf_omits_subtitle_when_blank(monkeypatch, tmp_path):
+    captured = {"paragraphs": []}
+
+    class DummyDoc:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def build(self, elements):
+            captured["elements"] = elements
+
+    class DummyTable:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def setStyle(self, *args, **kwargs):
+            return None
+
+    class DummyImage:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    def fake_paragraph(text, _style):
+        captured["paragraphs"].append(text)
+        return ("P", text)
+
+    monkeypatch.setattr(plotter, "SimpleDocTemplate", DummyDoc)
+    monkeypatch.setattr(plotter, "Table", DummyTable)
+    monkeypatch.setattr(plotter, "Image", DummyImage)
+    monkeypatch.setattr(plotter, "Paragraph", fake_paragraph)
+
+    plotter._export_pdf_report(
+        save_path=str(tmp_path / "report.pdf"),
+        fig_png_path=str(tmp_path / "plot.png"),
+        source_files=["a.csv"],
+        summary_rows=[["Metric", "Result"], ["Node ID", "98:A3:16:12:57:B0"], ["Measurement window", "x"]],
+        calibration_rows=[["Calibration item", "Recorded value"], ["Calibration points used", "3"]],
+        title="PT100 Temperature Log Report",
+        subtitle=None,
+        warning_text=None,
+    )
+
+    assert captured["paragraphs"][0] == "PT100 Temperature Log Report"
+    assert not any("Nodes:" in text and "Time range:" in text for text in captured["paragraphs"])
