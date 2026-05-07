@@ -627,6 +627,15 @@ class PlotOptions:
     time_source: str
 
 
+def _human_plot_title(series_name: str) -> str:
+    """Return a professional, generic chart title for a plotted series."""
+    if series_name in ("cal_temp_c", "raw_temp_c"):
+        return "Temperature Trend"
+    if series_name == "raw_rtd_ohms":
+        return "RTD Resistance Trend"
+    return "Measurement Trend"
+
+
 def _human_series_label(series_name: str, temp_unit: str = "C") -> str:
     """Return a human-friendly label for a data series.
 
@@ -3908,7 +3917,7 @@ class PlotterApp:
             utc_times.max(),
             display_config.display_tz,
         )
-        plot_title = _human_series_label(y_name_effective, temp_unit="F" if cfg.display_temperature_f else "C")
+        plot_title = _human_plot_title(y_name_effective)
         node_label = nodes if nodes != "n/a" else "n/a"
         suptitle = _build_report_subtitle(node_label, display_start, display_end, timezone_label)
 
@@ -3997,7 +4006,7 @@ class PlotterApp:
         subtitle = None
 
         temp_unit = "F" if cfg.display_temperature_f else "C"
-        plot_title = _human_series_label(y_name_effective, temp_unit=temp_unit)
+        plot_title = _human_plot_title(y_name_effective)
 
         try:
             options = build_plot_options_from_config(cfg, self.loaded, df, display_config)
