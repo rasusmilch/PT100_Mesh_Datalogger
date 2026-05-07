@@ -139,6 +139,14 @@ class FlagSummaryRow:
     include_in_pdf_by_default: bool
 
 
+@dataclass
+class SensorFaultRowClassification:
+    zero_fault_status_count: int
+    nonzero_fault_status_counts_by_code: Dict[int, int]
+    unparseable_fault_status_count: int
+    total_sensor_fault_count: int
+    zero_fault_status_percent: float
+
 
 # Built-in fallback definitions (mask -> short name).
 _FALLBACK_FLAG_DEFS: List[Tuple[int, str]] = [
@@ -1833,6 +1841,40 @@ def _escape_reportlab_text(value: object) -> str:
 
 
 
+def _classify_sensor_fault_rows(df: pd.DataFrame) -> Optional[SensorFaultRowClassification]:
+    """Classify SENSOR_FAULT rows by decoded MAX31865 fault-status byte state."""
+    if "flags" not in df.columns or "fault_status" not in df.columns:
+        return None
+
+    flags_numeric = pd.to_numeric(df["flags"], errors="coerce").fillna(0).astype("int64")
+    sensor_fault_mask = _get_flag_mask("SENSOR_FAULT", 1 << 4)
+    if sensor_fault_mask == 0:
+        return None
+
+    fault_rows = (flags_numeric & sensor_fault_mask) != 0
+    total_sensor_fault_count = int(fault_rows.sum())
+    if total_sensor_fault_count == 0:
+        return SensorFaultRowClassification(0, {}, 0, 0, 0.0)
+
+    fault_status_raw = pd.to_numeric(df.loc[fault_rows, "fault_status"], errors="coerce")
+    parsed_mask = fault_status_raw.notna()
+    fault_status_numeric = fault_status_raw.fillna(0).astype("int64")
+
+    nonzero = fault_status_numeric[parsed_mask & (fault_status_numeric != 0)]
+    nonzero_counts = {int(code) & 0xFF: int(count) for code, count in nonzero.value_counts().sort_index().items()}
+    zero_count = int((parsed_mask & (fault_status_numeric == 0)).sum())
+    unparseable_count = int((~parsed_mask).sum())
+    zero_percent = (100.0 * float(zero_count) / float(len(df))) if len(df) else 0.0
+
+    return SensorFaultRowClassification(
+        zero_fault_status_count=zero_count,
+        nonzero_fault_status_counts_by_code=nonzero_counts,
+        unparseable_fault_status_count=unparseable_count,
+        total_sensor_fault_count=total_sensor_fault_count,
+        zero_fault_status_percent=zero_percent,
+    )
+
+
 def _format_flags_summary(
     df: pd.DataFrame,
     *,
@@ -1872,8 +1914,19 @@ def _format_flags_summary(
         short_name = row.short_name
         if short_name == "MESH_CONNECTED" or short_name == "RTD_EMA":
             continue
-        if short_name == "SENSOR_FAULT" and row.count > 0 and row.percent < sensor_fault_threshold_percent:
-            continue
+        if short_name == "SENSOR_FAULT" and row.count > 0:
+            fault_class = _classify_sensor_fault_rows(df)
+            if fault_class is not None:
+                has_nonzero = bool(fault_class.nonzero_fault_status_counts_by_code)
+                has_unparseable = fault_class.unparseable_fault_status_count > 0
+                zero_below_threshold = (
+                    fault_class.zero_fault_status_count > 0
+                    and fault_class.zero_fault_status_percent < sensor_fault_threshold_percent
+                )
+                if not has_nonzero and not has_unparseable and zero_below_threshold:
+                    continue
+            elif row.percent < sensor_fault_threshold_percent:
+                continue
         if short_name == "TIME_VALID" and row.count:
             problem_lines.append(f"Time invalid: {row.count}/{total} ({_pct(row.count)})")
             continue
@@ -1927,46 +1980,38 @@ def _decode_max31865_fault_status(fault_status: int) -> str:
     return f"unknown(0x{fault_status:02X})"
 
 
-def _format_fault_status_summary(df: pd.DataFrame, *, include_zero_fault_status: bool = True) -> str:
+def _format_fault_status_summary(
+    df: pd.DataFrame,
+    *,
+    include_zero_fault_status: bool = True,
+    sensor_fault_threshold_percent: Optional[float] = None,
+) -> str:
     """Build a fault-status summary for rows flagged with SENSOR_FAULT."""
-    if "flags" not in df.columns or "fault_status" not in df.columns:
+    fault_class = _classify_sensor_fault_rows(df)
+    if fault_class is None or fault_class.total_sensor_fault_count == 0:
         return "n/a"
-
-    flags_numeric = pd.to_numeric(df["flags"], errors="coerce").fillna(0).astype("int64")
-    sensor_fault_mask = _get_flag_mask("SENSOR_FAULT", 1 << 4)
-    if sensor_fault_mask == 0:
-        return "n/a"
-
-    fault_rows = (flags_numeric & sensor_fault_mask) != 0
-    if not bool(fault_rows.any()):
-        return "n/a"
-
-    fault_status_raw = pd.to_numeric(df.loc[fault_rows, "fault_status"], errors="coerce")
-    parsed_mask = fault_status_raw.notna()
-    fault_status_numeric = fault_status_raw.fillna(0).astype("int64")
-    nonzero = fault_status_numeric[parsed_mask & (fault_status_numeric != 0)]
 
     lines: List[str] = []
-    if not nonzero.empty:
-        counts = nonzero.value_counts().sort_index()
-        for code, count in counts.items():
-            code_int = int(code) & 0xFF
-            label = _decode_max31865_fault_status(code_int)
-            row_word = "row" if int(count) == 1 else "rows"
-            lines.append(f"0x{code_int:02X}: {int(count)} {row_word} ({label})")
+    for code_int, count in fault_class.nonzero_fault_status_counts_by_code.items():
+        label = _decode_max31865_fault_status(code_int)
+        row_word = "row" if int(count) == 1 else "rows"
+        lines.append(f"0x{code_int:02X}: {int(count)} {row_word} ({label})")
 
-    no_fault_byte_count = int((parsed_mask & (fault_status_numeric == 0)).sum())
-    if include_zero_fault_status and no_fault_byte_count > 0:
-        row_word = "row" if no_fault_byte_count == 1 else "rows"
+    include_zero = include_zero_fault_status
+    if sensor_fault_threshold_percent is not None and fault_class.zero_fault_status_count > 0:
+        if fault_class.zero_fault_status_percent < sensor_fault_threshold_percent:
+            include_zero = False
+
+    if include_zero and fault_class.zero_fault_status_count > 0:
+        row_word = "row" if fault_class.zero_fault_status_count == 1 else "rows"
         lines.append(
             "Sensor read failure / no MAX31865 fault byte recorded: "
-            f"{no_fault_byte_count} {row_word}"
+            f"{fault_class.zero_fault_status_count} {row_word}"
         )
 
-    unparseable_count = int((~parsed_mask).sum())
-    if unparseable_count > 0:
-        row_word = "row" if unparseable_count == 1 else "rows"
-        lines.append(f"Unparseable fault_status: {unparseable_count} {row_word}")
+    if fault_class.unparseable_fault_status_count > 0:
+        row_word = "row" if fault_class.unparseable_fault_status_count == 1 else "rows"
+        lines.append(f"Unparseable fault_status: {fault_class.unparseable_fault_status_count} {row_word}")
 
     return "\n".join(lines) if lines else "n/a"
 
@@ -3900,6 +3945,7 @@ class PlotterApp:
         fault_status_summary = _format_fault_status_summary(
             df,
             include_zero_fault_status=("Sensor fault:" in flags_summary),
+            sensor_fault_threshold_percent=sensor_fault_threshold_percent,
         )
         if fault_status_summary != "n/a":
             summary_rows.append(["Sensor fault detail", fault_status_summary])
