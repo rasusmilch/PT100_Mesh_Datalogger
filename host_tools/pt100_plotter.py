@@ -2869,7 +2869,6 @@ class PlotterApp:
         self._has_manual_time_range = False
         self.series_choices = ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms"]
         self._warned_aggregated = False
-        self._auto_selected_cal_series = False
         self.config_path: Optional[str] = None
         self.report_config_loaded = False
         self.report_config: Optional[ReportConfig] = None
@@ -3280,11 +3279,17 @@ class PlotterApp:
         self.status_flags_tree.configure(yscrollcommand=scrollbar.set)
 
         self.show_zero_status_flags = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            status_frame,
+            text="Show rows with zero count",
+            variable=self.show_zero_status_flags,
+            command=self._refresh_status_from_current_range,
+        ).grid(row=3, column=0, sticky="w", pady=(4, 0))
         self.status_flags_tree.bind("<<TreeviewSelect>>", self._on_status_flag_selected)
         self.status_summary_label = tk.Label(status_frame, text="Status: n/a", justify="left", anchor="w")
-        self.status_summary_label.grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self.status_summary_label.grid(row=4, column=0, sticky="w", pady=(4, 0))
         self.status_meaning_label = tk.Label(status_frame, text="Meaning: n/a", justify="left", anchor="w")
-        self.status_meaning_label.grid(row=4, column=0, sticky="w")
+        self.status_meaning_label.grid(row=5, column=0, sticky="w")
 
     def _refresh_status_flags_table(self, df: Optional[pd.DataFrame]) -> None:
         rows = _build_status_flag_rows(df) if df is not None else []
@@ -3318,12 +3323,6 @@ class PlotterApp:
             return
         key = str(vals[0])
         self.status_meaning_label.config(text=f"Meaning: {_status_flag_meaning_for_key(key)}")
-
-    def _handle_scenario_change(self, _event: Optional[tk.Event] = None) -> None:
-        if self.scenario_choice.get() == "Thermal cycling":
-            self.stats_show_avg.set(False)
-            self.stats_show_std.set(False)
-            self.highlight_outside_std.set(False)
 
     def _parse_optional_float(self, value: str, label: str) -> Optional[float]:
         text = (value or "").strip()
@@ -3454,7 +3453,6 @@ class PlotterApp:
 
         self._refresh_status_from_current_range()
         self._warned_aggregated = False
-        self._auto_selected_cal_series = False
         self._has_manual_time_range = False
         self._autofill_time_range(force=True)
 
