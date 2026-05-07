@@ -2588,7 +2588,8 @@ class PlotterApp:
         self._range_validation_error: Optional[str] = None
 
         self._build_ui()
-        self._set_actions_enabled(False)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_exit_requested)
+        self._refresh_action_enabled_state()
         self.root.after(0, self._show_startup_dialog)
 
     def _build_ui(self) -> None:
@@ -2660,39 +2661,51 @@ class PlotterApp:
         menu.add_cascade(label="Options", menu=options_menu)
         self.root.config(menu=menu)
 
-    def _set_actions_enabled(self, enabled: bool) -> None:
-        if not enabled:
-            for btn in (self.plot_btn, self.save_trim_btn, self.pdf_btn, self.select_range_btn):
-                btn.config(state=tk.DISABLED)
-            return
-        self.select_range_btn.config(state=tk.NORMAL)
+    def _refresh_window_title(self) -> None:
+        config_name = os.path.basename(self.config_path) if self.config_path else "(none)"
+        dirty_suffix = " *" if self._config_dirty else ""
+        self.root.title(f"{self._base_title} - {config_name}{dirty_suffix}")
+
+    def _refresh_action_enabled_state(self) -> None:
+        has_config = self.report_config is not None
+        has_logs = self.loaded is not None
         range_ok = self._range_validation_error is None
-        action_state = tk.NORMAL if range_ok else tk.DISABLED
+        select_range_enabled = has_config and has_logs
+        actions_enabled = has_config and has_logs and range_ok
+
+        self.select_range_btn.config(state=tk.NORMAL if select_range_enabled else tk.DISABLED)
+        action_state = tk.NORMAL if actions_enabled else tk.DISABLED
         for btn in (self.plot_btn, self.save_trim_btn, self.pdf_btn):
             btn.config(state=action_state)
     def _update_config_summary(self) -> None:
         name = os.path.basename(self.config_path) if self.config_path else "(none)"
         self.config_summary_label.config(text=name)
+        threshold_text = "n/a"
+        if self.report_config is not None:
+            threshold_text = str(self.report_config.pdf_sensor_fault_threshold_percent)
+        self.pdf_sensor_fault_threshold_text.set(threshold_text)
         self.config_details_label.config(
             text=(
                 f"Input time zone: {self.report_config.input_timezone_mode if self.report_config else 'n/a'}\n"
                 f"Display time zone: {self.report_config.display_timezone if self.report_config else 'n/a'}\n"
                 f"Y-axis series: {self.report_config.y_axis_series if self.report_config else 'n/a'}\n"
-                f"PDF sensor fault threshold percent: {self.report_config.pdf_sensor_fault_threshold_percent if self.report_config else 'n/a'}"
+                f"PDF sensor fault threshold percent: {threshold_text}"
             )
         )
 
     def _apply_report_config_to_ui(self, config: ReportConfig) -> None:
         self.report_config = config
-        self._config_dirty = False
+        self.report_config_loaded = True
         self._update_config_summary()
+        self._refresh_status_from_current_range()
+        self._refresh_window_title()
 
     def _show_startup_dialog(self) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("Report Configuration")
         dialog.transient(self.root)
         dialog.grab_set()
-        dialog.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        dialog.protocol("WM_DELETE_WINDOW", self._on_exit_requested)
         tk.Label(dialog, text="Load or create a report configuration to continue.").pack(padx=12, pady=(12, 8))
 
         def _load() -> None:
@@ -2705,10 +2718,8 @@ class PlotterApp:
                 messagebox.showerror("Config Error", f"Failed to load config: {exc}")
                 return
             self.config_path = path
-            self.report_config_loaded = True
+            self._config_dirty = False
             self._apply_report_config_to_ui(cfg)
-            self.root.title(f"{self._base_title} - {os.path.basename(path)}")
-            self._set_actions_enabled(True)
             dialog.destroy()
 
         def _create() -> None:
@@ -2723,10 +2734,8 @@ class PlotterApp:
                 messagebox.showerror("Config Error", f"Failed to create config: {exc}")
                 return
             self.config_path = path
-            self.report_config_loaded = True
+            self._config_dirty = False
             self._apply_report_config_to_ui(loaded_cfg)
-            self.root.title(f"{self._base_title} - {os.path.basename(path)}")
-            self._set_actions_enabled(True)
             dialog.destroy()
 
         button_frame = tk.Frame(dialog)
@@ -2753,9 +2762,8 @@ class PlotterApp:
             messagebox.showerror("Config Error", f"Failed to create config file at '{path}'. Check file permissions and settings.\n\n{exc}")
             return
         self.config_path = path
-        self.report_config_loaded = True
+        self._config_dirty = False
         self._apply_report_config_to_ui(loaded_cfg)
-        self._set_actions_enabled(True)
 
     def load_config(self) -> None:
         if self._config_dirty and not messagebox.askyesno("Unsaved Changes", "Discard unsaved config changes and load another file?"):
@@ -2769,9 +2777,8 @@ class PlotterApp:
             messagebox.showerror("Config Error", f"Failed to load config file '{path}'.\n\n{exc}")
             return
         self.config_path = path
-        self.report_config_loaded = True
+        self._config_dirty = False
         self._apply_report_config_to_ui(cfg)
-        self._set_actions_enabled(True)
 
     def save_config(self) -> None:
         if not self.config_path:
@@ -2785,8 +2792,7 @@ class PlotterApp:
             return
         self.report_config = cfg
         self._config_dirty = False
-        self._update_config_summary()
-        self.root.title(f"{self._base_title} - {os.path.basename(self.config_path)}")
+        self._apply_report_config_to_ui(cfg)
 
     def save_config_as(self) -> None:
         if self.report_config is None:
@@ -2808,8 +2814,7 @@ class PlotterApp:
         self.config_path = path
         self.report_config = cfg
         self._config_dirty = False
-        self._update_config_summary()
-        self.root.title(f"{self._base_title} - {os.path.basename(path)}")
+        self._apply_report_config_to_ui(cfg)
 
     def edit_options(self) -> None:
         if not self.report_config_loaded:
@@ -2948,8 +2953,8 @@ class PlotterApp:
             except Exception as exc:
                 messagebox.showerror("Options Validation", str(exc))
                 return
-            self._apply_report_config_to_ui(new_cfg)
             self._config_dirty = True
+            self._apply_report_config_to_ui(new_cfg)
         button_row = tk.Frame(body); button_row.grid(row=r, column=0, sticky="e", pady=(10, 0))
         tk.Button(button_row, text="Apply", command=lambda: _apply_options(False)).pack(side="left", padx=(0, 6))
         tk.Button(button_row, text="Close", command=dialog.destroy).pack(side="left")
@@ -3202,11 +3207,11 @@ class PlotterApp:
         self._range_validation_error = None
         if not self.loaded:
             self._refresh_status_flags_table(None)
-            self._set_actions_enabled(self.report_config_loaded)
+            self._refresh_action_enabled_state()
             return
         if not self.report_config_loaded:
             self._refresh_status_flags_table(self.loaded.dataframe)
-            self._set_actions_enabled(False)
+            self._refresh_action_enabled_state()
             return
         try:
             cfg = self._validate_loaded_config_for_action()
@@ -3221,7 +3226,7 @@ class PlotterApp:
             self._refresh_status_flags_table(None)
             self.status_summary_label.config(text="Status: Range is invalid. Fix Start and End before plotting or exporting.")
             self.status_meaning_label.config(text=f"Meaning: {exc}")
-        self._set_actions_enabled(True)
+        self._refresh_action_enabled_state()
 
     def open_range_selector(self) -> None:
         try:
