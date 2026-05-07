@@ -1209,3 +1209,68 @@ def test_malformed_fault_status_is_classified_unparseable():
     df = pd.DataFrame({"flags": [0x0013, 0x0013], "fault_status": ["bad", None]})
     detail = p._format_fault_status_summary(df, include_zero_fault_status=False)
     assert detail == "Unparseable fault_status: 2 rows"
+
+
+def test_human_plot_title_mappings():
+    assert p._human_plot_title("cal_temp_c") == "Temperature Trend"
+    assert p._human_plot_title("raw_temp_c") == "Temperature Trend"
+    assert p._human_plot_title("raw_rtd_ohms") == "RTD Resistance Trend"
+    assert p._human_plot_title("some_other_series") == "Measurement Trend"
+
+
+def test_build_figure_titles_and_y_labels_for_supported_series():
+    time_col = "__time"
+    times = pd.date_range("2026-01-01T00:00:00Z", periods=4, freq="min")
+    df = pd.DataFrame(
+        {
+            time_col: times,
+            "cal_temp_c": [1.0, 2.0, 3.0, 4.0],
+            "raw_temp_c": [1.5, 2.5, 3.5, 4.5],
+            "raw_rtd_ohms": [100.1, 100.2, 100.3, 100.4],
+        }
+    )
+
+    display_cfg = p.DisplayTimeConfig(display_tz=datetime.timezone.utc, display_tz_label="UTC")
+
+    base_options = p.PlotOptions(
+        overlay_raw_temp=False,
+        smooth=False,
+        rolling_mean_divisor=40,
+        enable_downsample=False,
+        max_plot_points=5000,
+        temp_unit="F",
+        stats=p.StatsOptions(False, False, False, False),
+        highlights=p.HighlightOptions(False, None, None, False, False, False),
+        display_time_config=display_cfg,
+        time_source="device",
+    )
+
+    fig, *_ = p._build_figure(df, time_col, "cal_temp_c", p._human_plot_title("cal_temp_c"), None, base_options)
+    ax = fig.axes[0]
+    assert ax.get_title() == "Temperature Trend"
+    assert ax.get_ylabel() == "Calibrated Temperature (°F)"
+    p.plt.close(fig)
+
+    fig, *_ = p._build_figure(df, time_col, "raw_temp_c", p._human_plot_title("raw_temp_c"), None, base_options)
+    ax = fig.axes[0]
+    assert ax.get_title() == "Temperature Trend"
+    assert ax.get_ylabel() == "Raw Temperature (°F)"
+    p.plt.close(fig)
+
+    ohms_options = p.PlotOptions(
+        overlay_raw_temp=False,
+        smooth=False,
+        rolling_mean_divisor=40,
+        enable_downsample=False,
+        max_plot_points=5000,
+        temp_unit="C",
+        stats=p.StatsOptions(False, False, False, False),
+        highlights=p.HighlightOptions(False, None, None, False, False, False),
+        display_time_config=display_cfg,
+        time_source="device",
+    )
+    fig, *_ = p._build_figure(df, time_col, "raw_rtd_ohms", p._human_plot_title("raw_rtd_ohms"), None, ohms_options)
+    ax = fig.axes[0]
+    assert ax.get_title() == "RTD Resistance Trend"
+    assert ax.get_ylabel() == "RTD Resistance (Ω)"
+    p.plt.close(fig)
