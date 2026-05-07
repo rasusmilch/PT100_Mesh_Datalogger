@@ -144,6 +144,31 @@ def test_apply_flag_filters_for_stats_excludes_cal_invalid_for_cal_temp_stats():
     assert any("excluded SENSOR_FAULT rows: 1" in n for n in notes)
     assert any("excluded CAL_VALID==0 rows: 1" in n for n in notes)
 
+
+def test_prepare_series_for_statistics_drops_nan_values():
+    sensor_fault_mask = next(mask for mask, name in p._LOG_RECORD_FLAG_DEFS if name == "SENSOR_FAULT")
+    df = pd.DataFrame({"flags": [0, 0, sensor_fault_mask, 0]})
+    y = pd.Series([1.5, float("nan"), 999.0, "2.5"])
+
+    filtered, notes = p._prepare_series_for_statistics(df, y, "raw_temp_c")
+
+    assert filtered.tolist() == [1.5, 2.5]
+    assert any("excluded SENSOR_FAULT rows: 1" in n for n in notes)
+    assert any("dropped NaN/unparseable rows: 1" in n for n in notes)
+
+
+def test_prepare_series_for_statistics_basis_matches_stats_summary_values():
+    sensor_fault_mask = next(mask for mask, name in p._LOG_RECORD_FLAG_DEFS if name == "SENSOR_FAULT")
+    df = pd.DataFrame({"flags": [0, sensor_fault_mask, 0, 0]})
+    y = pd.Series([10.0, 1000.0, 20.0, 30.0])
+
+    filtered, _notes = p._prepare_series_for_statistics(df, y, "raw_temp_c")
+    stats = p._compute_basic_stats(filtered)
+    stats_numeric = p._compute_numeric_stats(filtered)
+
+    assert stats == {"min": "10.000", "avg": "20.000", "max": "30.000", "std": "8.165"}
+    assert stats_numeric == pytest.approx((10.0, 20.0, 30.0, 8.16496580927726))
+
 def test_human_config_label_mappings():
     assert p._human_config_label("display_temperature_f") == "Display temperature in degrees F"
     assert p._human_config_label("rolling_mean_divisor") == "Rolling mean divisor"
