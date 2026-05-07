@@ -954,6 +954,19 @@ def _apply_range_selection_to_main_form(
     )
     apply_callback(start_text, end_text, mark_manual=True)
 
+def _get_loaded_time_bounds_utc(loaded_log) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    if loaded_log.time_column == "__x":
+        raise ValueError("Timestamp autofill is unavailable for record_id-only logs.")
+    time_series_utc = _canonicalize_time_to_utc(
+        loaded_log.dataframe[loaded_log.time_column],
+        loaded_log.time_source,
+        loaded_log.tzinfo,
+    )
+    valid_times_utc = time_series_utc.dropna()
+    if valid_times_utc.empty:
+        raise ValueError("Unable to autofill time range because no valid timestamps were found.")
+    return valid_times_utc.min(), valid_times_utc.max()
+
 
 def _parse_positive_int(raw_text: str, field_label: str, default_value: int) -> int:
     text = (raw_text or "").strip()
@@ -3059,21 +3072,25 @@ class PlotterApp:
     def _autofill_time_range(self, *, force: bool = False) -> None:
         if self._has_manual_time_range and not force:
             return
-        if not self.loaded:
+        config = self._require_report_config()
+        if self.loaded is None:
             return
-        if self.loaded.time_column != "__time":
+        if self.loaded.time_column == "__x":
             self._apply_selected_time_range("", "", mark_manual=False)
             return
-        config = self._require_report_config()
+        selected_start_utc, selected_end_utc = _get_loaded_time_bounds_utc(self.loaded)
         display_tz = _resolve_display_tz(config.display_timezone)
         if display_tz is None:
-            return
+            raise ValueError(
+                f"Display timezone {config.display_timezone!r} could not be resolved. "
+                "Open Edit Options and choose a valid timezone."
+            )
         start_text, end_text = _build_input_range_text_from_selected_utc(
-            self.loaded.dataframe[self.loaded.time_column],
-            time_source=self.loaded.time_source,
+            selected_start_utc,
+            selected_end_utc,
             display_tz=display_tz,
             input_timezone_mode=config.input_timezone_mode,
-            source_tzinfo=self.loaded.tzinfo,
+            source_tz=self.loaded.tzinfo,
         )
         self._apply_selected_time_range(start_text, end_text, mark_manual=False)
 
