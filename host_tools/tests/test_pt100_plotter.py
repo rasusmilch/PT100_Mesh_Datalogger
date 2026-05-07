@@ -1087,3 +1087,30 @@ def test_y_axis_nonnumeric_raises():
     df = pd.DataFrame({"raw_rtd_ohms": ["abc", "def"], "flags": [0, 0]})
     with pytest.raises(ValueError, match="no usable numeric values"):
         p._validate_series_for_configured_output(df, cfg, require_overlay_check=False)
+
+
+def test_sensor_fault_zero_below_threshold_hidden_but_nonzero_still_reported():
+    flags = [0x0013, 0x0013, 0x0003, 0x0003]
+    df = pd.DataFrame({"flags": flags, "fault_status": [0x00, 0x80, 0x00, 0x00]})
+    summary = p._format_flags_summary(df, display_tz=None, time_source="device", sensor_fault_threshold_percent=60.0)
+    assert "Sensor fault" in summary
+    detail = p._format_fault_status_summary(df, include_zero_fault_status=True, sensor_fault_threshold_percent=60.0)
+    assert "0x80: 1 row" in detail
+    assert "Sensor read failure" not in detail
+
+
+def test_sensor_fault_unparseable_status_always_reported():
+    df = pd.DataFrame({"flags": [0x0013], "fault_status": ["bad"]})
+    summary = p._format_flags_summary(df, display_tz=None, time_source="device", sensor_fault_threshold_percent=99.0)
+    assert "Sensor fault" in summary
+    detail = p._format_fault_status_summary(df, include_zero_fault_status=False, sensor_fault_threshold_percent=99.0)
+    assert detail == "Unparseable fault_status: 1 row"
+
+
+def test_sensor_fault_zero_threshold_controls_fault_detail_output():
+    flags = [0x0013] * 20 + [0x0003] * (43601 - 20)
+    df = pd.DataFrame({"flags": flags, "fault_status": [0x00] * 43601})
+    hidden = p._format_fault_status_summary(df, include_zero_fault_status=True, sensor_fault_threshold_percent=0.10)
+    shown = p._format_fault_status_summary(df, include_zero_fault_status=True, sensor_fault_threshold_percent=0.01)
+    assert hidden == "n/a"
+    assert "Sensor read failure" in shown
