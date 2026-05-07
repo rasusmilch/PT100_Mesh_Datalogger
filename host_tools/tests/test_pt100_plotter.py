@@ -393,6 +393,15 @@ def test_save_config_writes_json(tmp_path):
         root.destroy()
 
 
+def test_save_report_config_rejects_invalid_config_and_does_not_write(tmp_path):
+    cfg = p.create_default_report_config()
+    cfg.display_temperature_f = "false"
+    path = tmp_path / "bad_config.json"
+    with pytest.raises(ValueError):
+        p.save_report_config(cfg, str(path))
+    assert not path.exists()
+
+
 def test_save_config_as_updates_path_and_clears_dirty(tmp_path, monkeypatch):
     tk = pytest.importorskip("tkinter")
     try:
@@ -545,6 +554,48 @@ def test_options_dialog_collection_highlight_enabled_requires_numeric():
     finally:
         root.destroy()
 
+
+def test_apply_invalid_options_does_not_mutate_existing_report_config():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        original = p.create_default_report_config()
+        app._apply_report_config_to_ui(original)
+        vars_map = {
+            "input_timezone_mode": tk.StringVar(value=original.input_timezone_mode),
+            "display_timezone": tk.StringVar(value=original.display_timezone),
+            "y_axis_series": tk.StringVar(value=original.y_axis_series),
+            "display_temperature_f": tk.BooleanVar(value=original.display_temperature_f),
+            "overlay_raw_temp_c": tk.BooleanVar(value=original.overlay_raw_temp_c),
+            "smooth_enabled": tk.BooleanVar(value=original.smooth_enabled),
+            "rolling_mean_divisor": tk.StringVar(value="40.5"),
+            "downsample_enabled": tk.BooleanVar(value=original.downsample_enabled),
+            "max_plot_points": tk.StringVar(value=str(original.max_plot_points)),
+            "pdf_plot_dpi": tk.StringVar(value=str(original.pdf_plot_dpi)),
+            "vector_pdf": tk.BooleanVar(value=original.vector_pdf),
+            "show_minimum": tk.BooleanVar(value=original.show_minimum),
+            "show_maximum": tk.BooleanVar(value=original.show_maximum),
+            "show_average": tk.BooleanVar(value=original.show_average),
+            "show_std_band": tk.BooleanVar(value=original.show_std_band),
+            "highlight_outside_std": tk.BooleanVar(value=original.highlight_outside_std),
+            "highlight_mask_from_rolling_mean": tk.BooleanVar(value=original.highlight_mask_from_rolling_mean),
+            "highlight_above_enabled": tk.BooleanVar(value=original.highlight_above_enabled),
+            "highlight_above_value": tk.StringVar(value=""),
+            "highlight_below_enabled": tk.BooleanVar(value=original.highlight_below_enabled),
+            "highlight_below_value": tk.StringVar(value=""),
+            "pdf_sensor_fault_threshold_percent": tk.StringVar(value=str(original.pdf_sensor_fault_threshold_percent)),
+        }
+        with pytest.raises(ValueError):
+            p.validate_report_config(app._collect_report_config_from_options_dialog(vars_map))
+        assert app.report_config == original
+    finally:
+        root.destroy()
+
 def _mk_loaded_log(df):
     return p.LoadedLog(
         dataframe=df,
@@ -606,6 +657,82 @@ def test_validate_report_config_invalid_input_timezone_mode_blocks():
     cfg = p.create_default_report_config()
     cfg.input_timezone_mode = "BadMode"
     with pytest.raises(ValueError, match="input_timezone_mode"):
+        p.validate_report_config(cfg)
+
+
+@pytest.mark.parametrize("bad_value", ["false", "true", "yes", "no", "0", "1"])
+def test_validate_report_config_rejects_string_booleans(bad_value):
+    cfg = p.create_default_report_config()
+    cfg.display_temperature_f = bad_value
+    with pytest.raises(ValueError, match="boolean"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_rejects_float_integer_field():
+    cfg = p.create_default_report_config()
+    cfg.rolling_mean_divisor = 40.5
+    with pytest.raises(ValueError, match="integer"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_rejects_numeric_string_integer_field():
+    cfg = p.create_default_report_config()
+    cfg.rolling_mean_divisor = "40"
+    with pytest.raises(ValueError, match="integer"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_rejects_negative_integer_field():
+    cfg = p.create_default_report_config()
+    cfg.max_plot_points = -1
+    with pytest.raises(ValueError, match=">= 1"):
+        p.validate_report_config(cfg)
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+def test_validate_report_config_rejects_non_finite_threshold(bad_value):
+    cfg = p.create_default_report_config()
+    cfg.pdf_sensor_fault_threshold_percent = bad_value
+    with pytest.raises(ValueError, match="finite"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_highlight_upper_enabled_with_null_fails():
+    cfg = p.create_default_report_config()
+    cfg.highlight_above_enabled = True
+    cfg.highlight_above_value = None
+    with pytest.raises(ValueError, match="highlight_above_value"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_highlight_upper_disabled_with_value_fails():
+    cfg = p.create_default_report_config()
+    cfg.highlight_above_enabled = False
+    cfg.highlight_above_value = 10.0
+    with pytest.raises(ValueError, match="highlight_above_value"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_highlight_lower_enabled_with_null_fails():
+    cfg = p.create_default_report_config()
+    cfg.highlight_below_enabled = True
+    cfg.highlight_below_value = None
+    with pytest.raises(ValueError, match="highlight_below_value"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_highlight_lower_disabled_with_value_fails():
+    cfg = p.create_default_report_config()
+    cfg.highlight_below_enabled = False
+    cfg.highlight_below_value = -10.0
+    with pytest.raises(ValueError, match="highlight_below_value"):
+        p.validate_report_config(cfg)
+
+
+def test_validate_report_config_unresolved_timezone_fails():
+    cfg = p.create_default_report_config()
+    cfg.display_timezone = "Mars/Olympus"
+    with pytest.raises(ValueError, match="Invalid timezone"):
         p.validate_report_config(cfg)
 
 
