@@ -1330,6 +1330,15 @@ def _validate_current_range_with_config(
     )
 
 
+def _operator_trimmed_csv_dataframe(trimmed_df: pd.DataFrame) -> pd.DataFrame:
+    """Return trimmed CSV rows intended for operator-facing export.
+
+    Internal helper columns start with '__' and are excluded by default.
+    """
+    operator_columns = [name for name in trimmed_df.columns if not str(name).startswith("__")]
+    return trimmed_df.loc[:, operator_columns].copy()
+
+
 
 _CAL_STATUS_CALIBRATED = "CALIBRATED"
 _CAL_STATUS_UNCALIBRATED = "UNCALIBRATED"
@@ -3844,6 +3853,7 @@ class PlotterApp:
             cfg = self._validate_loaded_config_for_action()
             trimmed, start_label, end_label, summary, _selected_label, _display_config, _display_series = self._get_trimmed_df(cfg)
             _validate_series_for_configured_output(trimmed, cfg, require_overlay_check=False)
+            operator_trimmed = _operator_trimmed_csv_dataframe(trimmed)
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -3858,7 +3868,7 @@ class PlotterApp:
             return
 
         try:
-            trimmed.to_csv(save_path, index=False)
+            operator_trimmed.to_csv(save_path, index=False)
         except Exception as exc:
             messagebox.showerror("CSV Save Error", f"Failed to save CSV file '{save_path}'. Check file permissions and available disk space.\n\n{exc}")
             return

@@ -949,6 +949,38 @@ def test_get_trimmed_df_uses_config_input_timezone_mode():
         root.destroy()
 
 
+def test_operator_trimmed_csv_dataframe_excludes_internal_columns():
+    trimmed = pd.DataFrame(
+        {
+            "__time": pd.to_datetime(["2026-01-01T00:00:00Z"]),
+            "__seq_unwrapped": [10],
+            "__source_file": ["a.csv"],
+            "schema_ver": [3],
+            "record_id": [123],
+            "seq": [10],
+            "iso8601_local": ["2026-01-01T00:00:00"],
+            "epoch_utc": [1735689600],
+            "node_id": [1],
+            "raw_rtd_ohms": [100.2],
+            "raw_temp_c": [20.5],
+            "cal_temp_c": [20.4],
+            "flags": [0],
+            "fault_status": [0],
+            "extra_col": ["ok"],
+        }
+    )
+    exported = p._operator_trimmed_csv_dataframe(trimmed)
+    assert "__time" not in exported.columns
+    assert "__seq_unwrapped" not in exported.columns
+    assert "__source_file" not in exported.columns
+    assert all(not name.startswith("__") for name in exported.columns)
+    for required in (
+        "schema_ver", "record_id", "seq", "iso8601_local", "epoch_utc", "node_id",
+        "raw_rtd_ohms", "raw_temp_c", "cal_temp_c", "flags", "fault_status", "extra_col",
+    ):
+        assert required in exported.columns
+
+
 def test_plot_and_pdf_share_same_settings_object():
     cfg = p.create_default_report_config()
     cfg.y_axis_series = "cal_temp_c"
