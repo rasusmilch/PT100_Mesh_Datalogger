@@ -1173,3 +1173,39 @@ def test_duplicate_node_record_rows_detected(tmp_path):
     f.write_text("record_id,node_id,cal_temp_c\n1,n1,1.0\n1,n1,2.0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Duplicate records detected"):
         p._load_log_files([str(f)])
+
+
+def test_main_window_close_protocol_wired_to_dirty_prompt():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        assert root.protocol("WM_DELETE_WINDOW")
+        app._config_dirty = True
+        calls = []
+        original = p.messagebox.askyesno
+        p.messagebox.askyesno = lambda title, msg: calls.append((title, msg)) or False
+        try:
+            app._on_exit_requested()
+        finally:
+            p.messagebox.askyesno = original
+        assert calls
+        assert "Unsaved Changes" in calls[0][0]
+    finally:
+        root.destroy()
+
+
+def test_malformed_flags_do_not_crash_summary_and_returns_safe_text():
+    df = pd.DataFrame({"flags": ["bad", None, "0x13"]})
+    summary = p._format_flags_summary(df, display_tz=None, time_source="device", sensor_fault_threshold_percent=0.1)
+    assert isinstance(summary, str)
+
+
+def test_malformed_fault_status_is_classified_unparseable():
+    df = pd.DataFrame({"flags": [0x0013, 0x0013], "fault_status": ["bad", None]})
+    detail = p._format_fault_status_summary(df, include_zero_fault_status=False)
+    assert detail == "Unparseable fault_status: 2 rows"
