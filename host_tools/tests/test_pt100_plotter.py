@@ -261,6 +261,50 @@ def test_report_config_invalid_numeric_values_rejected():
         p.validate_report_config(cfg)
 
 
+def _mk_loaded_for_bounds(source_tz):
+    utc = pd.Series(pd.date_range('2026-01-01T00:00:00Z', periods=3, freq='min'))
+    return SimpleNamespace(
+        time_column="__time",
+        dataframe=pd.DataFrame({"__time": utc}),
+        time_source="epoch_utc",
+        tzinfo=source_tz,
+    )
+
+
+def test_autofill_format_uses_utc_mode():
+    cfg = p.create_default_report_config()
+    cfg.input_timezone_mode = "UTC"
+    cfg.display_timezone = "America/Chicago"
+    loaded = _mk_loaded_for_bounds(datetime.timezone(datetime.timedelta(hours=-5)))
+    display_tz = p._resolve_display_tz(cfg.display_timezone)
+    start_utc, end_utc = p._get_loaded_time_bounds_utc(loaded)
+    start_text, end_text = p._format_range_utc_for_input_fields(start_utc, end_utc, cfg, loaded, display_tz)
+    assert start_text == "2026-01-01 00:00"
+    assert end_text == "2026-01-01 00:02"
+
+
+def test_autofill_format_uses_log_source_mode():
+    cfg = p.create_default_report_config()
+    cfg.input_timezone_mode = "Log/source time"
+    cfg.display_timezone = "UTC"
+    source_tz = datetime.timezone(datetime.timedelta(hours=-5))
+    loaded = _mk_loaded_for_bounds(source_tz)
+    display_tz = p._resolve_display_tz(cfg.display_timezone)
+    start_utc, end_utc = p._get_loaded_time_bounds_utc(loaded)
+    start_text, end_text = p._format_range_utc_for_input_fields(start_utc, end_utc, cfg, loaded, display_tz)
+    assert start_text == "2025-12-31 19:00"
+    assert end_text == "2025-12-31 19:02"
+
+
+def test_validate_trim_record_id_shape_and_error():
+    df = pd.DataFrame({"__x": [1, 2, 3], "record_id": [1, 2, 3]})
+    out = p._validate_and_trim_by_minute(df, "__x", "", "")
+    assert len(out) == 5
+    assert out[4] == "full range"
+    with pytest.raises(ValueError, match="Time trimming is unavailable"):
+        p._validate_and_trim_by_minute(df, "__x", "2026-01-01 00:00", "")
+
+
 def test_startup_gating_helper_state():
     tk = pytest.importorskip("tkinter")
     root = None
