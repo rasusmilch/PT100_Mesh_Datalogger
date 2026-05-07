@@ -2,6 +2,7 @@ import pytest
 pd = pytest.importorskip("pandas")
 import datetime
 import inspect
+from types import SimpleNamespace
 
 from host_tools import pt100_plotter as plotter
 
@@ -204,3 +205,110 @@ def test_open_range_selector_uses_loaded_tzinfo_not_source_tz_attribute():
     assert "self.loaded.tzinfo" in source
     assert "self.loaded.source_tz" not in source
 
+
+def _mk_autofill_app(cfg, loaded):
+    app = plotter.PlotterApp.__new__(plotter.PlotterApp)
+    app._has_manual_time_range = False
+    app.loaded = loaded
+    app._require_report_config = lambda: cfg
+    captured = {}
+    app._apply_selected_time_range = lambda s, e, mark_manual=False: captured.update(start=s, end=e, mark_manual=mark_manual)
+    return app, captured
+
+
+def test_autofill_time_range_signature_and_utc_mode():
+    cfg = plotter.create_default_report_config()
+    cfg.input_timezone_mode = "UTC"
+    cfg.display_timezone = "UTC"
+    df = pd.DataFrame({"__time": pd.to_datetime(["2026-05-06T12:30:00Z", "2026-05-06T12:33:00Z"])})
+    loaded = SimpleNamespace(dataframe=df, time_column="__time", time_source="epoch_utc", tzinfo=datetime.timezone.utc)
+    app, captured = _mk_autofill_app(cfg, loaded)
+    app._autofill_time_range(force=True)
+    assert captured["start"] == "2026-05-06 12:30"
+    assert captured["end"] == "2026-05-06 12:33"
+
+
+def test_autofill_time_range_source_mode_and_validation():
+    cfg = plotter.create_default_report_config()
+    cfg.input_timezone_mode = "Log/source time"
+    cfg.display_timezone = "UTC"
+    src_tz = datetime.timezone(datetime.timedelta(hours=-5))
+    utc_series = pd.to_datetime(["2026-05-06T12:30:00Z", "2026-05-06T12:33:00Z"])
+    df = pd.DataFrame({"__time": utc_series})
+    loaded = SimpleNamespace(dataframe=df, time_column="__time", time_source="epoch_utc", tzinfo=src_tz)
+    app, captured = _mk_autofill_app(cfg, loaded)
+    app._autofill_time_range(force=True)
+    assert (captured["start"], captured["end"]) == ("2026-05-06 07:30", "2026-05-06 07:33")
+    trimmed, *_ = plotter._validate_and_trim_by_minute(
+        df, "__time", captured["start"], captured["end"],
+        time_series_utc=pd.Series(utc_series),
+        input_timezone_mode=cfg.input_timezone_mode,
+        display_tz=datetime.timezone.utc,
+        source_tz=src_tz,
+    )
+    assert len(trimmed) == 2
+
+
+def test_autofill_time_range_same_as_display_modes():
+    df = pd.DataFrame({"__time": pd.to_datetime(["2026-05-06T12:30:00Z", "2026-05-06T12:33:00Z"])})
+    loaded = SimpleNamespace(dataframe=df, time_column="__time", time_source="epoch_utc", tzinfo=datetime.timezone.utc)
+    cfg_utc = plotter.create_default_report_config()
+    cfg_utc.input_timezone_mode = "Same as display"
+    cfg_utc.display_timezone = "UTC"
+    app_utc, captured_utc = _mk_autofill_app(cfg_utc, loaded)
+    app_utc._autofill_time_range(force=True)
+    assert (captured_utc["start"], captured_utc["end"]) == ("2026-05-06 12:30", "2026-05-06 12:33")
+
+    cfg_chi = plotter.create_default_report_config()
+    cfg_chi.input_timezone_mode = "Same as display"
+    cfg_chi.display_timezone = "America/Chicago"
+    app_chi, captured_chi = _mk_autofill_app(cfg_chi, loaded)
+    app_chi._autofill_time_range(force=True)
+    assert (captured_chi["start"], captured_chi["end"]) == ("2026-05-06 07:30", "2026-05-06 07:33")
+
+
+def test_autofill_time_range_record_id_and_invalid_display_timezone():
+    cfg = plotter.create_default_report_config()
+    cfg.input_timezone_mode = "UTC"
+    cfg.display_timezone = "UTC"
+    loaded_x = SimpleNamespace(dataframe=pd.DataFrame({"__x": [1, 2]}), time_column="__x", time_source="record_id", tzinfo=None)
+    app_x, captured_x = _mk_autofill_app(cfg, loaded_x)
+    app_x._autofill_time_range(force=True)
+    assert captured_x["start"] == ""
+    assert captured_x["end"] == ""
+
+    cfg_bad = plotter.create_default_report_config()
+    cfg_bad.input_timezone_mode = "UTC"
+    cfg_bad.display_timezone = "Bad/Timezone"
+    loaded = SimpleNamespace(
+        dataframe=pd.DataFrame({"__time": pd.to_datetime(["2026-05-06T12:30:00Z"])}),
+        time_column="__time",
+        time_source="epoch_utc",
+        tzinfo=datetime.timezone.utc,
+    )
+    app_bad, _ = _mk_autofill_app(cfg_bad, loaded)
+    with pytest.raises(ValueError, match="could not be resolved"):
+        app_bad._autofill_time_range(force=True)
+
+
+def test_no_action_path_references_legacy_tk_choice_vars():
+    source = inspect.getsource(plotter.PlotterApp)
+    banned = ["display_tz_choice", "input_tz_mode_choice", "y_menu", "y_choice", "y_var"]
+    action_blocks = [
+        "_autofill_time_range",
+        "_load_paths",
+        "open_range_selector",
+        "plot(",
+        "export_pdf(",
+        "save_trimmed_csv(",
+        "_get_trimmed_df",
+    ]
+    for block in action_blocks:
+        start = source.find(f"def {block}")
+        assert start >= 0
+        end = source.find("\n    def ", start + 1)
+        if end == -1:
+            end = len(source)
+        snippet = source[start:end]
+        for name in banned:
+            assert name not in snippet
