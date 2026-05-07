@@ -206,6 +206,40 @@ def test_open_range_selector_uses_loaded_tzinfo_not_source_tz_attribute():
     assert "self.loaded.source_tz" not in source
 
 
+def test_resolve_source_timezone_from_headers_fixed_offset_and_inconsistent():
+    headers = {
+        "a.ptlog": {"timezone_posix": "GMT-5", "dst_enabled": "0"},
+        "b.ptlog": {"timezone_posix": "GMT-5", "dst_enabled": "0"},
+    }
+    tz, label, warning = plotter._resolve_source_timezone_from_headers(headers)
+    assert tz is not None
+    assert label == "GMT-5"
+    assert warning is None
+
+    inconsistent = {
+        "a.ptlog": {"timezone_posix": "GMT-5", "dst_enabled": "0"},
+        "b.ptlog": {"timezone_posix": "GMT-6", "dst_enabled": "0"},
+    }
+    tz2, _label2, warning2 = plotter._resolve_source_timezone_from_headers(inconsistent)
+    assert tz2 is None
+    assert warning2 and "Inconsistent" in warning2
+
+
+def test_pick_time_source_prefers_header_timezone_over_host_local_for_naive_iso():
+    df = pd.DataFrame({
+        "iso8601_local": ["2026-05-06 07:30", "2026-05-06 07:33"],
+        "record_id": [1, 2],
+    })
+    host_local = datetime.timezone.utc
+    source_tz = datetime.timezone(datetime.timedelta(hours=-5))
+    out_df, col, source, tzinfo, _ = plotter._pick_time_source(df, local_tz=host_local, source_tz_hint=source_tz)
+    assert col == "__time"
+    assert source == "iso8601_local"
+    assert tzinfo == source_tz
+    utc = plotter._canonicalize_time_to_utc(out_df[col], source, tzinfo)
+    assert utc.iloc[0] == pd.Timestamp("2026-05-06T12:30:00Z")
+
+
 def _mk_autofill_app(cfg, loaded):
     app = plotter.PlotterApp.__new__(plotter.PlotterApp)
     app._has_manual_time_range = False
