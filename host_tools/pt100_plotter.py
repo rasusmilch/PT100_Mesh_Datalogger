@@ -889,7 +889,13 @@ def _parse_user_time_in_zone(
     if tzinfo is None:
         raise ValueError(f"Cannot interpret time for input mode '{label}' because its timezone is unavailable.")
     naive_ts = pd.Timestamp(parsed)
-    aware = naive_ts.tz_localize(tzinfo)
+    try:
+        aware = naive_ts.tz_localize(tzinfo, ambiguous="raise", nonexistent="raise")
+    except Exception as exc:
+        raise ValueError(
+            f"Entered local time is ambiguous or invalid for timezone mode '{label}'. "
+            "Choose a different minute or adjust timezone settings."
+        ) from exc
     return aware.tz_convert(datetime.timezone.utc)
 
 
@@ -968,6 +974,45 @@ def _get_loaded_time_bounds_utc(loaded_log) -> Tuple[pd.Timestamp, pd.Timestamp]
     return valid_times_utc.min(), valid_times_utc.max()
 
 
+def _parse_range_text_to_utc(
+    start_text: str,
+    end_text: str,
+    config: ReportConfig,
+    loaded_log,
+    display_tz: Optional[datetime.tzinfo],
+) -> Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+    return (
+        _parse_user_time_in_zone(
+            start_text,
+            input_timezone_mode=config.input_timezone_mode,
+            display_tz=display_tz,
+            source_tz=loaded_log.tzinfo,
+        ),
+        _parse_user_time_in_zone(
+            end_text,
+            input_timezone_mode=config.input_timezone_mode,
+            display_tz=display_tz,
+            source_tz=loaded_log.tzinfo,
+        ),
+    )
+
+
+def _format_range_utc_for_input_fields(
+    start_utc: pd.Timestamp,
+    end_utc: pd.Timestamp,
+    config: ReportConfig,
+    loaded_log,
+    display_tz: Optional[datetime.tzinfo],
+) -> Tuple[str, str]:
+    return _build_input_range_text_from_selected_utc(
+        start_utc,
+        end_utc,
+        input_timezone_mode=config.input_timezone_mode,
+        display_tz=display_tz,
+        source_tz=loaded_log.tzinfo,
+    )
+
+
 def _parse_positive_int(raw_text: str, field_label: str, default_value: int) -> int:
     text = (raw_text or "").strip()
     if not text:
@@ -1020,7 +1065,8 @@ def _validate_and_trim_by_minute(
         start_label = f"record_id {int(x_numeric.min())}"
         end_label = f"record_id {int(x_numeric.max())}"
         summary = f"{start_label} → {end_label} ({len(df):,} rows)"
-        return df.copy(), start_label, end_label, summary
+        selected_label = "full range"
+        return df.copy(), start_label, end_label, summary, selected_label
 
     if time_series_utc is None:
         time_series_utc = pd.to_datetime(df[time_column], errors="coerce", utc=True)
@@ -1095,6 +1141,34 @@ def _validate_and_trim_by_minute(
     if user_start is not None or user_end is not None:
         selected_label = f"{(start_text or '').strip() or 'min'} → {(end_text or '').strip() or 'max'} ({input_timezone_mode})"
     return trimmed, start_label, end_label, summary, selected_label
+
+
+def _validate_current_range_with_config(
+    config: ReportConfig,
+    loaded_log,
+    start_text: str,
+    end_text: str,
+) -> Tuple[pd.DataFrame, str, str, str, str]:
+    display_tz = _resolve_display_tz(config.display_timezone)
+    if display_tz is None:
+        raise ValueError(f"Configured display_timezone is invalid: {config.display_timezone}")
+    time_series_utc = None
+    if loaded_log.time_column == "__time":
+        time_series_utc = _canonicalize_time_to_utc(
+            loaded_log.dataframe[loaded_log.time_column],
+            loaded_log.time_source,
+            loaded_log.tzinfo,
+        )
+    return _validate_and_trim_by_minute(
+        df=loaded_log.dataframe,
+        time_column=loaded_log.time_column,
+        start_text=start_text,
+        end_text=end_text,
+        time_series_utc=time_series_utc,
+        input_timezone_mode=config.input_timezone_mode,
+        display_tz=display_tz,
+        source_tz=loaded_log.tzinfo,
+    )
 
 
 
@@ -3082,6 +3156,10 @@ class PlotterApp:
             return
         if self.loaded.time_column == "__x":
             self._apply_selected_time_range("", "", mark_manual=False)
+            if hasattr(self, "status_summary_label"):
+                self.status_summary_label.config(
+                    text="Status: record_id-only log loaded; timestamp autofill is unavailable."
+                )
             return
         selected_start_utc, selected_end_utc = _get_loaded_time_bounds_utc(self.loaded)
         display_tz = _resolve_display_tz(config.display_timezone)
@@ -3090,13 +3168,14 @@ class PlotterApp:
                 f"Display timezone {config.display_timezone!r} could not be resolved. "
                 "Open Edit Options and choose a valid timezone."
             )
-        start_text, end_text = _build_input_range_text_from_selected_utc(
+        start_text, end_text = _format_range_utc_for_input_fields(
             selected_start_utc,
             selected_end_utc,
-            display_tz=display_tz,
-            input_timezone_mode=config.input_timezone_mode,
-            source_tz=self.loaded.tzinfo,
+            config,
+            self.loaded,
+            display_tz,
         )
+        _validate_current_range_with_config(config, self.loaded, start_text, end_text)
         self._apply_selected_time_range(start_text, end_text, mark_manual=False)
 
     def _detect_aggregated(self, time_series: pd.Series) -> bool:
@@ -3310,15 +3389,16 @@ class PlotterApp:
         slider.valtext.set_text("")
         if time_column == "__time" and display_tz is not None:
             try:
-                start_candidate = _parse_user_time(self.start_time_text.get())
-                end_candidate = _parse_user_time(self.end_time_text.get())
+                start_candidate, end_candidate = _parse_range_text_to_utc(
+                    self.start_time_text.get(),
+                    self.end_time_text.get(),
+                    cfg,
+                    self.loaded,
+                    display_tz,
+                )
                 if start_candidate and end_candidate:
-                    start_ts = pd.Timestamp(start_candidate)
-                    end_ts = pd.Timestamp(end_candidate)
-                    if start_ts.tzinfo is None:
-                        start_ts = start_ts.tz_localize(display_tz)
-                    if end_ts.tzinfo is None:
-                        end_ts = end_ts.tz_localize(display_tz)
+                    start_ts = pd.Timestamp(start_candidate).tz_convert(display_tz)
+                    end_ts = pd.Timestamp(end_candidate).tz_convert(display_tz)
                     slider_min = float(np.min(x_slider))
                     slider_max = float(np.max(x_slider))
                     start_num = max(slider_min, min(slider_max, mdates.date2num(start_ts)))
@@ -3402,14 +3482,15 @@ class PlotterApp:
                 return
             nearest_start_utc = present_minutes_index[present_minutes_index.get_indexer([selected_start_utc], method="nearest")[0]]
             nearest_end_utc = present_minutes_index[present_minutes_index.get_indexer([selected_end_utc], method="nearest")[0]]
-            _apply_range_selection_to_main_form(
-                self._apply_selected_time_range,
-                selected_start_utc=nearest_start_utc,
-                selected_end_utc=nearest_end_utc,
-                input_timezone_mode=cfg.input_timezone_mode,
-                display_tz=display_tz,
-                source_tz=self.loaded.tzinfo,
+            start_text, end_text = _format_range_utc_for_input_fields(
+                nearest_start_utc,
+                nearest_end_utc,
+                cfg,
+                self.loaded,
+                display_tz,
             )
+            _validate_current_range_with_config(cfg, self.loaded, start_text, end_text)
+            self._apply_selected_time_range(start_text, end_text, mark_manual=True)
             selector_window.destroy()
 
         action_frame = tk.Frame(selector_window, padx=8, pady=6)
