@@ -1114,3 +1114,30 @@ def test_sensor_fault_zero_threshold_controls_fault_detail_output():
     shown = p._format_fault_status_summary(df, include_zero_fault_status=True, sensor_fault_threshold_percent=0.01)
     assert hidden == "n/a"
     assert "Sensor read failure" in shown
+
+def test_validate_selected_paths_dedupes_exact_path(tmp_path):
+    f = tmp_path / "a.csv"
+    f.write_text("record_id,cal_temp_c\n1,1.0\n", encoding="utf-8")
+    out = p._validate_selected_paths([str(f), str(f)])
+    assert out == [str(f)]
+
+
+def test_load_log_files_empty_file_clear_error(tmp_path):
+    f = tmp_path / "empty.csv"
+    f.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="empty"):
+        p._load_log_files([str(f)])
+
+
+def test_load_log_files_no_timestamp_and_no_record_id(tmp_path):
+    f = tmp_path / "bad.csv"
+    f.write_text("foo,bar\n1,2\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="No usable timestamp"):
+        p._load_log_files([str(f)])
+
+
+def test_duplicate_node_record_rows_detected(tmp_path):
+    f = tmp_path / "dup.csv"
+    f.write_text("record_id,node_id,cal_temp_c\n1,n1,1.0\n1,n1,2.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Duplicate records detected"):
+        p._load_log_files([str(f)])

@@ -1587,6 +1587,64 @@ def _read_log_file(path: str) -> Tuple[pd.DataFrame, Dict[str, str]]:
     return pd.read_csv(path), {}
 
 
+def _file_crc32(path: str) -> int:
+    crc = 0
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            crc = zlib.crc32(chunk, crc)
+    return crc & 0xFFFFFFFF
+
+
+def _validate_selected_paths(file_paths: List[str]) -> List[str]:
+    deduped: List[str] = []
+    seen_realpaths = set()
+    duplicate_inputs = 0
+    for raw in file_paths:
+        real = os.path.realpath(raw)
+        if real in seen_realpaths:
+            duplicate_inputs += 1
+            continue
+        seen_realpaths.add(real)
+        deduped.append(raw)
+    if not deduped:
+        raise ValueError("No files selected.")
+
+    file_meta: List[Tuple[str, str, int, int]] = []
+    for path in deduped:
+        if not os.path.exists(path):
+            raise ValueError(f"Selected file does not exist: {path}")
+        if not os.path.isfile(path):
+            raise ValueError(f"Selected path is not a file: {path}")
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            raise ValueError(f"Cannot access file metadata: {path} ({exc})") from exc
+        if size <= 0:
+            raise ValueError(f"Selected file is empty: {path}")
+        try:
+            crc = _file_crc32(path)
+        except OSError as exc:
+            raise ValueError(f"Selected file is not readable: {path} ({exc})") from exc
+        file_meta.append((path, os.path.basename(path).lower(), size, crc))
+
+    by_name: Dict[str, List[str]] = {}
+    by_content: Dict[Tuple[int, int], List[str]] = {}
+    for path, name, size, crc in file_meta:
+        by_name.setdefault(name, []).append(path)
+        by_content.setdefault((size, crc), []).append(path)
+    dup_names = [paths for paths in by_name.values() if len(paths) > 1]
+    dup_content = [paths for paths in by_content.values() if len(paths) > 1]
+    warn_bits = []
+    # Exact duplicate path picks are silently deduplicated.
+    if dup_names:
+        warn_bits.append("duplicate basenames detected")
+    if dup_content:
+        warn_bits.append("duplicate file content detected")
+    if warn_bits:
+        raise ValueError("Likely accidental duplicate inputs: " + "; ".join(warn_bits))
+    return deduped
+
+
 def _parse_log_filename_sort_key(path: str) -> Tuple[str, int, int, str]:
     name = os.path.basename(path)
     match = re.match(r"^(\d{4}-\d{2}-\d{2})Z(?:-(\d+))?\.(ptlog|csv)$", name, flags=re.IGNORECASE)
@@ -1740,8 +1798,7 @@ def _build_audit_summary(file_paths: List[str], headers_by_file: Dict[str, Dict[
 
 
 def _load_log_files(file_paths: List[str]) -> LoadedLog:
-    if not file_paths:
-        raise ValueError("No files selected.")
+    file_paths = _validate_selected_paths(file_paths)
 
     sorted_paths = sorted(file_paths, key=_parse_log_filename_sort_key)
 
@@ -1749,12 +1806,21 @@ def _load_log_files(file_paths: List[str]) -> LoadedLog:
     headers_by_file: Dict[str, Dict[str, str]] = {}
     for path in sorted_paths:
         df, header = _read_log_file(path)
+        if df.empty:
+            raise ValueError(f"Selected file has no data rows: {path}")
         df = _normalize_schema(df)
         df["__source_file"] = os.path.basename(path)
         dataframes.append(df)
         headers_by_file[path] = header
 
     combined = pd.concat(dataframes, ignore_index=True)
+    if "record_id" in combined.columns:
+        record_numeric = pd.to_numeric(combined["record_id"], errors="coerce")
+        if not record_numeric.notna().any():
+            has_time_cols = any(col in combined.columns for col in ("iso8601_local", "epoch_utc", "__time"))
+            if not has_time_cols:
+                raise ValueError("No usable timestamp and no usable record_id in selected files.")
+
     local_tz = _get_local_tz()
     source_tz, source_tz_label, source_tz_warning = _resolve_source_timezone_from_headers(headers_by_file)
     combined, time_column, time_source, tzinfo, dropped_no_time_rows = _pick_time_source(
@@ -1777,6 +1843,15 @@ def _load_log_files(file_paths: List[str]) -> LoadedLog:
         combined[time_column] = pd.to_numeric(combined[time_column], errors="coerce")
 
     combined = combined.sort_values(by="__seq_unwrapped", kind="mergesort").reset_index(drop=True)
+    if "node_id" in combined.columns and "record_id" in combined.columns:
+        rec = pd.to_numeric(combined["record_id"], errors="coerce")
+        node = combined["node_id"].astype(str).fillna("")
+        pair_df = pd.DataFrame({"__node": node, "__rid": rec})
+        dup_mask = rec.notna() & pair_df.duplicated(subset=["__node", "__rid"], keep=False)
+        if bool(dup_mask.any()):
+            raise ValueError(
+                f"Duplicate records detected after concatenation by node_id + record_id ({int(dup_mask.sum())} rows)."
+            )
     audit_summary = _build_audit_summary(sorted_paths, headers_by_file, combined)
 
     return LoadedLog(
@@ -2615,6 +2690,12 @@ def _node_ids_from_df(df: pd.DataFrame) -> str:
     if len(nodes) <= 4:
         return ", ".join(nodes)
     return f"{nodes[0]} … ({len(nodes)} total)"
+
+
+def _node_id_values(df: pd.DataFrame) -> List[str]:
+    if "node_id" not in df.columns:
+        return []
+    return sorted({str(v) for v in df["node_id"].dropna().unique() if str(v).strip()})
 
 
 def _export_pdf_report(
@@ -3856,6 +3937,15 @@ class PlotterApp:
             _validate_series_for_configured_output(df, cfg, require_overlay_check=True)
         except Exception as exc:
             messagebox.showerror("PDF Error", str(exc))
+            return
+        node_ids = _node_id_values(df)
+        if len(node_ids) > 1:
+            messagebox.showerror(
+                "PDF Error",
+                "Multiple node IDs are present in the selected range. "
+                "Generate one report per node or add explicit multi-node report support. "
+                f"Found {len(node_ids)} node IDs: {', '.join(node_ids[:8])}.",
+            )
             return
 
         overlay_raw = cfg.overlay_raw_temp_c
