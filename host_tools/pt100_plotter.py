@@ -210,34 +210,74 @@ def create_default_report_config() -> ReportConfig:
 
 
 def validate_report_config(config: ReportConfig) -> None:
+    def _require_str(name: str, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be a string")
+        return value
+
+    def _require_bool(name: str, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in {"true", "false", "yes", "no", "0", "1"}:
+            raise ValueError(f"{name} must be a boolean (true/false), not a string value")
+        raise ValueError(f"{name} must be a boolean")
+
+    def _require_int(name: str, value: object, minimum: Optional[int] = None) -> int:
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{name} must be an integer")
+        if minimum is not None and value < minimum:
+            raise ValueError(f"{name} must be >= {minimum}")
+        return value
+
+    def _require_finite_number(name: str, value: object) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be numeric")
+        value_f = float(value)
+        if not math.isfinite(value_f):
+            raise ValueError(f"{name} must be a finite number")
+        return value_f
+
     allowed_input_modes = {"Log/source time", "UTC", "Local", "Same as display"}
-    if config.input_timezone_mode not in allowed_input_modes:
+    input_timezone_mode = _require_str("input_timezone_mode", config.input_timezone_mode)
+    if input_timezone_mode not in allowed_input_modes:
         raise ValueError("input_timezone_mode must be one of: Log/source time, UTC, Local, Same as display")
-    if config.display_timezone not in {"Local", "UTC"}:
-        if ZoneInfo is None:
-            raise ValueError("display_timezone requires zoneinfo support")
-        try:
-            ZoneInfo(config.display_timezone)
-        except Exception as exc:
-            raise ValueError(
-                f"Invalid timezone '{config.display_timezone}' for display_timezone. "
-                "Check Edit Options and enter a valid IANA timezone (for example: America/Chicago) or use UTC/Local."
-            ) from exc
-    if not isinstance(config.y_axis_series, str) or not config.y_axis_series.strip():
-        raise ValueError("y_axis_series must be a non-empty string")
-    if int(config.rolling_mean_divisor) < 1:
-        raise ValueError("rolling_mean_divisor must be >= 1")
-    if int(config.max_plot_points) < 1:
-        raise ValueError("max_plot_points must be >= 1")
-    if int(config.pdf_plot_dpi) < 72:
-        raise ValueError("pdf_plot_dpi must be >= 72")
-    if float(config.pdf_sensor_fault_threshold_percent) < 0:
+    display_timezone = _require_str("display_timezone", config.display_timezone)
+    if display_timezone not in {"Local", "UTC"} and _resolve_display_tz(display_timezone) is None:
         raise ValueError(
-            "Invalid threshold value for pdf_sensor_fault_threshold_percent. Check that it is a non-negative number."
+            f"Invalid timezone '{display_timezone}' for display_timezone. "
+            "Check Edit Options and enter a valid IANA timezone (for example: America/Chicago) or use UTC/Local."
         )
-    if (not config.highlight_above_enabled) and (config.highlight_above_value is not None):
+    y_axis_series = _require_str("y_axis_series", config.y_axis_series)
+    if not y_axis_series.strip():
+        raise ValueError("y_axis_series must be a non-empty string")
+
+    for key in (
+        "display_temperature_f", "overlay_raw_temp_c", "smooth_enabled", "downsample_enabled", "vector_pdf",
+        "show_minimum", "show_maximum", "show_average", "show_std_band", "highlight_outside_std",
+        "highlight_mask_from_rolling_mean", "highlight_above_enabled", "highlight_below_enabled",
+    ):
+        _require_bool(key, getattr(config, key))
+
+    _require_int("rolling_mean_divisor", config.rolling_mean_divisor, minimum=1)
+    _require_int("max_plot_points", config.max_plot_points, minimum=1)
+    _require_int("pdf_plot_dpi", config.pdf_plot_dpi, minimum=72)
+
+    threshold = _require_finite_number("pdf_sensor_fault_threshold_percent", config.pdf_sensor_fault_threshold_percent)
+    if threshold < 0:
+        raise ValueError("pdf_sensor_fault_threshold_percent must be >= 0")
+
+    if config.highlight_above_enabled:
+        if config.highlight_above_value is None:
+            raise ValueError("highlight_above_value must be set when highlight_above_enabled is true")
+        _require_finite_number("highlight_above_value", config.highlight_above_value)
+    elif config.highlight_above_value is not None:
         raise ValueError("Invalid highlight limit: highlight_above_value must be blank when highlight_above_enabled is false.")
-    if (not config.highlight_below_enabled) and (config.highlight_below_value is not None):
+
+    if config.highlight_below_enabled:
+        if config.highlight_below_value is None:
+            raise ValueError("highlight_below_value must be set when highlight_below_enabled is true")
+        _require_finite_number("highlight_below_value", config.highlight_below_value)
+    elif config.highlight_below_value is not None:
         raise ValueError("Invalid highlight limit: highlight_below_value must be blank when highlight_below_enabled is false.")
 
 
