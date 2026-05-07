@@ -148,3 +148,77 @@ def test_pdf_text_does_not_include_statistics_filter_exclusion_labels(monkeypatc
     assert "excluded SENSOR_FAULT rows" not in all_text
     assert "excluded CAL_VALID rows" not in all_text
     assert "Statistics filters" not in all_text
+
+
+def test_export_pdf_escapes_filename_and_warning_text(monkeypatch, tmp_path):
+    captured = {"paragraphs": []}
+
+    class DummyDoc:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def build(self, elements):
+            captured["elements"] = elements
+
+    class DummyTable:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def setStyle(self, *args, **kwargs):
+            return None
+
+    class DummyImage:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    def fake_paragraph(text, _style):
+        captured["paragraphs"].append(text)
+        return ("P", text)
+
+    monkeypatch.setattr(plotter, "SimpleDocTemplate", DummyDoc)
+    monkeypatch.setattr(plotter, "Table", DummyTable)
+    monkeypatch.setattr(plotter, "Image", DummyImage)
+    monkeypatch.setattr(plotter, "Paragraph", fake_paragraph)
+
+    plotter._export_pdf_report(
+        save_path=str(tmp_path / "report.pdf"),
+        fig_png_path=str(tmp_path / "plot.png"),
+        source_files=["name&bad<file>.csv"],
+        summary_rows=[["Metric", "Result"], ["Node ID", "x"]],
+        calibration_rows=[["Calibration item", "Recorded value"], ["Calibration method (operator notes)", "note & < >"]],
+        title="PT100 Temperature Log Report",
+        subtitle=None,
+        warning_text="Warning & <broken>",
+    )
+    text_blob = "\n".join(captured["paragraphs"])
+    assert "&amp;" in text_blob
+    assert "&lt;" in text_blob
+    assert "&gt;" in text_blob
+
+
+def test_export_pdf_vector_does_not_render_subtitle():
+    fig = plotter.plt.figure(figsize=(4, 3))
+    try:
+        texts = []
+        orig_text = fig.text
+
+        def _capture_text(*args, **kwargs):
+            texts.append(str(args[2] if len(args) > 2 else kwargs.get("s", "")))
+            return orig_text(*args, **kwargs)
+
+        fig.text = _capture_text
+        plotter._export_pdf_report_vector(
+            save_path=str(tmp_path := __import__("tempfile").mkstemp(suffix=".pdf")[1]),
+            fig=fig,
+            source_files=["a.csv"],
+            summary_rows=[["Metric", "Result"], ["Node ID", "x"]],
+            calibration_rows=[["Calibration item", "Recorded value"], ["Calibration points used", "3"]],
+            title="PT100 Temperature Log Report",
+            subtitle=None,
+            warning_text=None,
+        )
+        assert "PT100 Temperature Log Report" in texts
+        assert not any("Nodes:" in t or "Time range:" in t for t in texts)
+        assert "None" not in "".join(texts)
+    finally:
+        plotter.plt.close(fig)
