@@ -3700,8 +3700,6 @@ class PlotterApp:
         )
         if fault_status_summary != "n/a":
             summary_rows.append(["Sensor fault detail", fault_status_summary])
-        if stats_notes:
-            summary_rows.append(["Statistics filters", "; ".join(stats_notes)])
 
         calibration_rows = [
             ["Calibration item", "Recorded value"],

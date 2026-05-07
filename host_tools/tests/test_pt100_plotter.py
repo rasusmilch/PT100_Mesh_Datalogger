@@ -115,6 +115,30 @@ def test_filter_status_flag_rows_nonzero_default():
 def test_format_percent_for_status_table_small_nonzero():
     assert p._format_percent_for_status_table(0.05) == "0.05%"
 
+
+def test_apply_flag_filters_for_stats_excludes_sensor_fault_rows_from_stats():
+    sensor_fault_mask = next(mask for mask, name in p._LOG_RECORD_FLAG_DEFS if name == "SENSOR_FAULT")
+    df = pd.DataFrame({"flags": [0, sensor_fault_mask, 0]})
+    y = pd.Series([10.0, 999.0, 30.0])
+
+    filtered, notes = p._apply_flag_filters_for_stats(df, y, "raw_temp_c")
+
+    assert filtered.tolist() == [10.0, 30.0]
+    assert any("excluded SENSOR_FAULT rows: 1" in n for n in notes)
+
+
+def test_apply_flag_filters_for_stats_excludes_cal_invalid_for_cal_temp_stats():
+    sensor_fault_mask = next(mask for mask, name in p._LOG_RECORD_FLAG_DEFS if name == "SENSOR_FAULT")
+    cal_valid_mask = next(mask for mask, name in p._LOG_RECORD_FLAG_DEFS if name == "CAL_VALID")
+    df = pd.DataFrame({"flags": [cal_valid_mask, 0, cal_valid_mask | sensor_fault_mask]})
+    y = pd.Series([1.0, 50.0, 100.0])
+
+    filtered, notes = p._apply_flag_filters_for_stats(df, y, "cal_temp_c")
+
+    assert filtered.tolist() == [1.0]
+    assert any("excluded SENSOR_FAULT rows: 1" in n for n in notes)
+    assert any("excluded CAL_VALID==0 rows: 1" in n for n in notes)
+
 def test_human_config_label_mappings():
     assert p._human_config_label("display_temperature_f") == "Display temperature in degrees F"
     assert p._human_config_label("rolling_mean_divisor") == "Rolling mean divisor"
