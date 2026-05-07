@@ -256,6 +256,29 @@ def test_startup_gating_helper_state():
         root.destroy()
 
 
+def test_menu_contains_config_actions_and_config_buttons_removed():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        menuname = root["menu"]
+        assert menuname
+        labels = [root.nametowidget(menuname).entrycget(i, "label") for i in range(root.nametowidget(menuname).index("end") + 1)]
+        assert "File" in labels
+        assert "Options" in labels
+        text_widgets = [w.cget("text") for w in app.root.winfo_children()[0].winfo_children() if hasattr(w, "cget")]
+        assert "Load Config" not in text_widgets
+        assert "New Config" not in text_widgets
+        assert "Save Config" not in text_widgets
+        assert "Edit Options" not in text_widgets
+    finally:
+        root.destroy()
+
+
 def test_options_apply_updates_in_memory_config():
     tk = pytest.importorskip("tkinter")
     try:
@@ -266,9 +289,9 @@ def test_options_apply_updates_in_memory_config():
     try:
         app = p.PlotterApp(root)
         cfg = p.create_default_report_config()
+        cfg.rolling_mean_divisor = 22
         app._apply_report_config_to_ui(cfg)
-        app.rolling_mean_divisor_text.set("22")
-        updated = app._build_report_config_from_ui()
+        updated = app._require_report_config()
         assert updated.rolling_mean_divisor == 22
     finally:
         root.destroy()
@@ -288,10 +311,39 @@ def test_save_config_writes_json(tmp_path):
         p.save_report_config(cfg, str(path))
         app.config_path = str(path)
         app._apply_report_config_to_ui(cfg)
-        app.max_plot_points.set(1234)
+        cfg.max_plot_points = 1234
+        app._apply_report_config_to_ui(cfg)
         app.save_config()
         loaded = p.load_report_config(str(path))
         assert loaded.max_plot_points == 1234
+    finally:
+        root.destroy()
+
+
+def test_save_config_as_updates_path_and_clears_dirty(tmp_path, monkeypatch):
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    try:
+        app = p.PlotterApp(root)
+        cfg = p.create_default_report_config()
+        app._apply_report_config_to_ui(cfg)
+        app._config_dirty = True
+        new_path = tmp_path / "new_config.json"
+        monkeypatch.setattr(p.filedialog, "asksaveasfilename", lambda **kwargs: str(new_path))
+        app.save_config_as()
+        assert app.config_path == str(new_path)
+        assert app._config_dirty is False
+        reloaded = p.load_report_config(str(new_path))
+        assert reloaded == cfg
+        cfg.max_plot_points = 222
+        app._apply_report_config_to_ui(cfg)
+        app.save_config()
+        reloaded2 = p.load_report_config(str(new_path))
+        assert reloaded2.max_plot_points == 222
     finally:
         root.destroy()
 

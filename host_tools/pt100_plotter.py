@@ -2580,6 +2580,7 @@ class PlotterApp:
 
     def _build_ui(self) -> None:
         self.root.geometry("640x760")
+        self._build_menu()
         frm = tk.Frame(self.root, padx=10, pady=10)
         frm.pack(fill="both", expand=True)
         frm.columnconfigure(0, weight=1)
@@ -2590,12 +2591,6 @@ class PlotterApp:
         tk.Label(config_frame, text="Config file:").grid(row=0, column=0, sticky="w")
         self.config_summary_label = tk.Label(config_frame, text="(none loaded)", anchor="w", justify="left")
         self.config_summary_label.grid(row=0, column=1, sticky="ew")
-        btns = tk.Frame(config_frame)
-        btns.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        tk.Button(btns, text="Load Config", command=self.load_config).pack(side="left")
-        tk.Button(btns, text="New Config", command=self._create_new_config).pack(side="left", padx=(6, 0))
-        tk.Button(btns, text="Edit Options", command=self.edit_options).pack(side="left", padx=(6, 0))
-        tk.Button(btns, text="Save Config", command=self.save_config).pack(side="left", padx=(6, 0))
         self.config_details_label = tk.Label(
             config_frame,
             text="Input time zone: n/a\nDisplay time zone: n/a\nY-axis series: n/a",
@@ -2635,6 +2630,22 @@ class PlotterApp:
         self.save_trim_btn.pack(side="left", padx=(6, 0))
         self.pdf_btn = tk.Button(action_frame, text="Export PDF Report", command=self.export_pdf, state=tk.DISABLED)
         self.pdf_btn.pack(side="left", padx=(6, 0))
+
+    def _build_menu(self) -> None:
+        menu = tk.Menu(self.root)
+        file_menu = tk.Menu(menu, tearoff=0)
+        file_menu.add_command(label="Load Config...", command=self.load_config)
+        file_menu.add_command(label="New Config...", command=self._create_new_config)
+        file_menu.add_command(label="Save Config", command=self.save_config)
+        file_menu.add_command(label="Save Config As...", command=self.save_config_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_exit_requested)
+        menu.add_cascade(label="File", menu=file_menu)
+
+        options_menu = tk.Menu(menu, tearoff=0)
+        options_menu.add_command(label="Edit Options...", command=self.edit_options)
+        menu.add_cascade(label="Options", menu=options_menu)
+        self.root.config(menu=menu)
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         if not enabled:
@@ -2711,31 +2722,11 @@ class PlotterApp:
         tk.Button(button_frame, text="Create New Config", command=_create).pack(side="left", padx=6)
         tk.Button(button_frame, text="Exit", command=self.root.destroy).pack(side="left")
 
-    def _build_report_config_from_ui(self) -> ReportConfig:
-        return ReportConfig(
-            input_timezone_mode=cfg.input_timezone_mode,
-            display_timezone=self.display_tz_choice.get(),
-            y_axis_series=self.y_choice.get(),
-            display_temperature_f=self.temp_f.get(),
-            overlay_raw_temp_c=self.overlay_raw.get(),
-            smooth_enabled=self.smooth.get(),
-            rolling_mean_divisor=int(self.rolling_mean_divisor_text.get() or _DEFAULT_ROLLING_MEAN_DIVISOR),
-            downsample_enabled=self.enable_downsample.get(),
-            max_plot_points=int(self.max_plot_points.get()),
-            pdf_plot_dpi=int(self.pdf_plot_dpi.get()),
-            vector_pdf=self.pdf_vector.get(),
-            show_minimum=self.stats_show_min.get(),
-            show_maximum=self.stats_show_max.get(),
-            show_average=self.stats_show_avg.get(),
-            show_std_band=self.stats_show_std.get(),
-            highlight_outside_std=self.highlight_outside_std.get(),
-            highlight_mask_from_rolling_mean=self.highlight_apply_to_rolling_mean.get(),
-            highlight_above_enabled=self.highlight_above.get(),
-            highlight_above_value=self._parse_optional_float(self.highlight_upper_limit.get(), "upper"),
-            highlight_below_enabled=self.highlight_below.get(),
-            highlight_below_value=self._parse_optional_float(self.highlight_lower_limit.get(), "lower"),
-            pdf_sensor_fault_threshold_percent=float(self.pdf_sensor_fault_threshold_text.get() or "0.10"),
-        )
+    def _require_report_config(self) -> ReportConfig:
+        if self.report_config is None:
+            raise ValueError("No configuration is loaded. Load or create a configuration before continuing.")
+        validate_report_config(self.report_config)
+        return self.report_config
 
     def _create_new_config(self) -> None:
         path = filedialog.asksaveasfilename(title="Create report config", defaultextension=".json", filetypes=[("JSON", "*.json")])
@@ -2771,15 +2762,41 @@ class PlotterApp:
 
     def save_config(self) -> None:
         if not self.config_path:
+            self.save_config_as()
             return
         try:
-            cfg = self.report_config
+            cfg = self._require_report_config()
             save_report_config(cfg, self.config_path)
         except Exception as exc:
             messagebox.showerror("Config Error", f"Failed to save config file '{self.config_path}'. Check the highlighted settings and file permissions.\n\n{exc}")
             return
         self.report_config = cfg
         self._config_dirty = False
+        self._update_config_summary()
+        self.root.title(f"{self._base_title} - {os.path.basename(self.config_path)}")
+
+    def save_config_as(self) -> None:
+        if self.report_config is None:
+            messagebox.showerror("Config Error", "No configuration is loaded. Load or create a configuration first.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save report config as",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            cfg = self._require_report_config()
+            save_report_config(cfg, path)
+        except Exception as exc:
+            messagebox.showerror("Config Error", f"Failed to save config file '{path}'.\n\n{exc}")
+            return
+        self.config_path = path
+        self.report_config = cfg
+        self._config_dirty = False
+        self._update_config_summary()
+        self.root.title(f"{self._base_title} - {os.path.basename(path)}")
 
     def edit_options(self) -> None:
         if not self.report_config_loaded:
@@ -2841,7 +2858,7 @@ class PlotterApp:
         widget.config(state=tk.NORMAL if enabled else tk.DISABLED)
 
     def _create_options_dialog(self) -> None:
-        cfg = self.report_config if self.report_config is not None else self._build_report_config_from_ui()
+        cfg = self._require_report_config()
         dialog = tk.Toplevel(self.root)
         dialog.title("Edit Options")
         body = tk.Frame(dialog, padx=10, pady=10)
@@ -3014,7 +3031,8 @@ class PlotterApp:
         start_dt: Optional[datetime.datetime],
         end_dt: Optional[datetime.datetime],
     ) -> DisplayTimeConfig:
-        tz_value = self.display_tz_choice.get()
+        cfg = self._require_report_config()
+        tz_value = cfg.display_timezone
         display_tz = _resolve_display_tz(tz_value)
         if display_tz is None:
             raise ValueError(f"Invalid time zone: {tz_value}")
@@ -3046,24 +3064,18 @@ class PlotterApp:
         if self.loaded.time_column != "__time":
             self._apply_selected_time_range("", "", mark_manual=False)
             return
-        display_tz = _resolve_display_tz(self.display_tz_choice.get())
+        config = self._require_report_config()
+        display_tz = _resolve_display_tz(config.display_timezone)
         if display_tz is None:
             return
-        display_series = _convert_time_series_to_display_tz(
+        start_text, end_text = _build_input_range_text_from_selected_utc(
             self.loaded.dataframe[self.loaded.time_column],
-            display_tz=display_tz,
             time_source=self.loaded.time_source,
+            display_tz=display_tz,
+            input_timezone_mode=config.input_timezone_mode,
+            source_tzinfo=self.loaded.tzinfo,
         )
-        minutes = display_series.dt.floor("min")
-        if minutes.isna().all():
-            return
-        start_min = minutes.min()
-        end_min = minutes.max()
-        self._apply_selected_time_range(
-            start_min.strftime("%Y-%m-%d %H:%M"),
-            end_min.strftime("%Y-%m-%d %H:%M"),
-            mark_manual=False,
-        )
+        self._apply_selected_time_range(start_text, end_text, mark_manual=False)
 
     def _detect_aggregated(self, time_series: pd.Series) -> bool:
         if time_series.empty:
@@ -3075,10 +3087,7 @@ class PlotterApp:
         return bool(median_seconds >= 60)
 
     def _validate_loaded_config_for_action(self) -> ReportConfig:
-        if not self.report_config_loaded or self.report_config is None:
-            raise ValueError("Load a report configuration before this action.")
-        cfg = self.report_config
-        validate_report_config(cfg)
+        cfg = self._require_report_config()
         if not self.loaded:
             raise ValueError("No data loaded.")
         if cfg.y_axis_series not in self.loaded.dataframe.columns:
@@ -3093,6 +3102,11 @@ class PlotterApp:
         if input_tz is None:
             raise ValueError(f"Configured input_timezone_mode cannot be resolved: {cfg.input_timezone_mode}")
         return cfg
+
+    def _on_exit_requested(self) -> None:
+        if self._config_dirty and not messagebox.askyesno("Unsaved Changes", "Discard unsaved config changes and exit?"):
+            return
+        self.root.destroy()
 
     def _dataset_is_calibrated(self) -> bool:
         if not self.loaded:
