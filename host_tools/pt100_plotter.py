@@ -1971,12 +1971,12 @@ def _format_fault_status_summary(df: pd.DataFrame, *, include_zero_fault_status:
     return "\n".join(lines) if lines else "n/a"
 
 
-def _apply_flag_filters_for_stats(
+def _prepare_series_for_statistics(
     df: pd.DataFrame,
     y_series: pd.Series,
     y_name: str,
 ) -> Tuple[pd.Series, List[str]]:
-    """Filter obviously-invalid samples from statistics based on log flags.
+    """Prepare a statistics-ready series shared by plot overlays and PDF summaries.
 
     We keep the plot series as-is (so faults remain visible), but compute
     statistics on samples that are likely meaningful.
@@ -1994,7 +1994,8 @@ def _apply_flag_filters_for_stats(
         (filtered_series, notes) where notes describes what was excluded.
     """
     if "flags" not in df.columns:
-        return y_series, []
+        numeric = pd.to_numeric(y_series, errors="coerce").dropna()
+        return numeric, []
 
     flags_series = df["flags"]
     flags_numeric = pd.to_numeric(flags_series, errors="coerce").fillna(0).astype("int64")
@@ -2026,14 +2027,26 @@ def _apply_flag_filters_for_stats(
             notes.append(f"excluded CAL_VALID==0 rows: {invalid_count}")
 
     filtered = y_series[include_mask]
-    return filtered, notes
+    numeric = pd.to_numeric(filtered, errors="coerce").dropna()
+    dropped_nan = int(filtered.shape[0] - numeric.shape[0])
+    if dropped_nan > 0:
+        notes.append(f"dropped NaN/unparseable rows: {dropped_nan}")
+    return numeric, notes
+
+
+def _apply_flag_filters_for_stats(
+    df: pd.DataFrame,
+    y_series: pd.Series,
+    y_name: str,
+) -> Tuple[pd.Series, List[str]]:
+    """Backward-compatible alias for statistics series preparation."""
+    return _prepare_series_for_statistics(df, y_series, y_name)
 
 
 def _compute_numeric_stats(series: pd.Series) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
-    numeric = pd.to_numeric(series, errors="coerce").dropna()
-    if numeric.empty:
+    if series.empty:
         return None, None, None, None
-    return float(numeric.min()), float(numeric.mean()), float(numeric.max()), float(numeric.std(ddof=0))
+    return float(series.min()), float(series.mean()), float(series.max()), float(series.std(ddof=0))
 
 
 def _downsample_positions_minmax(series_list: List[pd.Series], max_plot_points: int) -> np.ndarray:
@@ -2366,7 +2379,8 @@ def _build_figure(
 
     is_temperature = y_name in ("cal_temp_c", "raw_temp_c")
     if is_temperature:
-        stats_min, stats_avg, stats_max, stats_std = _compute_numeric_stats(y_series)
+        stats_source_series, _stats_notes = _prepare_series_for_statistics(df, y_series, y_name)
+        stats_min, stats_avg, stats_max, stats_std = _compute_numeric_stats(stats_source_series)
         if stats_avg is not None:
             if options.stats.show_min and stats_min is not None:
                 ax.axhline(stats_min, color="#8b0000", linestyle="--", linewidth=1.0, zorder=3.0, label="min")
@@ -3814,7 +3828,15 @@ class PlotterApp:
             if y_name_effective in ("cal_temp_c", "raw_temp_c")
             else y_series_c
         )
-        stats_series, stats_notes = _apply_flag_filters_for_stats(df, y_series_disp, y_name_effective)
+        stats_series, stats_notes = _prepare_series_for_statistics(df, y_series_disp, y_name_effective)
+        if stats_series.empty:
+            messagebox.showerror(
+                "PDF Export Error",
+                "Cannot compute summary statistics after filtering invalid rows "
+                f"for '{y_name_effective}'. Please review flags/calibration and selected range."
+            )
+            plt.close(fig)
+            return
         stats = _compute_basic_stats(stats_series)
         sensor_fault_threshold_percent = _parse_nonnegative_float(
             str(cfg.pdf_sensor_fault_threshold_percent),
