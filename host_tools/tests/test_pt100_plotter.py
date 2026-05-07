@@ -618,7 +618,7 @@ def test_build_plot_options_from_config_maps_fields():
     cfg.highlight_above_enabled = True
     cfg.highlight_above_value = 10.5
     cfg.show_std_band = True
-    df = pd.DataFrame({"cal_temp_c": [1.0, 2.0]})
+    df = pd.DataFrame({"cal_temp_c": [1.0, 2.0], "flags": [2, 2]})
     opts = p.build_plot_options_from_config(cfg, _mk_loaded_log(df), df, p.DisplayTimeConfig(None, "n/a"))
     assert opts.temp_unit == "F"
     assert opts.rolling_mean_divisor == 9
@@ -927,7 +927,7 @@ def test_get_trimmed_df_uses_config_input_timezone_mode():
 def test_plot_and_pdf_share_same_settings_object():
     cfg = p.create_default_report_config()
     cfg.y_axis_series = "cal_temp_c"
-    df = pd.DataFrame({"cal_temp_c":[1.0], "raw_temp_c":[1.0], "flags":[0], "fault_status":[0]})
+    df = pd.DataFrame({"cal_temp_c":[1.0], "raw_temp_c":[1.0], "flags":[2], "fault_status":[0]})
     loaded = _mk_loaded_log(df)
     display = p.DisplayTimeConfig(datetime.timezone.utc, "UTC")
     opts1 = p.build_plot_options_from_config(cfg, loaded, df, display)
@@ -987,3 +987,78 @@ def test_invalid_configured_y_axis_series_blocks_action_with_clear_error():
     )
     with pytest.raises(ValueError, match="Configured y-axis series does_not_exist is not present"):
         p.PlotterApp._validate_loaded_config_for_action(app)
+
+
+def _cfg_for_series(name: str) -> p.ReportConfig:
+    cfg = p.create_default_report_config()
+    cfg.y_axis_series = name
+    return cfg
+
+
+def test_strict_cal_temp_c_missing_column_raises():
+    with pytest.raises(ValueError, match="cal_temp_c is not present"):
+        p._validate_series_for_configured_output(pd.DataFrame({"flags": [0]}), _cfg_for_series("cal_temp_c"), require_overlay_check=False)
+
+
+def test_strict_cal_temp_c_all_nan_raises():
+    df = pd.DataFrame({"cal_temp_c": [None, float('nan')], "flags": [2, 2]})
+    with pytest.raises(ValueError, match="no usable numeric values"):
+        p._validate_series_for_configured_output(df, _cfg_for_series("cal_temp_c"), require_overlay_check=False)
+
+
+def test_strict_cal_temp_c_missing_flags_raises():
+    df = pd.DataFrame({"cal_temp_c": [1.0]})
+    with pytest.raises(ValueError, match="flags column is unavailable"):
+        p._validate_series_for_configured_output(df, _cfg_for_series("cal_temp_c"), require_overlay_check=False)
+
+
+def test_strict_cal_temp_c_partial_cal_valid_raises():
+    df = pd.DataFrame({"cal_temp_c": [1.0, 2.0], "flags": [2, 0]})
+    with pytest.raises(ValueError, match="not fully calibration-valid"):
+        p._validate_series_for_configured_output(df, _cfg_for_series("cal_temp_c"), require_overlay_check=False)
+
+
+def test_strict_cal_temp_c_all_cal_valid_passes():
+    df = pd.DataFrame({"cal_temp_c": [1.0, 2.0], "flags": [2, 2]})
+    p._validate_series_for_configured_output(df, _cfg_for_series("cal_temp_c"), require_overlay_check=False)
+
+
+def test_no_raw_fallback_for_missing_configured_series():
+    cfg = _cfg_for_series("cal_temp_c")
+    with pytest.raises(ValueError, match="cal_temp_c is not present"):
+        p._validate_series_for_configured_output(pd.DataFrame({"raw_temp_c": [1.0], "flags": [2]}), cfg, require_overlay_check=False)
+
+
+def test_raw_temp_c_configured_numeric_passes():
+    df = pd.DataFrame({"raw_temp_c": [1.0, 2.0], "flags": [0, 0]})
+    p._validate_series_for_configured_output(df, _cfg_for_series("raw_temp_c"), require_overlay_check=False)
+
+
+def test_overlay_raw_enabled_missing_raises():
+    cfg = _cfg_for_series("cal_temp_c")
+    cfg.overlay_raw_temp_c = True
+    df = pd.DataFrame({"cal_temp_c": [1.0], "flags": [2]})
+    with pytest.raises(ValueError, match="Overlay raw temperature is enabled"):
+        p._validate_series_for_configured_output(df, cfg, require_overlay_check=True)
+
+
+def test_overlay_raw_enabled_all_nan_raises():
+    cfg = _cfg_for_series("cal_temp_c")
+    cfg.overlay_raw_temp_c = True
+    df = pd.DataFrame({"cal_temp_c": [1.0], "raw_temp_c": [None], "flags": [2]})
+    with pytest.raises(ValueError, match="no usable numeric values"):
+        p._validate_series_for_configured_output(df, cfg, require_overlay_check=True)
+
+
+def test_overlay_raw_disabled_missing_does_not_fail():
+    cfg = _cfg_for_series("cal_temp_c")
+    cfg.overlay_raw_temp_c = False
+    df = pd.DataFrame({"cal_temp_c": [1.0], "flags": [2]})
+    p._validate_series_for_configured_output(df, cfg, require_overlay_check=True)
+
+
+def test_y_axis_nonnumeric_raises():
+    cfg = _cfg_for_series("raw_rtd_ohms")
+    df = pd.DataFrame({"raw_rtd_ohms": ["abc", "def"], "flags": [0, 0]})
+    with pytest.raises(ValueError, match="no usable numeric values"):
+        p._validate_series_for_configured_output(df, cfg, require_overlay_check=False)

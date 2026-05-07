@@ -332,11 +332,7 @@ def build_plot_options_from_config(
     display_time_config: DisplayTimeConfig,
 ) -> PlotOptions:
     validate_report_config(config)
-    if config.y_axis_series not in trimmed_dataframe.columns:
-        raise ValueError(
-            f"Configured y-axis series {config.y_axis_series} is not present in the selected log files. "
-            "Open Edit Options and choose a series that exists in the loaded logs."
-        )
+    _validate_series_for_configured_output(trimmed_dataframe, config, require_overlay_check=False)
 
     stats = StatsOptions(
         show_min=config.show_minimum,
@@ -365,6 +361,75 @@ def build_plot_options_from_config(
         display_time_config=display_time_config,
         time_source=loaded_log.time_source,
     )
+
+
+def _validate_series_for_configured_output(
+    trimmed_df: pd.DataFrame,
+    config: ReportConfig,
+    *,
+    require_overlay_check: bool,
+) -> None:
+    """Strict, audit-facing validation for configured y-axis and optional overlay."""
+    y_name = config.y_axis_series
+    if y_name not in trimmed_df.columns:
+        raise ValueError(
+            f"Configured y-axis series {y_name} is not present in the selected logs. "
+            "Open Edit Options and choose a valid series or investigate the log data."
+        )
+
+    y_numeric = pd.to_numeric(trimmed_df[y_name], errors="coerce")
+    if y_numeric.notna().sum() == 0:
+        raise ValueError(
+            f"Configured y-axis series {y_name} has no usable numeric values in the selected range. "
+            "Open Edit Options and choose a valid series or investigate the log data."
+        )
+
+    if config.display_temperature_f and y_name not in ("cal_temp_c", "raw_temp_c"):
+        raise ValueError(
+            f"Configured y-axis series {y_name} is not a temperature series and cannot be displayed in degrees F. "
+            "Disable Fahrenheit display or choose a temperature series."
+        )
+
+    if y_name == "cal_temp_c":
+        if "flags" not in trimmed_df.columns:
+            raise ValueError(
+                "Configured y-axis series cal_temp_c cannot be used because calibration evidence is missing (flags column is unavailable). "
+                "Open Edit Options and choose a valid series or investigate the calibration/log data."
+            )
+        flags_int = _parse_flags_series_to_int64(trimmed_df["flags"])
+        if flags_int.isna().any():
+            raise ValueError(
+                "Configured y-axis series cal_temp_c cannot be used because calibration evidence is unparseable in the selected range. "
+                "Open Edit Options and choose a valid series or investigate the calibration/log data."
+            )
+        cal_mask = _get_flag_mask("CAL_VALID", 1 << 1)
+        if cal_mask <= 0:
+            raise ValueError(
+                "Configured y-axis series cal_temp_c cannot be used because calibration evidence is unavailable (CAL_VALID mask is undefined). "
+                "Open Edit Options and choose a valid series or investigate the calibration/log data."
+            )
+        sensor_fault_mask = _get_flag_mask("SENSOR_FAULT", 1 << 4)
+        eligible = pd.Series(True, index=trimmed_df.index)
+        if sensor_fault_mask:
+            eligible &= ((flags_int.astype("int64") & sensor_fault_mask) == 0)
+        if not bool(((flags_int.astype("int64") & cal_mask) != 0)[eligible].all()):
+            raise ValueError(
+                "Configured y-axis series cal_temp_c cannot be used because the selected range is not fully calibration-valid. "
+                "Open Edit Options and choose a valid series or investigate the calibration/log data."
+            )
+
+    if require_overlay_check and config.overlay_raw_temp_c:
+        if "raw_temp_c" not in trimmed_df.columns:
+            raise ValueError(
+                "Overlay raw temperature is enabled, but raw_temp_c is not present in the selected logs. "
+                "Disable overlay or investigate the log data."
+            )
+        raw_numeric = pd.to_numeric(trimmed_df["raw_temp_c"], errors="coerce")
+        if raw_numeric.notna().sum() == 0:
+            raise ValueError(
+                "Overlay raw temperature is enabled, but raw_temp_c has no usable numeric values in the selected range. "
+                "Disable overlay or investigate the log data."
+            )
 
 
 def _load_flag_definitions_from_header() -> List[Tuple[int, str]]:
@@ -3589,6 +3654,7 @@ class PlotterApp:
         try:
             cfg = self._validate_loaded_config_for_action()
             trimmed, start_label, end_label, summary, _selected_label, _display_config, _display_series = self._get_trimmed_df(cfg)
+            _validate_series_for_configured_output(trimmed, cfg, require_overlay_check=False)
         except Exception as exc:
             messagebox.showerror("Trim Error", str(exc))
             return
@@ -3621,19 +3687,13 @@ class PlotterApp:
         requested_y_name = cfg.y_axis_series
         y_name_effective = requested_y_name
 
-        dataset_is_calibrated = self._dataset_is_calibrated()
-        if requested_y_name == "cal_temp_c" and not dataset_is_calibrated:
-            messagebox.showerror("Plot Error", "Configured y-axis series cal_temp_c cannot be used for the selected logs. Open Edit Options and choose a valid series, or investigate the calibration/log data.")
-            return
-
-        if y_name_effective not in df.columns:
-            messagebox.showerror("Plot Error", f"Configured y-axis series {y_name_effective} is not present in the selected logs. Open Edit Options and choose a valid series or investigate the log data.")
+        try:
+            _validate_series_for_configured_output(df, cfg, require_overlay_check=True)
+        except Exception as exc:
+            messagebox.showerror("Plot Error", str(exc))
             return
 
         overlay_raw = cfg.overlay_raw_temp_c
-        if overlay_raw and "raw_temp_c" not in df.columns:
-            messagebox.showerror("Plot Error", "Overlay raw temperature is enabled, but raw_temp_c is not present in the selected logs. Disable overlay or investigate the log data.")
-            return
 
         smooth = cfg.smooth_enabled
         if display_series is not None and self._detect_aggregated(display_series):
@@ -3682,22 +3742,15 @@ class PlotterApp:
         requested_y_name = cfg.y_axis_series
         y_name_effective = requested_y_name
 
-        dataset_is_calibrated = self._dataset_is_calibrated()
-
         warning_text: Optional[str] = self.loaded.audit_summary.calibration_warning
 
-        if requested_y_name == "cal_temp_c" and not dataset_is_calibrated:
-            messagebox.showerror("PDF Error", "Configured y-axis series cal_temp_c cannot be used for the selected logs. Open Edit Options and choose a valid series, or investigate the calibration/log data.")
-            return
-
-        if y_name_effective not in df.columns:
-            messagebox.showerror("PDF Error", f"Configured y-axis series {y_name_effective} is not present in the selected logs. Open Edit Options and choose a valid series or investigate the log data.")
+        try:
+            _validate_series_for_configured_output(df, cfg, require_overlay_check=True)
+        except Exception as exc:
+            messagebox.showerror("PDF Error", str(exc))
             return
 
         overlay_raw = cfg.overlay_raw_temp_c
-        if overlay_raw and "raw_temp_c" not in df.columns:
-            messagebox.showerror("PDF Error", "Overlay raw temperature is enabled, but raw_temp_c is not present in the selected logs. Disable overlay or investigate the log data.")
-            return
 
         smooth = cfg.smooth_enabled
         if display_series is not None and self._detect_aggregated(display_series):
