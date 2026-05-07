@@ -32,6 +32,7 @@ import math
 import os
 import tempfile
 import zlib
+import html
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Tuple, Sequence
@@ -1719,6 +1720,13 @@ def _compute_basic_stats(series: pd.Series) -> Dict[str, str]:
     }
 
 
+def _escape_reportlab_text(value: object) -> str:
+    """Escape free-form text for safe ReportLab Paragraph markup."""
+    if value is None:
+        return ""
+    return html.escape(str(value), quote=False)
+
+
 
 def _format_flags_summary(
     df: pd.DataFrame,
@@ -2447,12 +2455,14 @@ def _export_pdf_report(
     )
 
     elements: List[object] = []
-    elements.append(Paragraph(title, styles_title))
+    elements.append(Paragraph(_escape_reportlab_text(title), styles_title))
     elements.append(Spacer(1, 0.12 * inch))
     if subtitle:
-        elements.append(Paragraph(subtitle, styles_sub))
+        subtitle_text = _escape_reportlab_text(subtitle)
+        if subtitle_text:
+            elements.append(Paragraph(subtitle_text, styles_sub))
     if warning_text:
-        warning_html = warning_text.replace("\n", "<br/>")
+        warning_html = _escape_reportlab_text(warning_text).replace("\n", "<br/>")
         elements.append(Paragraph(warning_html, styles_warn))
 
 
@@ -2497,7 +2507,7 @@ def _export_pdf_report(
     elements.append(img)
     elements.append(Spacer(1, 10))
 
-    file_list = "\n".join([os.path.basename(p) for p in source_files[:12]])
+    file_list = "\n".join([_escape_reportlab_text(os.path.basename(p)) for p in source_files[:12]])
     if len(source_files) > 12:
         file_list += f"\n… ({len(source_files)} files total)"
     elements.append(Paragraph(f"<b>Input file(s):</b><br/>{file_list}", styles_body))
@@ -2512,7 +2522,7 @@ def _export_pdf_report_vector(
     summary_rows: List[List[str]],
     calibration_rows: List[List[str]],
     title: str,
-    subtitle: str,
+    subtitle: Optional[str],
     warning_text: Optional[str] = None,
 ) -> None:
     """Export a vector PDF using Matplotlib's PDF backend.
@@ -2521,7 +2531,7 @@ def _export_pdf_report_vector(
     """
     # Page 1: plot (vector).
     # Reserve some headroom for a report header above the plot title.
-    fig.subplots_adjust(top=0.82)
+    fig.subplots_adjust(top=0.84)
     fig.text(
         0.5,
         0.985,
@@ -2530,15 +2540,6 @@ def _export_pdf_report_vector(
         va="top",
         fontsize=14,
         fontweight="bold",
-    )
-    fig.text(
-        0.5,
-        0.955,
-        subtitle,
-        ha="center",
-        va="top",
-        fontsize=9,
-        color="gray",
     )
 
     with PdfPages(save_path) as pdf:
@@ -2567,7 +2568,7 @@ def _export_pdf_report_vector(
             ax.text(
                 0.5,
                 0.96,
-                warning_text,
+                str(warning_text),
                 ha="center",
                 va="top",
                 fontsize=12,
@@ -3731,6 +3732,7 @@ class PlotterApp:
             df,
             display_tz=display_config.display_tz,
             time_source=self.loaded.time_source,
+            sensor_fault_threshold_percent=sensor_fault_threshold_percent,
         )
 
         series_label = _human_series_label(y_name_effective, temp_unit=temp_unit)

@@ -90,6 +90,11 @@ def test_sensor_fault_nonzero_included_regardless_of_threshold():
     assert "RTD high threshold" in summary
 
 
+def test_escape_reportlab_text_escapes_xml_chars_and_handles_none():
+    assert p._escape_reportlab_text(None) == ""
+    assert p._escape_reportlab_text("a&b<c>d") == "a&amp;b&lt;c&gt;d"
+
+
 def test_build_status_flag_rows_includes_informational_and_counts():
     flags = [0x0013] * 2 + [0x004B] * 3
     df = pd.DataFrame({"flags": flags})
