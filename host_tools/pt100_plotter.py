@@ -304,7 +304,7 @@ def build_plot_options_from_config(
         show_std_band=config.show_std_band,
     )
     highlights = HighlightOptions(
-        highlight_outside_std=config.highlight_outside_std and stats.show_std_band,
+        highlight_outside_std=config.highlight_outside_std,
         upper_limit=config.highlight_above_value,
         lower_limit=config.highlight_below_value,
         highlight_above=config.highlight_above_enabled,
@@ -2564,29 +2564,7 @@ class PlotterApp:
         self.start_time_text = tk.StringVar(value="")
         self.end_time_text = tk.StringVar(value="")
         self._has_manual_time_range = False
-        self.display_tz_choice = tk.StringVar(value="Local")
-        self.input_tz_mode_choice = tk.StringVar(value="Log/source time")
-
-        self.y_choice = tk.StringVar(value="cal_temp_c")
         self.series_choices = ["cal_temp_c", "raw_temp_c", "raw_rtd_ohms"]
-        self.temp_f = tk.BooleanVar(value=False)
-        self.overlay_raw = tk.BooleanVar(value=False)
-        self.smooth = tk.BooleanVar(value=True)
-        self.rolling_mean_divisor_text = tk.StringVar(value=str(_DEFAULT_ROLLING_MEAN_DIVISOR))
-        self.enable_downsample = tk.BooleanVar(value=True)
-        self.max_plot_points = tk.IntVar(value=20000)
-        self.pdf_plot_dpi = tk.IntVar(value=600)
-        self.pdf_vector = tk.BooleanVar(value=False)
-        self.stats_show_min = tk.BooleanVar(value=False)
-        self.stats_show_max = tk.BooleanVar(value=False)
-        self.stats_show_avg = tk.BooleanVar(value=False)
-        self.stats_show_std = tk.BooleanVar(value=False)
-        self.highlight_outside_std = tk.BooleanVar(value=False)
-        self.highlight_apply_to_rolling_mean = tk.BooleanVar(value=False)
-        self.highlight_above = tk.BooleanVar(value=False)
-        self.highlight_below = tk.BooleanVar(value=False)
-        self.highlight_upper_limit = tk.StringVar(value="")
-        self.highlight_lower_limit = tk.StringVar(value="")
         self._warned_aggregated = False
         self._auto_selected_cal_series = False
         self.config_path: Optional[str] = None
@@ -2673,35 +2651,14 @@ class PlotterApp:
         self.config_summary_label.config(text=name)
         self.config_details_label.config(
             text=(
-                f"Input time zone: {self.input_tz_mode_choice.get()}\n"
-                f"Display time zone: {self.display_tz_choice.get()}\n"
-                f"Y-axis series: {self.y_choice.get()}"
+                f"Input time zone: {self.report_config.input_timezone_mode if self.report_config else 'n/a'}\n"
+                f"Display time zone: {self.report_config.display_timezone if self.report_config else 'n/a'}\n"
+                f"Y-axis series: {self.report_config.y_axis_series if self.report_config else 'n/a'}\n"
+                f"PDF sensor fault threshold percent: {self.report_config.pdf_sensor_fault_threshold_percent if self.report_config else 'n/a'}"
             )
         )
 
     def _apply_report_config_to_ui(self, config: ReportConfig) -> None:
-        self.input_tz_mode_choice.set(config.input_timezone_mode)
-        self.display_tz_choice.set(config.display_timezone)
-        self.y_choice.set(config.y_axis_series)
-        self.temp_f.set(config.display_temperature_f)
-        self.overlay_raw.set(config.overlay_raw_temp_c)
-        self.smooth.set(config.smooth_enabled)
-        self.rolling_mean_divisor_text.set(str(config.rolling_mean_divisor))
-        self.enable_downsample.set(config.downsample_enabled)
-        self.max_plot_points.set(config.max_plot_points)
-        self.pdf_plot_dpi.set(config.pdf_plot_dpi)
-        self.pdf_vector.set(config.vector_pdf)
-        self.stats_show_min.set(config.show_minimum)
-        self.stats_show_max.set(config.show_maximum)
-        self.stats_show_avg.set(config.show_average)
-        self.stats_show_std.set(config.show_std_band)
-        self.highlight_outside_std.set(config.highlight_outside_std)
-        self.highlight_apply_to_rolling_mean.set(config.highlight_mask_from_rolling_mean)
-        self.highlight_above.set(config.highlight_above_enabled)
-        self.highlight_upper_limit.set("" if config.highlight_above_value is None else str(config.highlight_above_value))
-        self.highlight_below.set(config.highlight_below_enabled)
-        self.highlight_lower_limit.set("" if config.highlight_below_value is None else str(config.highlight_below_value))
-        self.pdf_sensor_fault_threshold_text.set(str(config.pdf_sensor_fault_threshold_percent))
         self.report_config = config
         self._config_dirty = False
         self._update_config_summary()
@@ -2756,7 +2713,7 @@ class PlotterApp:
 
     def _build_report_config_from_ui(self) -> ReportConfig:
         return ReportConfig(
-            input_timezone_mode=self.input_tz_mode_choice.get(),
+            input_timezone_mode=cfg.input_timezone_mode,
             display_timezone=self.display_tz_choice.get(),
             y_axis_series=self.y_choice.get(),
             display_temperature_f=self.temp_f.get(),
@@ -2816,7 +2773,7 @@ class PlotterApp:
         if not self.config_path:
             return
         try:
-            cfg = self._build_report_config_from_ui()
+            cfg = self.report_config
             save_report_config(cfg, self.config_path)
         except Exception as exc:
             messagebox.showerror("Config Error", f"Failed to save config file '{self.config_path}'. Check the highlighted settings and file permissions.\n\n{exc}")
@@ -2963,19 +2920,9 @@ class PlotterApp:
                 return
             self._apply_report_config_to_ui(new_cfg)
             self._config_dirty = True
-            if close_after:
-                if self.config_path:
-                    try:
-                        save_report_config(new_cfg, self.config_path)
-                    except Exception as exc:
-                        messagebox.showerror("Config Error", str(exc))
-                        return
-                self._config_dirty = False
-                dialog.destroy()
         button_row = tk.Frame(body); button_row.grid(row=r, column=0, sticky="e", pady=(10, 0))
         tk.Button(button_row, text="Apply", command=lambda: _apply_options(False)).pack(side="left", padx=(0, 6))
-        tk.Button(button_row, text="Save", command=lambda: _apply_options(True)).pack(side="left", padx=(0, 6))
-        tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left")
+        tk.Button(button_row, text="Close", command=dialog.destroy).pack(side="left")
 
     def _create_status_flags_section(self, parent: tk.Widget, row: int, column: int = 0) -> None:
         status_frame = tk.LabelFrame(parent, text="Data Quality / Status Flags", padx=8, pady=6)
@@ -3423,7 +3370,7 @@ class PlotterApp:
                 self._apply_selected_time_range,
                 selected_start_utc=nearest_start_utc,
                 selected_end_utc=nearest_end_utc,
-                input_timezone_mode=self.input_tz_mode_choice.get(),
+                input_timezone_mode=cfg.input_timezone_mode,
                 display_tz=display_tz,
                 source_tz=self.loaded.tzinfo,
             )
@@ -3465,7 +3412,7 @@ class PlotterApp:
             start_text=self.start_time_text.get(),
             end_text=self.end_time_text.get(),
             time_series_utc=time_series_utc,
-            input_timezone_mode=self.input_tz_mode_choice.get(),
+            input_timezone_mode=cfg.input_timezone_mode,
             display_tz=display_tz,
             source_tz=self.loaded.tzinfo,
         )
@@ -3518,18 +3465,17 @@ class PlotterApp:
 
         dataset_is_calibrated = self._dataset_is_calibrated()
         if requested_y_name == "cal_temp_c" and not dataset_is_calibrated:
-            if "raw_temp_c" in df.columns:
-                y_name_effective = "raw_temp_c"
+            messagebox.showerror("Plot Error", "Configured y-axis series cal_temp_c cannot be used for the selected logs. Open Edit Options and choose a valid series, or investigate the calibration/log data.")
+            return
 
         if y_name_effective not in df.columns:
-            messagebox.showerror("Plot Error", f"Column not found: {y_name_effective}")
+            messagebox.showerror("Plot Error", f"Configured y-axis series {y_name_effective} is not present in the selected logs. Open Edit Options and choose a valid series or investigate the log data.")
             return
 
         overlay_raw = cfg.overlay_raw_temp_c
         if overlay_raw and "raw_temp_c" not in df.columns:
-            self.overlay_raw.set(False)
-            overlay_raw = False
-            messagebox.showinfo("Overlay Disabled", "raw_temp_c is not available in this dataset.")
+            messagebox.showerror("Plot Error", "Overlay raw temperature is enabled, but raw_temp_c is not present in the selected logs. Disable overlay or investigate the log data.")
+            return
 
         smooth = cfg.smooth_enabled
         if display_series is not None and self._detect_aggregated(display_series):
@@ -3582,25 +3528,18 @@ class PlotterApp:
 
         warning_text: Optional[str] = self.loaded.audit_summary.calibration_warning
 
-        # If the user requested calibrated temperature but explicit calibration evidence
-        # is not present, fall back to raw temperature for plotting/reporting.
         if requested_y_name == "cal_temp_c" and not dataset_is_calibrated:
-            if "raw_temp_c" in df.columns:
-                y_name_effective = "raw_temp_c"
-                warning_text = (
-                    "Calibration evidence not present in record flags (CAL_VALID). "
-                    "Using RAW temperature."
-                )
+            messagebox.showerror("PDF Error", "Configured y-axis series cal_temp_c cannot be used for the selected logs. Open Edit Options and choose a valid series, or investigate the calibration/log data.")
+            return
 
         if y_name_effective not in df.columns:
-            messagebox.showerror("PDF Error", f"Column not found: {y_name_effective}")
+            messagebox.showerror("PDF Error", f"Configured y-axis series {y_name_effective} is not present in the selected logs. Open Edit Options and choose a valid series or investigate the log data.")
             return
 
         overlay_raw = cfg.overlay_raw_temp_c
         if overlay_raw and "raw_temp_c" not in df.columns:
-            self.overlay_raw.set(False)
-            overlay_raw = False
-            messagebox.showinfo("Overlay Disabled", "raw_temp_c is not available in this dataset.")
+            messagebox.showerror("PDF Error", "Overlay raw temperature is enabled, but raw_temp_c is not present in the selected logs. Disable overlay or investigate the log data.")
+            return
 
         smooth = cfg.smooth_enabled
         if display_series is not None and self._detect_aggregated(display_series):
