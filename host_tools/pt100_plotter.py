@@ -557,6 +557,8 @@ class LoadedLog:
     dropped_no_time_rows: int
     file_headers: Dict[str, Dict[str, str]]
     audit_summary: "AuditSummary"
+    source_timezone_label: Optional[str] = None
+    source_timezone_warning: Optional[str] = None
 
 
 @dataclass
@@ -863,9 +865,52 @@ def _normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+
+
+def _resolve_source_timezone_from_headers(headers_by_file: Dict[str, Dict[str, str]]) -> Tuple[Optional[datetime.tzinfo], Optional[str], Optional[str]]:
+    """Resolve source timezone from PTLOG headers.
+
+    Returns (tzinfo, label, warning).
+    """
+    if not headers_by_file:
+        return None, None, None
+
+    tz_values = {(h.get("timezone_posix") or "").strip() for h in headers_by_file.values()}
+    tz_values.discard("")
+    if not tz_values:
+        return None, None, "Missing PTLOG timezone metadata; falling back to host local timezone for naive timestamps."
+    if len(tz_values) > 1:
+        return None, None, f"Inconsistent PTLOG timezone metadata across files: {sorted(tz_values)}"
+
+    tz_text = next(iter(tz_values))
+    dst_values = {(h.get("dst_enabled") or "").strip().lower() for h in headers_by_file.values()}
+    dst_values.discard("")
+    if len(dst_values) > 1:
+        return None, None, f"Inconsistent PTLOG DST metadata across files: {sorted(dst_values)}"
+
+    # Conservative parser for common forms first.
+    normalized = tz_text.upper().replace("UTC", "GMT")
+    m = re.fullmatch(r"GMT([+-])(\d{1,2})(?::?(\d{2}))?", normalized)
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        hours = int(m.group(2))
+        minutes = int(m.group(3) or "0")
+        offset = datetime.timedelta(hours=hours, minutes=minutes) * sign
+        tz = datetime.timezone(offset, name=f"UTC{m.group(1)}{hours:02d}:{minutes:02d}")
+        return tz, tz_text, None
+
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(tz_text), tz_text, None
+        except Exception:
+            pass
+
+    return None, tz_text, f"PTLOG timezone metadata present but unparseable ({tz_text!r}); falling back to host local timezone for naive timestamps."
+
 def _pick_time_source(
     df: pd.DataFrame,
     local_tz: Optional[datetime.tzinfo],
+    source_tz_hint: Optional[datetime.tzinfo] = None,
 ) -> Tuple[pd.DataFrame, str, str, Optional[datetime.tzinfo], int]:
     """Choose the best available X-axis source and create either '__time' (datetime)
     or '__x' (numeric).
@@ -906,7 +951,7 @@ def _pick_time_source(
 
     if iso_series is not None and iso_series.notna().any():
         first_ts = iso_series.dropna().iloc[0]
-        tzinfo = getattr(first_ts, "tzinfo", None) or local_tz
+        tzinfo = getattr(first_ts, "tzinfo", None) or source_tz_hint or local_tz
         combined_time = iso_series
         try:
             if tzinfo is not None and combined_time.dt.tz is None:
@@ -1711,10 +1756,14 @@ def _load_log_files(file_paths: List[str]) -> LoadedLog:
 
     combined = pd.concat(dataframes, ignore_index=True)
     local_tz = _get_local_tz()
+    source_tz, source_tz_label, source_tz_warning = _resolve_source_timezone_from_headers(headers_by_file)
     combined, time_column, time_source, tzinfo, dropped_no_time_rows = _pick_time_source(
         combined,
         local_tz=local_tz,
+        source_tz_hint=source_tz,
     )
+    if tzinfo is None:
+        tzinfo = source_tz
 
     combined = _ensure_sequence_column(combined)
     combined["__seq_unwrapped"] = _compute_unwrapped_sequence(combined["__seq"])
@@ -1739,6 +1788,8 @@ def _load_log_files(file_paths: List[str]) -> LoadedLog:
         dropped_no_time_rows=dropped_no_time_rows,
         file_headers=headers_by_file,
         audit_summary=audit_summary,
+        source_timezone_label=source_tz_label,
+        source_timezone_warning=source_tz_warning,
     )
 
 
