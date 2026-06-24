@@ -52,6 +52,7 @@ idf_component_register(
     "sd_card_detect.c"
     "sd_csv_verify.c"
     "sd_logger.c"
+    "sd_ptlog_paths.c"
     "stack_monitor.c"
     "wifi_credentials.c"
     "wifi_service.c"
