@@ -17,6 +17,50 @@ extern "C"
 {
 #endif
 
+#define SD_LOGGER_DAILY_DIAG_PATH_LEN 128u
+#define SD_LOGGER_DAILY_DIAG_DATE_LEN 16u
+#define SD_LOGGER_DAILY_DIAG_MONTH_LEN 16u
+
+  /** Stage labels for the last daily PTLOG path/directory/open failure. */
+  typedef enum
+  {
+    SD_LOGGER_DAILY_STAGE_NONE = 0,
+    SD_LOGGER_DAILY_STAGE_PATH_BUILD,
+    SD_LOGGER_DAILY_STAGE_LOG_ROOT_BUILD,
+    SD_LOGGER_DAILY_STAGE_LOG_ROOT_STAT,
+    SD_LOGGER_DAILY_STAGE_LOG_ROOT_MKDIR,
+    SD_LOGGER_DAILY_STAGE_LOG_ROOT_VERIFY,
+    SD_LOGGER_DAILY_STAGE_MONTH_DIR_BUILD,
+    SD_LOGGER_DAILY_STAGE_MONTH_DIR_STAT,
+    SD_LOGGER_DAILY_STAGE_MONTH_DIR_MKDIR,
+    SD_LOGGER_DAILY_STAGE_MONTH_DIR_VERIFY,
+    SD_LOGGER_DAILY_STAGE_REVISION_DIR_BUILD,
+    SD_LOGGER_DAILY_STAGE_REVISION_DIR_OPEN,
+    SD_LOGGER_DAILY_STAGE_REVISION_FILE_STAT,
+    SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
+    SD_LOGGER_DAILY_STAGE_ACCESS_EXISTING,
+    SD_LOGGER_DAILY_STAGE_FOPEN_DAILY,
+    SD_LOGGER_DAILY_STAGE_RESUME,
+    SD_LOGGER_DAILY_STAGE_HEADER_COMMIT,
+    SD_LOGGER_DAILY_STAGE_EMPTY_FILE_UNLINK,
+  } sd_logger_daily_stage_t;
+
+  /** Fixed-size daily PTLOG diagnostics; strings are copied, never borrowed. */
+  typedef struct
+  {
+    sd_logger_daily_stage_t stage;
+    char path[SD_LOGGER_DAILY_DIAG_PATH_LEN];
+    char date[SD_LOGGER_DAILY_DIAG_DATE_LEN];
+    char month[SD_LOGGER_DAILY_DIAG_MONTH_LEN];
+    uint32_t revision;
+    int errno_value;
+    esp_err_t result;
+    bool file_existed_before_open;
+    bool file_was_empty;
+    bool empty_file_unlink_attempted;
+    bool empty_file_unlink_succeeded;
+  } SdLoggerDailyDiagnostics;
+
   typedef struct
   {
     size_t batch_target_bytes;
@@ -52,6 +96,8 @@ extern "C"
     spi_host_device_t host_id;
     int cs_gpio;
     bool slot_config_valid;
+
+    SdLoggerDailyDiagnostics last_daily_diag;
   } sd_logger_t;
 
   typedef enum
@@ -158,6 +204,12 @@ extern "C"
                                               int64_t epoch_utc,
                                               const ptlog_header_t* header,
                                               uint32_t header_signature);
+
+  const char* SdLoggerDailyStageName(sd_logger_daily_stage_t stage);
+
+  /** Copy the last daily PTLOG failure diagnostics, if any, into diag_out. */
+  bool SdLoggerGetLastDailyDiagnostics(
+    const sd_logger_t* logger, SdLoggerDailyDiagnostics* diag_out);
 
   esp_err_t SdLoggerAppendBatchEx(
     sd_logger_t* logger,

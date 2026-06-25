@@ -30,10 +30,12 @@ SdLoggerJoinPath(const char* dir_path,
                  char* out_path,
                  size_t out_path_size);
 static esp_err_t
-SdLoggerEnsurePtlogDirectoryLocked(const sd_logger_t* logger,
-                                  const char* month_string);
+SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
+                                  const char* date_string,
+                                  const char* month_string,
+                                  uint32_t revision);
 static esp_err_t
-SdLoggerFindNextRevisionInMonthLocked(const sd_logger_t* logger,
+SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
                                       const char* date_string,
                                       const char* month_string,
                                       uint32_t* revision_out);
@@ -61,9 +63,20 @@ CommitHeaderIfEmptyAndSync_(FILE* file,
                             bool* file_was_empty_out,
                             bool* header_written_out);
 static bool
-SdLoggerUnlinkEmptyFileIfPresent_(const char* path);
+SdLoggerUnlinkEmptyFileIfPresent_(const char* path, int* errno_out);
 static void
 SdLoggerResetMountState_(sd_logger_t* logger);
+static void
+SdLoggerDailyDiagClear(sd_logger_t* logger);
+static void
+SdLoggerDailyDiagSet(sd_logger_t* logger,
+                     sd_logger_daily_stage_t stage,
+                     const char* path,
+                     const char* date_string,
+                     const char* month_string,
+                     uint32_t revision,
+                     int errno_value,
+                     esp_err_t result);
 
 static uint8_t*
 AllocatePreferPsram(size_t bytes)
@@ -119,6 +132,112 @@ ResetAppendStats(sd_csv_append_stats_t* stats)
   }
   memset(stats, 0, sizeof(*stats));
   SetAppendDiagnostics(&stats->diag, NULL, 0);
+}
+
+const char*
+SdLoggerDailyStageName(sd_logger_daily_stage_t stage)
+{
+  switch (stage) {
+    case SD_LOGGER_DAILY_STAGE_NONE:
+      return "none";
+    case SD_LOGGER_DAILY_STAGE_PATH_BUILD:
+      return "path_build";
+    case SD_LOGGER_DAILY_STAGE_LOG_ROOT_BUILD:
+      return "log_root_build";
+    case SD_LOGGER_DAILY_STAGE_LOG_ROOT_STAT:
+      return "log_root_stat";
+    case SD_LOGGER_DAILY_STAGE_LOG_ROOT_MKDIR:
+      return "log_root_mkdir";
+    case SD_LOGGER_DAILY_STAGE_LOG_ROOT_VERIFY:
+      return "log_root_verify";
+    case SD_LOGGER_DAILY_STAGE_MONTH_DIR_BUILD:
+      return "month_dir_build";
+    case SD_LOGGER_DAILY_STAGE_MONTH_DIR_STAT:
+      return "month_dir_stat";
+    case SD_LOGGER_DAILY_STAGE_MONTH_DIR_MKDIR:
+      return "month_dir_mkdir";
+    case SD_LOGGER_DAILY_STAGE_MONTH_DIR_VERIFY:
+      return "month_dir_verify";
+    case SD_LOGGER_DAILY_STAGE_REVISION_DIR_BUILD:
+      return "revision_dir_build";
+    case SD_LOGGER_DAILY_STAGE_REVISION_DIR_OPEN:
+      return "revision_dir_open";
+    case SD_LOGGER_DAILY_STAGE_REVISION_FILE_STAT:
+      return "revision_file_stat";
+    case SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW:
+      return "revision_overflow";
+    case SD_LOGGER_DAILY_STAGE_ACCESS_EXISTING:
+      return "access_existing";
+    case SD_LOGGER_DAILY_STAGE_FOPEN_DAILY:
+      return "fopen_daily";
+    case SD_LOGGER_DAILY_STAGE_RESUME:
+      return "resume";
+    case SD_LOGGER_DAILY_STAGE_HEADER_COMMIT:
+      return "header_commit";
+    case SD_LOGGER_DAILY_STAGE_EMPTY_FILE_UNLINK:
+      return "empty_file_unlink";
+    default:
+      return "unknown";
+  }
+}
+
+bool
+SdLoggerGetLastDailyDiagnostics(const sd_logger_t* logger,
+                                SdLoggerDailyDiagnostics* diag_out)
+{
+  if (logger == NULL || diag_out == NULL) {
+    return false;
+  }
+  *diag_out = logger->last_daily_diag;
+  return logger->last_daily_diag.stage != SD_LOGGER_DAILY_STAGE_NONE;
+}
+
+static void
+SdLoggerDailyDiagCopy(char* dest, size_t dest_size, const char* source)
+{
+  if (dest == NULL || dest_size == 0) {
+    return;
+  }
+  dest[0] = '\0';
+  if (source == NULL) {
+    return;
+  }
+  (void)snprintf(dest, dest_size, "%s", source);
+}
+
+/* Daily-file diagnostics are fixed-size and copied immediately so errno,
+ * stack paths, date/month context, and selected revision survive later calls. */
+static void
+SdLoggerDailyDiagSet(sd_logger_t* logger,
+                     sd_logger_daily_stage_t stage,
+                     const char* path,
+                     const char* date_string,
+                     const char* month_string,
+                     uint32_t revision,
+                     int errno_value,
+                     esp_err_t result)
+{
+  if (logger == NULL) {
+    return;
+  }
+  SdLoggerDailyDiagnostics* diag = &logger->last_daily_diag;
+  memset(diag, 0, sizeof(*diag));
+  diag->stage = stage;
+  diag->revision = revision;
+  diag->errno_value = errno_value;
+  diag->result = result;
+  SdLoggerDailyDiagCopy(diag->path, sizeof(diag->path), path);
+  SdLoggerDailyDiagCopy(diag->date, sizeof(diag->date), date_string);
+  SdLoggerDailyDiagCopy(diag->month, sizeof(diag->month), month_string);
+}
+
+static void
+SdLoggerDailyDiagClear(sd_logger_t* logger)
+{
+  if (logger != NULL) {
+    memset(&logger->last_daily_diag, 0, sizeof(logger->last_daily_diag));
+    logger->last_daily_diag.result = ESP_OK;
+  }
 }
 
 /**
@@ -263,9 +382,25 @@ SdLoggerJoinPath(const char* dir_path,
  * malformed FAT path.
  */
 static esp_err_t
-SdLoggerEnsureDirectoryPath_(const char* path, const char* label)
+SdLoggerEnsureDirectoryPath_(sd_logger_t* logger,
+                             const char* path,
+                             const char* label,
+                             sd_logger_daily_stage_t stat_stage,
+                             sd_logger_daily_stage_t mkdir_stage,
+                             sd_logger_daily_stage_t verify_stage,
+                             const char* date_string,
+                             const char* month_string,
+                             uint32_t revision)
 {
   if (path == NULL || path[0] == '\0') {
+    SdLoggerDailyDiagSet(logger,
+                         stat_stage,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         0,
+                         ESP_ERR_INVALID_ARG);
     ESP_LOGE(kTag, "Invalid %s directory path", label != NULL ? label : "PTLOG");
     return ESP_ERR_INVALID_ARG;
   }
@@ -275,6 +410,14 @@ SdLoggerEnsureDirectoryPath_(const char* path, const char* label)
     if (S_ISDIR(stat_buffer.st_mode)) {
       return ESP_OK;
     }
+    SdLoggerDailyDiagSet(logger,
+                         stat_stage,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         0,
+                         ESP_ERR_INVALID_STATE);
     ESP_LOGE(kTag,
              "%s path exists but is not a directory: %s",
              label != NULL ? label : "PTLOG",
@@ -284,6 +427,14 @@ SdLoggerEnsureDirectoryPath_(const char* path, const char* label)
 
   const int stat_errno = errno;
   if (stat_errno != ENOENT) {
+    SdLoggerDailyDiagSet(logger,
+                         stat_stage,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         stat_errno,
+                         ESP_FAIL);
     ESP_LOGE(kTag,
              "stat failed for %s directory %s: %s (%d)",
              label != NULL ? label : "PTLOG",
@@ -296,6 +447,14 @@ SdLoggerEnsureDirectoryPath_(const char* path, const char* label)
   if (mkdir(path, 0777) != 0) {
     const int mkdir_errno = errno;
     if (mkdir_errno != EEXIST) {
+      SdLoggerDailyDiagSet(logger,
+                           mkdir_stage,
+                           path,
+                           date_string,
+                           month_string,
+                           revision,
+                           mkdir_errno,
+                           ESP_FAIL);
       ESP_LOGE(kTag,
                "mkdir failed for %s directory %s: %s (%d)",
                label != NULL ? label : "PTLOG",
@@ -308,6 +467,14 @@ SdLoggerEnsureDirectoryPath_(const char* path, const char* label)
 
   if (stat(path, &stat_buffer) != 0) {
     const int verify_errno = errno;
+    SdLoggerDailyDiagSet(logger,
+                         verify_stage,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         verify_errno,
+                         ESP_FAIL);
     ESP_LOGE(kTag,
              "stat verify failed for %s directory %s: %s (%d)",
              label != NULL ? label : "PTLOG",
@@ -317,6 +484,14 @@ SdLoggerEnsureDirectoryPath_(const char* path, const char* label)
     return ESP_FAIL;
   }
   if (!S_ISDIR(stat_buffer.st_mode)) {
+    SdLoggerDailyDiagSet(logger,
+                         verify_stage,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         0,
+                         ESP_ERR_INVALID_STATE);
     ESP_LOGE(kTag,
              "%s path is not a directory after mkdir: %s",
              label != NULL ? label : "PTLOG",
@@ -334,8 +509,10 @@ SdLoggerEnsureDirectoryPath_(const char* path, const char* label)
  * deleted or renamed here.
  */
 static esp_err_t
-SdLoggerEnsurePtlogDirectoryLocked(const sd_logger_t* logger,
-                                  const char* month_string)
+SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
+                                  const char* date_string,
+                                  const char* month_string,
+                                  uint32_t revision)
 {
   if (logger == NULL || month_string == NULL) {
     return ESP_ERR_INVALID_ARG;
@@ -344,10 +521,27 @@ SdLoggerEnsurePtlogDirectoryLocked(const sd_logger_t* logger,
   char log_root[SD_PTLOG_MAX_PATH_LEN];
   if (!SdPtlogBuildLogRootPath(
         logger->mount_point, log_root, sizeof(log_root))) {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_LOG_ROOT_BUILD,
+                         logger->mount_point,
+                         date_string,
+                         month_string,
+                         revision,
+                         0,
+                         ESP_FAIL);
     ESP_LOGE(kTag, "Failed to build PTLOG log root path");
     return ESP_FAIL;
   }
-  esp_err_t result = SdLoggerEnsureDirectoryPath_(log_root, "PTLOG log root");
+  esp_err_t result = SdLoggerEnsureDirectoryPath_(
+    logger,
+    log_root,
+    "PTLOG log root",
+    SD_LOGGER_DAILY_STAGE_LOG_ROOT_STAT,
+    SD_LOGGER_DAILY_STAGE_LOG_ROOT_MKDIR,
+    SD_LOGGER_DAILY_STAGE_LOG_ROOT_VERIFY,
+    date_string,
+    month_string,
+    revision);
   if (result != ESP_OK) {
     return result;
   }
@@ -355,10 +549,27 @@ SdLoggerEnsurePtlogDirectoryLocked(const sd_logger_t* logger,
   char month_dir[SD_PTLOG_MAX_PATH_LEN];
   if (!SdPtlogBuildMonthDirPath(
         logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_MONTH_DIR_BUILD,
+                         logger->mount_point,
+                         date_string,
+                         month_string,
+                         revision,
+                         0,
+                         ESP_FAIL);
     ESP_LOGE(kTag, "Failed to build PTLOG month directory for %s", month_string);
     return ESP_FAIL;
   }
-  return SdLoggerEnsureDirectoryPath_(month_dir, "PTLOG month");
+  return SdLoggerEnsureDirectoryPath_(
+    logger,
+    month_dir,
+    "PTLOG month",
+    SD_LOGGER_DAILY_STAGE_MONTH_DIR_STAT,
+    SD_LOGGER_DAILY_STAGE_MONTH_DIR_MKDIR,
+    SD_LOGGER_DAILY_STAGE_MONTH_DIR_VERIFY,
+    date_string,
+    month_string,
+    revision);
 }
 
 /**
@@ -369,7 +580,7 @@ SdLoggerEnsurePtlogDirectoryLocked(const sd_logger_t* logger,
  * overflowing revision values are ignored or fail closed before wraparound.
  */
 static esp_err_t
-SdLoggerFindNextRevisionInMonthLocked(const sd_logger_t* logger,
+SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
                                       const char* date_string,
                                       const char* month_string,
                                       uint32_t* revision_out)
@@ -383,6 +594,14 @@ SdLoggerFindNextRevisionInMonthLocked(const sd_logger_t* logger,
   char month_dir[SD_PTLOG_MAX_PATH_LEN];
   if (!SdPtlogBuildMonthDirPath(
         logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_REVISION_DIR_BUILD,
+                         logger->mount_point,
+                         date_string,
+                         month_string,
+                         *revision_out,
+                         0,
+                         ESP_FAIL);
     ESP_LOGE(kTag, "Failed to build PTLOG revision scan directory for %s", month_string);
     return ESP_FAIL;
   }
@@ -393,6 +612,14 @@ SdLoggerFindNextRevisionInMonthLocked(const sd_logger_t* logger,
       return ESP_OK;
     }
     const int dir_errno = errno;
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_REVISION_DIR_OPEN,
+                         month_dir,
+                         date_string,
+                         month_string,
+                         *revision_out,
+                         dir_errno,
+                         ESP_FAIL);
     ESP_LOGE(kTag,
              "Failed to open PTLOG revision directory %s: %s (%d)",
              month_dir,
@@ -419,11 +646,36 @@ SdLoggerFindNextRevisionInMonthLocked(const sd_logger_t* logger,
       continue;
     }
     struct stat stat_buffer;
-    if (stat(candidate_path, &stat_buffer) != 0 ||
-        !S_ISREG(stat_buffer.st_mode)) {
+    if (stat(candidate_path, &stat_buffer) != 0) {
+      const int stat_errno = errno;
+      SdLoggerDailyDiagSet(logger,
+                           SD_LOGGER_DAILY_STAGE_REVISION_FILE_STAT,
+                           candidate_path,
+                           date_string,
+                           month_string,
+                           *revision_out,
+                           stat_errno,
+                           ESP_FAIL);
+      ESP_LOGE(kTag,
+               "Failed to stat PTLOG revision candidate %s: %s (%d)",
+               candidate_path,
+               strerror(stat_errno),
+               stat_errno);
+      closedir(dir);
+      return ESP_FAIL;
+    }
+    if (!S_ISREG(stat_buffer.st_mode)) {
       continue;
     }
     if (parsed_revision == UINT32_MAX) {
+      SdLoggerDailyDiagSet(logger,
+                           SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
+                           candidate_path,
+                           date_string,
+                           month_string,
+                           parsed_revision,
+                           0,
+                           ESP_ERR_INVALID_SIZE);
       ESP_LOGE(kTag,
                "PTLOG revision overflow in %s; refusing to wrap",
                candidate_path);
@@ -749,14 +1001,20 @@ CommitHeaderIfEmptyAndSync_(FILE* file,
 }
 
 static bool
-SdLoggerUnlinkEmptyFileIfPresent_(const char* path)
+SdLoggerUnlinkEmptyFileIfPresent_(const char* path, int* errno_out)
 {
+  if (errno_out != NULL) {
+    *errno_out = 0;
+  }
   if (path == NULL) {
     return false;
   }
 
   struct stat stat_buffer;
   if (stat(path, &stat_buffer) != 0) {
+    if (errno_out != NULL) {
+      *errno_out = errno;
+    }
     return false;
   }
   if (stat_buffer.st_size != 0) {
@@ -764,11 +1022,15 @@ SdLoggerUnlinkEmptyFileIfPresent_(const char* path)
   }
 
   if (unlink(path) != 0) {
+    const int unlink_errno = errno;
+    if (errno_out != NULL) {
+      *errno_out = unlink_errno;
+    }
     ESP_LOGW(kTag,
              "Failed to remove empty PTLOG placeholder %s: errno=%d (%s)",
              path,
-             errno,
-             strerror(errno));
+             unlink_errno,
+             strerror(unlink_errno));
     return false;
   }
   ESP_LOGW(kTag, "Removed empty PTLOG placeholder %s", path);
@@ -999,6 +1261,7 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   if (!logger->is_mounted) {
     return ESP_ERR_INVALID_STATE;
   }
+  SdLoggerDailyDiagClear(logger);
 
   char date_string[16];
   char month_string[16];
@@ -1014,6 +1277,14 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
                       path,
                       sizeof(path));
   if (path[0] == '\0') {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_PATH_BUILD,
+                         path,
+                         date_string,
+                         month_string,
+                         0,
+                         0,
+                         ESP_FAIL);
     ESP_LOGE(kTag, "Failed to build nested daily PTLOG path");
     return ESP_FAIL;
   }
@@ -1048,12 +1319,20 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
                       path,
                       sizeof(path));
   if (path[0] == '\0') {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_PATH_BUILD,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         0,
+                         ESP_FAIL);
     ESP_LOGE(kTag, "Failed to build nested daily PTLOG path for revision %" PRIu32, revision);
     return ESP_FAIL;
   }
 
   esp_err_t dir_result =
-    SdLoggerEnsurePtlogDirectoryLocked(logger, month_string);
+    SdLoggerEnsurePtlogDirectoryLocked(logger, date_string, month_string, revision);
   if (dir_result != ESP_OK) {
     return dir_result;
   }
@@ -1061,12 +1340,53 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   SdLoggerClose(logger);
   logger->last_record_id_on_sd = 0;
 
-  const bool file_existed_before_open = (access(path, F_OK) == 0);
+  const int access_result = access(path, F_OK);
+  const int access_errno = (access_result == 0) ? 0 : errno;
+  const bool file_existed_before_open = (access_result == 0);
+  if (access_result != 0 && access_errno != ENOENT) {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_ACCESS_EXISTING,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         access_errno,
+                         ESP_FAIL);
+    logger->last_daily_diag.file_existed_before_open = false;
+    ESP_LOGW(kTag,
+             "access check failed for daily PTLOG %s date=%s month=%s rev=%" PRIu32
+             ": %s (%d)",
+             path,
+             date_string,
+             month_string,
+             revision,
+             strerror(access_errno),
+             access_errno);
+  }
 
   logger->file = fopen(path, "a+b");
   if (logger->file == NULL) {
-    ESP_LOGE(
-      kTag, "fopen failed for %s: %s (%d)", path, strerror(errno), errno);
+    const int fopen_errno = errno;
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_FOPEN_DAILY,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         fopen_errno,
+                         ESP_FAIL);
+    logger->last_daily_diag.file_existed_before_open =
+      file_existed_before_open;
+    ESP_LOGE(kTag,
+             "fopen failed for daily PTLOG %s date=%s month=%s rev=%" PRIu32
+             " existed=%s: %s (%d)",
+             path,
+             date_string,
+             month_string,
+             revision,
+             file_existed_before_open ? "yes" : "no",
+             strerror(fopen_errno),
+             fopen_errno);
     return ESP_FAIL;
   }
   ESP_LOGI(kTag,
@@ -1083,6 +1403,16 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
 
   esp_err_t resume_result = ApplyResumeInfo(logger, logger->file, path);
   if (resume_result != ESP_OK) {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_RESUME,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         0,
+                         resume_result);
+    logger->last_daily_diag.file_existed_before_open =
+      file_existed_before_open;
     fclose(logger->file);
     logger->file = NULL;
     return resume_result;
@@ -1093,12 +1423,36 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   esp_err_t header_result = CommitHeaderIfEmptyAndSync_(
     logger->file, header, path, &file_was_empty, &header_written);
   if (header_result != ESP_OK) {
-    ESP_LOGE(kTag, "Failed to commit header for %s", path);
+    ESP_LOGE(kTag,
+             "Failed to commit header for %s date=%s month=%s rev=%" PRIu32,
+             path,
+             date_string,
+             month_string,
+             revision);
     fclose(logger->file);
     logger->file = NULL;
-    if (!file_existed_before_open && file_was_empty) {
-      (void)SdLoggerUnlinkEmptyFileIfPresent_(path);
+    const bool cleanup_attempted = (!file_existed_before_open && file_was_empty);
+    bool cleanup_succeeded = false;
+    int cleanup_errno = 0;
+    if (cleanup_attempted) {
+      cleanup_succeeded =
+        SdLoggerUnlinkEmptyFileIfPresent_(path, &cleanup_errno);
     }
+    SdLoggerDailyDiagSet(logger,
+                         cleanup_attempted && !cleanup_succeeded
+                           ? SD_LOGGER_DAILY_STAGE_EMPTY_FILE_UNLINK
+                           : SD_LOGGER_DAILY_STAGE_HEADER_COMMIT,
+                         path,
+                         date_string,
+                         month_string,
+                         revision,
+                         cleanup_attempted && !cleanup_succeeded ? cleanup_errno : 0,
+                         header_result);
+    logger->last_daily_diag.file_existed_before_open =
+      file_existed_before_open;
+    logger->last_daily_diag.file_was_empty = file_was_empty;
+    logger->last_daily_diag.empty_file_unlink_attempted = cleanup_attempted;
+    logger->last_daily_diag.empty_file_unlink_succeeded = cleanup_succeeded;
     return header_result;
   }
   if (header_written) {
@@ -1109,6 +1463,7 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   logger->current_date[sizeof(logger->current_date) - 1] = '\0';
   logger->current_header_signature = header_signature;
   logger->pending_header = NULL;
+  SdLoggerDailyDiagClear(logger);
   return ESP_OK;
 }
 
