@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "ptlog_format.h"
+#include "sd_ptlog_paths.h"
 
 static const char* kTag = "sd_logger";
 static const char kPtlogSuffix[] = ".ptlog";
@@ -28,6 +29,14 @@ SdLoggerJoinPath(const char* dir_path,
                  const char* child_name,
                  char* out_path,
                  size_t out_path_size);
+static esp_err_t
+SdLoggerEnsurePtlogDirectoryLocked(const sd_logger_t* logger,
+                                  const char* month_string);
+static esp_err_t
+SdLoggerFindNextRevisionInMonthLocked(const sd_logger_t* logger,
+                                      const char* date_string,
+                                      const char* month_string,
+                                      uint32_t* revision_out);
 static bool
 SdLoggerCopyString(const char* source, char* dest, size_t dest_size);
 static esp_err_t
@@ -157,13 +166,11 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
 }
 
 /**
- * @brief Execute BuildDailyPtlogPath.
- * @param logger Parameter logger.
- * @param epoch_seconds Parameter epoch_seconds.
- * @param date_out Parameter date_out.
- * @param date_out_size Parameter date_out_size.
- * @param path_out Parameter path_out.
- * @param path_out_size Parameter path_out_size.
+ * @brief Build the FAT16-safe nested daily PTLOG path.
+ *
+ * New writes avoid FAT16 root-directory pressure by targeting
+ * /logs/YYYY-MM/YYYY-MM-DDZ[-revision].ptlog.  The helper fails closed on
+ * truncation and leaves path_out empty so callers do not open partial paths.
  */
 static void
 BuildDailyPtlogPath(const sd_logger_t* logger,
@@ -171,41 +178,36 @@ BuildDailyPtlogPath(const sd_logger_t* logger,
                     uint32_t revision,
                     char* date_out,
                     size_t date_out_size,
+                    char* month_out,
+                    size_t month_out_size,
                     char* path_out,
                     size_t path_out_size)
 {
-  if (path_out_size > 0) {
+  if (path_out != NULL && path_out_size > 0) {
     path_out[0] = '\0';
   }
-
-  time_t time_seconds = (time_t)epoch_seconds;
-  struct tm time_info;
-  gmtime_r(&time_seconds, &time_info);
-
-  strftime(date_out, date_out_size, "%Y-%m-%dZ", &time_info);
-
-  char daily_name[40] = "";
-  const size_t date_len = strnlen(date_out, date_out_size);
-  if (date_len == date_out_size) {
+  if (date_out != NULL && date_out_size > 0) {
+    date_out[0] = '\0';
+  }
+  if (month_out != NULL && month_out_size > 0) {
+    month_out[0] = '\0';
+  }
+  if (logger == NULL) {
     return;
   }
 
-  if (revision == 0) {
-    (void)snprintf(daily_name, sizeof(daily_name), "%s%s", date_out, kPtlogSuffix);
-  } else {
-    (void)snprintf(
-      daily_name, sizeof(daily_name), "%s-%" PRIu32 "%s", date_out, revision, kPtlogSuffix);
-  }
-
-  if (daily_name[0] == '\0' ||
-      strnlen(daily_name, sizeof(daily_name)) >= sizeof(daily_name) - 1) {
-    return;
-  }
-
-  if (!SdLoggerJoinPath(
-        logger->mount_point, daily_name, path_out, path_out_size) &&
-      path_out_size > 0) {
-    path_out[0] = '\0';
+  if (!SdPtlogBuildNestedPath(logger->mount_point,
+                              epoch_seconds,
+                              revision,
+                              date_out,
+                              date_out_size,
+                              month_out,
+                              month_out_size,
+                              path_out,
+                              path_out_size)) {
+    if (path_out != NULL && path_out_size > 0) {
+      path_out[0] = '\0';
+    }
   }
 }
 
@@ -251,6 +253,190 @@ SdLoggerJoinPath(const char* dir_path,
   memcpy(out_path + write_index, child_name, child_len);
   out_path[write_index + child_len] = '\0';
   return true;
+}
+
+/**
+ * @brief Create or verify one PTLOG directory without overwriting conflicts.
+ *
+ * Existing directories are accepted, missing directories are created, and
+ * existing non-directory paths fail closed so later file opens cannot target a
+ * malformed FAT path.
+ */
+static esp_err_t
+SdLoggerEnsureDirectoryPath_(const char* path, const char* label)
+{
+  if (path == NULL || path[0] == '\0') {
+    ESP_LOGE(kTag, "Invalid %s directory path", label != NULL ? label : "PTLOG");
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  struct stat stat_buffer;
+  if (stat(path, &stat_buffer) == 0) {
+    if (S_ISDIR(stat_buffer.st_mode)) {
+      return ESP_OK;
+    }
+    ESP_LOGE(kTag,
+             "%s path exists but is not a directory: %s",
+             label != NULL ? label : "PTLOG",
+             path);
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const int stat_errno = errno;
+  if (stat_errno != ENOENT) {
+    ESP_LOGE(kTag,
+             "stat failed for %s directory %s: %s (%d)",
+             label != NULL ? label : "PTLOG",
+             path,
+             strerror(stat_errno),
+             stat_errno);
+    return ESP_FAIL;
+  }
+
+  if (mkdir(path, 0777) != 0) {
+    const int mkdir_errno = errno;
+    if (mkdir_errno != EEXIST) {
+      ESP_LOGE(kTag,
+               "mkdir failed for %s directory %s: %s (%d)",
+               label != NULL ? label : "PTLOG",
+               path,
+               strerror(mkdir_errno),
+               mkdir_errno);
+      return ESP_FAIL;
+    }
+  }
+
+  if (stat(path, &stat_buffer) != 0) {
+    const int verify_errno = errno;
+    ESP_LOGE(kTag,
+             "stat verify failed for %s directory %s: %s (%d)",
+             label != NULL ? label : "PTLOG",
+             path,
+             strerror(verify_errno),
+             verify_errno);
+    return ESP_FAIL;
+  }
+  if (!S_ISDIR(stat_buffer.st_mode)) {
+    ESP_LOGE(kTag,
+             "%s path is not a directory after mkdir: %s",
+             label != NULL ? label : "PTLOG",
+             path);
+    return ESP_ERR_INVALID_STATE;
+  }
+  return ESP_OK;
+}
+
+/**
+ * @brief Ensure the FAT16-safe PTLOG log root and target month directories.
+ *
+ * New daily files are opened only after /logs and /logs/YYYY-MM are verified
+ * as directories. Existing files at those paths fail closed; nothing is
+ * deleted or renamed here.
+ */
+static esp_err_t
+SdLoggerEnsurePtlogDirectoryLocked(const sd_logger_t* logger,
+                                  const char* month_string)
+{
+  if (logger == NULL || month_string == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  char log_root[SD_PTLOG_MAX_PATH_LEN];
+  if (!SdPtlogBuildLogRootPath(
+        logger->mount_point, log_root, sizeof(log_root))) {
+    ESP_LOGE(kTag, "Failed to build PTLOG log root path");
+    return ESP_FAIL;
+  }
+  esp_err_t result = SdLoggerEnsureDirectoryPath_(log_root, "PTLOG log root");
+  if (result != ESP_OK) {
+    return result;
+  }
+
+  char month_dir[SD_PTLOG_MAX_PATH_LEN];
+  if (!SdPtlogBuildMonthDirPath(
+        logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
+    ESP_LOGE(kTag, "Failed to build PTLOG month directory for %s", month_string);
+    return ESP_FAIL;
+  }
+  return SdLoggerEnsureDirectoryPath_(month_dir, "PTLOG month");
+}
+
+/**
+ * @brief Find the next same-day header revision in the target month directory.
+ *
+ * Revision rollover is scoped to /logs/YYYY-MM so nested files do not consume
+ * FAT16 root entries. Malformed names, non-regular entries, wrong dates, and
+ * overflowing revision values are ignored or fail closed before wraparound.
+ */
+static esp_err_t
+SdLoggerFindNextRevisionInMonthLocked(const sd_logger_t* logger,
+                                      const char* date_string,
+                                      const char* month_string,
+                                      uint32_t* revision_out)
+{
+  if (logger == NULL || date_string == NULL || month_string == NULL ||
+      revision_out == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  *revision_out = 1u;
+  char month_dir[SD_PTLOG_MAX_PATH_LEN];
+  if (!SdPtlogBuildMonthDirPath(
+        logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
+    ESP_LOGE(kTag, "Failed to build PTLOG revision scan directory for %s", month_string);
+    return ESP_FAIL;
+  }
+
+  DIR* dir = opendir(month_dir);
+  if (dir == NULL) {
+    if (errno == ENOENT) {
+      return ESP_OK;
+    }
+    const int dir_errno = errno;
+    ESP_LOGE(kTag,
+             "Failed to open PTLOG revision directory %s: %s (%d)",
+             month_dir,
+             strerror(dir_errno),
+             dir_errno);
+    return ESP_FAIL;
+  }
+
+  struct dirent* entry = NULL;
+  while ((entry = readdir(dir)) != NULL) {
+    char parsed_date[SD_PTLOG_DATE_LEN + 1u];
+    uint32_t parsed_revision = 0;
+    if (!SdPtlogParseName(
+          entry->d_name, parsed_date, sizeof(parsed_date), &parsed_revision)) {
+      continue;
+    }
+    if (strcmp(parsed_date, date_string) != 0) {
+      continue;
+    }
+
+    char candidate_path[SD_PTLOG_MAX_PATH_LEN];
+    if (!SdLoggerJoinPath(
+          month_dir, entry->d_name, candidate_path, sizeof(candidate_path))) {
+      continue;
+    }
+    struct stat stat_buffer;
+    if (stat(candidate_path, &stat_buffer) != 0 ||
+        !S_ISREG(stat_buffer.st_mode)) {
+      continue;
+    }
+    if (parsed_revision == UINT32_MAX) {
+      ESP_LOGE(kTag,
+               "PTLOG revision overflow in %s; refusing to wrap",
+               candidate_path);
+      closedir(dir);
+      return ESP_ERR_INVALID_SIZE;
+    }
+    if (parsed_revision >= *revision_out) {
+      *revision_out = parsed_revision + 1u;
+    }
+  }
+
+  closedir(dir);
+  return ESP_OK;
 }
 
 /**
@@ -815,10 +1001,22 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   }
 
   char date_string[16];
+  char month_string[16];
   char path[128];
   const bool same_signature = (logger->current_header_signature == header_signature);
-  BuildDailyPtlogPath(
-    logger, epoch_utc, 0, date_string, sizeof(date_string), path, sizeof(path));
+  BuildDailyPtlogPath(logger,
+                      epoch_utc,
+                      0,
+                      date_string,
+                      sizeof(date_string),
+                      month_string,
+                      sizeof(month_string),
+                      path,
+                      sizeof(path));
+  if (path[0] == '\0') {
+    ESP_LOGE(kTag, "Failed to build nested daily PTLOG path");
+    return ESP_FAIL;
+  }
 
   if (logger->file != NULL && logger->current_date[0] != '\0') {
     const int date_cmp = strcmp(date_string, logger->current_date);
@@ -831,38 +1029,34 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   }
 
   uint32_t revision = 0;
-  if (logger->current_date[0] != '\0' && strcmp(date_string, logger->current_date) == 0 &&
-      !same_signature) {
-    revision = 1;
-    DIR* dir = opendir(logger->mount_point);
-    if (dir != NULL) {
-      struct dirent* entry = NULL;
-      while ((entry = readdir(dir)) != NULL) {
-        if (!IsDailyPtlogName(entry->d_name, NULL, 0)) {
-          continue;
-        }
-        if (strncmp(entry->d_name, date_string, 11) != 0) {
-          continue;
-        }
-        const char* rev_start = entry->d_name + 11;
-        if (*rev_start != '-') {
-          continue;
-        }
-        char* end_ptr = NULL;
-        const unsigned long parsed = strtoul(rev_start + 1, &end_ptr, 10);
-        if (end_ptr == NULL || strcmp(end_ptr, kPtlogSuffix) != 0) {
-          continue;
-        }
-        if (parsed >= revision) {
-          revision = (uint32_t)parsed + 1;
-        }
-      }
-      closedir(dir);
+  if (logger->current_date[0] != '\0' &&
+      strcmp(date_string, logger->current_date) == 0 && !same_signature) {
+    esp_err_t revision_result = SdLoggerFindNextRevisionInMonthLocked(
+      logger, date_string, month_string, &revision);
+    if (revision_result != ESP_OK) {
+      return revision_result;
     }
   }
 
-  BuildDailyPtlogPath(
-    logger, epoch_utc, revision, date_string, sizeof(date_string), path, sizeof(path));
+  BuildDailyPtlogPath(logger,
+                      epoch_utc,
+                      revision,
+                      date_string,
+                      sizeof(date_string),
+                      month_string,
+                      sizeof(month_string),
+                      path,
+                      sizeof(path));
+  if (path[0] == '\0') {
+    ESP_LOGE(kTag, "Failed to build nested daily PTLOG path for revision %" PRIu32, revision);
+    return ESP_FAIL;
+  }
+
+  esp_err_t dir_result =
+    SdLoggerEnsurePtlogDirectoryLocked(logger, month_string);
+  if (dir_result != ESP_OK) {
+    return dir_result;
+  }
 
   SdLoggerClose(logger);
   logger->last_record_id_on_sd = 0;
