@@ -12,6 +12,7 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <time.h>
 
 static const char kPtlogSuffix[] = ".ptlog";
@@ -152,7 +153,9 @@ SdPtlogParseName(const char* name,
     if (name[11] != '-' || prefix_len == 12u) return false;
     for (size_t i = 12u; i < prefix_len; ++i) {
       if (name[i] < '0' || name[i] > '9') return false;
-      revision = revision * 10u + (uint32_t)(name[i] - '0');
+      const uint32_t digit = (uint32_t)(name[i] - '0');
+      if (revision > (UINT32_MAX - digit) / 10u) return false;
+      revision = revision * 10u + digit;
     }
   }
   if (date_out != NULL && date_out_size > 0) {
@@ -199,6 +202,10 @@ ConsiderCandidate(const char* dir_path,
   if (!SdPtlogParseName(name, date, sizeof(date), &revision)) return;
   char path[SD_PTLOG_MAX_PATH_LEN];
   if (!JoinPath(dir_path, name, path, sizeof(path))) return;
+  struct stat stat_buffer;
+  if (stat(path, &stat_buffer) != 0 || !S_ISREG(stat_buffer.st_mode)) return;
+  /* Later retention code may delete candidates, so PTLOG-looking directories
+   * or special files must fail closed even when their basenames parse. */
   const bool current_open = (current_path != NULL && strcmp(path, current_path) == 0);
   if (current_open) return;
   if (current_date != NULL && current_date[0] != '\0' && strcmp(date, current_date) == 0) return;

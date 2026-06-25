@@ -14,7 +14,7 @@ extern "C" {
 #define SD_PTLOG_MAX_PATH_LEN 128u
 #define SD_PTLOG_MAX_NAME_LEN 40u
 
-/** Candidate PTLOG file discovered by the bounded FAT16-safe scanner. */
+/** Regular PTLOG file discovered by the bounded FAT16-safe scanner. */
 typedef struct
 {
   char path[SD_PTLOG_MAX_PATH_LEN];

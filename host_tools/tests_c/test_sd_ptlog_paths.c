@@ -32,6 +32,9 @@ static void test_parse(void)
   assert(strcmp(date, "2026-06-23Z") == 0 && revision == 0);
   assert(SdPtlogParseName("2026-06-23Z-123.ptlog", date, sizeof(date), &revision));
   assert(revision == 123);
+  assert(SdPtlogParseName("2026-06-23Z-4294967295.ptlog", date, sizeof(date), &revision));
+  assert(revision == UINT32_MAX);
+  assert(!SdPtlogParseName("2026-06-23Z-4294967296.ptlog", date, sizeof(date), &revision));
   assert(!SdPtlogParseName("random.ptlog", date, sizeof(date), &revision));
   assert(!SdPtlogParseName("2026-6-23Z.ptlog", date, sizeof(date), &revision));
   assert(!SdPtlogParseName("2026-06-23.ptlog", date, sizeof(date), &revision));
@@ -49,6 +52,7 @@ static void test_traversal(void)
   char* root = mkdtemp(templ);
   assert(root != NULL);
   char path[256];
+  snprintf(path, sizeof(path), "%s/2024-01-01Z.ptlog", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/2026-01-01Z.ptlog", root); make_file(path);
   snprintf(path, sizeof(path), "%s/2026-01-01Z-1.ptlog", root); make_file(path);
   snprintf(path, sizeof(path), "%s/random.ptlog", root); make_file(path);
@@ -60,6 +64,8 @@ static void test_traversal(void)
   snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/not-a-month", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/not-a-month/2024-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/2024-01-01Z.ptlog", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06/2025-06-23Z.ptlog", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06/deeper", root); make_dir(path);
