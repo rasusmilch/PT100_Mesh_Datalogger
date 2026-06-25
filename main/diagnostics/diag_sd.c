@@ -11,6 +11,51 @@
 #include "sd_logger.h"
 
 /**
+ * @brief Report the last daily PTLOG preparation failure as informational data.
+ *
+ * Historical daily-open failures help the next hardware run diagnose nested
+ * path/directory/open issues, but they are not a current SD health verdict;
+ * this step always reports ESP_OK when the logger is readable.
+ */
+static void
+DiagReportLastDailyPtlog_(diag_ctx_t* ctx,
+                          const sd_logger_t* logger,
+                          int step,
+                          int total_steps)
+{
+  SdLoggerDailyDiagnostics daily_diag;
+  if (!SdLoggerGetLastDailyDiagnostics(logger, &daily_diag)) {
+    DiagReportStep(ctx,
+                   step,
+                   total_steps,
+                   "daily ptlog",
+                   ESP_OK,
+                   "last_daily_stage=none");
+    return;
+  }
+
+  DiagReportStep(ctx,
+                 step,
+                 total_steps,
+                 "daily ptlog",
+                 ESP_OK,
+                 "last_daily_stage=%s result=%s errno=%d path=%s date=%s "
+                 "month=%s rev=%" PRIu32 " existed=%s empty=%s "
+                 "cleanup_attempted=%s cleanup_succeeded=%s",
+                 SdLoggerDailyStageName(daily_diag.stage),
+                 esp_err_to_name(daily_diag.result),
+                 daily_diag.errno_value,
+                 daily_diag.path[0] != '\0' ? daily_diag.path : "-",
+                 daily_diag.date[0] != '\0' ? daily_diag.date : "-",
+                 daily_diag.month[0] != '\0' ? daily_diag.month : "-",
+                 daily_diag.revision,
+                 daily_diag.file_existed_before_open ? "yes" : "no",
+                 daily_diag.file_was_empty ? "yes" : "no",
+                 daily_diag.empty_file_unlink_attempted ? "yes" : "no",
+                 daily_diag.empty_file_unlink_succeeded ? "yes" : "no");
+}
+
+/**
  * @brief Execute RunDiagSdImpl.
  * @param runtime Parameter runtime.
  * @param full Parameter full.
@@ -29,7 +74,7 @@ RunDiagSdImpl(const app_runtime_t* runtime,
 
   diag_ctx_t ctx;
   DiagInitCtx(&ctx, "SD", verbosity);
-  const int total_steps = full ? 4 : 2;
+  const int total_steps = full ? 5 : 3;
   int result = 1;
 
   DiagHeapCheck(&ctx, "pre_sd_diag");
@@ -75,9 +120,11 @@ RunDiagSdImpl(const app_runtime_t* runtime,
                  format_if_needed ? "yes" : "no",
                  mount_err_string);
 
+  DiagReportLastDailyPtlog_(&ctx, runtime->sd_logger, 2, total_steps);
+
   if (!full) {
     DiagReportStep(&ctx,
-                   2,
+                   3,
                    total_steps,
                    "last id",
                    ESP_OK,
@@ -88,9 +135,9 @@ RunDiagSdImpl(const app_runtime_t* runtime,
   if (full) {
     const sdmmc_card_t* card = runtime->sd_logger->card;
     if (card != NULL) {
-      DiagReportStep(&ctx, 2, total_steps, "card info", ESP_OK, "name=%s oem=%u size=%lluMB", card->cid.name, (unsigned)card->cid.oem_id, (unsigned long long)((uint64_t)card->csd.capacity * card->csd.sector_size / (1024 * 1024)));
+      DiagReportStep(&ctx, 3, total_steps, "card info", ESP_OK, "name=%s oem=%u size=%lluMB", card->cid.name, (unsigned)card->cid.oem_id, (unsigned long long)((uint64_t)card->csd.capacity * card->csd.sector_size / (1024 * 1024)));
     } else {
-      DiagReportStep(&ctx, 2, total_steps, "card info", ESP_FAIL, "card structure missing");
+      DiagReportStep(&ctx, 3, total_steps, "card info", ESP_FAIL, "card structure missing");
     }
 
     if (runtime->sd_logger->is_mounted) {
@@ -114,7 +161,7 @@ RunDiagSdImpl(const app_runtime_t* runtime,
         }
         remove(test_path);
         DiagReportStep(&ctx,
-                       3,
+                       4,
                        total_steps,
                        "file r/w",
                        match ? ESP_OK : ESP_FAIL,
@@ -124,7 +171,7 @@ RunDiagSdImpl(const app_runtime_t* runtime,
       } else {
         const esp_err_t err = ESP_FAIL;
         DiagReportStep(&ctx,
-                       3,
+                       4,
                        total_steps,
                        "file r/w",
                        err,
@@ -135,11 +182,11 @@ RunDiagSdImpl(const app_runtime_t* runtime,
                        strerror(errno));
       }
     } else {
-      DiagReportStep(&ctx, 3, total_steps, "file r/w", ESP_FAIL, "not mounted");
+      DiagReportStep(&ctx, 4, total_steps, "file r/w", ESP_FAIL, "not mounted");
     }
 
     DiagReportStep(&ctx,
-                   4,
+                   5,
                    total_steps,
                    "last id",
                    ESP_OK,
