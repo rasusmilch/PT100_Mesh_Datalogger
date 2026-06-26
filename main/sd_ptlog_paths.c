@@ -285,10 +285,17 @@ ScanPtlogStatsDirectory(const char* dir_path,
                         const char* current_path,
                         const char* current_date,
                         sd_ptlog_stats_t* stats,
-                        uint32_t* directory_ptlog_files)
+                        uint32_t* directory_ptlog_files,
+                        bool* opened_out)
 {
+  if (opened_out != NULL) {
+    *opened_out = false;
+  }
   DIR* dir = opendir(dir_path);
   if (dir == NULL) return legacy_root ? false : true;
+  if (opened_out != NULL) {
+    *opened_out = true;
+  }
   uint32_t local_count = 0;
   struct dirent* entry;
   while ((entry = readdir(dir)) != NULL) {
@@ -357,7 +364,7 @@ SdPtlogCollectStats(const char* mount_point,
   memset(stats_out, 0, sizeof(*stats_out));
 
   if (!ScanPtlogStatsDirectory(
-        mount_point, true, current_path, current_date, stats_out, NULL)) {
+        mount_point, true, current_path, current_date, stats_out, NULL, NULL)) {
     return false;
   }
 
@@ -380,13 +387,23 @@ SdPtlogCollectStats(const char* mount_point,
       closedir(logs);
       return false;
     }
-    stats_out->valid_month_directories++;
     uint32_t month_count = 0;
+    bool month_opened = false;
     if (!ScanPtlogStatsDirectory(
-          month_dir, false, current_path, current_date, stats_out, &month_count)) {
+          month_dir,
+          false,
+          current_path,
+          current_date,
+          stats_out,
+          &month_count,
+          &month_opened)) {
       closedir(logs);
       return false;
     }
+    if (!month_opened) {
+      continue;
+    }
+    stats_out->valid_month_directories++;
     if (month_count > 0u &&
         (month_count > stats_out->max_month_ptlog_files ||
         (month_count == stats_out->max_month_ptlog_files &&

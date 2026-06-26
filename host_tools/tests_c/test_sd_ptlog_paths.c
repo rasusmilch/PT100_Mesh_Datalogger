@@ -324,6 +324,29 @@ static void test_stats_nested_month_counting_and_ignored_paths(void)
   assert(strcmp(stats.max_month_name, "2024-01") == 0);
 }
 
+static void test_stats_valid_month_regular_file_is_ignored(void)
+{
+  char templ[] = "/tmp/ptlog_stats_month_file_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-04", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-05", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-05/2024-05-01Z.ptlog", root); make_file(path);
+
+  sd_ptlog_stats_t stats;
+  assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
+  assert(stats.total_ptlog_files == 1);
+  assert(stats.legacy_root_ptlog_files == 0);
+  assert(stats.nested_month_ptlog_files == 1);
+  assert(stats.current_date_ptlog_files == 0);
+  assert(stats.eligible_ptlog_files == 1);
+  assert(stats.valid_month_directories == 1);
+  assert(stats.max_month_ptlog_files == 1);
+  assert(strcmp(stats.max_month_name, "2024-05") == 0);
+}
+
 static void test_stats_current_date_and_path_separation(void)
 {
   char templ[] = "/tmp/ptlog_stats_current_XXXXXX";
@@ -365,6 +388,7 @@ int main(void)
   test_stats_empty_and_missing_layout();
   test_stats_legacy_root_counting();
   test_stats_nested_month_counting_and_ignored_paths();
+  test_stats_valid_month_regular_file_is_ignored();
   test_stats_current_date_and_path_separation();
   puts("sd_ptlog_paths tests passed");
   return 0;

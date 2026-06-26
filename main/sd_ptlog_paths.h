@@ -46,7 +46,7 @@ typedef struct
   uint32_t nested_month_ptlog_files; /**< Parsed regular PTLOG files in /logs/YYYY-MM. */
   uint32_t current_date_ptlog_files; /**< Counted PTLOGs whose parsed date matches current_date. */
   uint32_t eligible_ptlog_files;     /**< Counted PTLOGs not protected by current_path/current_date. */
-  uint32_t valid_month_directories;  /**< Valid YYYY-MM directories seen directly under /logs. */
+  uint32_t valid_month_directories;  /**< Openable YYYY-MM directories seen directly under /logs. */
   uint32_t max_month_ptlog_files;    /**< Largest parsed regular PTLOG count in one month directory. */
   char max_month_name[SD_PTLOG_MONTH_LEN + 1u]; /**< Month name for max_month_ptlog_files, or empty. */
 } sd_ptlog_stats_t;
