@@ -243,6 +243,80 @@ ScanPtlogDirectory(const char* dir_path,
   closedir(dir);
 }
 
+static bool
+StatsCountPtlogFile(const char* dir_path,
+                    const char* name,
+                    bool legacy_root,
+                    const char* current_path,
+                    const char* current_date,
+                    sd_ptlog_stats_t* stats)
+{
+  char date[SD_PTLOG_DATE_LEN + 1u];
+  uint32_t revision = 0;
+  (void)revision;
+  if (!SdPtlogParseName(name, date, sizeof(date), &revision)) return true;
+  char path[SD_PTLOG_MAX_PATH_LEN];
+  if (!JoinPath(dir_path, name, path, sizeof(path))) return false;
+  struct stat stat_buffer;
+  if (stat(path, &stat_buffer) != 0 || !S_ISREG(stat_buffer.st_mode)) return true;
+
+  stats->total_ptlog_files++;
+  if (legacy_root) {
+    stats->legacy_root_ptlog_files++;
+  } else {
+    stats->nested_month_ptlog_files++;
+  }
+
+  const bool current_open = (current_path != NULL && strcmp(path, current_path) == 0);
+  const bool current_date_match =
+    (current_date != NULL && current_date[0] != '\0' && strcmp(date, current_date) == 0);
+  if (current_date_match) {
+    stats->current_date_ptlog_files++;
+  }
+  if (!current_open && !current_date_match) {
+    stats->eligible_ptlog_files++;
+  }
+  return true;
+}
+
+static bool
+ScanPtlogStatsDirectory(const char* dir_path,
+                        bool legacy_root,
+                        const char* current_path,
+                        const char* current_date,
+                        sd_ptlog_stats_t* stats,
+                        uint32_t* directory_ptlog_files,
+                        bool* opened_out)
+{
+  if (opened_out != NULL) {
+    *opened_out = false;
+  }
+  DIR* dir = opendir(dir_path);
+  if (dir == NULL) return legacy_root ? false : true;
+  if (opened_out != NULL) {
+    *opened_out = true;
+  }
+  uint32_t local_count = 0;
+  struct dirent* entry;
+  while ((entry = readdir(dir)) != NULL) {
+    if (IsSystemDirectoryName(entry->d_name)) continue;
+    const uint32_t before = stats->total_ptlog_files;
+    if (!StatsCountPtlogFile(
+          dir_path, entry->d_name, legacy_root, current_path, current_date, stats)) {
+      closedir(dir);
+      return false;
+    }
+    if (!legacy_root && stats->total_ptlog_files > before) {
+      local_count++;
+    }
+  }
+  closedir(dir);
+  if (directory_ptlog_files != NULL) {
+    *directory_ptlog_files = local_count;
+  }
+  return true;
+}
+
 /*
  * Bounded traversal foundation: scan /sdcard, /sdcard/logs, and one level of
  * YYYY-MM month directories only.  Current/open and current-date files are
@@ -278,4 +352,72 @@ SdPtlogFindOldestCandidate(const char* mount_point,
 
   if (found) *candidate_out = best;
   return found;
+}
+
+bool
+SdPtlogCollectStats(const char* mount_point,
+                    const char* current_path,
+                    const char* current_date,
+                    sd_ptlog_stats_t* stats_out)
+{
+  if (mount_point == NULL || stats_out == NULL) return false;
+  memset(stats_out, 0, sizeof(*stats_out));
+
+  if (!ScanPtlogStatsDirectory(
+        mount_point, true, current_path, current_date, stats_out, NULL, NULL)) {
+    return false;
+  }
+
+  char log_root[SD_PTLOG_MAX_PATH_LEN];
+  if (!SdPtlogBuildLogRootPath(mount_point, log_root, sizeof(log_root))) {
+    return false;
+  }
+
+  DIR* logs = opendir(log_root);
+  if (logs == NULL) return true;
+
+  struct dirent* entry;
+  while ((entry = readdir(logs)) != NULL) {
+    if (IsSystemDirectoryName(entry->d_name) ||
+        !SdPtlogIsMonthDirectoryName(entry->d_name)) {
+      continue;
+    }
+    char month_dir[SD_PTLOG_MAX_PATH_LEN];
+    if (!JoinPath(log_root, entry->d_name, month_dir, sizeof(month_dir))) {
+      closedir(logs);
+      return false;
+    }
+    uint32_t month_count = 0;
+    bool month_opened = false;
+    if (!ScanPtlogStatsDirectory(
+          month_dir,
+          false,
+          current_path,
+          current_date,
+          stats_out,
+          &month_count,
+          &month_opened)) {
+      closedir(logs);
+      return false;
+    }
+    if (!month_opened) {
+      continue;
+    }
+    stats_out->valid_month_directories++;
+    if (month_count > 0u &&
+        (month_count > stats_out->max_month_ptlog_files ||
+        (month_count == stats_out->max_month_ptlog_files &&
+         stats_out->max_month_name[0] != '\0' &&
+         strcmp(entry->d_name, stats_out->max_month_name) < 0))) {
+      stats_out->max_month_ptlog_files = month_count;
+      if (!CopyString(entry->d_name,
+                      stats_out->max_month_name,
+                      sizeof(stats_out->max_month_name))) {
+        closedir(logs);
+        return false;
+      }
+    }
+  }
+  closedir(logs);
+  return true;
 }

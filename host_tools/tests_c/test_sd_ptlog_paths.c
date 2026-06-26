@@ -10,6 +10,17 @@
 static void make_dir(const char* path) { assert(mkdir(path, 0777) == 0 || access(path, F_OK) == 0); }
 static void make_file(const char* path) { FILE* f = fopen(path, "wb"); assert(f != NULL); fclose(f); }
 static bool exists_path(const char* path) { return access(path, F_OK) == 0; }
+static void assert_zero_stats(const sd_ptlog_stats_t* stats)
+{
+  assert(stats->total_ptlog_files == 0);
+  assert(stats->legacy_root_ptlog_files == 0);
+  assert(stats->nested_month_ptlog_files == 0);
+  assert(stats->current_date_ptlog_files == 0);
+  assert(stats->eligible_ptlog_files == 0);
+  assert(stats->valid_month_directories == 0);
+  assert(stats->max_month_ptlog_files == 0);
+  assert(stats->max_month_name[0] == '\0');
+}
 
 static unsigned test_reclaim_candidates(const char* root,
                                         const char* current_date,
@@ -219,6 +230,151 @@ static void test_reclaim_unlink_failure_does_not_count(void)
   assert(exists_path(candidate));
 }
 
+static void test_stats_empty_and_missing_layout(void)
+{
+  char templ[] = "/tmp/ptlog_stats_empty_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+
+  sd_ptlog_stats_t stats;
+  memset(&stats, 0xA5, sizeof(stats));
+  assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
+  assert_zero_stats(&stats);
+
+  char logs[256];
+  snprintf(logs, sizeof(logs), "%s/logs", root); make_dir(logs);
+  assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
+  assert_zero_stats(&stats);
+
+  char long_root[256];
+  char long_name[120];
+  memset(long_name, 'a', sizeof(long_name) - 1);
+  long_name[sizeof(long_name) - 1] = '\0';
+  snprintf(long_root, sizeof(long_root), "%s/%s", root, long_name);
+  make_dir(long_root);
+  memset(&stats, 0xA5, sizeof(stats));
+  assert(!SdPtlogCollectStats(long_root, NULL, "2026-06-23Z", &stats));
+  assert_zero_stats(&stats);
+}
+
+static void test_stats_legacy_root_counting(void)
+{
+  char templ[] = "/tmp/ptlog_stats_root_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  snprintf(path, sizeof(path), "%s/2024-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/2024-01-02Z-2.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/2024-01-03Z.ptlog", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/2024-1-03Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/keep.txt", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/.Trash-1000", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/.Trash-1000/2020-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/unknown", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/unknown/2020-01-01Z.ptlog", root); make_file(path);
+
+  sd_ptlog_stats_t stats;
+  assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
+  assert(stats.total_ptlog_files == 2);
+  assert(stats.legacy_root_ptlog_files == 2);
+  assert(stats.nested_month_ptlog_files == 0);
+  assert(stats.current_date_ptlog_files == 0);
+  assert(stats.eligible_ptlog_files == 2);
+  assert(stats.valid_month_directories == 0);
+  assert(stats.max_month_ptlog_files == 0);
+  assert(stats.max_month_name[0] == '\0');
+}
+
+static void test_stats_nested_month_counting_and_ignored_paths(void)
+{
+  char templ[] = "/tmp/ptlog_stats_nested_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  snprintf(path, sizeof(path), "%s/2023-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2020-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/not-a-month", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/not-a-month/2020-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/2024-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/2024-01-02Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/notes.txt", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/deeper", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/deeper/2020-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-02", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-02/2024-02-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-02/2024-02-02Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-03", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-03/2024-03-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-03/2024-03-02Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-03/2024-03-03Z.ptlog", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/FOUND.000", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/FOUND.000/2020-01-01Z.ptlog", root); make_file(path);
+
+  sd_ptlog_stats_t stats;
+  assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
+  assert(stats.total_ptlog_files == 7);
+  assert(stats.legacy_root_ptlog_files == 1);
+  assert(stats.nested_month_ptlog_files == 6);
+  assert(stats.current_date_ptlog_files == 0);
+  assert(stats.eligible_ptlog_files == 7);
+  assert(stats.valid_month_directories == 3);
+  assert(stats.max_month_ptlog_files == 2);
+  assert(strcmp(stats.max_month_name, "2024-01") == 0);
+}
+
+static void test_stats_valid_month_regular_file_is_ignored(void)
+{
+  char templ[] = "/tmp/ptlog_stats_month_file_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-04", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-05", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-05/2024-05-01Z.ptlog", root); make_file(path);
+
+  sd_ptlog_stats_t stats;
+  assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
+  assert(stats.total_ptlog_files == 1);
+  assert(stats.legacy_root_ptlog_files == 0);
+  assert(stats.nested_month_ptlog_files == 1);
+  assert(stats.current_date_ptlog_files == 0);
+  assert(stats.eligible_ptlog_files == 1);
+  assert(stats.valid_month_directories == 1);
+  assert(stats.max_month_ptlog_files == 1);
+  assert(strcmp(stats.max_month_name, "2024-05") == 0);
+}
+
+static void test_stats_current_date_and_path_separation(void)
+{
+  char templ[] = "/tmp/ptlog_stats_current_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  snprintf(path, sizeof(path), "%s/2024-01-01Z.ptlog", root); make_file(path);
+  char current_path[256];
+  snprintf(current_path, sizeof(current_path), "%s/2024-01-02Z.ptlog", root); make_file(current_path);
+  snprintf(path, sizeof(path), "%s/2026-06-23Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06/2026-06-23Z-1.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2025-06", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2025-06/2025-06-23Z.ptlog", root); make_file(path);
+
+  sd_ptlog_stats_t stats;
+  assert(SdPtlogCollectStats(root, current_path, "2026-06-23Z", &stats));
+  assert(stats.total_ptlog_files == 5);
+  assert(stats.legacy_root_ptlog_files == 3);
+  assert(stats.nested_month_ptlog_files == 2);
+  assert(stats.current_date_ptlog_files == 2);
+  assert(stats.eligible_ptlog_files == 2);
+  assert(stats.valid_month_directories == 2);
+  assert(stats.max_month_ptlog_files == 1);
+  assert(strcmp(stats.max_month_name, "2025-06") == 0);
+}
+
 int main(void)
 {
   test_paths();
@@ -229,6 +385,11 @@ int main(void)
   test_reclaim_prefers_older_legacy_root_candidate();
   test_reclaim_safety_and_limits();
   test_reclaim_unlink_failure_does_not_count();
+  test_stats_empty_and_missing_layout();
+  test_stats_legacy_root_counting();
+  test_stats_nested_month_counting_and_ignored_paths();
+  test_stats_valid_month_regular_file_is_ignored();
+  test_stats_current_date_and_path_separation();
   puts("sd_ptlog_paths tests passed");
   return 0;
 }
