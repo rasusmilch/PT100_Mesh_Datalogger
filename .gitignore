@@ -91,5 +91,5 @@ main/console
 logs/*
 ~$*
 analysis/*
-!host_tools/requirements-dev.txt2026-04-09Z.ptlog
+!host_tools/requirements-dev.txt
 *.ptlog
