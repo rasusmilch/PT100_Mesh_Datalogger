@@ -20,10 +20,7 @@
 #include "sd_ptlog_paths.h"
 
 static const char* kTag = "sd_logger";
-static const char kPtlogSuffix[] = ".ptlog";
 
-static bool
-IsDailyPtlogName(const char* name, char* date_out, size_t date_out_size);
 static bool
 SdLoggerJoinPath(const char* dir_path,
                  const char* child_name,
@@ -39,19 +36,10 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
                                       const char* date_string,
                                       const char* month_string,
                                       uint32_t* revision_out);
-static bool
-SdLoggerCopyString(const char* source, char* dest, size_t dest_size);
 static esp_err_t
 SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
                            uint64_t* total_bytes,
                            uint64_t* free_bytes);
-static bool
-SdLoggerFindOldestDailyPtlogDateLocked(const sd_logger_t* logger,
-                                       char* oldest_date,
-                                       size_t oldest_date_size);
-static uint32_t
-SdLoggerDeleteDailyPtlogDateLocked(const sd_logger_t* logger,
-                                   const char* date_string);
 static esp_err_t
 SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
                            uint64_t required_free_bytes,
@@ -691,85 +679,6 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
   return ESP_OK;
 }
 
-/**
- * @brief Copy a C string to a destination buffer when it fully fits.
- * @param source Source string.
- * @param dest Destination buffer.
- * @param dest_size Destination buffer size.
- * @return True when copied successfully, otherwise false.
- */
-static bool
-SdLoggerCopyString(const char* source, char* dest, size_t dest_size)
-{
-  if (source == NULL || dest == NULL || dest_size == 0) {
-    return false;
-  }
-
-  const size_t source_len = strnlen(source, dest_size);
-  if (source_len == dest_size) {
-    return false;
-  }
-
-  memcpy(dest, source, source_len + 1);
-  return true;
-}
-
-static bool
-IsDailyPtlogName(const char* name, char* date_out, size_t date_out_size)
-{
-  if (name == NULL) {
-    return false;
-  }
-  const size_t suffix_len = sizeof(kPtlogSuffix) - 1;
-  const size_t length = strlen(name);
-  if (length < 11 + suffix_len) {
-    return false;
-  }
-  if (strcmp(name + length - suffix_len, kPtlogSuffix) != 0) {
-    return false;
-  }
-
-  const size_t prefix_len = length - suffix_len;
-  if (prefix_len < 11 || prefix_len > 22) {
-    return false;
-  }
-  if (name[4] != '-' || name[7] != '-' || name[10] != 'Z') {
-    return false;
-  }
-  for (size_t i = 0; i < 11; ++i) {
-    if (i == 4 || i == 7) {
-      continue;
-    }
-    if (i == 10) {
-      continue;
-    }
-    if (name[i] < '0' || name[i] > '9') {
-      return false;
-    }
-  }
-
-  if (prefix_len > 11) {
-    if (name[11] != '-') {
-      return false;
-    }
-    for (size_t i = 12; i < prefix_len; ++i) {
-      if (name[i] < '0' || name[i] > '9') {
-        return false;
-      }
-    }
-  }
-
-  if (date_out != NULL && date_out_size > 0) {
-    if (date_out_size < 12) {
-      return false;
-    }
-    memcpy(date_out, name, 11);
-    date_out[11] = '\0';
-  }
-
-  return true;
-}
-
 static esp_err_t
 SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
                            uint64_t* total_bytes,
@@ -792,90 +701,6 @@ SdLoggerGetSpaceInfoLocked(const sd_logger_t* logger,
   *total_bytes = total_tmp_bytes;
   *free_bytes = free_tmp_bytes;
   return ESP_OK;
-}
-
-static bool
-SdLoggerFindOldestDailyPtlogDateLocked(const sd_logger_t* logger,
-                                       char* oldest_date,
-                                       size_t oldest_date_size)
-{
-  if (logger == NULL || oldest_date == NULL || oldest_date_size < 12) {
-    return false;
-  }
-
-  DIR* dir = opendir(logger->mount_point);
-  if (dir == NULL) {
-    return false;
-  }
-  bool found = false;
-  oldest_date[0] = '\0';
-  struct dirent* entry = NULL;
-  while ((entry = readdir(dir)) != NULL) {
-    char date_string[16] = "";
-    if (!IsDailyPtlogName(entry->d_name, date_string, sizeof(date_string))) {
-      continue;
-    }
-
-    if (logger->current_date[0] != '\0' &&
-        strcmp(date_string, logger->current_date) == 0) {
-      continue;
-    }
-
-    if (!found || strcmp(date_string, oldest_date) < 0) {
-      if (!SdLoggerCopyString(date_string, oldest_date, oldest_date_size)) {
-        continue;
-      }
-      found = true;
-    }
-  }
-
-  closedir(dir);
-  return found;
-}
-
-static uint32_t
-SdLoggerDeleteDailyPtlogDateLocked(const sd_logger_t* logger,
-                                   const char* date_string)
-{
-  if (logger == NULL || date_string == NULL) {
-    return 0;
-  }
-
-  DIR* dir = opendir(logger->mount_point);
-  if (dir == NULL) {
-    return 0;
-  }
-
-  uint32_t deleted = 0;
-  struct dirent* entry = NULL;
-  while ((entry = readdir(dir)) != NULL) {
-    char candidate_date[16] = "";
-    if (!IsDailyPtlogName(entry->d_name, candidate_date, sizeof(candidate_date))) {
-      continue;
-    }
-    if (strcmp(candidate_date, date_string) != 0) {
-      continue;
-    }
-
-    char candidate_path[128] = "";
-    if (!SdLoggerJoinPath(
-          logger->mount_point, entry->d_name, candidate_path, sizeof(candidate_path))) {
-      continue;
-    }
-    if (unlink(candidate_path) != 0) {
-      ESP_LOGW(kTag,
-               "Failed to delete old log %s: %s (%d)",
-               candidate_path,
-               strerror(errno),
-               errno);
-      continue;
-    }
-    deleted++;
-    ESP_LOGW(kTag, "Deleted old log to reclaim space: %s", candidate_path);
-  }
-
-  closedir(dir);
-  return deleted;
 }
 
 static esp_err_t
@@ -907,17 +732,34 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
   uint32_t deletes = 0;
   while (free_bytes < required_free_bytes &&
          deletes < kSdReclaimMaxDeletesPerAttempt) {
-    char oldest_date[16] = "";
-    if (!SdLoggerFindOldestDailyPtlogDateLocked(
-          logger, oldest_date, sizeof(oldest_date))) {
+    sd_ptlog_candidate_t candidate;
+    /* Task 2A intentionally relies on broad current-date protection because
+     * sd_logger_t does not yet track the open path.  The bounded scanner only
+     * returns parsed regular PTLOG files from root or /logs/YYYY-MM. */
+    if (!SdPtlogFindOldestCandidate(
+          logger->mount_point, NULL, logger->current_date, &candidate)) {
       break;
     }
-    const uint32_t deleted_for_day =
-      SdLoggerDeleteDailyPtlogDateLocked(logger, oldest_date);
-    if (deleted_for_day == 0) {
+
+    if (unlink(candidate.path) != 0) {
+      ESP_LOGW(kTag,
+               "Failed to delete old %s PTLOG %s date=%s rev=%" PRIu32
+               ": %s (%d)",
+               candidate.legacy_root ? "legacy-root" : "nested",
+               candidate.path,
+               candidate.date,
+               candidate.revision,
+               strerror(errno),
+               errno);
       break;
     }
-    deletes += deleted_for_day;
+    deletes++;
+    ESP_LOGW(kTag,
+             "Deleted old %s PTLOG to reclaim space: %s date=%s rev=%" PRIu32,
+             candidate.legacy_root ? "legacy-root" : "nested",
+             candidate.path,
+             candidate.date,
+             candidate.revision);
 
     space_result =
       SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes);
