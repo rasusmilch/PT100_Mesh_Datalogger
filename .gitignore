@@ -16,10 +16,6 @@ compile_commands.json
 rules.ninja
 
 # Generated firmware artifacts
-*.elf
-*.bin
-*.map
-*.hex
 flasher_args.json
 flash_project_args
 bootloader-flash_args
@@ -84,10 +80,6 @@ Desktop.ini
 *.swp
 *.swo
 *~
-main/logger.zip
-main/logger_1.zip
-main.zip
-main.tar.gz
 *.patch
 *.tar.gz
 *.zip
@@ -95,9 +87,9 @@ dependencies.yml
 # *.csv
 main/console
 *.txt
-*.txt
 *.log
 logs/*
 ~$*
 analysis/*
-!host_tools/requirements-dev.txt
+!host_tools/requirements-dev.txt2026-04-09Z.ptlog
+*.ptlog
