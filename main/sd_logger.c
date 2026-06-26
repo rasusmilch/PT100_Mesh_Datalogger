@@ -21,6 +21,18 @@
 
 static const char* kTag = "sd_logger";
 
+/* Approved Task 2B-2 PTLOG retention policy.  These product thresholds live
+ * in the SD logger integration layer so sd_ptlog_paths remains a read-only
+ * bounded scanner.  The total-file cap retains roughly two years of daily
+ * PTLOGs by count, the legacy-root cap protects fixed FAT16 root entry
+ * pressure, and the month/per-month caps bound nested /logs/YYYY-MM growth.
+ * FAT long-filename directory-entry estimation is intentionally deferred. */
+static const uint32_t kSdPtlogMaxTotalFiles = 730u;
+static const uint32_t kSdPtlogMaxLegacyRootFiles = 64u;
+static const uint32_t kSdPtlogMaxMonthDirectories = 24u;
+static const uint32_t kSdPtlogMaxFilesPerMonth = 64u;
+static const uint32_t kSdReclaimMaxDeletesPerAttempt = 16u;
+
 static bool
 SdLoggerJoinPath(const char* dir_path,
                  const char* child_name,
@@ -44,6 +56,11 @@ static esp_err_t
 SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
                            uint64_t required_free_bytes,
                            uint32_t* deleted_files);
+static bool
+SdLoggerPtlogStatsThresholdExceeded_(const sd_ptlog_stats_t* stats);
+static esp_err_t
+SdLoggerReclaimPtlogThresholdsLocked_(sd_logger_t* logger,
+                                      uint32_t* deleted_files);
 static esp_err_t
 CommitHeaderIfEmptyAndSync_(FILE* file,
                             const ptlog_header_t* header,
@@ -715,7 +732,6 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
     *deleted_files = 0;
   }
 
-  static const uint32_t kSdReclaimMaxDeletesPerAttempt = 16;
   static bool reclaim_scope_logged = false;
   if (!reclaim_scope_logged) {
     ESP_LOGI(kTag, "SD reclaim targets ptlog only");
@@ -765,6 +781,110 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
       SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes);
     if (space_result != ESP_OK) {
       return space_result;
+    }
+  }
+
+  if (deleted_files != NULL) {
+    *deleted_files = deletes;
+  }
+  return ESP_OK;
+}
+
+/**
+ * @brief Return true when approved Task 2B-2 PTLOG stats exceed policy caps.
+ *
+ * This predicate is policy-only: it compares read-only SdPtlogCollectStats()
+ * facts against approved thresholds and never deletes files.
+ */
+static bool
+SdLoggerPtlogStatsThresholdExceeded_(const sd_ptlog_stats_t* stats)
+{
+  if (stats == NULL) {
+    return false;
+  }
+  return stats->total_ptlog_files > kSdPtlogMaxTotalFiles ||
+         stats->legacy_root_ptlog_files > kSdPtlogMaxLegacyRootFiles ||
+         stats->valid_month_directories > kSdPtlogMaxMonthDirectories ||
+         stats->max_month_ptlog_files > kSdPtlogMaxFilesPerMonth;
+}
+
+/**
+ * @brief Reclaim old eligible PTLOGs when approved stats thresholds are high.
+ *
+ * Threshold reclaim uses the same destructive safety model as byte-space
+ * reclaim: SdPtlogFindOldestCandidate() can return only parsed regular PTLOG
+ * files from approved locations, the current date is protected, and one
+ * candidate is unlinked per pass.  sd_logger_t does not track an exact open
+ * PTLOG path yet, so current-path protection is passed as NULL and the
+ * conservative current-date guard remains the active protection.  FAT
+ * long-filename directory-entry estimation is intentionally deferred.
+ */
+static esp_err_t
+SdLoggerReclaimPtlogThresholdsLocked_(sd_logger_t* logger,
+                                      uint32_t* deleted_files)
+{
+  if (logger == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (deleted_files != NULL) {
+    *deleted_files = 0;
+  }
+
+  sd_ptlog_stats_t stats;
+  if (!SdPtlogCollectStats(logger->mount_point, NULL, logger->current_date, &stats)) {
+    ESP_LOGW(kTag, "PTLOG threshold reclaim skipped: stats collection failed");
+    return ESP_OK;
+  }
+
+  uint32_t deletes = 0;
+  while (SdLoggerPtlogStatsThresholdExceeded_(&stats) &&
+         deletes < kSdReclaimMaxDeletesPerAttempt) {
+    sd_ptlog_candidate_t candidate;
+    if (!SdPtlogFindOldestCandidate(
+          logger->mount_point, NULL, logger->current_date, &candidate)) {
+      ESP_LOGW(kTag,
+               "PTLOG threshold reclaim needed but no eligible candidate: "
+               "total=%" PRIu32 "/%" PRIu32 " legacy_root=%" PRIu32 "/%" PRIu32
+               " months=%" PRIu32 "/%" PRIu32 " max_month=%" PRIu32 "/%" PRIu32
+               " max_month_name=%s eligible=%" PRIu32,
+               stats.total_ptlog_files,
+               kSdPtlogMaxTotalFiles,
+               stats.legacy_root_ptlog_files,
+               kSdPtlogMaxLegacyRootFiles,
+               stats.valid_month_directories,
+               kSdPtlogMaxMonthDirectories,
+               stats.max_month_ptlog_files,
+               kSdPtlogMaxFilesPerMonth,
+               stats.max_month_name,
+               stats.eligible_ptlog_files);
+      break;
+    }
+
+    if (unlink(candidate.path) != 0) {
+      ESP_LOGW(kTag,
+               "Failed to delete old %s PTLOG for threshold reclaim: %s "
+               "date=%s rev=%" PRIu32 ": %s (%d)",
+               candidate.legacy_root ? "legacy-root" : "nested",
+               candidate.path,
+               candidate.date,
+               candidate.revision,
+               strerror(errno),
+               errno);
+      break;
+    }
+
+    deletes++;
+    ESP_LOGW(kTag,
+             "Deleted old %s PTLOG for threshold reclaim: %s date=%s rev=%" PRIu32,
+             candidate.legacy_root ? "legacy-root" : "nested",
+             candidate.path,
+             candidate.date,
+             candidate.revision);
+
+    if (!SdPtlogCollectStats(logger->mount_point, NULL, logger->current_date, &stats)) {
+      ESP_LOGW(kTag,
+               "PTLOG threshold reclaim stopped after delete: stats collection failed");
+      break;
     }
   }
 
@@ -1384,6 +1504,16 @@ SdLoggerAppendBatchEx(sd_logger_t* logger,
   if (batch_bytes == NULL || batch_length_bytes == 0) {
     SetAppendDiagnostics(&stats_out->diag, "append", 0);
     return ESP_ERR_INVALID_ARG;
+  }
+
+  uint32_t threshold_deleted_files = 0;
+  if (logger->is_mounted &&
+      SdLoggerReclaimPtlogThresholdsLocked_(logger, &threshold_deleted_files) ==
+        ESP_OK &&
+      threshold_deleted_files > 0u) {
+    logger->space_reclaim_active = true;
+    logger->space_reclaim_deleted_total += threshold_deleted_files;
+    stats_out->space_reclaim_deleted_files += threshold_deleted_files;
   }
 
   const uint64_t required_free_bytes =

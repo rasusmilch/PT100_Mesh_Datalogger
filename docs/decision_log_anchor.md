@@ -557,3 +557,32 @@ Unverified at this update:
 * Display/ntfy status split implementation.
 * FRAM active-vs-historical overrun fix implementation.
 * Whether project intent, requirements/constraints, decision log, roadmap, code documentation policy, or validation ledger anchors have been committed after this draft.
+---
+
+## Decision 14 — Approved Task 2B-2 PTLOG stats thresholds drive Task 2B-3 reclaim
+
+Date: 2026-06-26
+
+Status: approved for Task 2B-3 implementation
+
+### Decision
+
+Threshold-triggered PTLOG reclaim shall run from the SD logger policy/integration layer when any read-only `SdPtlogCollectStats()` fact exceeds these approved limits:
+
+* total parsed regular PTLOG files: `> 730`;
+* legacy root parsed regular PTLOG files: `> 64`;
+* openable `YYYY-MM` month directories directly under `/logs`: `> 24`;
+* parsed regular PTLOG files in any one month directory: `> 64`.
+
+The reclaim action shall preserve existing eligible candidate behavior: select the oldest eligible parsed regular PTLOG candidate from approved locations, delete one candidate per pass, recompute after each successful delete, and stop at the existing bounded delete limit. Current-date protection remains mandatory. Because `sd_logger_t` does not yet track the exact current open PTLOG path, Task 2B-3 continues to rely on the conservative current-date guard.
+
+### Rationale
+
+The approved thresholds add retention triggers beyond free-byte pressure while avoiding unvalidated FAT directory-entry arithmetic. The legacy-root cap specifically protects fixed FAT16 root entry pressure, while month and per-month caps bound nested directory growth.
+
+### Explicit exclusions
+
+* Do not implement FAT long-filename directory-entry estimation in Task 2B-3.
+* Do not prioritize root files with a new selector; keep existing chronological candidate behavior.
+* Do not add daily PTLOG create/open retry; that remains Task 2C.
+* Do not delete non-PTLOG files, malformed PTLOG names, PTLOG-looking directories, current-date PTLOG files, or files outside approved locations.

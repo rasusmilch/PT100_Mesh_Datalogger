@@ -281,47 +281,35 @@ Remaining checkpoint:
 
 ### 2B — File-count and directory-entry-aware retention triggers
 
-Status: next SD execute candidate after validation.
+Status: 2B-3 implemented in this branch; targeted validation pending.
 
-Goal:
+Outcome:
 
-* Add retention triggers beyond free byte space.
+* PR #370 completed the read-only `sd_ptlog_stats_t` and `SdPtlogCollectStats()` mechanism for approved-location PTLOG statistics.
+* Task 2B-2 approved exact threshold policy values:
 
-Likely scope:
+  * total parsed regular PTLOG files: `> 730`;
+  * legacy root parsed regular PTLOG files: `> 64`;
+  * openable `YYYY-MM` directories directly under `/logs`: `> 24`;
+  * parsed regular PTLOG files in any one month directory: `> 64`.
+* Task 2B-3 implements threshold-triggered reclaim in the SD logger append flow using the existing oldest eligible PTLOG candidate behavior.
+* Reclaim remains PTLOG-only, regular-file-only, bounded traversal, current-date protected, one-candidate-per-pass, and bounded by the existing max deletes per attempt.
+* FAT long-filename directory-entry estimation is deferred; Task 2B-3 does not implement FAT directory-entry math.
+* 2C daily create/open reclaim retry remains deferred and separate.
 
-* Count total PTLOG files across approved locations.
-* Count root-level legacy PTLOG files.
-* Count PTLOG files per relevant directory.
-* Add conservative estimated FAT long-filename directory-entry pressure metric if approved.
-* Trigger reclaim when configured thresholds are exceeded.
-* Preserve PTLOG-only, regular-file-only, bounded traversal, current-date protection, and one-candidate-per-pass deletion.
-* Do not add create/open retry in this task unless explicitly approved.
+Validation:
 
-Needs read-only planning first:
-
-* Yes.
-
-Why:
-
-* Thresholds are product policy.
-* Must decide exact limits and whether root legacy cleanup is prioritized.
-* Must avoid Codex inventing retention policy.
-
-Dependencies:
-
-* 2A complete.
-* Prefer hardware/build checkpoint after 2A before execution.
-* Product decision required for threshold values.
+* Host path/stats/reclaim-policy tests updated for threshold boundaries and threshold-driven candidate deletion mechanics.
+* Firmware build status must be reported by the executing task.
+* Hardware SD/FAT16 runtime validation not performed unless an explicit hardware checkpoint says otherwise.
 
 Branch/PR:
 
-* Separate draft PR from 2A.
-* Can share one branch with only tightly related threshold/count code and tests.
-* Do not combine with 2C.
+* Separate focused PR from PR #370 and from future 2C work.
 
 High-risk checkpoint:
 
-* Yes. Requires build and hardware/SD-media validation.
+* Yes. Targeted validation must review exact threshold values, policy placement outside `sd_ptlog_paths.c`, current-date protection, PTLOG-only deletion, no create/open retry, anchor documentation, and firmware/hardware validation status before proceeding to 2C.
 
 ### 2C — Reclaim on daily create/open failure and retry
 

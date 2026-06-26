@@ -109,6 +109,23 @@ PTLOG path constraints:
 4. System directories such as `.Trash-1000`, `FOUND.000`, and `System Volume Information` shall be ignored by automatic retention.
 5. Path joins shall check truncation and fail closed.
 
+
+## SD retention threshold policy
+
+Approved Task 2B-2/2B-3 PTLOG threshold reclaim policy:
+
+1. Reclaim shall be triggered when any read-only `SdPtlogCollectStats()` fact exceeds these limits:
+
+   * total parsed regular PTLOG files: `> 730`;
+   * legacy root parsed regular PTLOG files: `> 64`;
+   * openable `YYYY-MM` month directories directly under `/logs`: `> 24`;
+   * parsed regular PTLOG files in any one month directory: `> 64`.
+2. Threshold-triggered reclaim shall use the existing eligible PTLOG candidate behavior: oldest parsed regular PTLOG candidate from approved locations, one candidate per pass, with bounded traversal and bounded deletes per attempt.
+3. Current-date protection remains mandatory. Current-open path protection shall be used only after exact current path tracking exists; until then, the conservative current-date guard remains the active protection.
+4. Automatic threshold reclaim shall never delete non-PTLOG files, malformed PTLOG names, PTLOG-looking directories, system directories, unknown directories, or files outside approved scan locations.
+5. FAT long-filename directory-entry estimation is intentionally deferred; no FAT directory-entry math is approved for Task 2B-3.
+6. Task 2B-3 shall not add daily PTLOG create/open retry; create/open retry remains separate Task 2C scope.
+
 ## Security and permission constraints
 
 1. Automatic firmware deletion shall be restricted to validated PTLOG candidates.

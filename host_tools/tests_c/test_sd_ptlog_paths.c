@@ -10,6 +10,68 @@
 static void make_dir(const char* path) { assert(mkdir(path, 0777) == 0 || access(path, F_OK) == 0); }
 static void make_file(const char* path) { FILE* f = fopen(path, "wb"); assert(f != NULL); fclose(f); }
 static bool exists_path(const char* path) { return access(path, F_OK) == 0; }
+static void make_ptlog_revision(const char* root,
+                                const char* date,
+                                unsigned revision)
+{
+  char path[256];
+  if (revision == 0u) {
+    snprintf(path, sizeof(path), "%s/%s.ptlog", root, date);
+  } else {
+    snprintf(path, sizeof(path), "%s/%s-%u.ptlog", root, date, revision);
+  }
+  make_file(path);
+}
+static void make_nested_ptlog_revision(const char* root,
+                                       const char* month,
+                                       const char* date,
+                                       unsigned revision)
+{
+  char dir[256];
+  snprintf(dir, sizeof(dir), "%s/logs/%s", root, month);
+  make_dir(dir);
+  char path[512];
+  if (revision == 0u) {
+    snprintf(path, sizeof(path), "%s/%s.ptlog", dir, date);
+  } else {
+    snprintf(path, sizeof(path), "%s/%s-%u.ptlog", dir, date, revision);
+  }
+  make_file(path);
+}
+
+enum {
+  kTestSdPtlogMaxTotalFiles = 730u,
+  kTestSdPtlogMaxLegacyRootFiles = 64u,
+  kTestSdPtlogMaxMonthDirectories = 24u,
+  kTestSdPtlogMaxFilesPerMonth = 64u,
+  kTestSdReclaimMaxDeletesPerAttempt = 16u
+};
+
+static bool test_threshold_exceeded(const sd_ptlog_stats_t* stats)
+{
+  return stats->total_ptlog_files > kTestSdPtlogMaxTotalFiles ||
+         stats->legacy_root_ptlog_files > kTestSdPtlogMaxLegacyRootFiles ||
+         stats->valid_month_directories > kTestSdPtlogMaxMonthDirectories ||
+         stats->max_month_ptlog_files > kTestSdPtlogMaxFilesPerMonth;
+}
+
+static unsigned test_threshold_reclaim_candidates(const char* root,
+                                                  const char* current_date)
+{
+  unsigned deleted = 0;
+  sd_ptlog_stats_t stats;
+  assert(SdPtlogCollectStats(root, NULL, current_date, &stats));
+  while (test_threshold_exceeded(&stats) &&
+         deleted < kTestSdReclaimMaxDeletesPerAttempt) {
+    sd_ptlog_candidate_t candidate;
+    if (!SdPtlogFindOldestCandidate(root, NULL, current_date, &candidate)) break;
+    assert(unlink(candidate.path) == 0);
+    deleted++;
+    assert(SdPtlogCollectStats(root, NULL, current_date, &stats));
+  }
+  return deleted;
+}
+
 static void assert_zero_stats(const sd_ptlog_stats_t* stats)
 {
   assert(stats->total_ptlog_files == 0);
@@ -20,6 +82,29 @@ static void assert_zero_stats(const sd_ptlog_stats_t* stats)
   assert(stats->valid_month_directories == 0);
   assert(stats->max_month_ptlog_files == 0);
   assert(stats->max_month_name[0] == '\0');
+}
+
+static void test_threshold_predicate_boundaries(void)
+{
+  sd_ptlog_stats_t stats;
+  memset(&stats, 0, sizeof(stats));
+  stats.total_ptlog_files = kTestSdPtlogMaxTotalFiles;
+  stats.legacy_root_ptlog_files = kTestSdPtlogMaxLegacyRootFiles;
+  stats.valid_month_directories = kTestSdPtlogMaxMonthDirectories;
+  stats.max_month_ptlog_files = kTestSdPtlogMaxFilesPerMonth;
+  assert(!test_threshold_exceeded(&stats));
+
+  stats.total_ptlog_files = kTestSdPtlogMaxTotalFiles + 1u;
+  assert(test_threshold_exceeded(&stats));
+  stats.total_ptlog_files = kTestSdPtlogMaxTotalFiles;
+  stats.legacy_root_ptlog_files = kTestSdPtlogMaxLegacyRootFiles + 1u;
+  assert(test_threshold_exceeded(&stats));
+  stats.legacy_root_ptlog_files = kTestSdPtlogMaxLegacyRootFiles;
+  stats.valid_month_directories = kTestSdPtlogMaxMonthDirectories + 1u;
+  assert(test_threshold_exceeded(&stats));
+  stats.valid_month_directories = kTestSdPtlogMaxMonthDirectories;
+  stats.max_month_ptlog_files = kTestSdPtlogMaxFilesPerMonth + 1u;
+  assert(test_threshold_exceeded(&stats));
 }
 
 static unsigned test_reclaim_candidates(const char* root,
@@ -375,8 +460,115 @@ static void test_stats_current_date_and_path_separation(void)
   assert(strcmp(stats.max_month_name, "2025-06") == 0);
 }
 
+static void test_threshold_reclaim_total_limit_and_safety(void)
+{
+  char templ[] = "/tmp/ptlog_threshold_total_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
+  for (unsigned i = 0; i < 731u; ++i) {
+    const unsigned month_index = i % 24u;
+    const unsigned year = 2023u + (month_index / 12u);
+    const unsigned month = 1u + (month_index % 12u);
+    const unsigned revision = i / 24u;
+    char month_name[16];
+    char date_name[16];
+    snprintf(month_name, sizeof(month_name), "%04u-%02u", year, month);
+    snprintf(date_name, sizeof(date_name), "%04u-%02u-01Z", year, month);
+    make_nested_ptlog_revision(root, month_name, date_name, revision);
+  }
+  snprintf(path, sizeof(path), "%s/keep.txt", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/2023-01-01Z.ptlog", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/bad-name.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/2026-06-23Z.ptlog", root); make_file(path);
+
+  unsigned deleted = test_threshold_reclaim_candidates(root, "2026-06-23Z");
+  assert(deleted == 2u);
+  snprintf(path, sizeof(path), "%s/2024-01-01Z.ptlog", root);
+  assert(!exists_path(path));
+  snprintf(path, sizeof(path), "%s/2024-01-02Z.ptlog", root);
+  assert(!exists_path(path));
+  snprintf(path, sizeof(path), "%s/keep.txt", root);
+  assert(exists_path(path));
+  snprintf(path, sizeof(path), "%s/2023-01-01Z.ptlog", root);
+  assert(exists_path(path));
+  snprintf(path, sizeof(path), "%s/bad-name.ptlog", root);
+  assert(exists_path(path));
+  snprintf(path, sizeof(path), "%s/2026-06-23Z.ptlog", root);
+  assert(exists_path(path));
+}
+
+static void test_threshold_reclaim_max_delete_cap(void)
+{
+  char templ[] = "/tmp/ptlog_threshold_cap_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  for (unsigned i = 0; i < 800u; ++i) {
+    make_ptlog_revision(root, "2024-02-01Z", i);
+  }
+
+  assert(test_threshold_reclaim_candidates(root, "2026-06-23Z") ==
+         kTestSdReclaimMaxDeletesPerAttempt);
+}
+
+static void test_threshold_reclaim_no_eligible_candidate(void)
+{
+  char templ[] = "/tmp/ptlog_threshold_none_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  for (unsigned i = 0; i < 731u; ++i) {
+    make_ptlog_revision(root, "2026-06-01Z", i);
+  }
+
+  assert(test_threshold_reclaim_candidates(root, "2026-06-01Z") == 0u);
+}
+
+static void test_threshold_root_month_and_per_month_pressure(void)
+{
+  char templ[] = "/tmp/ptlog_threshold_mix_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  for (unsigned i = 0; i < 65u; ++i) {
+    make_ptlog_revision(root, "2023-01-01Z", i);
+  }
+  snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
+  for (unsigned n = 0; n < 25u; ++n) {
+    const unsigned year = 2023u + (n / 12u);
+    const unsigned month = 1u + (n % 12u);
+    snprintf(path, sizeof(path), "%s/logs/%04u-%02u", root, year, month);
+    make_dir(path);
+  }
+  snprintf(path, sizeof(path), "%s/logs/2025-01", root);
+  make_dir(path);
+  for (unsigned i = 1; i <= 65u; ++i) {
+    snprintf(path,
+             sizeof(path),
+             i == 1u ? "%s/logs/2025-01/2025-01-01Z.ptlog" :
+                       "%s/logs/2025-01/2025-01-01Z-%u.ptlog",
+             root,
+             i - 1u);
+    make_file(path);
+  }
+  snprintf(path, sizeof(path), "%s/logs/not-a-month", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/not-a-month/2020-01-01Z.ptlog", root);
+  make_file(path);
+
+  sd_ptlog_stats_t stats;
+  assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
+  assert(stats.legacy_root_ptlog_files == 65u);
+  assert(stats.valid_month_directories == 25u);
+  assert(stats.max_month_ptlog_files == 65u);
+  assert(test_threshold_exceeded(&stats));
+  assert(test_threshold_reclaim_candidates(root, "2026-06-23Z") > 0u);
+  snprintf(path, sizeof(path), "%s/logs/not-a-month/2020-01-01Z.ptlog", root);
+  assert(exists_path(path));
+}
+
 int main(void)
 {
+  test_threshold_predicate_boundaries();
   test_paths();
   test_parse();
   test_traversal();
@@ -390,6 +582,10 @@ int main(void)
   test_stats_nested_month_counting_and_ignored_paths();
   test_stats_valid_month_regular_file_is_ignored();
   test_stats_current_date_and_path_separation();
+  test_threshold_reclaim_total_limit_and_safety();
+  test_threshold_reclaim_max_delete_cap();
+  test_threshold_reclaim_no_eligible_candidate();
+  test_threshold_root_month_and_per_month_pressure();
   puts("sd_ptlog_paths tests passed");
   return 0;
 }
