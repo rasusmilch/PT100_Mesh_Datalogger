@@ -80,20 +80,25 @@ General architecture constraints:
 
 1. Keep storage/path behavior centralized in storage/path helper code where practical.
 2. Avoid duplicating PTLOG name parsing in multiple modules.
-3. Prefer bounded, fixed-buffer embedded logic.
-4. Separate mechanism from policy:
+3. Prefer bounded, fixed-buffer embedded logic, but do not treat fixed-size buffers as approval to place large storage path, file, candidate, scan-observation, or I/O buffers on a FreeRTOS task stack.
+4. Storage/path traversal code shall preserve task stack headroom. Large reusable SD/PTLOG path and scratch buffers are unacceptable on task stack and shall be centrally owned outside the task stack where feasible.
+5. Do not increase task stack sizes merely to compensate for storage scratch/path buffers unless an explicit product/architecture decision approves that tradeoff.
+6. Prefer centrally owned reusable storage scratch/path buffers for traversal, logging, scan facts, and diagnostics. Prefer PSRAM-backed storage for reusable generic scratch buffers when the target configuration can guarantee it safely.
+7. If PSRAM cannot be guaranteed, implementation must define and document fallback behavior, allocation failure behavior, maximum internal-memory usage, ownership, lifetime, and locking/task-safety assumptions.
+8. Separate scratch-buffer mechanism from PTLOG scan/reclaim policy.
+9. Separate mechanism from policy:
 
    * candidate discovery is mechanism;
    * retention thresholds are policy;
    * create/open retry rules are policy;
    * current-date deletion is policy;
    * display/ntfy wording is product behavior.
-5. Prefer one-candidate-per-pass reclaim over large in-memory candidate arrays.
-6. Do not use unbounded recursive directory traversal on embedded firmware.
-7. Do not follow arbitrary host-created directories.
-8. Do not preserve obsolete root-only assumptions after the nested PTLOG layout.
-9. Do not refactor broadly while fixing a specific reliability issue.
-10. Do not change public/operator-visible behavior unless it is in scope.
+10. Prefer one-candidate-per-pass reclaim over large in-memory candidate arrays.
+11. Do not use unbounded recursive directory traversal on embedded firmware.
+12. Do not follow arbitrary host-created directories.
+13. Do not preserve obsolete root-only assumptions after the nested PTLOG layout.
+14. Do not refactor broadly while fixing a specific reliability issue.
+15. Do not change public/operator-visible behavior unless it is in scope.
 
 PTLOG path constraints:
 
@@ -106,6 +111,7 @@ PTLOG path constraints:
 3. Unknown subdirectories under `/logs` shall not be traversed unless they match `YYYY-MM`.
 4. System directories such as `.Trash-1000`, `FOUND.000`, and `System Volume Information` shall be ignored by automatic retention.
 5. Path joins shall check truncation and fail closed.
+6. Scan/reclaim code shall remain bounded and non-recursive even when storage scratch/path buffers are moved out of task stack.
 
 ## Security and permission constraints
 
@@ -189,6 +195,8 @@ Storage-specific validation requirements:
 9. Prefer deterministic candidate ordering.
 10. Keep host-test helpers small and purpose-specific.
 11. Do not create a large fake ESP-IDF harness unless a task explicitly approves it.
+12. Any execute task touching storage/path code shall report new stack buffers by file/function/size, new static buffers by owner/lifetime/size, new heap or PSRAM allocations with fallback behavior, and task-safety/locking assumptions for shared scratch buffers.
+13. Future storage tasks shall not silently add or preserve large stack buffers; if a small stack path-fragment buffer is necessary, the task receipt shall justify it and distinguish it from reusable storage scratch/path buffers.
 
 ## Prompting and Codex receipt formatting requirements
 

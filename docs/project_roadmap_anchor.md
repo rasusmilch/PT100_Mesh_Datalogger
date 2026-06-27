@@ -849,9 +849,13 @@ Unverified at this update:
 
 Status: implemented in this branch. New nested firmware PTLOG files use `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR` with decimal revisions `000` through `999`; legacy/root long-name `.ptlog` compatibility is removed; old files are ignored by firmware. PTLOG identity is formalized around the first-line `#PT100_LOG_V1` magic. No migration, display progress, read-only pressure expansion, create/open retry, or reclaim policy change is included.
 
+### 2B-3B-DOC1 — Storage scratch-buffer/anchor update
+
+Status: implemented by the documentation-only anchor update. The anchors now record that large storage path/scratch buffers are unacceptable on task stack, storage scratch/path buffers should be centrally owned outside task stack where feasible, PSRAM-backed reusable scratch is preferred when guaranteed, and future storage tasks must report stack/static/heap/PSRAM buffer placement.
+
 ### 2B-3B — Read-only bounded pressure/status scan model
 
-Status: next. Add richer read-only scan facts without deletion or full-card recursion.
+Status: next. Add richer read-only scan facts without deletion or full-card recursion, but do not merely add scan facts on top of large task-stack PTLOG path buffers. The first implementation step must account for the storage scratch-buffer rule and may need to introduce or explicitly plan a shared storage scratch/path-buffer mechanism before adding or preserving large PTLOG traversal path buffers on task stack.
 
 ### 2B-3C — Compact MAX7219 scan progress
 

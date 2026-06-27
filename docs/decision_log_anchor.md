@@ -65,9 +65,9 @@ Existing SD cards and field data may already contain root-level or long-name PTL
 
 ### Consequences
 
-* Scanners must support both layouts.
-* Deletion policy must not ignore old root files.
-* Host tools should avoid assuming only the new nested layout exists.
+* Firmware scan, stats, and reclaim must ignore root-level PTLOG-looking files and old long-name `.ptlog` files.
+* Tests should preserve firmware ignore behavior without requiring obsolete `legacy_root` compatibility fields if those fields are later removed.
+* Host tools may keep explicit import or inspection support for historical files only when that support remains separate from firmware scan/reclaim policy.
 
 ### Rejected alternatives
 
@@ -77,12 +77,45 @@ Existing SD cards and field data may already contain root-level or long-name PTL
 
 ### Follow-up tasks or validation needed
 
-* Confirm host tools support both layouts.
-* Decide whether old root files should be prioritized for retention under directory-entry pressure.
+* Keep host-tool historical-file support clearly separated from firmware scan/stats/reclaim behavior.
+* Remove obsolete `legacy_root` firmware API fields only in a scoped compatibility cleanup.
 
 ---
 
-## Decision 3 — Keep FAT16 / 16 KiB allocation unit format for now
+## Decision 3 — Keep large storage path/scratch buffers off task stack
+
+Status: accepted
+Reference: Task 2B-3B-DOC1 / storage scratch-buffer architecture clarification
+
+### Decision
+
+SD/PTLOG traversal, scan, reclaim, and diagnostics shall avoid large stack path/scratch buffers. Future implementation shall move reusable storage path and scratch buffers to centrally owned static or PSRAM-backed storage where feasible. If PSRAM cannot be guaranteed, fallback behavior must be explicit and bounded. FreeRTOS task stack sizes shall not be increased merely to accommodate storage path buffers without explicit approval.
+
+### Rationale
+
+Prior stack pressure issues make path-buffer growth risky. Storage traversal may run inside long-lived application/runtime tasks, and central scratch ownership makes stack usage reviewable, reusable, and easier to protect with SD I/O locking or other lifetime rules.
+
+### Consequences
+
+* Future 2B-3B-1 execution must include stack, static, heap, and PSRAM buffer accounting.
+* Shared scratch buffers need documented ownership, lifetime, required capacity, and locking/task-safety assumptions.
+* Large per-entry arrays, large candidate arrays, and recursive traversal remain prohibited.
+* Scratch-buffer mechanism remains separate from PTLOG scan facts, reclaim thresholds, display wording, and retry policy.
+
+### Validation needed
+
+* Future code review must verify actual stack usage and allocation placement for storage/path changes.
+* Firmware build validation remains required for embedded changes when available.
+* When possible, target stack high-water, heap, and PSRAM validation should be reported for storage traversal paths.
+
+### Exclusions
+
+* This decision does not implement the scratch-buffer mechanism.
+* This decision does not approve reclaim thresholds, display progress, create/open retry policy, ntfy changes, or SD format changes.
+
+---
+
+## Decision 4 — Keep FAT16 / 16 KiB allocation unit format for now
 
 Status: settled for current implementation; may be revisited with evidence
 Reference: PR #368 and SD/FRAM failure analysis
@@ -120,7 +153,7 @@ The immediate failure can be addressed by moving long filenames out of the FAT r
 
 ---
 
-## Decision 4 — Use bounded PTLOG traversal, not unbounded recursion
+## Decision 5 — Use bounded PTLOG traversal, not unbounded recursion
 
 Status: settled
 Reference: PR #368, PR #369
@@ -164,7 +197,7 @@ Automatic deletion on embedded firmware must fail closed. Unbounded recursion ri
 
 ---
 
-## Decision 5 — Reclaim deletes one oldest eligible PTLOG candidate per pass
+## Decision 6 — Reclaim deletes one oldest eligible PTLOG candidate per pass
 
 Status: settled
 Reference: PR #369, Task 2A
