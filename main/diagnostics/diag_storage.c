@@ -12,6 +12,7 @@
 #include "nvs.h"
 #include "sd_csv_verify.h"
 #include "sd_logger.h"
+#include "sd_ptlog_paths.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -32,17 +33,24 @@ BuildDailyPtlogPath(const sd_logger_t* logger,
                   char* path_out,
                   size_t path_out_size)
 {
+  if (path_out != NULL && path_out_size > 0) {
+    path_out[0] = '\0';
+  }
   if (logger == NULL || path_out == NULL || path_out_size == 0) {
     return;
   }
-  time_t time_seconds = (time_t)epoch_seconds;
-  struct tm time_info;
-  gmtime_r(&time_seconds, &time_info);
 
-  char date_string[16];
-  strftime(date_string, sizeof(date_string), "%Y-%m-%dZ", &time_info);
-  snprintf(
-    path_out, path_out_size, "%s/%s.ptlog", logger->mount_point, date_string);
+  char date_string[SD_PTLOG_DATE_LEN + 1u];
+  char month_string[SD_PTLOG_MONTH_LEN + 1u];
+  (void)SdPtlogBuildNestedPath(logger->mount_point,
+                               epoch_seconds,
+                               0,
+                               date_string,
+                               sizeof(date_string),
+                               month_string,
+                               sizeof(month_string),
+                               path_out,
+                               path_out_size);
 }
 
 /**

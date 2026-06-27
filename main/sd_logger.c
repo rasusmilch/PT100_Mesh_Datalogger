@@ -738,7 +738,7 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
     sd_ptlog_candidate_t candidate;
     /* Task 2A intentionally relies on broad current-date protection because
      * sd_logger_t does not yet track the open path.  The bounded scanner only
-     * returns parsed regular PTLOG files from root or /logs/YYYY-MM. */
+     * returns parsed regular compact PTLOG files from /logs/YYYY-MM only. */
     if (!SdPtlogFindOldestCandidate(
           logger->mount_point, NULL, logger->current_date, &candidate)) {
       break;
@@ -746,9 +746,8 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
 
     if (unlink(candidate.path) != 0) {
       ESP_LOGW(kTag,
-               "Failed to delete old %s PTLOG %s date=%s rev=%" PRIu32
+               "Failed to delete old nested PTLOG %s date=%s rev=%" PRIu32
                ": %s (%d)",
-               candidate.legacy_root ? "legacy-root" : "nested",
                candidate.path,
                candidate.date,
                candidate.revision,
@@ -758,8 +757,7 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
     }
     deletes++;
     ESP_LOGW(kTag,
-             "Deleted old %s PTLOG to reclaim space: %s date=%s rev=%" PRIu32,
-             candidate.legacy_root ? "legacy-root" : "nested",
+             "Deleted old nested PTLOG to reclaim space: %s date=%s rev=%" PRIu32,
              candidate.path,
              candidate.date,
              candidate.revision);

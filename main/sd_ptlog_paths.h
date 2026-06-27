@@ -15,23 +15,23 @@ extern "C" {
 #define SD_PTLOG_MAX_NAME_LEN 40u
 #define SD_PTLOG_MAX_REVISION 999u
 
-/** Regular PTLOG file discovered by the bounded FAT16-safe scanner. */
+/** Regular nested compact PTLOG file discovered by the bounded scanner. */
 typedef struct
 {
   char path[SD_PTLOG_MAX_PATH_LEN];
   char name[SD_PTLOG_MAX_NAME_LEN];
   char date[SD_PTLOG_DATE_LEN + 1u];
   uint32_t revision;
-  bool legacy_root;
+  bool legacy_root; /**< Obsolete compatibility field; always false in compact-only scans. */
   bool current_open;
 } sd_ptlog_candidate_t;
 
 /**
  * @brief Read-only counts from the bounded PTLOG retention scan.
  *
- * Stats include only parsed regular PTLOG files found in approved automatic
- * retention locations: the mount root for legacy files and /logs/YYYY-MM for
- * nested monthly files.  Unknown directories, malformed month names, system
+ * Stats include only parsed regular compact PTLOG files found in approved
+ * automatic retention locations: /logs/YYYY-MM month directories.  Root files,
+ * old long .ptlog names, unknown directories, malformed month names, system
  * directories, PTLOG-looking directories, and non-PTLOG files are ignored.
  *
  * Current-date and current-path files still contribute to total pressure
@@ -43,7 +43,7 @@ typedef struct
 typedef struct
 {
   uint32_t total_ptlog_files;        /**< Parsed regular PTLOG files counted. */
-  uint32_t legacy_root_ptlog_files;  /**< Parsed regular PTLOG files in root. */
+  uint32_t legacy_root_ptlog_files;  /**< Obsolete; always zero because root PTLOGs are ignored. */
   uint32_t nested_month_ptlog_files; /**< Parsed regular PTLOG files in /logs/YYYY-MM. */
   uint32_t current_date_ptlog_files; /**< Counted PTLOGs whose parsed date matches current_date. */
   uint32_t eligible_ptlog_files;     /**< Counted PTLOGs not protected by current_path/current_date. */
@@ -74,7 +74,7 @@ bool SdPtlogBuildNestedPath(const char* mount_point,
                             char* path_out,
                             size_t path_out_size);
 
-/** Parse new YYYYMMDD.RRR or legacy YYYY-MM-DDZ[-revision].ptlog basename. */
+/** Parse only compact YYYYMMDD.RRR basenames into canonical date/revision fields. */
 bool SdPtlogParseName(const char* name,
                       char* date_out,
                       size_t date_out_size,
@@ -83,7 +83,7 @@ bool SdPtlogParseName(const char* name,
 /** Return true only for bounded traversal month directory names in YYYY-MM form. */
 bool SdPtlogIsMonthDirectoryName(const char* name);
 
-/** Find the oldest safe PTLOG candidate in root or /logs/YYYY-MM. */
+/** Find the oldest safe compact PTLOG candidate in /logs/YYYY-MM only. */
 bool SdPtlogFindOldestCandidate(const char* mount_point,
                                 const char* current_path,
                                 const char* current_date,
@@ -98,13 +98,12 @@ bool SdPtlogFindOldestCandidate(const char* mount_point,
  * @param stats_out Receives zero-initialized counts before scanning begins.
  *
  * @return true when arguments are valid and the bounded scan completed.
- * @return false when required arguments are invalid, the mount root cannot be
- * opened, or a required approved path cannot be built without truncation.
+ * @return false when required arguments are invalid or an approved path cannot
+ * be built without truncation.
  *
- * @note Traversal is intentionally limited to the mount root, /logs, and
- * /logs/YYYY-MM.  Missing /logs and unreadable month directories are treated
- * like the candidate scanner: they produce no nested counts rather than a
- * threshold policy decision.
+ * @note Traversal is intentionally limited to /logs and /logs/YYYY-MM.
+ * Missing /logs and unreadable month directories produce no counts rather than
+ * a threshold policy decision. Root-level PTLOG-looking files are ignored.
  * @warning This function never deletes files and never decides retention
  * thresholds.  Future policy code must compare these facts against approved
  * thresholds outside the PTLOG path/scanner layer.

@@ -16,15 +16,12 @@ Core product requirements:
    * `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`
 
    `RRR` is a decimal same-day revision from `000` through `999`; the extension is revision metadata, not file-type metadata.
-5. The firmware shall preserve compatibility with legacy root-level PTLOG files:
-
-   * `/sdcard/YYYY-MM-DDZ.ptlog`
-   * `/sdcard/YYYY-MM-DDZ-<revision>.ptlog`
-6. SD reclaim shall delete only old eligible PTLOG files from approved locations.
+5. The firmware shall ignore old root-level and long-name `.ptlog` files for PTLOG scanning, stats, and reclaim.
+6. SD reclaim shall delete only old eligible compact nested PTLOG files from approved locations.
 7. SD reclaim shall preserve current-date PTLOG files unless a later explicit emergency policy approves otherwise.
 8. SD diagnostics shall preserve enough detail to distinguish mount, card, byte-space, create/open, directory-entry, and I/O failure classes where practical.
 9. FRAM diagnostics shall distinguish current live pressure from historical data-loss evidence.
-10. Host tools shall continue to read and process PTLOG data required for plotting, reporting, and validation.
+10. Host tools shall continue to read and process compact PTLOG data required for plotting, reporting, and validation; CSV import may remain as a generic feature.
 
 ## Workflow requirements
 
@@ -55,9 +52,9 @@ PTLOG data requirements:
 
 1. PTLOG files shall remain append-safe and recoverable after interrupted writes where practical.
 2. New daily PTLOG file names shall include the UTC date as `YYYYMMDD` in `/logs/YYYY-MM/YYYYMMDD.RRR`.
-3. New revision PTLOG files shall use decimal `.RRR` revision metadata from `000` through `999`; legacy long names with `-<revision>.ptlog` remain parseable.
+3. New revision PTLOG files shall use decimal `.RRR` revision metadata from `000` through `999`; old long names with `-<revision>.ptlog` are ignored by firmware.
 4. New daily PTLOG files shall be grouped under `/logs/YYYY-MM/`.
-5. Legacy root PTLOGs shall remain eligible for scanning and safe reclaim.
+5. Root-level and old long-name PTLOG-looking files shall not be eligible for firmware scanning, stats, or reclaim.
 6. Automatic retention shall use parsed PTLOG metadata, not directory enumeration order alone.
 7. Automatic retention shall fail closed when names, paths, stat results, or directory traversal are ambiguous.
 
@@ -142,8 +139,7 @@ Storage-specific validation requirements:
 5. Reclaim tests shall verify:
 
    * nested candidate selection;
-   * legacy root candidate selection;
-   * current-date protection;
+      * current-date protection;
    * same-date revision protection;
    * non-PTLOG preservation;
    * PTLOG-looking directory preservation;
@@ -152,7 +148,7 @@ Storage-specific validation requirements:
    * max delete limit behavior;
    * successful delete counting;
    * unlink-failure no-count behavior.
-6. Hardware SD validation should include real FAT16 media, nested log directories, legacy root files if available, low-space or forced reclaim conditions, and current-date file protection.
+6. Hardware SD validation should include real FAT16 media, nested log directories, old ignored root files, low-space or forced reclaim conditions, and current-date file protection.
 
 ## Documentation requirements
 
@@ -272,7 +268,7 @@ Codex receipts shall include at minimum:
 These are currently settled unless the user explicitly changes them:
 
 1. New daily PTLOG files use nested monthly directories with `YYYYMMDD.RRR` FAT 8.3 basenames.
-2. Legacy root PTLOG files remain supported.
+2. Legacy/root long-name PTLOG compatibility is intentionally removed; old files are ignored, not migrated.
 3. Automatic PTLOG traversal is bounded to approved locations.
 4. Automatic reclaim deletes only parsed regular PTLOG candidates.
 5. Current-date PTLOG files are protected.
@@ -290,7 +286,7 @@ These require user decision or explicit task approval:
 
 1. Exact max total PTLOG file count.
 2. Exact max PTLOG files per directory.
-3. Exact root PTLOG count threshold.
+3. Exact compact nested PTLOG count threshold.
 4. Exact estimated FAT directory-entry pressure threshold.
 5. Whether reclaim should run before daily open based on file-count/directory-entry pressure.
 6. Which daily `fopen`/create errors trigger reclaim and retry.
@@ -299,7 +295,7 @@ These require user decision or explicit task approval:
 9. Whether same-day old revision PTLOGs may be deleted automatically.
 10. Whether empty month directories should be removed after reclaim.
 11. Whether to track current open PTLOG path in `sd_logger_t`.
-12. Short 8.3 PTLOG names have been adopted for new nested files as YYYYMMDD.RRR.
+12. Compact PTLOG names are mandatory for firmware PTLOG files as `YYYYMMDD.RRR`; legacy `.ptlog` compatibility is removed.
 13. Replacement display/status code taxonomy for `SDOUT`.
 14. FRAM acknowledgement policy for historical data loss.
 15. Whether `LOG_RECORD_FLAG_FRAM_FULL` should be fixed before append or removed.

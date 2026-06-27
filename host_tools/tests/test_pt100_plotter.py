@@ -70,10 +70,10 @@ def test_compact_ptlog_filename_sort_key_and_detection():
     assert p._is_compact_ptlog_name('/tmp/20260626.012')
     assert not p._is_compact_ptlog_name('/tmp/20260626.12')
     assert p._parse_log_filename_sort_key('/tmp/20260626.012')[:3] == ('2026-06-26', 12, 0)
-    assert p._parse_log_filename_sort_key('/tmp/2026-06-26Z-2.ptlog')[:3] == ('2026-06-26', 2, 0)
+    assert p._parse_log_filename_sort_key('/tmp/2026-06-26Z-2.ptlog')[:3] == ('9999-99-99', 999999, 999)
 
 
-def test_compact_ptlog_folder_dedupe_sorting_preserves_csv_behavior():
+def test_compact_ptlog_folder_sorting_preserves_csv_behavior():
     paths = [
         '/tmp/20260626.012',
         '/tmp/2026-06-25Z.ptlog',
@@ -81,6 +81,6 @@ def test_compact_ptlog_folder_dedupe_sorting_preserves_csv_behavior():
         '/tmp/other.csv',
     ]
     sorted_paths = p._dedupe_folder_file_paths(paths)
-    assert '/tmp/2026-06-25Z.csv' not in sorted_paths
-    assert sorted_paths[:2] == ['/tmp/2026-06-25Z.ptlog', '/tmp/20260626.012']
+    assert sorted_paths[:2] == ['/tmp/2026-06-25Z.csv', '/tmp/20260626.012']
+    assert '/tmp/2026-06-25Z.ptlog' in sorted_paths
     assert '/tmp/other.csv' in sorted_paths

@@ -45,10 +45,7 @@ The product should behave as follows:
   * `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`
 
   `RRR` is a decimal same-day revision from `000` through `999`; the extension is revision metadata, not file-type metadata.
-* Legacy root PTLOG files remain supported for reading, scanning, and retention:
-
-  * `/sdcard/YYYY-MM-DDZ.ptlog`
-  * `/sdcard/YYYY-MM-DDZ-<revision>.ptlog`
+* Old long-name `.ptlog` files and root-level PTLOG-looking files are no longer supported by firmware scanning, stats, or reclaim. They may remain on a card, but firmware does not migrate, rename, parse, count, or reclaim them automatically.
 * Automatic retention/reclaim must only delete parsed, regular PTLOG files from approved locations.
 * Automatic retention/reclaim must never delete:
 
@@ -68,14 +65,14 @@ The product should behave as follows:
 * FRAM should preserve records while SD is unavailable and should distinguish current pressure from historical overrun/data-loss state.
 * Diagnostics should preserve low-level error detail where practical, especially operation, path, errno, and ESP error state.
 * Display and alert states should communicate the actual condition rather than overloaded or stale symptoms.
-* Host tools should support the current nested layout and legacy root layout where relevant.
+* Host tools should primarily support the current compact nested layout; CSV import may remain as a generic host-side feature.
 
 ## Current known behavior
 
 As of the latest reviewed context:
 
-* PR #368 moved new daily PTLOG writes into `/logs/YYYY-MM/`, preserved legacy root PTLOG compatibility, added daily PTLOG diagnostics, and surfaced the last daily PTLOG diagnostic through `diag sd`.
-* PR #369 updated `SdLoggerReclaimSpaceLocked()` to use `SdPtlogFindOldestCandidate()` for bounded root plus nested monthly reclaim.
+* PR #368 moved new daily PTLOG writes into `/logs/YYYY-MM/`, added daily PTLOG diagnostics, and surfaced the last daily PTLOG diagnostic through `diag sd`.
+* PR #369 updated `SdLoggerReclaimSpaceLocked()` to use `SdPtlogFindOldestCandidate()` for bounded nested monthly reclaim.
 * Current reclaim remains byte-space-triggered only.
 * Current reclaim does not yet add file-count, root-entry, or estimated FAT long-filename entry-pressure thresholds.
 * Current reclaim does not yet run on daily PTLOG create/open failure and retry.
@@ -96,7 +93,7 @@ Do not infer or implement these without explicit approval:
 * Do not delete current-date PTLOG files automatically.
 * Do not delete same-day old revisions automatically unless a later product policy approves it.
 * Do not delete or clean unknown host-created directories automatically.
-* Do not migrate, rewrite, or move legacy PTLOG files unless explicitly scoped.
+* Do not migrate, rewrite, move, parse, count, or reclaim old long-name/root PTLOG files unless explicitly scoped.
 * Do not treat free byte space as the only long-term retention signal.
 * Do not treat a historical FRAM overrun as automatically equivalent to current live data-loss pressure.
 * Do not collapse distinct SD states into a single overloaded status if touching display/status behavior.
@@ -110,9 +107,9 @@ Use these terms consistently:
 
 * **PTLOG**: The project log file format used for PT100 sample records.
 * **Daily PTLOG**: A PTLOG file for one UTC date.
-* **Nested monthly PTLOG path**: `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR` for new files; legacy nested long names remain parseable.
-* **Legacy root PTLOG path**: `/sdcard/YYYY-MM-DDZ.ptlog`.
-* **Revision PTLOG**: A same-date PTLOG. New nested files encode the revision as `.RRR` from `000` through `999`; legacy long names may use `-<revision>` before `.ptlog`.
+* **Nested monthly PTLOG path**: `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`; this is the only supported firmware PTLOG layout.
+* **Old root PTLOG path**: root-level `.ptlog` or compact-looking files are obsolete and ignored by firmware scanning, stats, and reclaim.
+* **Revision PTLOG**: A same-date PTLOG whose compact nested filename encodes the revision as `.RRR` from `000` through `999`.
 * **Log root**: `/sdcard/logs`.
 * **Month directory**: `/sdcard/logs/YYYY-MM`.
 * **Reclaim**: Automatic deletion of old eligible PTLOG files to restore required storage margin.
@@ -179,7 +176,7 @@ General expectations:
 
 Audit and logging expectations:
 
-* Log reclaim deletion path, parsed date, revision, and source class such as legacy root vs nested.
+* Log reclaim deletion path, parsed date, and revision for compact nested candidates.
 * Log unlink failures with path and errno.
 * Log daily PTLOG create/open diagnostic stage and path when available.
 * Do not log misleading “current data loss” wording when only historical FRAM overrun state was observed.
@@ -201,7 +198,7 @@ Use these principles for future implementation:
   * create/open retry rules are policy;
   * current-day deletion is policy.
 * Prefer one-candidate-per-pass reclaim over large in-memory candidate arrays.
-* Preserve compatibility with legacy root PTLOGs while moving new writes to nested monthly paths.
+* Ignore old root/long-name PTLOG-looking files while using compact nested monthly paths.
 * Keep host-testable seams small and purpose-specific.
 * Avoid broad refactors unless the existing model is wrong and replanning has approved the change.
 * Do not change display/notification semantics inside unrelated storage tasks.
@@ -225,7 +222,7 @@ Known risks:
 Real failure scenarios to keep in mind:
 
 * A FAT16 card has plenty of free bytes but cannot create the next daily PTLOG because directory entries are exhausted.
-* Old root PTLOGs remain readable, but creating a new long filename fails.
+* Old root PTLOG-looking files may remain on the card, but firmware ignores them for scan/stats/reclaim.
 * New nested monthly PTLOGs accumulate and root-only reclaim finds nothing.
 * A malformed or host-created directory contains PTLOG-looking names; automatic reclaim must not traverse or delete them.
 * FRAM drains successfully after SD recovery, but stale overrun totals continue to trigger active alerts.
@@ -244,7 +241,7 @@ These require explicit approval before implementation:
 * Whether to add and maintain a current-open PTLOG path field.
 * Whether create/open failure should reclaim one file or multiple files before retry.
 * Which errno values should trigger create/open reclaim retry.
-* Short 8.3 nested PTLOG filenames are adopted for new files as YYYYMMDD.RRR; legacy long names remain compatible.
+* Compact nested PTLOG filenames are required as `YYYYMMDD.RRR`; legacy long filename compatibility is intentionally removed.
 * Exact display/status codes replacing or supplementing `SDOUT`.
 * Exact FRAM overrun acknowledgement and notification policy.
 * Whether `LOG_RECORD_FLAG_FRAM_FULL` should be fixed before append or removed as a per-record flag.

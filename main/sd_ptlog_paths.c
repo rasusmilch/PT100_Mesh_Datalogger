@@ -1,9 +1,9 @@
 #include "sd_ptlog_paths.h"
 
 /*
- * FAT16 keeps the root directory in a fixed-size table.  New nested PTLOG
- * files use one-entry YYYYMMDD.RRR names while legacy long .ptlog names remain
- * parseable so bounded retention code can handle existing cards safely.
+ * FAT16 keeps the root directory in a fixed-size table.  Firmware PTLOG files
+ * now use only the nested one-entry YYYYMMDD.RRR layout under /logs/YYYY-MM.
+ * Root-level files and old long .ptlog names are intentionally ignored.
  */
 
 #include <dirent.h>
@@ -13,7 +13,6 @@
 #include <sys/stat.h>
 #include <time.h>
 
-static const char kPtlogSuffix[] = ".ptlog";
 static const char kLogsDirName[] = "logs";
 
 static bool
@@ -165,12 +164,13 @@ SdPtlogBuildNestedPath(const char* mount_point,
   return JoinPath(month_dir, daily_name, path_out, path_out_size);
 }
 
-static bool
-ParseCompactPtlogName(const char* name,
-                      char* date_out,
-                      size_t date_out_size,
-                      uint32_t* revision_out)
+bool
+SdPtlogParseName(const char* name,
+                 char* date_out,
+                 size_t date_out_size,
+                 uint32_t* revision_out)
 {
+  if (name == NULL) return false;
   if (strlen(name) != 12u || name[8] != '.') return false;
   for (size_t i = 0; i < 8u; ++i) {
     if (!IsDigit(name[i])) return false;
@@ -201,54 +201,6 @@ ParseCompactPtlogName(const char* name,
   return true;
 }
 
-static bool
-ParseLegacyPtlogName(const char* name,
-                     char* date_out,
-                     size_t date_out_size,
-                     uint32_t* revision_out)
-{
-  const size_t suffix_len = sizeof(kPtlogSuffix) - 1u;
-  const size_t length = strlen(name);
-  if (length < SD_PTLOG_DATE_LEN + suffix_len || strcmp(name + length - suffix_len, kPtlogSuffix) != 0) {
-    return false;
-  }
-  const size_t prefix_len = length - suffix_len;
-  if (prefix_len < SD_PTLOG_DATE_LEN || prefix_len > 22u) return false;
-  if (name[4] != '-' || name[7] != '-' || name[10] != 'Z') return false;
-  for (size_t i = 0; i < SD_PTLOG_DATE_LEN; ++i) {
-    if (i == 4u || i == 7u || i == 10u) continue;
-    if (!IsDigit(name[i])) return false;
-  }
-  uint32_t revision = 0;
-  if (prefix_len > SD_PTLOG_DATE_LEN) {
-    if (name[11] != '-' || prefix_len == 12u) return false;
-    for (size_t i = 12u; i < prefix_len; ++i) {
-      if (!IsDigit(name[i])) return false;
-      const uint32_t digit = (uint32_t)(name[i] - '0');
-      if (revision > (UINT32_MAX - digit) / 10u) return false;
-      revision = revision * 10u + digit;
-    }
-  }
-  if (date_out != NULL && date_out_size > 0) {
-    if (date_out_size < SD_PTLOG_DATE_LEN + 1u) return false;
-    memcpy(date_out, name, SD_PTLOG_DATE_LEN);
-    date_out[SD_PTLOG_DATE_LEN] = '\0';
-  }
-  if (revision_out != NULL) *revision_out = revision;
-  return true;
-}
-
-bool
-SdPtlogParseName(const char* name,
-                 char* date_out,
-                 size_t date_out_size,
-                 uint32_t* revision_out)
-{
-  if (name == NULL) return false;
-  return ParseCompactPtlogName(name, date_out, date_out_size, revision_out) ||
-         ParseLegacyPtlogName(name, date_out, date_out_size, revision_out);
-}
-
 bool
 SdPtlogIsMonthDirectoryName(const char* name)
 {
@@ -266,14 +218,12 @@ CandidateIsOlder(const sd_ptlog_candidate_t* candidate, const sd_ptlog_candidate
   const int date_cmp = strcmp(candidate->date, best->date);
   if (date_cmp != 0) return date_cmp < 0;
   if (candidate->revision != best->revision) return candidate->revision < best->revision;
-  if (candidate->legacy_root != best->legacy_root) return candidate->legacy_root;
   return strcmp(candidate->path, best->path) < 0;
 }
 
 static void
 ConsiderCandidate(const char* dir_path,
                   const char* name,
-                  bool legacy_root,
                   const char* current_path,
                   const char* current_date,
                   bool* found,
@@ -299,7 +249,7 @@ ConsiderCandidate(const char* dir_path,
     return;
   }
   candidate.revision = revision;
-  candidate.legacy_root = legacy_root;
+  candidate.legacy_root = false;
   candidate.current_open = false;
   if (!*found || CandidateIsOlder(&candidate, best)) {
     *best = candidate;
@@ -309,7 +259,6 @@ ConsiderCandidate(const char* dir_path,
 
 static void
 ScanPtlogDirectory(const char* dir_path,
-                   bool legacy_root,
                    const char* current_path,
                    const char* current_date,
                    bool* found,
@@ -320,7 +269,7 @@ ScanPtlogDirectory(const char* dir_path,
   struct dirent* entry;
   while ((entry = readdir(dir)) != NULL) {
     if (IsSystemDirectoryName(entry->d_name)) continue;
-    ConsiderCandidate(dir_path, entry->d_name, legacy_root, current_path, current_date, found, best);
+    ConsiderCandidate(dir_path, entry->d_name, current_path, current_date, found, best);
   }
   closedir(dir);
 }
@@ -328,7 +277,6 @@ ScanPtlogDirectory(const char* dir_path,
 static bool
 StatsCountPtlogFile(const char* dir_path,
                     const char* name,
-                    bool legacy_root,
                     const char* current_path,
                     const char* current_date,
                     sd_ptlog_stats_t* stats)
@@ -343,11 +291,7 @@ StatsCountPtlogFile(const char* dir_path,
   if (stat(path, &stat_buffer) != 0 || !S_ISREG(stat_buffer.st_mode)) return true;
 
   stats->total_ptlog_files++;
-  if (legacy_root) {
-    stats->legacy_root_ptlog_files++;
-  } else {
-    stats->nested_month_ptlog_files++;
-  }
+  stats->nested_month_ptlog_files++;
 
   const bool current_open = (current_path != NULL && strcmp(path, current_path) == 0);
   const bool current_date_match =
@@ -363,7 +307,6 @@ StatsCountPtlogFile(const char* dir_path,
 
 static bool
 ScanPtlogStatsDirectory(const char* dir_path,
-                        bool legacy_root,
                         const char* current_path,
                         const char* current_date,
                         sd_ptlog_stats_t* stats,
@@ -374,7 +317,7 @@ ScanPtlogStatsDirectory(const char* dir_path,
     *opened_out = false;
   }
   DIR* dir = opendir(dir_path);
-  if (dir == NULL) return legacy_root ? false : true;
+  if (dir == NULL) return true;
   if (opened_out != NULL) {
     *opened_out = true;
   }
@@ -384,11 +327,11 @@ ScanPtlogStatsDirectory(const char* dir_path,
     if (IsSystemDirectoryName(entry->d_name)) continue;
     const uint32_t before = stats->total_ptlog_files;
     if (!StatsCountPtlogFile(
-          dir_path, entry->d_name, legacy_root, current_path, current_date, stats)) {
+          dir_path, entry->d_name, current_path, current_date, stats)) {
       closedir(dir);
       return false;
     }
-    if (!legacy_root && stats->total_ptlog_files > before) {
+    if (stats->total_ptlog_files > before) {
       local_count++;
     }
   }
@@ -400,8 +343,8 @@ ScanPtlogStatsDirectory(const char* dir_path,
 }
 
 /*
- * Bounded traversal foundation: scan /sdcard, /sdcard/logs, and one level of
- * YYYY-MM month directories only.  Current/open and current-date files are
+ * Bounded traversal foundation: scan /sdcard/logs and one level of YYYY-MM
+ * month directories only.  Current/open and current-date files are
  * protected here so later deletion policies cannot select them accidentally.
  */
 bool
@@ -415,8 +358,6 @@ SdPtlogFindOldestCandidate(const char* mount_point,
   sd_ptlog_candidate_t best;
   memset(&best, 0, sizeof(best));
 
-  ScanPtlogDirectory(mount_point, true, current_path, current_date, &found, &best);
-
   char log_root[SD_PTLOG_MAX_PATH_LEN];
   if (SdPtlogBuildLogRootPath(mount_point, log_root, sizeof(log_root))) {
     DIR* logs = opendir(log_root);
@@ -426,7 +367,7 @@ SdPtlogFindOldestCandidate(const char* mount_point,
         if (IsSystemDirectoryName(entry->d_name) || !SdPtlogIsMonthDirectoryName(entry->d_name)) continue;
         char month_dir[SD_PTLOG_MAX_PATH_LEN];
         if (!JoinPath(log_root, entry->d_name, month_dir, sizeof(month_dir))) continue;
-        ScanPtlogDirectory(month_dir, false, current_path, current_date, &found, &best);
+        ScanPtlogDirectory(month_dir, current_path, current_date, &found, &best);
       }
       closedir(logs);
     }
@@ -444,11 +385,6 @@ SdPtlogCollectStats(const char* mount_point,
 {
   if (mount_point == NULL || stats_out == NULL) return false;
   memset(stats_out, 0, sizeof(*stats_out));
-
-  if (!ScanPtlogStatsDirectory(
-        mount_point, true, current_path, current_date, stats_out, NULL, NULL)) {
-    return false;
-  }
 
   char log_root[SD_PTLOG_MAX_PATH_LEN];
   if (!SdPtlogBuildLogRootPath(mount_point, log_root, sizeof(log_root))) {
@@ -473,7 +409,6 @@ SdPtlogCollectStats(const char* mount_point,
     bool month_opened = false;
     if (!ScanPtlogStatsDirectory(
           month_dir,
-          false,
           current_path,
           current_date,
           stats_out,

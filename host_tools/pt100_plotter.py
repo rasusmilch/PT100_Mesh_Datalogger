@@ -1098,8 +1098,6 @@ def _parse_ptlog_header(path: str) -> Tuple[Dict[str, str], int]:
 
 
 def _is_ptlog_file(path: str) -> bool:
-    if path.lower().endswith(".ptlog"):
-        return True
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -1125,13 +1123,9 @@ def _parse_log_filename_sort_key(path: str) -> Tuple[str, int, int, str]:
     if compact_match:
         date_part = f"{compact_match.group(1)}-{compact_match.group(2)}-{compact_match.group(3)}"
         return (date_part, int(compact_match.group(4)), 0, name.lower())
-    match = re.match(r"^(\d{4}-\d{2}-\d{2})Z(?:-(\d+))?\.(ptlog|csv)$", name, flags=re.IGNORECASE)
-    if match:
-        date_part = match.group(1)
-        rev = int(match.group(2) or "0")
-        ext = match.group(3).lower()
-        ext_priority = 0 if ext == "ptlog" else 1
-        return (date_part, rev, ext_priority, name.lower())
+    csv_match = re.match(r"^(\d{4}-\d{2}-\d{2})Z\.csv$", name, flags=re.IGNORECASE)
+    if csv_match:
+        return (csv_match.group(1), 0, 1, name.lower())
     return ("9999-99-99", 999999, 999, name.lower())
 
 
@@ -1142,18 +1136,7 @@ def _is_compact_ptlog_name(path: str) -> bool:
 
 
 def _dedupe_folder_file_paths(file_paths: List[str]) -> List[str]:
-    has_ptlog = any(path.lower().endswith(".ptlog") or _is_compact_ptlog_name(path) for path in file_paths)
-    if not has_ptlog:
-        return sorted(file_paths, key=_parse_log_filename_sort_key)
-
-    ptlog_stems = {Path(path).stem.lower() for path in file_paths if path.lower().endswith(".ptlog") or _is_compact_ptlog_name(path)}
-    filtered: List[str] = []
-    for path in file_paths:
-        lower = path.lower()
-        if lower.endswith(".csv") and Path(path).stem.lower() in ptlog_stems:
-            continue
-        filtered.append(path)
-    return sorted(filtered, key=_parse_log_filename_sort_key)
+    return sorted(file_paths, key=_parse_log_filename_sort_key)
 
 
 def _metadata_signature(header: Dict[str, str]) -> int:
@@ -2677,7 +2660,7 @@ class PlotterApp:
     def select_files(self) -> None:
         file_paths = filedialog.askopenfilenames(
             title="Select PT100 log file(s)",
-            filetypes=[("PTLOG/CSV", "*.ptlog *.csv"), ("PTLOG", "*.ptlog"), ("CSV", "*.csv"), ("All Files", "*.*")],
+            filetypes=[("Compact PTLOG/CSV", "*.csv"), ("CSV", "*.csv"), ("All Files", "*.*")],
         )
         self._load_paths(list(file_paths))
 
@@ -2685,7 +2668,7 @@ class PlotterApp:
         folder = filedialog.askdirectory(title="Select folder containing PT100 log files")
         if not folder:
             return
-        file_paths = glob.glob(os.path.join(folder, "*.ptlog")) + glob.glob(os.path.join(folder, "*.csv"))
+        file_paths = glob.glob(os.path.join(folder, "*.csv"))
         file_paths.extend(
             os.path.join(folder, name)
             for name in os.listdir(folder)
