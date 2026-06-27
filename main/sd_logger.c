@@ -20,6 +20,7 @@
 #include "sd_ptlog_paths.h"
 
 static const char* kTag = "sd_logger";
+static const uint32_t kSdLoggerPtlogShortMaxRevision = 36u * 36u - 1u;
 
 static bool
 SdLoggerJoinPath(const char* dir_path,
@@ -655,7 +656,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     if (!S_ISREG(stat_buffer.st_mode)) {
       continue;
     }
-    if (parsed_revision == UINT32_MAX) {
+    if (parsed_revision >= kSdLoggerPtlogShortMaxRevision) {
       SdLoggerDailyDiagSet(logger,
                            SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
                            candidate_path,

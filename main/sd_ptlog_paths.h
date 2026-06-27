@@ -62,7 +62,19 @@ bool SdPtlogBuildMonthDirPath(const char* mount_point,
                               char* out_path,
                               size_t out_path_size);
 
-/** Build date/month strings and nested /logs/YYYY-MM/YYYY-MM-DDZ[-rev].ptlog path. */
+/**
+ * @brief Build date/month strings and the nested PTLOG path for new files.
+ *
+ * New firmware-created PTLOG files use the FAT 8.3 basename
+ * `YYMMDDRR.PTL` under `/logs/YYYY-MM/`, where `RR` is a two-character
+ * uppercase base-36 same-day revision. `date_out` remains the canonical
+ * `YYYY-MM-DDZ` string, and `month_out` remains `YYYY-MM`. Revision values
+ * above `ZZ` (1295) fail closed by clearing `path_out` and returning false.
+ *
+ * @note Short-name years encode 2000 through 2099. This helper changes only
+ * new file creation; it does not rename or migrate existing long-name PTLOGs.
+ * The 8.3 output reduces FAT long-filename directory-entry pressure.
+ */
 bool SdPtlogBuildNestedPath(const char* mount_point,
                             int64_t epoch_seconds,
                             uint32_t revision,
@@ -73,7 +85,16 @@ bool SdPtlogBuildNestedPath(const char* mount_point,
                             char* path_out,
                             size_t path_out_size);
 
-/** Parse legacy/nested PTLOG basename YYYY-MM-DDZ[revision].ptlog. */
+/**
+ * @brief Parse a PTLOG basename into canonical date and numeric revision.
+ *
+ * Accepts new short `YYMMDDRR.PTL` names and legacy long
+ * `YYYY-MM-DDZ.ptlog` / `YYYY-MM-DDZ-<revision>.ptlog` names from approved
+ * root or nested locations. Short-name `YY` expands to `20YY`, so the policy
+ * covers years 2000 through 2099; short-name `RR` is uppercase base-36
+ * revision 0 through 1295. Lowercase `.ptl` and lowercase base-36 letters are
+ * rejected for the short policy.
+ */
 bool SdPtlogParseName(const char* name,
                       char* date_out,
                       size_t date_out_size,

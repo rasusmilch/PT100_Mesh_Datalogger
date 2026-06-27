@@ -16,7 +16,9 @@
 #include <time.h>
 
 static const char kPtlogSuffix[] = ".ptlog";
+static const char kPtlogShortSuffix[] = ".PTL";
 static const char kLogsDirName[] = "logs";
+static const uint32_t kPtlogShortMaxRevision = 36u * 36u - 1u;
 
 /* Fail closed on truncation: callers must never use partial FAT paths. */
 static bool
@@ -113,11 +115,23 @@ SdPtlogBuildNestedPath(const char* mount_point,
     path_out[0] = '\0';
     return false;
   }
+  if (revision > kPtlogShortMaxRevision) {
+    path_out[0] = '\0';
+    return false;
+  }
+  const char base36[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   char daily_name[SD_PTLOG_MAX_NAME_LEN];
-  int written = (revision == 0u)
-                  ? snprintf(daily_name, sizeof(daily_name), "%s%s", date_out, kPtlogSuffix)
-                  : snprintf(daily_name, sizeof(daily_name), "%s-%" PRIu32 "%s", date_out, revision, kPtlogSuffix);
-  if (written < 0 || written >= (int)sizeof(daily_name)) {
+  const int year = time_info.tm_year + 1900;
+  int written = snprintf(daily_name,
+                         sizeof(daily_name),
+                         "%02d%02d%02d%c%c%s",
+                         year % 100,
+                         time_info.tm_mon + 1,
+                         time_info.tm_mday,
+                         base36[revision / 36u],
+                         base36[revision % 36u],
+                         kPtlogShortSuffix);
+  if (written != 12) {
     path_out[0] = '\0';
     return false;
   }
@@ -129,16 +143,53 @@ SdPtlogBuildNestedPath(const char* mount_point,
   return JoinPath(month_dir, daily_name, path_out, path_out_size);
 }
 
-bool
-SdPtlogParseName(const char* name,
-                 char* date_out,
-                 size_t date_out_size,
-                 uint32_t* revision_out)
+static bool
+IsDigitChar(char value)
 {
-  if (name == NULL) return false;
+  return value >= '0' && value <= '9';
+}
+
+static bool
+IsValidMonthDay(unsigned year, unsigned month, unsigned day)
+{
+  static const unsigned days_per_month[] = { 31u, 28u, 31u, 30u, 31u, 30u,
+                                            31u, 31u, 30u, 31u, 30u, 31u };
+  if (month < 1u || month > 12u || day < 1u) return false;
+  unsigned days = days_per_month[month - 1u];
+  const bool leap = (year % 4u == 0u && (year % 100u != 0u || year % 400u == 0u));
+  if (month == 2u && leap) days = 29u;
+  return day <= days;
+}
+
+static int
+Base36UpperValue(char value)
+{
+  if (value >= '0' && value <= '9') return value - '0';
+  if (value >= 'A' && value <= 'Z') return value - 'A' + 10;
+  return -1;
+}
+
+static bool
+CopyParsedDate(const char* source, char* date_out, size_t date_out_size)
+{
+  if (date_out != NULL && date_out_size > 0) {
+    if (date_out_size < SD_PTLOG_DATE_LEN + 1u) return false;
+    memcpy(date_out, source, SD_PTLOG_DATE_LEN);
+    date_out[SD_PTLOG_DATE_LEN] = '\0';
+  }
+  return true;
+}
+
+static bool
+ParseLongPtlogName(const char* name,
+                   char* date_out,
+                   size_t date_out_size,
+                   uint32_t* revision_out)
+{
   const size_t suffix_len = sizeof(kPtlogSuffix) - 1u;
   const size_t length = strlen(name);
-  if (length < SD_PTLOG_DATE_LEN + suffix_len || strcmp(name + length - suffix_len, kPtlogSuffix) != 0) {
+  if (length < SD_PTLOG_DATE_LEN + suffix_len ||
+      strcmp(name + length - suffix_len, kPtlogSuffix) != 0) {
     return false;
   }
   const size_t prefix_len = length - suffix_len;
@@ -146,25 +197,66 @@ SdPtlogParseName(const char* name,
   if (name[4] != '-' || name[7] != '-' || name[10] != 'Z') return false;
   for (size_t i = 0; i < SD_PTLOG_DATE_LEN; ++i) {
     if (i == 4u || i == 7u || i == 10u) continue;
-    if (name[i] < '0' || name[i] > '9') return false;
+    if (!IsDigitChar(name[i])) return false;
   }
   uint32_t revision = 0;
   if (prefix_len > SD_PTLOG_DATE_LEN) {
     if (name[11] != '-' || prefix_len == 12u) return false;
     for (size_t i = 12u; i < prefix_len; ++i) {
-      if (name[i] < '0' || name[i] > '9') return false;
+      if (!IsDigitChar(name[i])) return false;
       const uint32_t digit = (uint32_t)(name[i] - '0');
       if (revision > (UINT32_MAX - digit) / 10u) return false;
       revision = revision * 10u + digit;
     }
   }
-  if (date_out != NULL && date_out_size > 0) {
-    if (date_out_size < SD_PTLOG_DATE_LEN + 1u) return false;
-    memcpy(date_out, name, SD_PTLOG_DATE_LEN);
-    date_out[SD_PTLOG_DATE_LEN] = '\0';
-  }
+  if (!CopyParsedDate(name, date_out, date_out_size)) return false;
   if (revision_out != NULL) *revision_out = revision;
   return true;
+}
+
+static bool
+ParseShortPtlogName(const char* name,
+                    char* date_out,
+                    size_t date_out_size,
+                    uint32_t* revision_out)
+{
+  if (strlen(name) != 12u || strcmp(name + 8u, kPtlogShortSuffix) != 0) return false;
+  for (size_t i = 0; i < 6u; ++i) {
+    if (!IsDigitChar(name[i])) return false;
+  }
+  const int rev_high = Base36UpperValue(name[6]);
+  const int rev_low = Base36UpperValue(name[7]);
+  if (rev_high < 0 || rev_low < 0) return false;
+
+  const unsigned year = 2000u + (unsigned)((name[0] - '0') * 10 + (name[1] - '0'));
+  const unsigned month = (unsigned)((name[2] - '0') * 10 + (name[3] - '0'));
+  const unsigned day = (unsigned)((name[4] - '0') * 10 + (name[5] - '0'));
+  if (!IsValidMonthDay(year, month, day)) return false;
+
+  char parsed_date[SD_PTLOG_DATE_LEN + 1u];
+  const int written = snprintf(parsed_date,
+                               sizeof(parsed_date),
+                               "%04u-%02u-%02uZ",
+                               year,
+                               month,
+                               day);
+  if (written != (int)SD_PTLOG_DATE_LEN) return false;
+  if (!CopyParsedDate(parsed_date, date_out, date_out_size)) return false;
+  if (revision_out != NULL) {
+    *revision_out = (uint32_t)(rev_high * 36 + rev_low);
+  }
+  return true;
+}
+
+bool
+SdPtlogParseName(const char* name,
+                 char* date_out,
+                 size_t date_out_size,
+                 uint32_t* revision_out)
+{
+  if (name == NULL) return false;
+  return ParseShortPtlogName(name, date_out, date_out_size, revision_out) ||
+         ParseLongPtlogName(name, date_out, date_out_size, revision_out);
 }
 
 bool

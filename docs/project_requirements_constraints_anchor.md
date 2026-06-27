@@ -11,14 +11,17 @@ Core product requirements:
 1. The firmware shall collect PT100 temperature samples and preserve them through SD-card interruptions where possible.
 2. The root logging node shall write durable PTLOG files to SD storage.
 3. The system shall use FRAM as a buffer when SD logging is unavailable, delayed, degraded, or recovering.
-4. New PTLOG files shall use the nested monthly layout:
+4. New PTLOG files shall use the nested monthly FAT 8.3 layout:
 
-   * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`
-   * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ-<revision>.ptlog`
-5. The firmware shall preserve compatibility with legacy root-level PTLOG files:
+   * `/sdcard/logs/YYYY-MM/YYMMDDRR.PTL`
+
+   `RR` is a two-character uppercase base-36 same-day revision from `00` through `ZZ` (0 through 1295), and `YY` maps to years 2000 through 2099.
+5. The firmware shall preserve compatibility with legacy long-name PTLOG files in root and nested monthly locations:
 
    * `/sdcard/YYYY-MM-DDZ.ptlog`
    * `/sdcard/YYYY-MM-DDZ-<revision>.ptlog`
+   * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`
+   * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ-<revision>.ptlog`
 6. SD reclaim shall delete only old eligible PTLOG files from approved locations.
 7. SD reclaim shall preserve current-date PTLOG files unless a later explicit emergency policy approves otherwise.
 8. SD diagnostics shall preserve enough detail to distinguish mount, card, byte-space, create/open, directory-entry, and I/O failure classes where practical.
@@ -53,12 +56,14 @@ Operator workflow requirements:
 PTLOG data requirements:
 
 1. PTLOG files shall remain append-safe and recoverable after interrupted writes where practical.
-2. Daily PTLOG file names shall include UTC date in the canonical long-name format unless an explicit filename policy change is approved.
-3. Revision PTLOG files shall use `-<revision>` before `.ptlog`.
-4. New daily PTLOG files shall be grouped under `/logs/YYYY-MM/`.
-5. Legacy root PTLOGs shall remain eligible for scanning and safe reclaim.
-6. Automatic retention shall use parsed PTLOG metadata, not directory enumeration order alone.
-7. Automatic retention shall fail closed when names, paths, stat results, or directory traversal are ambiguous.
+2. New nested daily PTLOG file names shall use `YYMMDDRR.PTL`, the approved FAT 8.3 filename policy, to reduce FAT long-filename directory-entry pressure.
+3. `RR` shall encode same-day revision as two uppercase base-36 characters from `00` through `ZZ` (0 through 1295); revisions above `ZZ` shall fail closed rather than wrap.
+4. `YY` shall expand to `20YY`, so short PTLOG names cover 2000 through 2099 while parsers normalize dates to canonical `YYYY-MM-DDZ`.
+5. New daily PTLOG files shall be grouped under `/logs/YYYY-MM/`.
+6. Legacy root and nested long-name PTLOGs shall remain eligible for scanning, safe reclaim, and host-tool reading where applicable.
+7. Existing files shall not be automatically renamed or migrated as part of the 8.3 policy change.
+8. Automatic retention shall use parsed PTLOG metadata, not directory enumeration order alone.
+9. Automatic retention shall fail closed when names, paths, stat results, or directory traversal are ambiguous.
 
 FRAM state requirements:
 

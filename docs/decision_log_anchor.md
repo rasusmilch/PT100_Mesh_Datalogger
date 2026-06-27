@@ -557,3 +557,33 @@ Unverified at this update:
 * Display/ntfy status split implementation.
 * FRAM active-vs-historical overrun fix implementation.
 * Whether project intent, requirements/constraints, decision log, roadmap, code documentation policy, or validation ledger anchors have been committed after this draft.
+
+---
+
+## Decision 7 — Adopt FAT 8.3 names for new nested PTLOG files
+
+Status: settled
+Reference: Task 2B-3A
+
+### Decision
+
+New firmware-created nested PTLOG files use `/sdcard/logs/YYYY-MM/YYMMDDRR.PTL`. `RR` is a two-character uppercase base-36 revision from `00` through `ZZ` (0 through 1295), and `YY` expands to years 2000 through 2099. Existing long-name PTLOG files remain parseable, discoverable, readable by host tooling where applicable, and eligible for safe reclaim. No automatic migration or renaming is performed.
+
+### Rationale
+
+The short FAT 8.3 basename reduces long-filename directory-entry pressure while preserving the existing nested month directory layout and compatibility with historical data.
+
+### Consequences
+
+Path builders for new files must emit only short names. PTLOG scanners and host-facing parsers must normalize both short and legacy long names to canonical `YYYY-MM-DDZ` plus numeric revision. Pressure modeling and pressure-targeted reclaim remain separate follow-up tasks.
+
+### Rejected alternatives
+
+* Rename or migrate existing long-name PTLOG files automatically.
+* Add FAT pressure thresholds or reclaim behavior in the filename-policy task.
+* Accept lowercase short `.ptl` output as firmware policy.
+
+### Follow-up tasks or validation needed
+
+* Targeted validation of mixed short/long discovery and current-date protection on target media.
+* Implement the read-only FAT/PTLOG pressure model in Task 2B-3B after validation.

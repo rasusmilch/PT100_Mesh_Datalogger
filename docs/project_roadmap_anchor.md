@@ -21,8 +21,9 @@ Completed in this feature line:
 
 * PR #368: Move new daily PTLOG writes into `/logs/YYYY-MM/`, preserve legacy root compatibility, add bounded path/candidate helper foundation, and add daily PTLOG diagnostics.
 * PR #369: Wire bounded PTLOG candidate traversal into SD reclaim so reclaim can delete old eligible PTLOG files from both legacy root and nested monthly directories.
+* PR #370: Add read-only `sd_ptlog_stats_t` / `SdPtlogCollectStats()` traversal counts for later pressure modeling.
 
-Current state after PR #369:
+Current state after PR #370:
 
 * New PTLOG writes use nested monthly directories.
 * Legacy root PTLOG files remain supported.
@@ -30,6 +31,10 @@ Current state after PR #369:
 * Reclaim remains byte-space-triggered only.
 * Current-date PTLOG files remain protected.
 * No create/open reclaim retry exists yet.
+* PR #371 was closed unmerged and superseded because global-oldest threshold reclaim was not pressure-targeted.
+* Task 2B-3A adds the FAT 8.3 `YYMMDDRR.PTL` filename foundation for new nested PTLOG files while preserving dual-format parsing.
+* Task 2B-3B remains the read-only FAT/PTLOG pressure model.
+* Task 2B-3C remains pressure-targeted reclaim.
 * No file-count or directory-entry threshold policy exists yet.
 * Hardware SD/FAT16 validation remains unverified in the available context.
 

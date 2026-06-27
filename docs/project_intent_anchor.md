@@ -39,14 +39,17 @@ Core workflows include:
 The product should behave as follows:
 
 * SD logging should be durable, append-safe, and recoverable after reset or power loss.
-* New PTLOG files should use the FAT16-safe nested monthly layout:
+* New PTLOG files should use the FAT16-safe nested monthly 8.3 layout:
 
-  * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`
-  * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ-<revision>.ptlog`
-* Legacy root PTLOG files remain supported for reading, scanning, and retention:
+  * `/sdcard/logs/YYYY-MM/YYMMDDRR.PTL`
+
+  where `RR` is an uppercase base-36 revision from `00` through `ZZ`.
+* Legacy long-name PTLOG files remain supported for reading, scanning, and retention:
 
   * `/sdcard/YYYY-MM-DDZ.ptlog`
   * `/sdcard/YYYY-MM-DDZ-<revision>.ptlog`
+  * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`
+  * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ-<revision>.ptlog`
 * Automatic retention/reclaim must only delete parsed, regular PTLOG files from approved locations.
 * Automatic retention/reclaim must never delete:
 
@@ -108,9 +111,9 @@ Use these terms consistently:
 
 * **PTLOG**: The project log file format used for PT100 sample records.
 * **Daily PTLOG**: A PTLOG file for one UTC date.
-* **Nested monthly PTLOG path**: `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`.
+* **Nested monthly PTLOG path**: `/sdcard/logs/YYYY-MM/YYMMDDRR.PTL` for new files, with legacy long-name nested files still supported.
 * **Legacy root PTLOG path**: `/sdcard/YYYY-MM-DDZ.ptlog`.
-* **Revision PTLOG**: A same-date PTLOG with `-<revision>` before `.ptlog`, used when header signature or same-date conditions require a new file.
+* **Revision PTLOG**: A same-date PTLOG revision. New short names encode the revision in the `RR` base-36 field; legacy long names use `-<revision>` before `.ptlog`.
 * **Log root**: `/sdcard/logs`.
 * **Month directory**: `/sdcard/logs/YYYY-MM`.
 * **Reclaim**: Automatic deletion of old eligible PTLOG files to restore required storage margin.
