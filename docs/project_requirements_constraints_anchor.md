@@ -42,7 +42,7 @@ Operator workflow requirements:
 
 1. Operators shall have a clear way to inspect SD and FRAM status.
 2. Destructive SD format shall remain an explicit operator action.
-3. Runtime alerts shall distinguish active/current failures from stale historical conditions where practical.
+3. Runtime alerts shall distinguish active/current failures from stale historical conditions where practical. Repeated stale `fram_overrun - active` ntfy after SD recovery and FRAM drain is a known deferred defect, not expected product behavior.
 4. Display/status codes shall not be treated as precise unless their semantics are explicit.
 5. Recovery behavior should avoid requiring card format unless reclaim/retry policies cannot recover.
 
@@ -65,6 +65,7 @@ FRAM state requirements:
 3. Historical/unacknowledged FRAM overrun and current/live FRAM pressure shall be modeled separately.
 4. FRAM contents shall not be cleared by SD format unless a later explicit policy approves that behavior.
 5. After SD recovery, FRAM drain behavior shall preserve record ordering and record IDs.
+6. Repeated `fram_overrun - active` ntfy after SD recovery and FRAM drain appears caused by historical cumulative overrun being treated as active/current pressure; later FRAM semantic work shall fix it, and unrelated SD storage tasks shall not modify ntfy/display/FRAM behavior unless explicitly scoped.
 
 SD state requirements:
 
@@ -83,22 +84,24 @@ General architecture constraints:
 3. Prefer bounded, fixed-buffer embedded logic, but do not treat fixed-size buffers as approval to place large storage path, file, candidate, scan-observation, or I/O buffers on a FreeRTOS task stack.
 4. Storage/path traversal code shall preserve task stack headroom. Large reusable SD/PTLOG path and scratch buffers are unacceptable on task stack and shall be centrally owned outside the task stack where feasible.
 5. Do not increase task stack sizes merely to compensate for storage scratch/path buffers unless an explicit product/architecture decision approves that tradeoff.
-6. Prefer centrally owned reusable storage scratch/path buffers for traversal, logging, scan facts, and diagnostics. Prefer PSRAM-backed storage for reusable generic scratch buffers when the target configuration can guarantee it safely.
-7. If PSRAM cannot be guaranteed, implementation must define and document fallback behavior, allocation failure behavior, maximum internal-memory usage, ownership, lifetime, and locking/task-safety assumptions.
-8. Separate scratch-buffer mechanism from PTLOG scan/reclaim policy.
-9. Separate mechanism from policy:
+6. Option A is approved directionally for the next storage scratch design: a centrally owned storage scratch owner covering all storage/path/scratch buffers, not only PTLOG traversal. The inventory shall include logger daily path/revision paths, PTLOG traversal, reclaim, scan facts, diagnostics, CSV append/verify/resume scratch, and related SD helper buffers where applicable.
+7. PSRAM is guaranteed for the target configuration for this direction. Reusable generic storage scratch/path buffers should be PSRAM-backed; allocation failure must fail closed and be reported or diagnosed rather than silently increasing task-stack use or inventing broad internal-RAM fallback.
+8. A fixed compile-time scratch slot count is acceptable, and the initial approved count may be 1. A scratch slot may contain multiple named internal path/scratch buffers when a storage workflow needs more than one buffer live at once.
+9. The storage scratch owner shall preserve a future expansion path for additional slots or consumers, but it must not become a broad allocator, generalized pool, dynamic arbitrary allocator, or unnecessary concurrency framework.
+10. Separate scratch-buffer mechanism from PTLOG scan/reclaim policy.
+11. Separate mechanism from policy:
 
    * candidate discovery is mechanism;
    * retention thresholds are policy;
    * create/open retry rules are policy;
    * current-date deletion is policy;
    * display/ntfy wording is product behavior.
-10. Prefer one-candidate-per-pass reclaim over large in-memory candidate arrays.
-11. Do not use unbounded recursive directory traversal on embedded firmware.
-12. Do not follow arbitrary host-created directories.
-13. Do not preserve obsolete root-only assumptions after the nested PTLOG layout.
-14. Do not refactor broadly while fixing a specific reliability issue.
-15. Do not change public/operator-visible behavior unless it is in scope.
+12. Prefer one-candidate-per-pass reclaim over large in-memory candidate arrays.
+13. Do not use unbounded recursive directory traversal on embedded firmware.
+14. Do not follow arbitrary host-created directories.
+15. Do not preserve obsolete root-only assumptions after the nested PTLOG layout.
+16. Do not refactor broadly while fixing a specific reliability issue.
+17. Do not change public/operator-visible behavior unless it is in scope.
 
 PTLOG path constraints:
 
