@@ -276,7 +276,7 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
  * @brief Build the FAT16-safe nested daily PTLOG path.
  *
  * New writes avoid FAT16 root-directory pressure by targeting
- * /logs/YYYY-MM/YYYY-MM-DDZ[-revision].ptlog.  The helper fails closed on
+ * /logs/YYYY-MM/YYYYMMDD.RRR.  The helper fails closed on
  * truncation and leaves path_out empty so callers do not open partial paths.
  */
 static void
@@ -578,7 +578,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     return ESP_ERR_INVALID_ARG;
   }
 
-  *revision_out = 1u;
+  *revision_out = 0u;
   char month_dir[SD_PTLOG_MAX_PATH_LEN];
   if (!SdPtlogBuildMonthDirPath(
         logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
@@ -655,7 +655,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     if (!S_ISREG(stat_buffer.st_mode)) {
       continue;
     }
-    if (parsed_revision == UINT32_MAX) {
+    if (!SdPtlogAccumulateNextRevision(parsed_revision, revision_out)) {
       SdLoggerDailyDiagSet(logger,
                            SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
                            candidate_path,
@@ -665,13 +665,13 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
                            0,
                            ESP_ERR_INVALID_SIZE);
       ESP_LOGE(kTag,
-               "PTLOG revision overflow in %s; refusing to wrap",
-               candidate_path);
+               "PTLOG revision limit reached in %s rev=%" PRIu32
+               "; refusing to wrap beyond %u",
+               candidate_path,
+               parsed_revision,
+               (unsigned)SD_PTLOG_MAX_REVISION);
       closedir(dir);
       return ESP_ERR_INVALID_SIZE;
-    }
-    if (parsed_revision >= *revision_out) {
-      *revision_out = parsed_revision + 1u;
     }
   }
 
@@ -735,7 +735,7 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
     sd_ptlog_candidate_t candidate;
     /* Task 2A intentionally relies on broad current-date protection because
      * sd_logger_t does not yet track the open path.  The bounded scanner only
-     * returns parsed regular PTLOG files from root or /logs/YYYY-MM. */
+     * returns parsed regular compact PTLOG files from /logs/YYYY-MM only. */
     if (!SdPtlogFindOldestCandidate(
           logger->mount_point, NULL, logger->current_date, &candidate)) {
       break;
@@ -743,9 +743,8 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
 
     if (unlink(candidate.path) != 0) {
       ESP_LOGW(kTag,
-               "Failed to delete old %s PTLOG %s date=%s rev=%" PRIu32
+               "Failed to delete old nested PTLOG %s date=%s rev=%" PRIu32
                ": %s (%d)",
-               candidate.legacy_root ? "legacy-root" : "nested",
                candidate.path,
                candidate.date,
                candidate.revision,
@@ -755,8 +754,7 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
     }
     deletes++;
     ESP_LOGW(kTag,
-             "Deleted old %s PTLOG to reclaim space: %s date=%s rev=%" PRIu32,
-             candidate.legacy_root ? "legacy-root" : "nested",
+             "Deleted old nested PTLOG to reclaim space: %s date=%s rev=%" PRIu32,
              candidate.path,
              candidate.date,
              candidate.revision);

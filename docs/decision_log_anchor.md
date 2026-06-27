@@ -9,15 +9,13 @@ Reference: PR #368, Task 1 / SD FAT16-safe path work
 
 ### Decision
 
-New daily PTLOG files use the nested monthly layout:
+New daily PTLOG files use the nested monthly FAT 8.3 layout:
 
-* `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`
-* `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ-<revision>.ptlog`
+* `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`
 
-Legacy root-level PTLOG files remain supported for compatibility:
+`RRR` is a decimal same-day revision from `000` through `999`; the extension is revision metadata, not file-type metadata. PTLOG file identity is the first-line ASCII magic `#PT100_LOG_V1`.
 
-* `/sdcard/YYYY-MM-DDZ.ptlog`
-* `/sdcard/YYYY-MM-DDZ-<revision>.ptlog`
+Old root-level and long-name `.ptlog` files are not supported by firmware scanning, stats, or reclaim. They may remain on a card, but firmware ignores them rather than migrating or renaming them.
 
 ### Rationale
 
@@ -33,12 +31,12 @@ The leading SD failure theory is FAT root-directory entry exhaustion from many l
 
 * New log files are no longer expected at SD root.
 * Tools and firmware code must not assume root-only PTLOG layout.
-* Retention and host tools must support both legacy root and nested monthly paths.
+* Firmware retention and stats support only compact nested monthly paths.
 
 ### Rejected alternatives
 
 * Keep all daily PTLOG files at root.
-* Immediately migrate to short 8.3 names.
+* Use the superseded YYMMDDRR.PTL design from closed PR #372.
 * Immediately migrate to FAT32 solely to avoid FAT16 root limits.
 
 ### Follow-up tasks or validation needed
@@ -48,23 +46,22 @@ The leading SD failure theory is FAT root-directory entry exhaustion from many l
 
 ---
 
-## Decision 2 — Preserve legacy root PTLOG compatibility
+## Decision 2 — Remove legacy root PTLOG filename compatibility
 
 Status: settled
 Reference: PR #368, PR #369
 
 ### Decision
 
-The firmware shall continue to recognize and safely handle legacy root-level PTLOG files.
+The firmware shall ignore root-level PTLOG-looking files and old long-name `.ptlog` files for scanning, stats, and reclaim.
 
 ### Rationale
 
-Existing SD cards and field data may already contain root-level PTLOG files. Retention must be able to reclaim old root files during migration, and host tooling may need to read historical cards.
+Existing SD cards and field data may already contain root-level or long-name PTLOG files. They are not migrated, renamed, parsed, counted, or reclaimed automatically by firmware.
 
 ### Evidence or context references
 
-* PR #368 preserved legacy root-level PTLOG handling.
-* PR #369 reclaim scanner supports both legacy root and nested monthly candidates.
+* Task 2B-3A-F1 supersedes earlier compatibility decisions and forces the compact nested layout only.
 
 ### Consequences
 
@@ -74,9 +71,9 @@ Existing SD cards and field data may already contain root-level PTLOG files. Ret
 
 ### Rejected alternatives
 
-* Ignore legacy root PTLOGs.
 * Migrate or rewrite root PTLOGs automatically.
 * Delete all root PTLOGs as a one-time cleanup.
+* Continue parsing old long `.ptlog` names in firmware.
 
 ### Follow-up tasks or validation needed
 
@@ -144,7 +141,7 @@ Automatic deletion on embedded firmware must fail closed. Unbounded recursion ri
 
 ### Evidence or context references
 
-* `SdPtlogFindOldestCandidate()` scans root, `/logs`, and valid month directories only.
+* `SdPtlogFindOldestCandidate()` scans `/logs` and valid month directories only; root files are ignored.
 * System directories and non-month directories are ignored.
 * PTLOG candidates must parse and must be regular files.
 
@@ -415,7 +412,7 @@ Linux filesystems and temporary directories do not reproduce FAT16 root-entry li
 
 ### Follow-up tasks or validation needed
 
-* Run hardware validation on real SD media with nested logs, legacy root files, forced reclaim, and current-date protection checks.
+* Run hardware validation on real SD media with compact nested logs, ignored old root/long files, forced reclaim, and current-date protection checks.
 
 ---
 
@@ -557,3 +554,12 @@ Unverified at this update:
 * Display/ntfy status split implementation.
 * FRAM active-vs-historical overrun fix implementation.
 * Whether project intent, requirements/constraints, decision log, roadmap, code documentation policy, or validation ledger anchors have been committed after this draft.
+
+
+## Decision 10 — Force YYYYMMDD.RRR nested PTLOG filenames and magic identity
+
+Status: Accepted in Task 2B-3A.
+
+New firmware-created nested PTLOG files use `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`, where `RRR` is a decimal same-day revision from `000` through `999`. Revision overflow above `999` fails closed. The `.RRR` extension is revision metadata, not file-type metadata. Old root and nested long-name `.ptlog` files are ignored by firmware scanning, stats, and reclaim; no automatic migration or renaming is performed. PTLOG identity is formalized as the first-line ASCII magic `#PT100_LOG_V1`.
+
+PR #371 and PR #372 are treated as closed, unmerged, and superseded context; PR #372's YYMMDDRR.PTL policy and earlier legacy-compatibility assumptions are not accepted filename design. Follow-up work remains staged: 2B-3B read-only bounded pressure/status scan model, 2B-3C compact display progress, and 2B-3D pressure-targeted reclaim after validation. No hardware validation is claimed by this decision.

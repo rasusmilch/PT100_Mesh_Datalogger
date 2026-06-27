@@ -12,6 +12,7 @@
 #include "nvs.h"
 #include "sd_csv_verify.h"
 #include "sd_logger.h"
+#include "sd_ptlog_paths.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,11 +21,11 @@ static const char* kNvsNamespace = "pt100_logger";
 static const char* kRecordIdKey = "diag_recid";
 
 /**
- * @brief Execute BuildDailyPtlogPath.
- * @param logger Parameter logger.
- * @param epoch_seconds Parameter epoch_seconds.
- * @param path_out Parameter path_out.
- * @param path_out_size Parameter path_out_size.
+ * @brief Build the compact nested PTLOG path used by storage diagnostics.
+ *
+ * The diagnostic path is delegated to SdPtlogBuildNestedPath() with revision 0
+ * so self-tests exercise the same /logs/YYYY-MM/YYYYMMDD.RRR layout as normal
+ * firmware-created PTLOG files. Invalid arguments leave path_out empty.
  */
 static void
 BuildDailyPtlogPath(const sd_logger_t* logger,
@@ -32,23 +33,31 @@ BuildDailyPtlogPath(const sd_logger_t* logger,
                   char* path_out,
                   size_t path_out_size)
 {
+  if (path_out != NULL && path_out_size > 0) {
+    path_out[0] = '\0';
+  }
   if (logger == NULL || path_out == NULL || path_out_size == 0) {
     return;
   }
-  time_t time_seconds = (time_t)epoch_seconds;
-  struct tm time_info;
-  gmtime_r(&time_seconds, &time_info);
 
-  char date_string[16];
-  strftime(date_string, sizeof(date_string), "%Y-%m-%dZ", &time_info);
-  snprintf(
-    path_out, path_out_size, "%s/%s.ptlog", logger->mount_point, date_string);
+  char date_string[SD_PTLOG_DATE_LEN + 1u];
+  char month_string[SD_PTLOG_MONTH_LEN + 1u];
+  (void)SdPtlogBuildNestedPath(logger->mount_point,
+                               epoch_seconds,
+                               0,
+                               date_string,
+                               sizeof(date_string),
+                               month_string,
+                               sizeof(month_string),
+                               path_out,
+                               path_out_size);
 }
 
 /**
- * @brief Execute BuildDiagRecord.
- * @param epoch_seconds Parameter epoch_seconds.
- * @return Return the function result.
+ * @brief Create a deterministic synthetic PT100 record for storage diagnostics.
+ *
+ * The fixed temperature/resistance values keep power-loss and flush self-tests
+ * focused on persistence behavior rather than sensor sampling state.
  */
 static log_record_t
 BuildDiagRecord(int64_t epoch_seconds)
@@ -66,10 +75,10 @@ BuildDiagRecord(int64_t epoch_seconds)
 }
 
 /**
- * @brief Execute AppendRecordToFram.
- * @param fram Parameter fram.
- * @param record Parameter record.
- * @return Return the function result.
+ * @brief Assign a record id and append one diagnostic record to FRAM.
+ *
+ * The helper preserves the production ordering of id assignment before append so
+ * storage diagnostics exercise the same FRAM queue semantics as normal logging.
  */
 static esp_err_t
 AppendRecordToFram(fram_log_t* fram, log_record_t* record)
@@ -85,12 +94,11 @@ AppendRecordToFram(fram_log_t* fram, log_record_t* record)
 }
 
 /**
- * @brief Execute WritePartialCsvLine.
- * @param logger Parameter logger.
- * @param record Parameter record.
- * @param node_id Parameter node_id.
- * @param full_len_out Parameter full_len_out.
- * @return Return the function result.
+ * @brief Write and sync a deliberately truncated CSV row to the active PTLOG.
+ *
+ * Power-loss diagnostics use this helper to create an incomplete tail record so
+ * recovery checks can verify that the logger truncates back to the last complete
+ * CSV line. full_len_out receives the intended full row length when requested.
  */
 static esp_err_t
 WritePartialCsvLine(sd_logger_t* logger,

@@ -42,7 +42,7 @@ PtlogWriteHeader(FILE* file, const ptlog_header_t* header)
   }
 
   char line[256] = { 0 };
-  if (!WriteLine(file, "#PT100_LOG_V1\n") ||
+  if (!WriteLine(file, PTLOG_MAGIC_LINE) ||
       !WriteLine(file, "# header_version=1\n")) {
     return false;
   }
@@ -79,6 +79,12 @@ PtlogWriteHeader(FILE* file, const ptlog_header_t* header)
     return false;
   }
   return CsvWriteHeader(CsvHeaderWriter, file);
+}
+
+bool
+PtlogIsMagicLine(const char* line)
+{
+  return line != NULL && strcmp(line, PTLOG_MAGIC_LINE) == 0;
 }
 
 /**

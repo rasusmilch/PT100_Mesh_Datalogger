@@ -14,6 +14,8 @@ extern "C"
 
 #define PTLOG_TEXT_FIELD_MAX_LEN 96
 #define PTLOG_CAL_CONTEXT_MAX_LEN 160
+#define PTLOG_MAGIC_TEXT "#PT100_LOG_V1"
+#define PTLOG_MAGIC_LINE PTLOG_MAGIC_TEXT "\n"
 
 typedef struct
 {
@@ -44,6 +46,14 @@ typedef struct
  * @return True when all lines were written successfully.
  */
 bool PtlogWriteHeader(FILE* file, const ptlog_header_t* header);
+
+/**
+ * @brief Return true when line exactly matches the PTLOG V1 magic line.
+ *
+ * @param line Null-terminated line buffer to compare.
+ * @return true only for "#PT100_LOG_V1\n"; false for NULL, short, or partial input.
+ */
+bool PtlogIsMagicLine(const char* line);
 
 /**
  * @brief Compute a deterministic signature over header-relevant metadata.

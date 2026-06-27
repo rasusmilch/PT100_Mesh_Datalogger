@@ -19,13 +19,13 @@ Current active feature/fix: SD PTLOG storage and reclaim hardening.
 
 Completed in this feature line:
 
-* PR #368: Move new daily PTLOG writes into `/logs/YYYY-MM/`, preserve legacy root compatibility, add bounded path/candidate helper foundation, and add daily PTLOG diagnostics.
-* PR #369: Wire bounded PTLOG candidate traversal into SD reclaim so reclaim can delete old eligible PTLOG files from both legacy root and nested monthly directories.
+* PR #368: Move new daily PTLOG writes into `/logs/YYYY-MM/`, add bounded path/candidate helper foundation, and add daily PTLOG diagnostics.
+* PR #369: Wire bounded PTLOG candidate traversal into SD reclaim so reclaim can delete old eligible PTLOG files from compact nested monthly directories.
 
 Current state after PR #369:
 
 * New PTLOG writes use nested monthly directories.
-* Legacy root PTLOG files remain supported.
+* Legacy/root long-name PTLOG compatibility is removed; old files are ignored by firmware.
 * Reclaim uses `SdPtlogFindOldestCandidate()`.
 * Reclaim remains byte-space-triggered only.
 * Current-date PTLOG files remain protected.
@@ -221,7 +221,7 @@ Status: completed in PR #368.
 
 Outcome:
 
-* New PTLOG files are written to `/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`.
+* New PTLOG files are written to `/logs/YYYY-MM/YYYYMMDD.RRR`.
 * Same-day revisions are written under the same month directory.
 * Legacy root compatibility preserved.
 * Directory creation and daily PTLOG diagnostics added.
@@ -255,7 +255,7 @@ Status: completed in PR #369.
 Outcome:
 
 * `SdLoggerReclaimSpaceLocked()` now uses `SdPtlogFindOldestCandidate()`.
-* Reclaim can select eligible PTLOGs from legacy SD root and nested `/logs/YYYY-MM/`.
+* Reclaim can select eligible compact PTLOGs from nested `/logs/YYYY-MM/`; root files are ignored by current policy.
 * Reclaim deletes one candidate per pass.
 * Reclaim recomputes free bytes after successful delete.
 * Reclaim counts only successful `unlink()` calls.
@@ -290,7 +290,6 @@ Goal:
 Likely scope:
 
 * Count total PTLOG files across approved locations.
-* Count root-level legacy PTLOG files.
 * Count PTLOG files per relevant directory.
 * Add conservative estimated FAT long-filename directory-entry pressure metric if approved.
 * Trigger reclaim when configured thresholds are exceeded.
@@ -304,7 +303,7 @@ Needs read-only planning first:
 Why:
 
 * Thresholds are product policy.
-* Must decide exact limits and whether root legacy cleanup is prioritized.
+* Must decide exact compact nested limits; root legacy cleanup is not part of firmware reclaim.
 * Must avoid Codex inventing retention policy.
 
 Dependencies:
@@ -443,7 +442,7 @@ Test matrix:
 
 * Known-good industrial SD card.
 * FAT16/current format.
-* Existing legacy root PTLOGs.
+* Old root/long-name PTLOG-looking files present and ignored.
 * Nested `/logs/YYYY-MM/` PTLOGs.
 * Low-free-space or forced reclaim condition.
 * Current-date PTLOG present.
@@ -456,7 +455,6 @@ Checks:
 * New daily file creates under `/logs/YYYY-MM/`.
 * Same-day revision behavior still works.
 * Reclaim deletes old eligible nested PTLOG.
-* Reclaim deletes old eligible legacy root PTLOG when appropriate.
 * Reclaim does not delete current-date PTLOG.
 * Reclaim does not delete non-PTLOG files.
 * Reclaim counters/status behave as expected.
@@ -606,7 +604,7 @@ Status: deferred but should occur before relying on field cards with nested logs
 
 Goal:
 
-* Ensure host-side plotting/reporting/analysis tools handle `/logs/YYYY-MM/` and legacy root PTLOG files.
+* Ensure host-side plotting/reporting/analysis tools handle `/logs/YYYY-MM/` and compact nested PTLOG files.
 
 Needs read-only planning first:
 
@@ -647,7 +645,7 @@ Branch/PR:
 
 These are future tasks, not part of the active SD/FAT16 fix unless explicitly promoted:
 
-1. Evaluate short 8.3 PTLOG filenames if FAT long-filename pressure remains a problem.
+1. Task 2B-3A adopted new nested `YYYYMMDD.RRR` FAT 8.3 PTLOG filenames and `#PT100_LOG_V1` magic identity; next implement read-only pressure/status scanning.
 2. Evaluate FAT32 migration only if field evidence justifies it.
 3. Add richer SD diagnostics to ntfy messages.
 4. Add operator acknowledgement workflow for historical FRAM data-loss state.
@@ -843,3 +841,22 @@ Unverified at this update:
 * Display/ntfy status split implementation.
 * FRAM active-vs-historical overrun fix implementation.
 * Whether project intent, requirements/constraints, decision log, roadmap, code documentation policy, or validation ledger anchors have been committed after this draft.
+
+
+## Task 2B-3 staged PTLOG filename, pressure scan, and reclaim work
+
+### 2B-3A — YYYYMMDD.RRR filename and PTLOG magic foundation
+
+Status: implemented in this branch. New nested firmware PTLOG files use `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR` with decimal revisions `000` through `999`; legacy/root long-name `.ptlog` compatibility is removed; old files are ignored by firmware. PTLOG identity is formalized around the first-line `#PT100_LOG_V1` magic. No migration, display progress, read-only pressure expansion, create/open retry, or reclaim policy change is included.
+
+### 2B-3B — Read-only bounded pressure/status scan model
+
+Status: next. Add richer read-only scan facts without deletion or full-card recursion.
+
+### 2B-3C — Compact MAX7219 scan progress
+
+Status: later. Add throttled count-up display states only after scan/status architecture is validated.
+
+### 2B-3D — Pressure-targeted reclaim
+
+Status: later. Reclaim actions must directly relieve the pressure class; directory-count cleanup remains unapproved unless explicitly decided.
