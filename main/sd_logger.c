@@ -578,7 +578,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     return ESP_ERR_INVALID_ARG;
   }
 
-  *revision_out = 1u;
+  *revision_out = 0u;
   char month_dir[SD_PTLOG_MAX_PATH_LEN];
   if (!SdPtlogBuildMonthDirPath(
         logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
@@ -655,7 +655,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     if (!S_ISREG(stat_buffer.st_mode)) {
       continue;
     }
-    if (parsed_revision >= SD_PTLOG_MAX_REVISION) {
+    if (!SdPtlogAccumulateNextRevision(parsed_revision, revision_out)) {
       SdLoggerDailyDiagSet(logger,
                            SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
                            candidate_path,
@@ -672,9 +672,6 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
                (unsigned)SD_PTLOG_MAX_REVISION);
       closedir(dir);
       return ESP_ERR_INVALID_SIZE;
-    }
-    if (parsed_revision >= *revision_out) {
-      *revision_out = parsed_revision + 1u;
     }
   }
 

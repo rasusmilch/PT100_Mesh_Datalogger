@@ -195,6 +195,20 @@ static void test_reclaim_unlink_failure_does_not_count(void)
   assert(exists_path(candidate));
 }
 
+
+static void test_next_revision_accumulator(void)
+{
+  uint32_t next_revision = 0;
+  assert(next_revision == 0);
+  assert(SdPtlogAccumulateNextRevision(0, &next_revision));
+  assert(next_revision == 1);
+  assert(SdPtlogAccumulateNextRevision(998, &next_revision));
+  assert(next_revision == 999);
+  assert(!SdPtlogAccumulateNextRevision(999, &next_revision));
+  assert(next_revision == 999);
+  assert(!SdPtlogAccumulateNextRevision(0, NULL));
+}
+
 static void test_stats_empty_and_missing_layout(void)
 {
   char templ[] = "/tmp/ptlog_stats_empty_XXXXXX";
@@ -287,6 +301,7 @@ int main(void)
   test_current_date_only_is_protected();
   test_reclaim_deletes_only_nested_compact();
   test_reclaim_unlink_failure_does_not_count();
+  test_next_revision_accumulator();
   test_stats_empty_and_missing_layout();
   test_stats_nested_compact_only();
   test_stats_current_date_and_path_separation();

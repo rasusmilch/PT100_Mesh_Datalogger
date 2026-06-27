@@ -202,6 +202,18 @@ SdPtlogParseName(const char* name,
 }
 
 bool
+SdPtlogAccumulateNextRevision(uint32_t existing_revision, uint32_t* revision_out)
+{
+  if (revision_out == NULL || existing_revision >= SD_PTLOG_MAX_REVISION) {
+    return false;
+  }
+  if (existing_revision >= *revision_out) {
+    *revision_out = existing_revision + 1u;
+  }
+  return true;
+}
+
+bool
 SdPtlogIsMonthDirectoryName(const char* name)
 {
   if (name == NULL || strlen(name) != SD_PTLOG_MONTH_LEN) return false;

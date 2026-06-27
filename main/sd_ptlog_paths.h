@@ -80,6 +80,16 @@ bool SdPtlogParseName(const char* name,
                       size_t date_out_size,
                       uint32_t* revision_out);
 
+/**
+ * @brief Fold one existing same-day compact revision into a next-revision value.
+ *
+ * Callers initialize revision_out to 0 before scanning. Each regular compact
+ * same-day file updates it to max(existing_revision + 1) while rejecting
+ * SD_PTLOG_MAX_REVISION so firmware fails closed instead of wrapping past .999.
+ */
+bool SdPtlogAccumulateNextRevision(uint32_t existing_revision,
+                                   uint32_t* revision_out);
+
 /** Return true only for bounded traversal month directory names in YYYY-MM form. */
 bool SdPtlogIsMonthDirectoryName(const char* name);
 
