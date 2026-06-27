@@ -65,9 +65,9 @@ Existing SD cards and field data may already contain root-level or long-name PTL
 
 ### Consequences
 
-* Scanners must support both layouts.
-* Deletion policy must not ignore old root files.
-* Host tools should avoid assuming only the new nested layout exists.
+* Firmware scan, stats, and reclaim must ignore root-level PTLOG-looking files and old long-name `.ptlog` files.
+* Tests should preserve firmware ignore behavior without requiring obsolete `legacy_root` compatibility fields if those fields are later removed.
+* Host tools may keep explicit import or inspection support for historical files only when that support remains separate from firmware scan/reclaim policy.
 
 ### Rejected alternatives
 
@@ -77,12 +77,48 @@ Existing SD cards and field data may already contain root-level or long-name PTL
 
 ### Follow-up tasks or validation needed
 
-* Confirm host tools support both layouts.
-* Decide whether old root files should be prioritized for retention under directory-entry pressure.
+* Keep host-tool historical-file support clearly separated from firmware scan/stats/reclaim behavior.
+* Remove obsolete `legacy_root` firmware API fields only in a scoped compatibility cleanup.
 
 ---
 
-## Decision 3 — Keep FAT16 / 16 KiB allocation unit format for now
+## Decision 3 — Keep large storage path/scratch buffers off task stack
+
+Status: accepted
+Reference: Task 2B-3B-DOC1 and 2B-3B-DOC2 / storage scratch-buffer architecture clarification
+
+### Decision
+
+SD/PTLOG traversal, scan, reclaim, and diagnostics shall avoid large stack path/scratch buffers. Option A is approved as the next storage scratch planning direction: create a centrally owned, PSRAM-backed storage scratch owner because PSRAM is guaranteed on the target configuration. Future implementation shall inventory all storage/path/scratch buffers before changing source, including logger daily path/revision paths, PTLOG traversal, reclaim, scan facts, diagnostics, CSV append/verify/resume scratch, and related SD helper buffers where applicable.
+
+The owner may use a fixed compile-time scratch slot count, initially 1. One scratch slot may contain multiple named internal path/scratch buffers where a storage workflow requires simultaneous live paths or scratch regions. The design should leave room for additional slots or consumers later, but it shall not become a broad allocator, generalized pool, dynamic arbitrary allocator, or unnecessary concurrency model. Allocation failure must fail closed and be reported or diagnosed rather than silently growing task-stack use. FreeRTOS task stack sizes shall not be increased merely to accommodate storage path buffers without explicit approval.
+
+### Rationale
+
+Prior stack pressure issues make path-buffer growth risky. Storage traversal may run inside long-lived application/runtime tasks, and central scratch ownership makes stack usage reviewable, reusable, and easier to protect with SD I/O locking or other lifetime rules.
+
+### Consequences
+
+* Future 2B-3B-1 planning must design the storage scratch owner before read-only scan facts are added on top of existing stack path buffers.
+* Future implementation must document ownership, lifetime, required capacity, buffer sizes, lock/task-safety assumptions, fail-closed behavior, and diagnostics for each scratch slot and named internal buffer.
+* Future 2B-3B-1 execution must include stack, static, heap, and PSRAM buffer accounting.
+* Large per-entry arrays, large candidate arrays, recursive traversal, broad allocators, and generalized pools remain prohibited.
+* Scratch-buffer mechanism remains separate from PTLOG scan facts, reclaim thresholds, display wording, ntfy behavior, FRAM semantics, and retry policy.
+
+### Validation needed
+
+* Future code review must verify actual stack usage and allocation placement for storage/path changes.
+* Firmware build validation remains required for embedded changes when available.
+* When possible, target stack high-water, heap, and PSRAM validation should be reported for storage traversal paths.
+
+### Exclusions
+
+* This decision does not implement the scratch-buffer mechanism.
+* This decision does not approve reclaim thresholds, display progress, create/open retry policy, ntfy/display changes, FRAM semantic changes, or SD format changes.
+
+---
+
+## Decision 4 — Keep FAT16 / 16 KiB allocation unit format for now
 
 Status: settled for current implementation; may be revisited with evidence
 Reference: PR #368 and SD/FRAM failure analysis
@@ -120,7 +156,7 @@ The immediate failure can be addressed by moving long filenames out of the FAT r
 
 ---
 
-## Decision 4 — Use bounded PTLOG traversal, not unbounded recursion
+## Decision 5 — Use bounded PTLOG traversal, not unbounded recursion
 
 Status: settled
 Reference: PR #368, PR #369
@@ -164,7 +200,7 @@ Automatic deletion on embedded firmware must fail closed. Unbounded recursion ri
 
 ---
 
-## Decision 5 — Reclaim deletes one oldest eligible PTLOG candidate per pass
+## Decision 6 — Reclaim deletes one oldest eligible PTLOG candidate per pass
 
 Status: settled
 Reference: PR #369, Task 2A
@@ -328,11 +364,13 @@ A cumulative overrun total is useful audit data, but it should not necessarily b
 ### Evidence or context references
 
 * SD/FRAM analysis identifies stale cumulative FRAM overrun state as a likely cause of misleading `fram overrun - active` alerts after recovery.
+* Repeated stale `fram_overrun - active` ntfy after SD recovery and FRAM drain is a known deferred defect.
 
 ### Consequences
 
 * Future FRAM work should introduce or clarify fields for current pressure, session overrun, lifetime overrun, unacknowledged historical loss, and notification state.
 * ntfy/display behavior should not spam active alerts for stale historical state.
+* Storage scratch owner planning and implementation must not mix in FRAM active-vs-historical behavior changes.
 
 ### Rejected alternatives
 
@@ -342,8 +380,8 @@ A cumulative overrun total is useful audit data, but it should not necessarily b
 
 ### Follow-up tasks or validation needed
 
-* Implement FRAM active-vs-historical overrun model.
-* Update ntfy and display/status wording accordingly.
+* Implement FRAM active-vs-historical overrun model in a later dedicated task.
+* Update ntfy and display/status wording accordingly in that dedicated FRAM/status scope.
 * Add tests for post-recovery stale-overrun scenarios.
 
 ---

@@ -510,6 +510,7 @@ Status: next major non-SD workstream after SD reclaim/create diagnostics are sta
 Goal:
 
 * Separate historical data-loss accounting from current live FRAM pressure.
+* Explicitly address repeated stale `fram_overrun - active` ntfy after SD recovery and FRAM drain.
 
 Needs read-only planning first:
 
@@ -517,7 +518,7 @@ Needs read-only planning first:
 
 Why:
 
-* This changes status/alert semantics and must not hide real data loss.
+* This changes status/alert semantics and must not hide real data loss. The stale FRAM ntfy symptom is known and deferred; it is not part of storage scratch owner work.
 
 Dependencies:
 
@@ -689,24 +690,21 @@ Rejected/deprecated unless a later decision reverses them:
 
 Current recommended sequence:
 
-1. Finish anchor docs/admin PR:
-
-   * project intent anchor;
-   * requirements/constraints anchor;
-   * decision log anchor;
-   * roadmap anchor;
-   * code documentation policy anchor if agreed.
-2. Validate PR #368/#369 behavior on local firmware build and target hardware.
-3. Plan Task 2B read-only: file-count/directory-entry-aware retention triggers.
-4. Execute Task 2B after threshold policy approval.
-5. Hardware validate Task 2B.
-6. Plan Task 2C read-only: daily create/open reclaim retry.
-7. Execute Task 2C after errno/retry policy approval.
-8. Hardware validate Task 2C.
-9. Plan and execute SD diagnostic/status split.
-10. Plan and execute FRAM active-vs-historical overrun fix.
-11. Verify host tools discover nested PTLOG files.
-12. Run long-duration pilot.
+1. Human-review the storage scratch/FRAM-anchor documentation checkpoint.
+2. Plan Task 2B-3B-1 read-only: PSRAM-backed centrally owned storage scratch owner.
+3. Execute only the approved storage scratch owner foundation after that plan is accepted.
+4. Plan and execute read-only bounded PTLOG pressure/status scan facts after the scratch owner path is clear.
+5. Validate PR #368/#369 and storage scratch behavior on local firmware build and target hardware when implementation exists.
+6. Plan Task 2B read-only: file-count/directory-entry-aware retention triggers.
+7. Execute Task 2B after threshold policy approval.
+8. Hardware validate Task 2B.
+9. Plan Task 2C read-only: daily create/open reclaim retry.
+10. Execute Task 2C after errno/retry policy approval.
+11. Hardware validate Task 2C.
+12. Plan and execute SD diagnostic/status split.
+13. Plan and execute FRAM active-vs-historical overrun fix, including stale `fram_overrun - active` ntfy after recovery/drain.
+14. Verify host tools discover nested PTLOG files.
+15. Run long-duration pilot.
 
 ## Branch / PR grouping guidance
 
@@ -736,15 +734,16 @@ Do not combine:
 
 Require read-only planning first:
 
-1. Task 2B: file-count/directory-entry-aware retention triggers.
-2. Task 2C: create/open reclaim retry.
-3. Task 2D: SD diagnostic propagation/status specificity.
-4. Task 2E: SD display/status code split.
-5. Task 4A/4B: FRAM active-vs-historical overrun model.
-6. Task 4D: `LOG_RECORD_FLAG_FRAM_FULL` fix/removal.
-7. Task 5A: host tools nested PTLOG discovery.
-8. Any FAT32 migration or short 8.3 filename change.
-9. Any automatic deletion of current-date or same-day revision PTLOGs.
+1. Task 2B-3B-1: PSRAM-backed storage scratch owner.
+2. Task 2B: file-count/directory-entry-aware retention triggers.
+3. Task 2C: create/open reclaim retry.
+4. Task 2D: SD diagnostic propagation/status specificity.
+5. Task 2E: SD display/status code split.
+6. Task 4A/4B: FRAM active-vs-historical overrun model.
+7. Task 4D: `LOG_RECORD_FLAG_FRAM_FULL` fix/removal.
+8. Task 5A: host tools nested PTLOG discovery.
+9. Any FAT32 migration or short 8.3 filename change.
+10. Any automatic deletion of current-date or same-day revision PTLOGs.
 
 ## Tasks that can be focused execute tasks
 
@@ -807,16 +806,9 @@ Completed but not fully integrated-validated:
 
 Recommended next action:
 
-Create a focused docs/admin PR that adds the anchor files drafted in chat:
+Human-review this documentation checkpoint, then create the next Codex task as read-only planning for `2B-3B-1 — PSRAM-backed storage scratch owner`. That plan must inventory all storage/path/scratch buffers, design the centrally owned PSRAM-backed scratch owner, keep the initial compile-time slot count at 1 if appropriate, allow multiple named buffers inside a slot where simultaneous paths are needed, and preserve future expansion without building a broad allocator or changing runtime behavior.
 
-1. `docs/project_intent_anchor.md`
-2. `docs/project_requirements_constraints_anchor.md`
-3. `docs/decision_log_anchor.md`
-4. `docs/project_roadmap_anchor.md`
-5. Optional: `docs/code_documentation_policy_anchor.md`
-6. Optional: `docs/validation_ledger_anchor.md`
-
-After the anchor PR, run hardware SD validation for the merged PR #368 and PR #369 behavior before starting Task 2B.
+Do not start read-only PTLOG pressure/status scan facts, retention thresholds, create/open retry, display/ntfy changes, FRAM semantic fixes, or SD format changes before the scratch-owner plan is reviewed. The repeated stale `fram_overrun - active` ntfy after SD recovery and FRAM drain remains a known deferred FRAM active-vs-historical semantic defect, not part of the storage scratch task.
 
 ## Last updated context
 
@@ -849,9 +841,17 @@ Unverified at this update:
 
 Status: implemented in this branch. New nested firmware PTLOG files use `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR` with decimal revisions `000` through `999`; legacy/root long-name `.ptlog` compatibility is removed; old files are ignored by firmware. PTLOG identity is formalized around the first-line `#PT100_LOG_V1` magic. No migration, display progress, read-only pressure expansion, create/open retry, or reclaim policy change is included.
 
+### 2B-3B-DOC1 — Storage scratch-buffer/anchor update
+
+Status: implemented by the documentation-only anchor update. The anchors now record that large storage path/scratch buffers are unacceptable on task stack, storage scratch/path buffers should be centrally owned outside task stack where feasible, PSRAM-backed reusable scratch is preferred when guaranteed, and future storage tasks must report stack/static/heap/PSRAM buffer placement.
+
+### 2B-3B-1 — Plan PSRAM-backed storage scratch owner
+
+Status: next planning task before read-only pressure/status scan implementation. Option A is approved directionally: inventory all storage/path/scratch buffers and design a centrally owned PSRAM-backed storage scratch owner covering logger daily path/revision paths, PTLOG traversal, reclaim, scan facts, diagnostics, CSV append/verify/resume scratch, and related SD helper buffers where applicable. The design may hard-code a compile-time scratch slot count of 1 initially, may put multiple named internal path/scratch buffers inside that slot when workflows require simultaneous live buffers, and should preserve a future path for additional slots/consumers without implementing concurrency or a broad allocator/pool now. Ownership, lifetime, required sizes, locking/task-safety, fail-closed behavior, and diagnostics must be explicit. Excludes thresholds, reclaim policy, create/open retry, display/ntfy behavior, FRAM semantic fixes, SD format changes, broad allocators, and task stack increases.
+
 ### 2B-3B — Read-only bounded pressure/status scan model
 
-Status: next. Add richer read-only scan facts without deletion or full-card recursion.
+Status: after 2B-3B-1 scratch owner plan/foundation. Add richer read-only scan facts without deletion or full-card recursion, but do not merely add scan facts on top of large task-stack PTLOG path buffers.
 
 ### 2B-3C — Compact MAX7219 scan progress
 
