@@ -9,10 +9,11 @@ Reference: PR #368, Task 1 / SD FAT16-safe path work
 
 ### Decision
 
-New daily PTLOG files use the nested monthly layout:
+New daily PTLOG files use the nested monthly FAT 8.3 layout:
 
-* `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`
-* `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ-<revision>.ptlog`
+* `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`
+
+`RRR` is a decimal same-day revision from `000` through `999`; the extension is revision metadata, not file-type metadata. PTLOG file identity is the first-line ASCII magic `#PT100_LOG_V1`.
 
 Legacy root-level PTLOG files remain supported for compatibility:
 
@@ -38,7 +39,7 @@ The leading SD failure theory is FAT root-directory entry exhaustion from many l
 ### Rejected alternatives
 
 * Keep all daily PTLOG files at root.
-* Immediately migrate to short 8.3 names.
+* Use the superseded YYMMDDRR.PTL design from closed PR #372.
 * Immediately migrate to FAT32 solely to avoid FAT16 root limits.
 
 ### Follow-up tasks or validation needed
@@ -557,3 +558,12 @@ Unverified at this update:
 * Display/ntfy status split implementation.
 * FRAM active-vs-historical overrun fix implementation.
 * Whether project intent, requirements/constraints, decision log, roadmap, code documentation policy, or validation ledger anchors have been committed after this draft.
+
+
+## Decision 10 — Adopt YYYYMMDD.RRR nested PTLOG filenames and magic identity
+
+Status: Accepted in Task 2B-3A.
+
+New firmware-created nested PTLOG files use `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`, where `RRR` is a decimal same-day revision from `000` through `999`. Revision overflow above `999` fails closed. The `.RRR` extension is revision metadata, not file-type metadata. Existing root and nested long-name `.ptlog` files remain parseable and eligible under existing bounded safety rules; no automatic migration or renaming is performed. PTLOG identity is formalized as the first-line ASCII magic `#PT100_LOG_V1`.
+
+PR #371 and PR #372 are treated as closed, unmerged, and superseded context; PR #372's YYMMDDRR.PTL policy is not the accepted filename design. Follow-up work remains staged: 2B-3B read-only bounded pressure/status scan model, 2B-3C compact display progress, and 2B-3D pressure-targeted reclaim after validation. No hardware validation is claimed by this decision.

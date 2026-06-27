@@ -276,7 +276,7 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
  * @brief Build the FAT16-safe nested daily PTLOG path.
  *
  * New writes avoid FAT16 root-directory pressure by targeting
- * /logs/YYYY-MM/YYYY-MM-DDZ[-revision].ptlog.  The helper fails closed on
+ * /logs/YYYY-MM/YYYYMMDD.RRR.  The helper fails closed on
  * truncation and leaves path_out empty so callers do not open partial paths.
  */
 static void
@@ -655,7 +655,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     if (!S_ISREG(stat_buffer.st_mode)) {
       continue;
     }
-    if (parsed_revision == UINT32_MAX) {
+    if (parsed_revision >= SD_PTLOG_MAX_REVISION) {
       SdLoggerDailyDiagSet(logger,
                            SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
                            candidate_path,
@@ -665,8 +665,11 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
                            0,
                            ESP_ERR_INVALID_SIZE);
       ESP_LOGE(kTag,
-               "PTLOG revision overflow in %s; refusing to wrap",
-               candidate_path);
+               "PTLOG revision limit reached in %s rev=%" PRIu32
+               "; refusing to wrap beyond %u",
+               candidate_path,
+               parsed_revision,
+               (unsigned)SD_PTLOG_MAX_REVISION);
       closedir(dir);
       return ESP_ERR_INVALID_SIZE;
     }

@@ -78,7 +78,7 @@ extern "C"
     uint32_t space_reclaim_deleted_total;
 
     FILE* file;
-    char current_date[16]; // YYYY-MM-DD
+    char current_date[16]; // YYYY-MM-DDZ
     uint32_t current_header_signature;
     const ptlog_header_t* pending_header;
     uint64_t last_record_id_on_sd;

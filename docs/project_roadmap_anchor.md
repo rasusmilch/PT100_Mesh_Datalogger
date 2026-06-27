@@ -647,7 +647,7 @@ Branch/PR:
 
 These are future tasks, not part of the active SD/FAT16 fix unless explicitly promoted:
 
-1. Evaluate short 8.3 PTLOG filenames if FAT long-filename pressure remains a problem.
+1. Task 2B-3A adopted new nested `YYYYMMDD.RRR` FAT 8.3 PTLOG filenames and `#PT100_LOG_V1` magic identity; next implement read-only pressure/status scanning.
 2. Evaluate FAT32 migration only if field evidence justifies it.
 3. Add richer SD diagnostics to ntfy messages.
 4. Add operator acknowledgement workflow for historical FRAM data-loss state.
@@ -843,3 +843,22 @@ Unverified at this update:
 * Display/ntfy status split implementation.
 * FRAM active-vs-historical overrun fix implementation.
 * Whether project intent, requirements/constraints, decision log, roadmap, code documentation policy, or validation ledger anchors have been committed after this draft.
+
+
+## Task 2B-3 staged PTLOG filename, pressure scan, and reclaim work
+
+### 2B-3A — YYYYMMDD.RRR filename and PTLOG magic foundation
+
+Status: implemented in this branch. New nested firmware PTLOG files use `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR` with decimal revisions `000` through `999`; legacy long-name root and nested `.ptlog` compatibility remains. PTLOG identity is formalized around the first-line `#PT100_LOG_V1` magic. No migration, display progress, read-only pressure expansion, create/open retry, or reclaim policy change is included.
+
+### 2B-3B — Read-only bounded pressure/status scan model
+
+Status: next. Add richer read-only scan facts without deletion or full-card recursion.
+
+### 2B-3C — Compact MAX7219 scan progress
+
+Status: later. Add throttled count-up display states only after scan/status architecture is validated.
+
+### 2B-3D — Pressure-targeted reclaim
+
+Status: later. Reclaim actions must directly relieve the pressure class; directory-count cleanup remains unapproved unless explicitly decided.

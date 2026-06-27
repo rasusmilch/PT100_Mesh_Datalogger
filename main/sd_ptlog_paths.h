@@ -13,6 +13,7 @@ extern "C" {
 #define SD_PTLOG_MONTH_LEN 7u
 #define SD_PTLOG_MAX_PATH_LEN 128u
 #define SD_PTLOG_MAX_NAME_LEN 40u
+#define SD_PTLOG_MAX_REVISION 999u
 
 /** Regular PTLOG file discovered by the bounded FAT16-safe scanner. */
 typedef struct
@@ -62,7 +63,7 @@ bool SdPtlogBuildMonthDirPath(const char* mount_point,
                               char* out_path,
                               size_t out_path_size);
 
-/** Build date/month strings and nested /logs/YYYY-MM/YYYY-MM-DDZ[-rev].ptlog path. */
+/** Build canonical date/month strings and nested /logs/YYYY-MM/YYYYMMDD.RRR path. */
 bool SdPtlogBuildNestedPath(const char* mount_point,
                             int64_t epoch_seconds,
                             uint32_t revision,
@@ -73,7 +74,7 @@ bool SdPtlogBuildNestedPath(const char* mount_point,
                             char* path_out,
                             size_t path_out_size);
 
-/** Parse legacy/nested PTLOG basename YYYY-MM-DDZ[revision].ptlog. */
+/** Parse new YYYYMMDD.RRR or legacy YYYY-MM-DDZ[-revision].ptlog basename. */
 bool SdPtlogParseName(const char* name,
                       char* date_out,
                       size_t date_out_size,

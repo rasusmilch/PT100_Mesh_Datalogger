@@ -11,10 +11,11 @@ Core product requirements:
 1. The firmware shall collect PT100 temperature samples and preserve them through SD-card interruptions where possible.
 2. The root logging node shall write durable PTLOG files to SD storage.
 3. The system shall use FRAM as a buffer when SD logging is unavailable, delayed, degraded, or recovering.
-4. New PTLOG files shall use the nested monthly layout:
+4. New PTLOG files shall use the nested monthly FAT 8.3 layout:
 
-   * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`
-   * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ-<revision>.ptlog`
+   * `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`
+
+   `RRR` is a decimal same-day revision from `000` through `999`; the extension is revision metadata, not file-type metadata.
 5. The firmware shall preserve compatibility with legacy root-level PTLOG files:
 
    * `/sdcard/YYYY-MM-DDZ.ptlog`
@@ -53,8 +54,8 @@ Operator workflow requirements:
 PTLOG data requirements:
 
 1. PTLOG files shall remain append-safe and recoverable after interrupted writes where practical.
-2. Daily PTLOG file names shall include UTC date in the canonical long-name format unless an explicit filename policy change is approved.
-3. Revision PTLOG files shall use `-<revision>` before `.ptlog`.
+2. New daily PTLOG file names shall include the UTC date as `YYYYMMDD` in `/logs/YYYY-MM/YYYYMMDD.RRR`.
+3. New revision PTLOG files shall use decimal `.RRR` revision metadata from `000` through `999`; legacy long names with `-<revision>.ptlog` remain parseable.
 4. New daily PTLOG files shall be grouped under `/logs/YYYY-MM/`.
 5. Legacy root PTLOGs shall remain eligible for scanning and safe reclaim.
 6. Automatic retention shall use parsed PTLOG metadata, not directory enumeration order alone.
@@ -270,7 +271,7 @@ Codex receipts shall include at minimum:
 
 These are currently settled unless the user explicitly changes them:
 
-1. New daily PTLOG files use nested monthly directories.
+1. New daily PTLOG files use nested monthly directories with `YYYYMMDD.RRR` FAT 8.3 basenames.
 2. Legacy root PTLOG files remain supported.
 3. Automatic PTLOG traversal is bounded to approved locations.
 4. Automatic reclaim deletes only parsed regular PTLOG candidates.
@@ -298,7 +299,7 @@ These require user decision or explicit task approval:
 9. Whether same-day old revision PTLOGs may be deleted automatically.
 10. Whether empty month directories should be removed after reclaim.
 11. Whether to track current open PTLOG path in `sd_logger_t`.
-12. Whether to adopt short 8.3 PTLOG names.
+12. Short 8.3 PTLOG names have been adopted for new nested files as YYYYMMDD.RRR.
 13. Replacement display/status code taxonomy for `SDOUT`.
 14. FRAM acknowledgement policy for historical data loss.
 15. Whether `LOG_RECORD_FLAG_FRAM_FULL` should be fixed before append or removed.

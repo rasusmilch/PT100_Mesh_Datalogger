@@ -1,11 +1,9 @@
 #include "sd_ptlog_paths.h"
 
 /*
- * FAT16 keeps the root directory in a fixed-size table, and long PTLOG
- * filenames consume multiple directory entries.  These helpers build the
- * future /logs/YYYY-MM layout and scan only explicitly approved locations so
- * later retention code can relieve root-directory pressure without treating
- * arbitrary files or host-created system directories as log candidates.
+ * FAT16 keeps the root directory in a fixed-size table.  New nested PTLOG
+ * files use one-entry YYYYMMDD.RRR names while legacy long .ptlog names remain
+ * parseable so bounded retention code can handle existing cards safely.
  */
 
 #include <dirent.h>
@@ -17,6 +15,27 @@
 
 static const char kPtlogSuffix[] = ".ptlog";
 static const char kLogsDirName[] = "logs";
+
+static bool
+IsDigit(char c)
+{
+  return c >= '0' && c <= '9';
+}
+
+static bool
+IsLeapYear(unsigned year)
+{
+  return (year % 4u == 0u && year % 100u != 0u) || (year % 400u == 0u);
+}
+
+static unsigned
+DaysInMonth(unsigned year, unsigned month)
+{
+  static const unsigned kDaysPerMonth[] = { 31u, 28u, 31u, 30u, 31u, 30u, 31u, 31u, 30u, 31u, 30u, 31u };
+  if (month < 1u || month > 12u) return 0u;
+  if (month == 2u && IsLeapYear(year)) return 29u;
+  return kDaysPerMonth[month - 1u];
+}
 
 /* Fail closed on truncation: callers must never use partial FAT paths. */
 static bool
@@ -113,10 +132,27 @@ SdPtlogBuildNestedPath(const char* mount_point,
     path_out[0] = '\0';
     return false;
   }
+  if (revision > SD_PTLOG_MAX_REVISION) {
+    path_out[0] = '\0';
+    return false;
+  }
+  char compact_date[9];
+  int compact_written = snprintf(compact_date,
+                                 sizeof(compact_date),
+                                 "%04d%02d%02d",
+                                 time_info.tm_year + 1900,
+                                 time_info.tm_mon + 1,
+                                 time_info.tm_mday);
+  if (compact_written != 8) {
+    path_out[0] = '\0';
+    return false;
+  }
   char daily_name[SD_PTLOG_MAX_NAME_LEN];
-  int written = (revision == 0u)
-                  ? snprintf(daily_name, sizeof(daily_name), "%s%s", date_out, kPtlogSuffix)
-                  : snprintf(daily_name, sizeof(daily_name), "%s-%" PRIu32 "%s", date_out, revision, kPtlogSuffix);
+  int written = snprintf(daily_name,
+                         sizeof(daily_name),
+                         "%s.%03" PRIu32,
+                         compact_date,
+                         revision);
   if (written < 0 || written >= (int)sizeof(daily_name)) {
     path_out[0] = '\0';
     return false;
@@ -129,13 +165,48 @@ SdPtlogBuildNestedPath(const char* mount_point,
   return JoinPath(month_dir, daily_name, path_out, path_out_size);
 }
 
-bool
-SdPtlogParseName(const char* name,
-                 char* date_out,
-                 size_t date_out_size,
-                 uint32_t* revision_out)
+static bool
+ParseCompactPtlogName(const char* name,
+                      char* date_out,
+                      size_t date_out_size,
+                      uint32_t* revision_out)
 {
-  if (name == NULL) return false;
+  if (strlen(name) != 12u || name[8] != '.') return false;
+  for (size_t i = 0; i < 8u; ++i) {
+    if (!IsDigit(name[i])) return false;
+  }
+  for (size_t i = 9u; i < 12u; ++i) {
+    if (!IsDigit(name[i])) return false;
+  }
+  const unsigned year = (unsigned)(name[0] - '0') * 1000u +
+                        (unsigned)(name[1] - '0') * 100u +
+                        (unsigned)(name[2] - '0') * 10u +
+                        (unsigned)(name[3] - '0');
+  const unsigned month = (unsigned)(name[4] - '0') * 10u +
+                         (unsigned)(name[5] - '0');
+  const unsigned day = (unsigned)(name[6] - '0') * 10u +
+                       (unsigned)(name[7] - '0');
+  const unsigned max_day = DaysInMonth(year, month);
+  if (max_day == 0u || day < 1u || day > max_day) return false;
+  if (date_out != NULL && date_out_size > 0) {
+    if (date_out_size < SD_PTLOG_DATE_LEN + 1u) return false;
+    int written = snprintf(date_out, date_out_size, "%04u-%02u-%02uZ", year, month, day);
+    if (written != (int)SD_PTLOG_DATE_LEN) return false;
+  }
+  if (revision_out != NULL) {
+    *revision_out = (uint32_t)(name[9] - '0') * 100u +
+                    (uint32_t)(name[10] - '0') * 10u +
+                    (uint32_t)(name[11] - '0');
+  }
+  return true;
+}
+
+static bool
+ParseLegacyPtlogName(const char* name,
+                     char* date_out,
+                     size_t date_out_size,
+                     uint32_t* revision_out)
+{
   const size_t suffix_len = sizeof(kPtlogSuffix) - 1u;
   const size_t length = strlen(name);
   if (length < SD_PTLOG_DATE_LEN + suffix_len || strcmp(name + length - suffix_len, kPtlogSuffix) != 0) {
@@ -146,13 +217,13 @@ SdPtlogParseName(const char* name,
   if (name[4] != '-' || name[7] != '-' || name[10] != 'Z') return false;
   for (size_t i = 0; i < SD_PTLOG_DATE_LEN; ++i) {
     if (i == 4u || i == 7u || i == 10u) continue;
-    if (name[i] < '0' || name[i] > '9') return false;
+    if (!IsDigit(name[i])) return false;
   }
   uint32_t revision = 0;
   if (prefix_len > SD_PTLOG_DATE_LEN) {
     if (name[11] != '-' || prefix_len == 12u) return false;
     for (size_t i = 12u; i < prefix_len; ++i) {
-      if (name[i] < '0' || name[i] > '9') return false;
+      if (!IsDigit(name[i])) return false;
       const uint32_t digit = (uint32_t)(name[i] - '0');
       if (revision > (UINT32_MAX - digit) / 10u) return false;
       revision = revision * 10u + digit;
@@ -165,6 +236,17 @@ SdPtlogParseName(const char* name,
   }
   if (revision_out != NULL) *revision_out = revision;
   return true;
+}
+
+bool
+SdPtlogParseName(const char* name,
+                 char* date_out,
+                 size_t date_out_size,
+                 uint32_t* revision_out)
+{
+  if (name == NULL) return false;
+  return ParseCompactPtlogName(name, date_out, date_out_size, revision_out) ||
+         ParseLegacyPtlogName(name, date_out, date_out_size, revision_out);
 }
 
 bool

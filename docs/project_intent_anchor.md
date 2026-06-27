@@ -39,10 +39,12 @@ Core workflows include:
 The product should behave as follows:
 
 * SD logging should be durable, append-safe, and recoverable after reset or power loss.
-* New PTLOG files should use the FAT16-safe nested monthly layout:
+* PTLOG file identity is the first-line ASCII magic `#PT100_LOG_V1`; new `.RRR` extensions are revision metadata rather than file-type metadata.
+* New PTLOG files should use the FAT16-safe nested monthly 8.3 layout:
 
-  * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`
-  * `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ-<revision>.ptlog`
+  * `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`
+
+  `RRR` is a decimal same-day revision from `000` through `999`; the extension is revision metadata, not file-type metadata.
 * Legacy root PTLOG files remain supported for reading, scanning, and retention:
 
   * `/sdcard/YYYY-MM-DDZ.ptlog`
@@ -108,9 +110,9 @@ Use these terms consistently:
 
 * **PTLOG**: The project log file format used for PT100 sample records.
 * **Daily PTLOG**: A PTLOG file for one UTC date.
-* **Nested monthly PTLOG path**: `/sdcard/logs/YYYY-MM/YYYY-MM-DDZ.ptlog`.
+* **Nested monthly PTLOG path**: `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR` for new files; legacy nested long names remain parseable.
 * **Legacy root PTLOG path**: `/sdcard/YYYY-MM-DDZ.ptlog`.
-* **Revision PTLOG**: A same-date PTLOG with `-<revision>` before `.ptlog`, used when header signature or same-date conditions require a new file.
+* **Revision PTLOG**: A same-date PTLOG. New nested files encode the revision as `.RRR` from `000` through `999`; legacy long names may use `-<revision>` before `.ptlog`.
 * **Log root**: `/sdcard/logs`.
 * **Month directory**: `/sdcard/logs/YYYY-MM`.
 * **Reclaim**: Automatic deletion of old eligible PTLOG files to restore required storage margin.
@@ -242,7 +244,7 @@ These require explicit approval before implementation:
 * Whether to add and maintain a current-open PTLOG path field.
 * Whether create/open failure should reclaim one file or multiple files before retry.
 * Which errno values should trigger create/open reclaim retry.
-* Whether short 8.3 PTLOG filenames should be adopted in addition to monthly directories.
+* Short 8.3 nested PTLOG filenames are adopted for new files as YYYYMMDD.RRR; legacy long names remain compatible.
 * Exact display/status codes replacing or supplementing `SDOUT`.
 * Exact FRAM overrun acknowledgement and notification policy.
 * Whether `LOG_RECORD_FLAG_FRAM_FULL` should be fixed before append or removed as a per-record flag.

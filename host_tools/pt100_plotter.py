@@ -1121,6 +1121,10 @@ def _read_log_file(path: str) -> Tuple[pd.DataFrame, Dict[str, str]]:
 
 def _parse_log_filename_sort_key(path: str) -> Tuple[str, int, int, str]:
     name = os.path.basename(path)
+    compact_match = re.match(r"^(\d{4})(\d{2})(\d{2})\.(\d{3})$", name)
+    if compact_match:
+        date_part = f"{compact_match.group(1)}-{compact_match.group(2)}-{compact_match.group(3)}"
+        return (date_part, int(compact_match.group(4)), 0, name.lower())
     match = re.match(r"^(\d{4}-\d{2}-\d{2})Z(?:-(\d+))?\.(ptlog|csv)$", name, flags=re.IGNORECASE)
     if match:
         date_part = match.group(1)
@@ -1131,12 +1135,18 @@ def _parse_log_filename_sort_key(path: str) -> Tuple[str, int, int, str]:
     return ("9999-99-99", 999999, 999, name.lower())
 
 
+def _is_compact_ptlog_name(path: str) -> bool:
+    """Return true for firmware-created YYYYMMDD.RRR PTLOG basenames."""
+
+    return re.match(r"^\d{8}\.\d{3}$", os.path.basename(path)) is not None
+
+
 def _dedupe_folder_file_paths(file_paths: List[str]) -> List[str]:
-    has_ptlog = any(path.lower().endswith(".ptlog") for path in file_paths)
+    has_ptlog = any(path.lower().endswith(".ptlog") or _is_compact_ptlog_name(path) for path in file_paths)
     if not has_ptlog:
         return sorted(file_paths, key=_parse_log_filename_sort_key)
 
-    ptlog_stems = {Path(path).stem.lower() for path in file_paths if path.lower().endswith(".ptlog")}
+    ptlog_stems = {Path(path).stem.lower() for path in file_paths if path.lower().endswith(".ptlog") or _is_compact_ptlog_name(path)}
     filtered: List[str] = []
     for path in file_paths:
         lower = path.lower()
@@ -2324,7 +2334,7 @@ class PlotterApp:
         tk.Button(frm, text="Select Log Files", command=self.select_files).grid(
             row=1, column=0, sticky="w", pady=(6, 0)
         )
-        tk.Button(frm, text="Select Folder (all *.ptlog/*.csv)", command=self.select_folder).grid(
+        tk.Button(frm, text="Select Folder (PTLOG/CSV)", command=self.select_folder).grid(
             row=1, column=1, sticky="w", pady=(6, 0)
         )
 
@@ -2676,9 +2686,14 @@ class PlotterApp:
         if not folder:
             return
         file_paths = glob.glob(os.path.join(folder, "*.ptlog")) + glob.glob(os.path.join(folder, "*.csv"))
+        file_paths.extend(
+            os.path.join(folder, name)
+            for name in os.listdir(folder)
+            if re.match(r"^\d{8}\.\d{3}$", name)
+        )
         file_paths = _dedupe_folder_file_paths(file_paths)
         if not file_paths:
-            messagebox.showerror("Load Error", "No .ptlog or .csv files found in the selected folder.")
+            messagebox.showerror("Load Error", "No PTLOG or .csv files found in the selected folder.")
             return
         self._load_paths(file_paths)
 

@@ -48,14 +48,21 @@ static unsigned test_reclaim_candidates(const char* root,
 static void test_paths(void)
 {
   char date[16], month[16], path[128];
-  assert(SdPtlogBuildNestedPath("/sdcard", 1782172800, 0, date, sizeof(date), month, sizeof(month), path, sizeof(path)));
-  assert(strcmp(date, "2026-06-23Z") == 0);
+  assert(SdPtlogBuildNestedPath("/sdcard", 1782432000, 0, date, sizeof(date), month, sizeof(month), path, sizeof(path)));
+  assert(strcmp(date, "2026-06-26Z") == 0);
   assert(strcmp(month, "2026-06") == 0);
-  assert(strcmp(path, "/sdcard/logs/2026-06/2026-06-23Z.ptlog") == 0);
-  assert(SdPtlogBuildNestedPath("/sdcard", 1782172800, 12, date, sizeof(date), month, sizeof(month), path, sizeof(path)));
-  assert(strcmp(path, "/sdcard/logs/2026-06/2026-06-23Z-12.ptlog") == 0);
+  assert(strcmp(path, "/sdcard/logs/2026-06/20260626.000") == 0);
+  assert(SdPtlogBuildNestedPath("/sdcard", 1782432000, 1, date, sizeof(date), month, sizeof(month), path, sizeof(path)));
+  assert(strcmp(path, "/sdcard/logs/2026-06/20260626.001") == 0);
+  assert(SdPtlogBuildNestedPath("/sdcard", 1782432000, 12, date, sizeof(date), month, sizeof(month), path, sizeof(path)));
+  assert(strcmp(path, "/sdcard/logs/2026-06/20260626.012") == 0);
+  assert(SdPtlogBuildNestedPath("/sdcard", 1782432000, 999, date, sizeof(date), month, sizeof(month), path, sizeof(path)));
+  assert(strcmp(path, "/sdcard/logs/2026-06/20260626.999") == 0);
+  strcpy(path, "unchanged");
+  assert(!SdPtlogBuildNestedPath("/sdcard", 1782432000, 1000, date, sizeof(date), month, sizeof(month), path, sizeof(path)));
+  assert(path[0] == '\0');
   char tiny[10] = "unchanged";
-  assert(!SdPtlogBuildNestedPath("/sdcard", 1782172800, 0, date, sizeof(date), month, sizeof(month), tiny, sizeof(tiny)));
+  assert(!SdPtlogBuildNestedPath("/sdcard", 1782432000, 0, date, sizeof(date), month, sizeof(month), tiny, sizeof(tiny)));
   assert(tiny[0] == '\0');
 }
 
@@ -63,9 +70,30 @@ static void test_parse(void)
 {
   char date[16];
   uint32_t revision = 99;
-  assert(SdPtlogParseName("2026-06-23Z.ptlog", date, sizeof(date), &revision));
-  assert(strcmp(date, "2026-06-23Z") == 0 && revision == 0);
-  assert(SdPtlogParseName("2026-06-23Z-123.ptlog", date, sizeof(date), &revision));
+  assert(SdPtlogParseName("20260626.000", date, sizeof(date), &revision));
+  assert(strcmp(date, "2026-06-26Z") == 0 && revision == 0);
+  assert(SdPtlogParseName("20260626.001", date, sizeof(date), &revision));
+  assert(revision == 1);
+  assert(SdPtlogParseName("20260626.012", date, sizeof(date), &revision));
+  assert(revision == 12);
+  assert(SdPtlogParseName("20260626.999", date, sizeof(date), &revision));
+  assert(revision == 999);
+  assert(SdPtlogParseName("20240229.000", date, sizeof(date), &revision));
+  assert(strcmp(date, "2024-02-29Z") == 0 && revision == 0);
+  assert(!SdPtlogParseName("20260626.00", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("20260626.0000", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("2026062.000", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("202606260.000", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("2026-06-26.000", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("20260626.A00", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("20260626.0X1", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("20261326.000", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("20260600.000", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("20260230.000", date, sizeof(date), &revision));
+  assert(!SdPtlogParseName("20230229.000", date, sizeof(date), &revision));
+  assert(SdPtlogParseName("2026-06-26Z.ptlog", date, sizeof(date), &revision));
+  assert(strcmp(date, "2026-06-26Z") == 0 && revision == 0);
+  assert(SdPtlogParseName("2026-06-26Z-123.ptlog", date, sizeof(date), &revision));
   assert(revision == 123);
   assert(SdPtlogParseName("2026-06-23Z-4294967295.ptlog", date, sizeof(date), &revision));
   assert(revision == UINT32_MAX);
@@ -102,11 +130,11 @@ static void test_traversal(void)
   snprintf(path, sizeof(path), "%s/logs/2024-01", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2024-01/2024-01-01Z.ptlog", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06", root); make_dir(path);
-  snprintf(path, sizeof(path), "%s/logs/2025-06/2025-06-23Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2025-06/20250623.000", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06/deeper", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06/deeper/2020-01-01Z.ptlog", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2026-06", root); make_dir(path);
-  snprintf(path, sizeof(path), "%s/logs/2026-06/2026-06-23Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06/20260623.000", root); make_file(path);
 
   sd_ptlog_candidate_t candidate;
   assert(SdPtlogFindOldestCandidate(root, NULL, "2026-06-23Z", &candidate));
@@ -114,7 +142,7 @@ static void test_traversal(void)
   assert(!candidate.legacy_root);
 
   char current_path[256];
-  snprintf(current_path, sizeof(current_path), "%s/logs/2025-06/2025-06-23Z.ptlog", root);
+  snprintf(current_path, sizeof(current_path), "%s/logs/2025-06/20250623.000", root);
   assert(SdPtlogFindOldestCandidate(root, current_path, "2026-06-23Z", &candidate));
   assert(strcmp(candidate.date, "2026-01-01Z") == 0);
   assert(candidate.legacy_root);
@@ -131,7 +159,7 @@ static void test_current_date_only_is_protected(void)
   snprintf(path, sizeof(path), "%s/2026-06-23Z.ptlog", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2026-06", root); make_dir(path);
-  snprintf(path, sizeof(path), "%s/logs/2026-06/2026-06-23Z-1.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06/20260623.001", root); make_file(path);
   sd_ptlog_candidate_t candidate;
   assert(!SdPtlogFindOldestCandidate(root, NULL, "2026-06-23Z", &candidate));
 }
@@ -146,7 +174,7 @@ static void test_reclaim_deletes_nested_when_root_has_no_candidate(void)
   snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06", root); make_dir(path);
   char nested[256];
-  snprintf(nested, sizeof(nested), "%s/logs/2025-06/2025-06-23Z.ptlog", root); make_file(nested);
+  snprintf(nested, sizeof(nested), "%s/logs/2025-06/20250623.000", root); make_file(nested);
 
   unsigned free_checks = 0;
   assert(test_reclaim_candidates(root, "2026-06-23Z", 1, false, &free_checks) == 1);
@@ -167,7 +195,7 @@ static void test_reclaim_prefers_older_legacy_root_candidate(void)
   snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06", root); make_dir(path);
   char nested[256];
-  snprintf(nested, sizeof(nested), "%s/logs/2025-06/2025-06-23Z.ptlog", root); make_file(nested);
+  snprintf(nested, sizeof(nested), "%s/logs/2025-06/20250623.000", root); make_file(nested);
 
   assert(test_reclaim_candidates(root, "2026-06-23Z", 1, false, NULL) == 1);
   assert(!exists_path(root_candidate));
@@ -191,7 +219,7 @@ static void test_reclaim_safety_and_limits(void)
   snprintf(path, sizeof(path), "%s/logs/not-a-month", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/not-a-month/2021-01-01Z.ptlog", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2024-01", root); make_dir(path);
-  snprintf(path, sizeof(path), "%s/logs/2024-01/2024-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/20240101.000", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2026-06", root); make_dir(path);
   char current_revision[256];
   snprintf(current_revision, sizeof(current_revision), "%s/logs/2026-06/2026-06-23Z-1.ptlog", root); make_file(current_revision);
@@ -203,7 +231,7 @@ static void test_reclaim_safety_and_limits(void)
   assert(!exists_path(path));
   snprintf(path, sizeof(path), "%s/2023-01-02Z.ptlog", root);
   assert(!exists_path(path));
-  snprintf(path, sizeof(path), "%s/logs/2024-01/2024-01-01Z.ptlog", root);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/20240101.000", root);
   assert(exists_path(path));
   snprintf(path, sizeof(path), "%s/keep.txt", root);
   assert(exists_path(path));
@@ -297,8 +325,9 @@ static void test_stats_nested_month_counting_and_ignored_paths(void)
   snprintf(path, sizeof(path), "%s/logs/not-a-month", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/not-a-month/2020-01-01Z.ptlog", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2024-01", root); make_dir(path);
-  snprintf(path, sizeof(path), "%s/logs/2024-01/2024-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/20240101.000", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2024-01/2024-01-02Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/20240102.001", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2024-01/notes.txt", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2024-01/deeper", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2024-01/deeper/2020-01-01Z.ptlog", root); make_file(path);
@@ -314,13 +343,13 @@ static void test_stats_nested_month_counting_and_ignored_paths(void)
 
   sd_ptlog_stats_t stats;
   assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
-  assert(stats.total_ptlog_files == 7);
+  assert(stats.total_ptlog_files == 8);
   assert(stats.legacy_root_ptlog_files == 1);
-  assert(stats.nested_month_ptlog_files == 6);
+  assert(stats.nested_month_ptlog_files == 7);
   assert(stats.current_date_ptlog_files == 0);
-  assert(stats.eligible_ptlog_files == 7);
+  assert(stats.eligible_ptlog_files == 8);
   assert(stats.valid_month_directories == 3);
-  assert(stats.max_month_ptlog_files == 2);
+  assert(stats.max_month_ptlog_files == 3);
   assert(strcmp(stats.max_month_name, "2024-01") == 0);
 }
 
@@ -333,7 +362,7 @@ static void test_stats_valid_month_regular_file_is_ignored(void)
   snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2024-04", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2024-05", root); make_dir(path);
-  snprintf(path, sizeof(path), "%s/logs/2024-05/2024-05-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-05/20240501.000", root); make_file(path);
 
   sd_ptlog_stats_t stats;
   assert(SdPtlogCollectStats(root, NULL, "2026-06-23Z", &stats));
@@ -359,9 +388,9 @@ static void test_stats_current_date_and_path_separation(void)
   snprintf(path, sizeof(path), "%s/2026-06-23Z.ptlog", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
   snprintf(path, sizeof(path), "%s/logs/2026-06", root); make_dir(path);
-  snprintf(path, sizeof(path), "%s/logs/2026-06/2026-06-23Z-1.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06/20260623.001", root); make_file(path);
   snprintf(path, sizeof(path), "%s/logs/2025-06", root); make_dir(path);
-  snprintf(path, sizeof(path), "%s/logs/2025-06/2025-06-23Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2025-06/20250623.000", root); make_file(path);
 
   sd_ptlog_stats_t stats;
   assert(SdPtlogCollectStats(root, current_path, "2026-06-23Z", &stats));
