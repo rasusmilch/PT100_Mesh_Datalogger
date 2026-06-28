@@ -28,11 +28,13 @@ SdLoggerJoinPath(const char* dir_path,
                  size_t out_path_size);
 static esp_err_t
 SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
+                                  sd_storage_scratch_slot_t* scratch,
                                   const char* date_string,
                                   const char* month_string,
                                   uint32_t revision);
 static esp_err_t
 SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
+                                      sd_storage_scratch_slot_t* scratch,
                                       const char* date_string,
                                       const char* month_string,
                                       uint32_t* revision_out);
@@ -267,6 +269,13 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
     }
   }
 
+  if (SdStorageScratchInit(&logger->storage_scratch) != ESP_OK) {
+    ESP_LOGE(kTag,
+             "SD storage scratch init failed: result=%s bytes=%u",
+             esp_err_to_name(logger->storage_scratch.init_result),
+             (unsigned)logger->storage_scratch.allocation_bytes);
+  }
+
   logger->host_id = (spi_host_device_t)0;
   logger->cs_gpio = -1;
   logger->slot_config_valid = false;
@@ -281,6 +290,7 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
  */
 static void
 BuildDailyPtlogPath(const sd_logger_t* logger,
+                    sd_storage_scratch_slot_t* scratch,
                     int64_t epoch_seconds,
                     uint32_t revision,
                     char* date_out,
@@ -299,13 +309,14 @@ BuildDailyPtlogPath(const sd_logger_t* logger,
   if (month_out != NULL && month_out_size > 0) {
     month_out[0] = '\0';
   }
-  if (logger == NULL) {
+  if (logger == NULL || scratch == NULL) {
     return;
   }
 
-  if (!SdPtlogBuildNestedPath(logger->mount_point,
+  if (!SdPtlogBuildNestedPathWithScratch(logger->mount_point,
                               epoch_seconds,
                               revision,
+                              scratch,
                               date_out,
                               date_out_size,
                               month_out,
@@ -498,17 +509,18 @@ SdLoggerEnsureDirectoryPath_(sd_logger_t* logger,
  */
 static esp_err_t
 SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
+                                  sd_storage_scratch_slot_t* scratch,
                                   const char* date_string,
                                   const char* month_string,
                                   uint32_t revision)
 {
-  if (logger == NULL || month_string == NULL) {
+  if (logger == NULL || scratch == NULL || month_string == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  char log_root[SD_PTLOG_MAX_PATH_LEN];
+  char* log_root = scratch->path_a;
   if (!SdPtlogBuildLogRootPath(
-        logger->mount_point, log_root, sizeof(log_root))) {
+        logger->mount_point, log_root, SD_PTLOG_MAX_PATH_LEN)) {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_LOG_ROOT_BUILD,
                          logger->mount_point,
@@ -534,9 +546,9 @@ SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
     return result;
   }
 
-  char month_dir[SD_PTLOG_MAX_PATH_LEN];
-  if (!SdPtlogBuildMonthDirPath(
-        logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
+  char* month_dir = scratch->path_b;
+  if (!SdPtlogBuildMonthDirPathWithScratch(
+        logger->mount_point, month_string, scratch, month_dir, SD_PTLOG_MAX_PATH_LEN)) {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_MONTH_DIR_BUILD,
                          logger->mount_point,
@@ -569,19 +581,20 @@ SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
  */
 static esp_err_t
 SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
+                                      sd_storage_scratch_slot_t* scratch,
                                       const char* date_string,
                                       const char* month_string,
                                       uint32_t* revision_out)
 {
-  if (logger == NULL || date_string == NULL || month_string == NULL ||
-      revision_out == NULL) {
+  if (logger == NULL || scratch == NULL || date_string == NULL ||
+      month_string == NULL || revision_out == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
 
   *revision_out = 0u;
-  char month_dir[SD_PTLOG_MAX_PATH_LEN];
-  if (!SdPtlogBuildMonthDirPath(
-        logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
+  char* month_dir = scratch->path_b;
+  if (!SdPtlogBuildMonthDirPathWithScratch(
+        logger->mount_point, month_string, scratch, month_dir, SD_PTLOG_MAX_PATH_LEN)) {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_REVISION_DIR_BUILD,
                          logger->mount_point,
@@ -628,9 +641,9 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
       continue;
     }
 
-    char candidate_path[SD_PTLOG_MAX_PATH_LEN];
+    char* candidate_path = scratch->path_c;
     if (!SdLoggerJoinPath(
-          month_dir, entry->d_name, candidate_path, sizeof(candidate_path))) {
+          month_dir, entry->d_name, candidate_path, SD_PTLOG_MAX_PATH_LEN)) {
       continue;
     }
     struct stat stat_buffer;
@@ -732,32 +745,41 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
   uint32_t deletes = 0;
   while (free_bytes < required_free_bytes &&
          deletes < kSdReclaimMaxDeletesPerAttempt) {
-    sd_ptlog_candidate_t candidate;
+    sd_storage_scratch_slot_t* scratch =
+      SdStorageScratchBorrow(&logger->storage_scratch, "reclaim_candidate");
+    if (scratch == NULL) {
+      ESP_LOGE(kTag, "SD reclaim cannot borrow storage scratch");
+      return ESP_ERR_NO_MEM;
+    }
+    sd_ptlog_candidate_t* candidate = &scratch->candidate;
     /* Task 2A intentionally relies on broad current-date protection because
      * sd_logger_t does not yet track the open path.  The bounded scanner only
      * returns parsed regular compact PTLOG files from /logs/YYYY-MM only. */
-    if (!SdPtlogFindOldestCandidate(
-          logger->mount_point, NULL, logger->current_date, &candidate)) {
+    if (!SdPtlogFindOldestCandidateWithScratch(
+          logger->mount_point, NULL, logger->current_date, scratch, candidate)) {
+      SdStorageScratchRelease(&logger->storage_scratch, scratch);
       break;
     }
 
-    if (unlink(candidate.path) != 0) {
+    if (unlink(candidate->path) != 0) {
       ESP_LOGW(kTag,
                "Failed to delete old nested PTLOG %s date=%s rev=%" PRIu32
                ": %s (%d)",
-               candidate.path,
-               candidate.date,
-               candidate.revision,
+               candidate->path,
+               candidate->date,
+               candidate->revision,
                strerror(errno),
                errno);
+      SdStorageScratchRelease(&logger->storage_scratch, scratch);
       break;
     }
     deletes++;
     ESP_LOGW(kTag,
              "Deleted old nested PTLOG to reclaim space: %s date=%s rev=%" PRIu32,
-             candidate.path,
-             candidate.date,
-             candidate.revision);
+             candidate->path,
+             candidate->date,
+             candidate->revision);
+    SdStorageScratchRelease(&logger->storage_scratch, scratch);
 
     space_result =
       SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes);
@@ -1103,19 +1125,34 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   }
   SdLoggerDailyDiagClear(logger);
 
-  char date_string[16];
-  char month_string[16];
-  char path[128];
+  sd_storage_scratch_slot_t* scratch =
+    SdStorageScratchBorrow(&logger->storage_scratch, "daily_file");
+  if (scratch == NULL) {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_PATH_BUILD,
+                         logger->mount_point,
+                         NULL,
+                         NULL,
+                         0,
+                         0,
+                         ESP_ERR_NO_MEM);
+    ESP_LOGE(kTag, "Daily PTLOG cannot borrow storage scratch");
+    return ESP_ERR_NO_MEM;
+  }
+  char* date_string = scratch->date;
+  char* month_string = scratch->month;
+  char* path = scratch->path_a;
   const bool same_signature = (logger->current_header_signature == header_signature);
   BuildDailyPtlogPath(logger,
+                      scratch,
                       epoch_utc,
                       0,
                       date_string,
-                      sizeof(date_string),
+                      sizeof(scratch->date),
                       month_string,
-                      sizeof(month_string),
+                      sizeof(scratch->month),
                       path,
-                      sizeof(path));
+                      SD_PTLOG_MAX_PATH_LEN);
   if (path[0] == '\0') {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_PATH_BUILD,
@@ -1126,15 +1163,18 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
                          0,
                          ESP_FAIL);
     ESP_LOGE(kTag, "Failed to build nested daily PTLOG path");
+    SdStorageScratchRelease(&logger->storage_scratch, scratch);
     return ESP_FAIL;
   }
 
   if (logger->file != NULL && logger->current_date[0] != '\0') {
     const int date_cmp = strcmp(date_string, logger->current_date);
     if (date_cmp == 0 && same_signature) {
+      SdStorageScratchRelease(&logger->storage_scratch, scratch);
       return ESP_OK; // already open for today
     }
     if (date_cmp < 0) {
+      SdStorageScratchRelease(&logger->storage_scratch, scratch);
       return ESP_OK; // never roll backward to an earlier date
     }
   }
@@ -1143,21 +1183,23 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   if (logger->current_date[0] != '\0' &&
       strcmp(date_string, logger->current_date) == 0 && !same_signature) {
     esp_err_t revision_result = SdLoggerFindNextRevisionInMonthLocked(
-      logger, date_string, month_string, &revision);
+      logger, scratch, date_string, month_string, &revision);
     if (revision_result != ESP_OK) {
+      SdStorageScratchRelease(&logger->storage_scratch, scratch);
       return revision_result;
     }
   }
 
   BuildDailyPtlogPath(logger,
+                      scratch,
                       epoch_utc,
                       revision,
                       date_string,
-                      sizeof(date_string),
+                      sizeof(scratch->date),
                       month_string,
-                      sizeof(month_string),
+                      sizeof(scratch->month),
                       path,
-                      sizeof(path));
+                      SD_PTLOG_MAX_PATH_LEN);
   if (path[0] == '\0') {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_PATH_BUILD,
@@ -1168,12 +1210,14 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
                          0,
                          ESP_FAIL);
     ESP_LOGE(kTag, "Failed to build nested daily PTLOG path for revision %" PRIu32, revision);
+    SdStorageScratchRelease(&logger->storage_scratch, scratch);
     return ESP_FAIL;
   }
 
   esp_err_t dir_result =
-    SdLoggerEnsurePtlogDirectoryLocked(logger, date_string, month_string, revision);
+    SdLoggerEnsurePtlogDirectoryLocked(logger, scratch, date_string, month_string, revision);
   if (dir_result != ESP_OK) {
+    SdStorageScratchRelease(&logger->storage_scratch, scratch);
     return dir_result;
   }
 
@@ -1227,6 +1271,7 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
              file_existed_before_open ? "yes" : "no",
              strerror(fopen_errno),
              fopen_errno);
+    SdStorageScratchRelease(&logger->storage_scratch, scratch);
     return ESP_FAIL;
   }
   ESP_LOGI(kTag,
@@ -1255,6 +1300,7 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
       file_existed_before_open;
     fclose(logger->file);
     logger->file = NULL;
+    SdStorageScratchRelease(&logger->storage_scratch, scratch);
     return resume_result;
   }
 
@@ -1293,6 +1339,7 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
     logger->last_daily_diag.file_was_empty = file_was_empty;
     logger->last_daily_diag.empty_file_unlink_attempted = cleanup_attempted;
     logger->last_daily_diag.empty_file_unlink_succeeded = cleanup_succeeded;
+    SdStorageScratchRelease(&logger->storage_scratch, scratch);
     return header_result;
   }
   if (header_written) {
@@ -1304,6 +1351,7 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   logger->current_header_signature = header_signature;
   logger->pending_header = NULL;
   SdLoggerDailyDiagClear(logger);
+  SdStorageScratchRelease(&logger->storage_scratch, scratch);
   return ESP_OK;
 }
 

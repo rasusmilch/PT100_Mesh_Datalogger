@@ -1,4 +1,5 @@
 #include "sd_ptlog_paths.h"
+#include "sd_storage_scratch.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -43,6 +44,87 @@ static unsigned test_reclaim_candidates(const char* root,
     if (free_checks_out != NULL) (*free_checks_out)++;
   }
   return deleted;
+}
+
+
+static void test_storage_scratch_owner(void)
+{
+  assert(SD_STORAGE_SCRATCH_SLOT_COUNT == 1u);
+  sd_storage_scratch_owner_t owner;
+  assert(SdStorageScratchInit(&owner) == ESP_OK);
+  assert(owner.initialized);
+  assert(owner.slot_count == 1u);
+  assert(owner.slots != NULL);
+  sd_storage_scratch_slot_t* first = SdStorageScratchBorrow(&owner, "test_first");
+  assert(first != NULL);
+  sd_storage_scratch_slot_t* second = SdStorageScratchBorrow(&owner, "test_second");
+  assert(second == NULL);
+  assert(owner.borrow_failures == 1u);
+  SdStorageScratchRelease(&owner, first);
+  first = SdStorageScratchBorrow(&owner, "test_reborrow");
+  assert(first != NULL);
+  SdStorageScratchRelease(&owner, first);
+  SdStorageScratchDeinit(&owner);
+
+  SdStorageScratchHostSetAllocationFailure(true);
+  assert(SdStorageScratchInit(&owner) == ESP_ERR_NO_MEM);
+  assert(!owner.initialized);
+  assert(SdStorageScratchBorrow(&owner, "after_failed_init") == NULL);
+  SdStorageScratchHostSetAllocationFailure(false);
+}
+
+static void test_scratch_aware_paths(void)
+{
+  sd_storage_scratch_owner_t owner;
+  assert(SdStorageScratchInit(&owner) == ESP_OK);
+  sd_storage_scratch_slot_t* scratch = SdStorageScratchBorrow(&owner, "paths");
+  assert(scratch != NULL);
+
+  char date_public[16], month_public[16], path_public[128];
+  char date_scratch[16], month_scratch[16], path_scratch[128];
+  assert(SdPtlogBuildNestedPath("/sdcard",
+                                1782432000,
+                                12,
+                                date_public,
+                                sizeof(date_public),
+                                month_public,
+                                sizeof(month_public),
+                                path_public,
+                                sizeof(path_public)));
+  assert(SdPtlogBuildNestedPathWithScratch("/sdcard",
+                                           1782432000,
+                                           12,
+                                           scratch,
+                                           date_scratch,
+                                           sizeof(date_scratch),
+                                           month_scratch,
+                                           sizeof(month_scratch),
+                                           path_scratch,
+                                           sizeof(path_scratch)));
+  assert(strcmp(date_public, date_scratch) == 0);
+  assert(strcmp(month_public, month_scratch) == 0);
+  assert(strcmp(path_public, path_scratch) == 0);
+
+  char month_dir[128];
+  assert(SdPtlogBuildMonthDirPathWithScratch(
+    "/sdcard", "2026-06", scratch, month_dir, sizeof(month_dir)));
+  assert(strcmp(month_dir, "/sdcard/logs/2026-06") == 0);
+
+  char tiny[10] = "unchanged";
+  assert(!SdPtlogBuildNestedPathWithScratch("/sdcard",
+                                            1782432000,
+                                            1000,
+                                            scratch,
+                                            date_scratch,
+                                            sizeof(date_scratch),
+                                            month_scratch,
+                                            sizeof(month_scratch),
+                                            tiny,
+                                            sizeof(tiny)));
+  assert(tiny[0] == '\0');
+
+  SdStorageScratchRelease(&owner, scratch);
+  SdStorageScratchDeinit(&owner);
 }
 
 static void test_paths(void)
@@ -137,6 +219,46 @@ static void test_traversal_compact_nested_only(void)
   assert(SdPtlogFindOldestCandidate(root, current_path, "2026-06-23Z", &candidate));
   assert(strcmp(candidate.date, "2025-06-23Z") == 0);
   assert(candidate.revision == 0);
+}
+
+
+static void test_scratch_aware_candidate_selection(void)
+{
+  char templ[] = "/tmp/ptlog_scratch_candidates_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  snprintf(path, sizeof(path), "%s/20220101.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/FOUND.000", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/FOUND.000/20200101.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/not-a-month", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/not-a-month/20200101.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/20240102.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/20240101.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06/20260623.000", root); make_file(path);
+
+  sd_storage_scratch_owner_t owner;
+  assert(SdStorageScratchInit(&owner) == ESP_OK);
+  sd_storage_scratch_slot_t* scratch = SdStorageScratchBorrow(&owner, "candidate");
+  assert(scratch != NULL);
+  sd_ptlog_candidate_t candidate;
+  assert(SdPtlogFindOldestCandidateWithScratch(
+    root, NULL, "2026-06-23Z", scratch, &candidate));
+  assert(strcmp(candidate.date, "2024-01-01Z") == 0);
+  assert(strcmp(candidate.name, "20240101.000") == 0);
+  assert(!candidate.legacy_root);
+
+  char current_path[256];
+  snprintf(current_path, sizeof(current_path), "%s/logs/2024-01/20240101.000", root);
+  assert(SdPtlogFindOldestCandidateWithScratch(
+    root, current_path, "2026-06-23Z", scratch, &candidate));
+  assert(strcmp(candidate.date, "2024-01-02Z") == 0);
+
+  SdStorageScratchRelease(&owner, scratch);
+  SdStorageScratchDeinit(&owner);
 }
 
 static void test_current_date_only_is_protected(void)
@@ -295,9 +417,12 @@ static void test_stats_current_date_and_path_separation(void)
 
 int main(void)
 {
+  test_storage_scratch_owner();
+  test_scratch_aware_paths();
   test_paths();
   test_parse();
   test_traversal_compact_nested_only();
+  test_scratch_aware_candidate_selection();
   test_current_date_only_is_protected();
   test_reclaim_deletes_only_nested_compact();
   test_reclaim_unlink_failure_does_not_count();

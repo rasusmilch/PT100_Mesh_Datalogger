@@ -1,5 +1,7 @@
 #include "sd_ptlog_paths.h"
 
+#include "sd_storage_scratch.h"
+
 /*
  * FAT16 keeps the root directory in a fixed-size table.  Firmware PTLOG files
  * now use only the nested one-entry YYYYMMDD.RRR layout under /logs/YYYY-MM.
@@ -92,14 +94,19 @@ SdPtlogBuildLogRootPath(const char* mount_point, char* out_path, size_t out_path
 }
 
 bool
-SdPtlogBuildMonthDirPath(const char* mount_point,
-                         const char* month_string,
-                         char* out_path,
-                         size_t out_path_size)
+SdPtlogBuildMonthDirPathWithScratch(const char* mount_point,
+                                    const char* month_string,
+                                    sd_storage_scratch_slot_t* scratch,
+                                    char* out_path,
+                                    size_t out_path_size)
 {
-  char log_root[SD_PTLOG_MAX_PATH_LEN];
+  if (scratch == NULL) {
+    if (out_path != NULL && out_path_size > 0) out_path[0] = '\0';
+    return false;
+  }
+  char* log_root = scratch->path_a;
   if (!SdPtlogIsMonthDirectoryName(month_string) ||
-      !SdPtlogBuildLogRootPath(mount_point, log_root, sizeof(log_root))) {
+      !SdPtlogBuildLogRootPath(mount_point, log_root, SD_PTLOG_MAX_PATH_LEN)) {
     if (out_path != NULL && out_path_size > 0) out_path[0] = '\0';
     return false;
   }
@@ -107,9 +114,22 @@ SdPtlogBuildMonthDirPath(const char* mount_point,
 }
 
 bool
-SdPtlogBuildNestedPath(const char* mount_point,
+SdPtlogBuildMonthDirPath(const char* mount_point,
+                         const char* month_string,
+                         char* out_path,
+                         size_t out_path_size)
+{
+  sd_storage_scratch_slot_t stack_scratch;
+  memset(&stack_scratch, 0, sizeof(stack_scratch));
+  return SdPtlogBuildMonthDirPathWithScratch(
+    mount_point, month_string, &stack_scratch, out_path, out_path_size);
+}
+
+bool
+SdPtlogBuildNestedPathWithScratch(const char* mount_point,
                        int64_t epoch_seconds,
                        uint32_t revision,
+                       sd_storage_scratch_slot_t* scratch,
                        char* date_out,
                        size_t date_out_size,
                        char* month_out,
@@ -146,22 +166,52 @@ SdPtlogBuildNestedPath(const char* mount_point,
     path_out[0] = '\0';
     return false;
   }
-  char daily_name[SD_PTLOG_MAX_NAME_LEN];
-  int written = snprintf(daily_name,
-                         sizeof(daily_name),
-                         "%s.%03" PRIu32,
-                         compact_date,
-                         revision);
-  if (written < 0 || written >= (int)sizeof(daily_name)) {
+  if (scratch == NULL) {
     path_out[0] = '\0';
     return false;
   }
-  char month_dir[SD_PTLOG_MAX_PATH_LEN];
-  if (!SdPtlogBuildMonthDirPath(mount_point, month_out, month_dir, sizeof(month_dir))) {
+  char* daily_name = scratch->name;
+  int written = snprintf(daily_name,
+                         SD_PTLOG_MAX_NAME_LEN,
+                         "%s.%03" PRIu32,
+                         compact_date,
+                         revision);
+  if (written < 0 || written >= (int)SD_PTLOG_MAX_NAME_LEN) {
+    path_out[0] = '\0';
+    return false;
+  }
+  char* month_dir = scratch->path_b;
+  if (!SdPtlogBuildMonthDirPathWithScratch(
+        mount_point, month_out, scratch, month_dir, SD_PTLOG_MAX_PATH_LEN)) {
     path_out[0] = '\0';
     return false;
   }
   return JoinPath(month_dir, daily_name, path_out, path_out_size);
+}
+
+bool
+SdPtlogBuildNestedPath(const char* mount_point,
+                       int64_t epoch_seconds,
+                       uint32_t revision,
+                       char* date_out,
+                       size_t date_out_size,
+                       char* month_out,
+                       size_t month_out_size,
+                       char* path_out,
+                       size_t path_out_size)
+{
+  sd_storage_scratch_slot_t stack_scratch;
+  memset(&stack_scratch, 0, sizeof(stack_scratch));
+  return SdPtlogBuildNestedPathWithScratch(mount_point,
+                                           epoch_seconds,
+                                           revision,
+                                           &stack_scratch,
+                                           date_out,
+                                           date_out_size,
+                                           month_out,
+                                           month_out_size,
+                                           path_out,
+                                           path_out_size);
 }
 
 bool
@@ -238,14 +288,16 @@ ConsiderCandidate(const char* dir_path,
                   const char* name,
                   const char* current_path,
                   const char* current_date,
+                  sd_storage_scratch_slot_t* scratch,
                   bool* found,
                   sd_ptlog_candidate_t* best)
 {
-  char date[SD_PTLOG_DATE_LEN + 1u];
+  if (scratch == NULL) return;
+  char* date = scratch->date;
   uint32_t revision = 0;
-  if (!SdPtlogParseName(name, date, sizeof(date), &revision)) return;
-  char path[SD_PTLOG_MAX_PATH_LEN];
-  if (!JoinPath(dir_path, name, path, sizeof(path))) return;
+  if (!SdPtlogParseName(name, date, sizeof(scratch->date), &revision)) return;
+  char* path = scratch->path_c;
+  if (!JoinPath(dir_path, name, path, SD_PTLOG_MAX_PATH_LEN)) return;
   struct stat stat_buffer;
   if (stat(path, &stat_buffer) != 0 || !S_ISREG(stat_buffer.st_mode)) return;
   /* Later retention code may delete candidates, so PTLOG-looking directories
@@ -253,18 +305,18 @@ ConsiderCandidate(const char* dir_path,
   const bool current_open = (current_path != NULL && strcmp(path, current_path) == 0);
   if (current_open) return;
   if (current_date != NULL && current_date[0] != '\0' && strcmp(date, current_date) == 0) return;
-  sd_ptlog_candidate_t candidate;
-  memset(&candidate, 0, sizeof(candidate));
-  if (!CopyString(path, candidate.path, sizeof(candidate.path)) ||
-      !CopyString(name, candidate.name, sizeof(candidate.name)) ||
-      !CopyString(date, candidate.date, sizeof(candidate.date))) {
+  sd_ptlog_candidate_t* candidate = &scratch->candidate;
+  memset(candidate, 0, sizeof(*candidate));
+  if (!CopyString(path, candidate->path, sizeof(candidate->path)) ||
+      !CopyString(name, candidate->name, sizeof(candidate->name)) ||
+      !CopyString(date, candidate->date, sizeof(candidate->date))) {
     return;
   }
-  candidate.revision = revision;
-  candidate.legacy_root = false;
-  candidate.current_open = false;
-  if (!*found || CandidateIsOlder(&candidate, best)) {
-    *best = candidate;
+  candidate->revision = revision;
+  candidate->legacy_root = false;
+  candidate->current_open = false;
+  if (!*found || CandidateIsOlder(candidate, best)) {
+    *best = *candidate;
     *found = true;
   }
 }
@@ -273,6 +325,7 @@ static void
 ScanPtlogDirectory(const char* dir_path,
                    const char* current_path,
                    const char* current_date,
+                   sd_storage_scratch_slot_t* scratch,
                    bool* found,
                    sd_ptlog_candidate_t* best)
 {
@@ -281,7 +334,8 @@ ScanPtlogDirectory(const char* dir_path,
   struct dirent* entry;
   while ((entry = readdir(dir)) != NULL) {
     if (IsSystemDirectoryName(entry->d_name)) continue;
-    ConsiderCandidate(dir_path, entry->d_name, current_path, current_date, found, best);
+    ConsiderCandidate(
+      dir_path, entry->d_name, current_path, current_date, scratch, found, best);
   }
   closedir(dir);
 }
@@ -360,33 +414,46 @@ ScanPtlogStatsDirectory(const char* dir_path,
  * protected here so later deletion policies cannot select them accidentally.
  */
 bool
-SdPtlogFindOldestCandidate(const char* mount_point,
-                           const char* current_path,
-                           const char* current_date,
-                           sd_ptlog_candidate_t* candidate_out)
+SdPtlogFindOldestCandidateWithScratch(const char* mount_point,
+                                      const char* current_path,
+                                      const char* current_date,
+                                      sd_storage_scratch_slot_t* scratch,
+                                      sd_ptlog_candidate_t* candidate_out)
 {
-  if (mount_point == NULL || candidate_out == NULL) return false;
+  if (mount_point == NULL || scratch == NULL || candidate_out == NULL) return false;
   bool found = false;
-  sd_ptlog_candidate_t best;
-  memset(&best, 0, sizeof(best));
+  sd_ptlog_candidate_t* best = &scratch->best_candidate;
+  memset(best, 0, sizeof(*best));
 
-  char log_root[SD_PTLOG_MAX_PATH_LEN];
-  if (SdPtlogBuildLogRootPath(mount_point, log_root, sizeof(log_root))) {
+  char* log_root = scratch->path_a;
+  if (SdPtlogBuildLogRootPath(mount_point, log_root, SD_PTLOG_MAX_PATH_LEN)) {
     DIR* logs = opendir(log_root);
     if (logs != NULL) {
       struct dirent* entry;
       while ((entry = readdir(logs)) != NULL) {
         if (IsSystemDirectoryName(entry->d_name) || !SdPtlogIsMonthDirectoryName(entry->d_name)) continue;
-        char month_dir[SD_PTLOG_MAX_PATH_LEN];
-        if (!JoinPath(log_root, entry->d_name, month_dir, sizeof(month_dir))) continue;
-        ScanPtlogDirectory(month_dir, current_path, current_date, &found, &best);
+        char* month_dir = scratch->path_b;
+        if (!JoinPath(log_root, entry->d_name, month_dir, SD_PTLOG_MAX_PATH_LEN)) continue;
+        ScanPtlogDirectory(month_dir, current_path, current_date, scratch, &found, best);
       }
       closedir(logs);
     }
   }
 
-  if (found) *candidate_out = best;
+  if (found) *candidate_out = *best;
   return found;
+}
+
+bool
+SdPtlogFindOldestCandidate(const char* mount_point,
+                           const char* current_path,
+                           const char* current_date,
+                           sd_ptlog_candidate_t* candidate_out)
+{
+  sd_storage_scratch_slot_t stack_scratch;
+  memset(&stack_scratch, 0, sizeof(stack_scratch));
+  return SdPtlogFindOldestCandidateWithScratch(
+    mount_point, current_path, current_date, &stack_scratch, candidate_out);
 }
 
 bool

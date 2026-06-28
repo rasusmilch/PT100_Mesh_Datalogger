@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef struct sd_storage_scratch_slot_t sd_storage_scratch_slot_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -63,6 +65,13 @@ bool SdPtlogBuildMonthDirPath(const char* mount_point,
                               char* out_path,
                               size_t out_path_size);
 
+/** Build /<mount>/logs/YYYY-MM using caller-owned storage scratch for intermediate paths. */
+bool SdPtlogBuildMonthDirPathWithScratch(const char* mount_point,
+                                         const char* month_string,
+                                         sd_storage_scratch_slot_t* scratch,
+                                         char* out_path,
+                                         size_t out_path_size);
+
 /** Build canonical date/month strings and nested /logs/YYYY-MM/YYYYMMDD.RRR path. */
 bool SdPtlogBuildNestedPath(const char* mount_point,
                             int64_t epoch_seconds,
@@ -73,6 +82,18 @@ bool SdPtlogBuildNestedPath(const char* mount_point,
                             size_t month_out_size,
                             char* path_out,
                             size_t path_out_size);
+
+/** Build canonical nested PTLOG path using caller-owned storage scratch for intermediate paths. */
+bool SdPtlogBuildNestedPathWithScratch(const char* mount_point,
+                                       int64_t epoch_seconds,
+                                       uint32_t revision,
+                                       sd_storage_scratch_slot_t* scratch,
+                                       char* date_out,
+                                       size_t date_out_size,
+                                       char* month_out,
+                                       size_t month_out_size,
+                                       char* path_out,
+                                       size_t path_out_size);
 
 /** Parse only compact YYYYMMDD.RRR basenames into canonical date/revision fields. */
 bool SdPtlogParseName(const char* name,
@@ -98,6 +119,13 @@ bool SdPtlogFindOldestCandidate(const char* mount_point,
                                 const char* current_path,
                                 const char* current_date,
                                 sd_ptlog_candidate_t* candidate_out);
+
+/** Find the oldest safe compact PTLOG candidate using caller-owned storage scratch. */
+bool SdPtlogFindOldestCandidateWithScratch(const char* mount_point,
+                                           const char* current_path,
+                                           const char* current_date,
+                                           sd_storage_scratch_slot_t* scratch,
+                                           sd_ptlog_candidate_t* candidate_out);
 
 /**
  * @brief Collect read-only PTLOG counts using the bounded retention traversal.

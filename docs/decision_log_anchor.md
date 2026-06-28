@@ -84,7 +84,7 @@ Existing SD cards and field data may already contain root-level or long-name PTL
 
 ## Decision 3 — Keep large storage path/scratch buffers off task stack
 
-Status: accepted
+Status: accepted; partially implemented by Task 2B-3B-1A for PTLOG/logger path and candidate scratch
 Reference: Task 2B-3B-DOC1 and 2B-3B-DOC2 / storage scratch-buffer architecture clarification
 
 ### Decision
@@ -96,6 +96,12 @@ The owner may use a fixed compile-time scratch slot count, initially 1. One scra
 ### Rationale
 
 Prior stack pressure issues make path-buffer growth risky. Storage traversal may run inside long-lived application/runtime tasks, and central scratch ownership makes stack usage reviewable, reusable, and easier to protect with SD I/O locking or other lifetime rules.
+
+### Implemented foundation
+
+Task 2B-3B-1A added a typed `sd_storage_scratch_owner_t` with `SD_STORAGE_SCRATCH_SLOT_COUNT` defaulting to 1. The slot storage is allocated from PSRAM on target firmware with no internal-RAM fallback for these generic path/candidate buffers. Borrowing is non-blocking and fails closed when the owner is uninitialized or the single slot is already in use. The implementation is intentionally not a broad allocator, generalized pool, arbitrary dynamic allocator, semaphore framework, or retention policy engine.
+
+The first implementation wires the owner into `sd_logger.c` daily PTLOG path creation, PTLOG directory ensure, same-day revision scan, and reclaim candidate traversal through scratch-aware PTLOG helper variants while preserving existing public `SdPtlog*` APIs. CSV resume/readback byte buffers and the internal DMA SD host bounce buffer remain under their prior ownership and allocation behavior.
 
 ### Consequences
 
@@ -113,7 +119,7 @@ Prior stack pressure issues make path-buffer growth risky. Storage traversal may
 
 ### Exclusions
 
-* This decision does not implement the scratch-buffer mechanism.
+* Task 2B-3B-1A implements only the path/candidate scratch-owner foundation for PTLOG/logger hot paths; CSV byte-buffer ownership and diagnostic/console path cleanup remain separate follow-ups.
 * This decision does not approve reclaim thresholds, display progress, create/open retry policy, ntfy/display changes, FRAM semantic changes, or SD format changes.
 
 ---
@@ -579,6 +585,7 @@ This decision log was drafted from:
 * Merged PR #369: `Refactor SD reclaim to use SdPtlogFindOldestCandidate and add reclaim unit tests`.
 * Current `main/sd_logger.c` reclaim implementation after PR #369.
 * Current `main/sd_ptlog_paths.c` bounded PTLOG candidate scanner.
+* Task 2B-3B-1A implementation of the typed PSRAM-backed single-slot storage scratch owner foundation for PTLOG/logger path and candidate hot paths.
 * `docs/sd_fram_failure_2026_06_23_analysis.md`.
 * Codex Task 2A planning and execution receipts.
 * ChatGPT senior review of Task 2A execution.

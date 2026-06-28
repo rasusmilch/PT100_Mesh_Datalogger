@@ -692,19 +692,20 @@ Current recommended sequence:
 
 1. Human-review the storage scratch/FRAM-anchor documentation checkpoint.
 2. Plan Task 2B-3B-1 read-only: PSRAM-backed centrally owned storage scratch owner.
-3. Execute only the approved storage scratch owner foundation after that plan is accepted.
-4. Plan and execute read-only bounded PTLOG pressure/status scan facts after the scratch owner path is clear.
-5. Validate PR #368/#369 and storage scratch behavior on local firmware build and target hardware when implementation exists.
-6. Plan Task 2B read-only: file-count/directory-entry-aware retention triggers.
-7. Execute Task 2B after threshold policy approval.
-8. Hardware validate Task 2B.
-9. Plan Task 2C read-only: daily create/open reclaim retry.
-10. Execute Task 2C after errno/retry policy approval.
-11. Hardware validate Task 2C.
-12. Plan and execute SD diagnostic/status split.
-13. Plan and execute FRAM active-vs-historical overrun fix, including stale `fram_overrun - active` ntfy after recovery/drain.
-14. Verify host tools discover nested PTLOG files.
-15. Run long-duration pilot.
+3. Execute Task 2B-3B-1A: PSRAM-backed path/candidate scratch owner foundation.
+4. Review and validate the scratch owner foundation before CSV byte-buffer migration or scan facts.
+5. Plan and execute read-only bounded PTLOG pressure/status scan facts after the scratch owner path is clear.
+6. Validate PR #368/#369 and storage scratch behavior on local firmware build and target hardware when implementation exists.
+7. Plan Task 2B read-only: file-count/directory-entry-aware retention triggers.
+8. Execute Task 2B after threshold policy approval.
+9. Hardware validate Task 2B.
+10. Plan Task 2C read-only: daily create/open reclaim retry.
+11. Execute Task 2C after errno/retry policy approval.
+12. Hardware validate Task 2C.
+13. Plan and execute SD diagnostic/status split.
+14. Plan and execute FRAM active-vs-historical overrun fix, including stale `fram_overrun - active` ntfy after recovery/drain.
+15. Verify host tools discover nested PTLOG files.
+16. Run long-duration pilot.
 
 ## Branch / PR grouping guidance
 
@@ -806,9 +807,9 @@ Completed but not fully integrated-validated:
 
 Recommended next action:
 
-Human-review this documentation checkpoint, then create the next Codex task as read-only planning for `2B-3B-1 — PSRAM-backed storage scratch owner`. That plan must inventory all storage/path/scratch buffers, design the centrally owned PSRAM-backed scratch owner, keep the initial compile-time slot count at 1 if appropriate, allow multiple named buffers inside a slot where simultaneous paths are needed, and preserve future expansion without building a broad allocator or changing runtime behavior.
+Human-review and validate `2B-3B-1A — PSRAM-backed path/candidate scratch owner foundation`. Confirm firmware build, PSRAM allocation behavior, and target stack headroom before deciding whether the next focused task is `2B-3B-1B` CSV resume/readback scratch ownership or read-only PTLOG pressure/status scan facts.
 
-Do not start read-only PTLOG pressure/status scan facts, retention thresholds, create/open retry, display/ntfy changes, FRAM semantic fixes, or SD format changes before the scratch-owner plan is reviewed. The repeated stale `fram_overrun - active` ntfy after SD recovery and FRAM drain remains a known deferred FRAM active-vs-historical semantic defect, not part of the storage scratch task.
+Do not start retention thresholds, create/open retry, display/ntfy changes, FRAM semantic fixes, or SD format changes as part of storage scratch validation. The repeated stale `fram_overrun - active` ntfy after SD recovery and FRAM drain remains a known deferred FRAM active-vs-historical semantic defect, not part of the storage scratch task.
 
 ## Last updated context
 
@@ -820,6 +821,7 @@ This roadmap was drafted from:
 * PR #369: `Refactor SD reclaim to use SdPtlogFindOldestCandidate and add reclaim unit tests`, merged at `1e9dffa51d6409c9c63dfbee5410525e9f406bbc`.
 * Current `main/sd_logger.c` reclaim implementation after PR #369.
 * Current `main/sd_ptlog_paths.c` bounded PTLOG scanner.
+* Task 2B-3B-1A implementation: typed PSRAM-backed single-slot storage scratch owner for PTLOG/logger path and candidate hot paths.
 * `docs/sd_fram_failure_2026_06_23_analysis.md`.
 * Codex Task 2A planning and execution receipts.
 * ChatGPT senior review of Task 2A execution.

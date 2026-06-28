@@ -10,6 +10,7 @@
 #include "esp_err.h"
 #include "ptlog_format.h"
 #include "sd_csv_verify.h"
+#include "sd_storage_scratch.h"
 #include "sdmmc_cmd.h"
 
 #ifdef __cplusplus
@@ -98,6 +99,7 @@ extern "C"
     bool slot_config_valid;
 
     SdLoggerDailyDiagnostics last_daily_diag;
+    sd_storage_scratch_owner_t storage_scratch;
   } sd_logger_t;
 
   typedef enum
