@@ -22,6 +22,7 @@ Core product requirements:
 8. SD diagnostics shall preserve enough detail to distinguish mount, card, byte-space, create/open, directory-entry, and I/O failure classes where practical.
 9. FRAM diagnostics shall distinguish current live pressure from historical data-loss evidence.
 10. Host tools shall continue to read and process compact PTLOG data required for plotting, reporting, and validation; CSV import may remain as a generic feature.
+11. Host tools shall tolerate partial/corrupt PTLOG tails, process all valid compact nested revisions independently, deduplicate valid records by `record_id`, and report skipped/corrupt records with file/offset or line details when available.
 
 ## Workflow requirements
 
@@ -57,6 +58,8 @@ PTLOG data requirements:
 5. Root-level and old long-name PTLOG-looking files shall not be eligible for firmware scanning, stats, or reclaim.
 6. Automatic retention shall use parsed PTLOG metadata, not directory enumeration order alone.
 7. Automatic retention shall fail closed when names, paths, stat results, or directory traversal are ambiguous.
+8. On boot, SD remount, recovery, restart, header/signature uncertainty, or prior-file uncertainty, firmware should create a new same-day revision file rather than repairing and appending to an uncertain old tail.
+9. Old/corrupt/partial revision files shall be preserved for host-side recovery, and firmware must not consume/discard FRAM records until append/verify to the active revision succeeds.
 
 FRAM state requirements:
 
@@ -82,26 +85,24 @@ General architecture constraints:
 1. Keep storage/path behavior centralized in storage/path helper code where practical.
 2. Avoid duplicating PTLOG name parsing in multiple modules.
 3. Prefer bounded, fixed-buffer embedded logic, but do not treat fixed-size buffers as approval to place large storage path, file, candidate, scan-observation, or I/O buffers on a FreeRTOS task stack.
-4. Storage/path traversal code shall preserve task stack headroom. Large reusable SD/PTLOG path and scratch buffers are unacceptable on task stack and shall be centrally owned outside the task stack where feasible.
-5. Do not increase task stack sizes merely to compensate for storage scratch/path buffers unless an explicit product/architecture decision approves that tradeoff.
-6. Option A is approved directionally for the next storage scratch design: a centrally owned storage scratch owner covering all storage/path/scratch buffers, not only PTLOG traversal. The inventory shall include logger daily path/revision paths, PTLOG traversal, reclaim, scan facts, diagnostics, CSV append/verify/resume scratch, and related SD helper buffers where applicable.
-7. PSRAM is guaranteed for the target configuration for this direction. Reusable generic storage scratch/path buffers should be PSRAM-backed; allocation failure must fail closed and be reported or diagnosed rather than silently increasing task-stack use or inventing broad internal-RAM fallback.
-8. A fixed compile-time scratch slot count is acceptable, and the initial approved count may be 1. A scratch slot may contain multiple named internal path/scratch buffers when a storage workflow needs more than one buffer live at once.
-9. The storage scratch owner shall preserve a future expansion path for additional slots or consumers, but it must not become a broad allocator, generalized pool, dynamic arbitrary allocator, or unnecessary concurrency framework.
-10. Separate scratch-buffer mechanism from PTLOG scan/reclaim policy.
-11. Separate mechanism from policy:
+4. SD/PTLOG path, filename, month-directory, candidate-path, and related path-workflow buffers currently local to stack-heavy workflows should be moved to centrally owned static storage where practical. Prefer PSRAM-backed allocation/storage on the target when safe and available.
+5. Largish reusable buffers should be centrally owned/static rather than repeatedly placed on task stacks. Do not increase FreeRTOS task stack sizes merely to compensate for storage/path stack pressure.
+6. The abandoned generic storage scratch-owner direction from PR #376 is not the intended architecture and must not be merged as-is; it is preserved only on `archive/scratch-owner-pr376-0819853` for reference.
+7. The next implementation must remain narrow: path/candidate buffer placement only, using a dedicated typed SD/PTLOG path workspace if useful. It must not create a generic allocator, slot pool, borrow/release API, or concurrency framework.
+8. Future storage/path code must document ownership, lifetime, capacity, fail-closed behavior, diagnostics, and explicit runtime serialization or locking assumptions for shared/static workspace use.
+9. Separate mechanism from policy:
 
    * candidate discovery is mechanism;
    * retention thresholds are policy;
    * create/open retry rules are policy;
    * current-date deletion is policy;
    * display/ntfy wording is product behavior.
-12. Prefer one-candidate-per-pass reclaim over large in-memory candidate arrays.
-13. Do not use unbounded recursive directory traversal on embedded firmware.
-14. Do not follow arbitrary host-created directories.
-15. Do not preserve obsolete root-only assumptions after the nested PTLOG layout.
-16. Do not refactor broadly while fixing a specific reliability issue.
-17. Do not change public/operator-visible behavior unless it is in scope.
+10. Prefer one-candidate-per-pass reclaim over large in-memory candidate arrays.
+11. Do not use unbounded recursive directory traversal on embedded firmware.
+12. Do not follow arbitrary host-created directories.
+13. Do not preserve obsolete root-only assumptions after the nested PTLOG layout.
+14. Do not refactor broadly while fixing a specific reliability issue.
+15. Do not change public/operator-visible behavior unless it is in scope.
 
 PTLOG path constraints:
 
@@ -114,7 +115,7 @@ PTLOG path constraints:
 3. Unknown subdirectories under `/logs` shall not be traversed unless they match `YYYY-MM`.
 4. System directories such as `.Trash-1000`, `FOUND.000`, and `System Volume Information` shall be ignored by automatic retention.
 5. Path joins shall check truncation and fail closed.
-6. Scan/reclaim code shall remain bounded and non-recursive even when storage scratch/path buffers are moved out of task stack.
+6. Scan/reclaim code shall remain bounded and non-recursive when storage path-workflow buffers are moved out of task stack.
 
 ## Security and permission constraints
 
@@ -198,8 +199,8 @@ Storage-specific validation requirements:
 9. Prefer deterministic candidate ordering.
 10. Keep host-test helpers small and purpose-specific.
 11. Do not create a large fake ESP-IDF harness unless a task explicitly approves it.
-12. Any execute task touching storage/path code shall report new stack buffers by file/function/size, new static buffers by owner/lifetime/size, new heap or PSRAM allocations with fallback behavior, and task-safety/locking assumptions for shared scratch buffers.
-13. Future storage tasks shall not silently add or preserve large stack buffers; if a small stack path-fragment buffer is necessary, the task receipt shall justify it and distinguish it from reusable storage scratch/path buffers.
+12. Any execute task touching storage/path code shall report new stack buffers by file/function/size, new static buffers by owner/lifetime/size, new heap or PSRAM allocations with fallback behavior, and task-safety/locking assumptions for shared static path workspaces.
+13. Future storage tasks shall not silently add or preserve large stack buffers; if a small stack path-fragment buffer is necessary, the task receipt shall justify it and distinguish it from reusable static SD/PTLOG path-workflow buffers.
 
 ## Prompting and Codex receipt formatting requirements
 

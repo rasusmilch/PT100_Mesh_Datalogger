@@ -82,28 +82,31 @@ Existing SD cards and field data may already contain root-level or long-name PTL
 
 ---
 
-## Decision 3 — Keep large storage path/scratch buffers off task stack
+## Decision 3 — Replace generic scratch-owner direction with narrow static SD/PTLOG path workspace
 
-Status: accepted
-Reference: Task 2B-3B-DOC1 and 2B-3B-DOC2 / storage scratch-buffer architecture clarification
+Status: accepted; supersedes Task 2B-3B-DOC1/DOC2 scratch-owner direction
+Reference: Task 2B-3B-DOC3; PR #376 reviewed as abandoned context
 
 ### Decision
 
-SD/PTLOG traversal, scan, reclaim, and diagnostics shall avoid large stack path/scratch buffers. Option A is approved as the next storage scratch planning direction: create a centrally owned, PSRAM-backed storage scratch owner because PSRAM is guaranteed on the target configuration. Future implementation shall inventory all storage/path/scratch buffers before changing source, including logger daily path/revision paths, PTLOG traversal, reclaim, scan facts, diagnostics, CSV append/verify/resume scratch, and related SD helper buffers where applicable.
+The generic PSRAM-backed storage scratch owner model is abandoned for now. PR #376, `Introduce PSRAM-backed storage scratch owner and integrate into PTLOG paths/logger`, is not the intended architecture and must not be merged as-is. Its inspected head was previously recorded as `0819853d39c3d464de3bb391a4243271c43ca28d`; the work is preserved for reference only on branch `archive/scratch-owner-pr376-0819853`.
 
-The owner may use a fixed compile-time scratch slot count, initially 1. One scratch slot may contain multiple named internal path/scratch buffers where a storage workflow requires simultaneous live paths or scratch regions. The design should leave room for additional slots or consumers later, but it shall not become a broad allocator, generalized pool, dynamic arbitrary allocator, or unnecessary concurrency model. Allocation failure must fail closed and be reported or diagnosed rather than silently growing task-stack use. FreeRTOS task stack sizes shall not be increased merely to accommodate storage path buffers without explicit approval.
+The next implementation shall use a simpler, dedicated static SD/PTLOG path workspace. SD/PTLOG path, filename, month-directory, candidate-path, and related path-workflow buffers that are currently local stack arrays should be moved to centrally owned static storage where practical. Prefer PSRAM-backed allocation/storage on the target when safe and available. Largish reusable buffers should also be centrally owned/static rather than repeatedly placed on FreeRTOS task stacks. Do not increase FreeRTOS task stack sizes to hide storage/path stack pressure.
+
+The immediate goal is only to remove file/path/candidate buffers from FreeRTOS task stacks. Do not create a generic allocator, slot pool, borrow/release API, concurrency framework, broad allocator, or generalized scratch mechanism. A future implementation may use a dedicated typed SD/PTLOG path workspace object, but it must keep ownership, lifetime, serialization/locking assumptions, required capacity, fail-closed behavior, and diagnostics explicit. Existing SD/runtime serialization assumptions may be used only when documented in that implementation.
+
+Suggested next implementation name: `2B-3B-1R — Replace SD/PTLOG stack path buffers with static PSRAM-backed path workspace`.
 
 ### Rationale
 
-Prior stack pressure issues make path-buffer growth risky. Storage traversal may run inside long-lived application/runtime tasks, and central scratch ownership makes stack usage reviewable, reusable, and easier to protect with SD I/O locking or other lifetime rules.
+Prior stack pressure issues still make path-buffer growth risky, but PR #376 showed that a generic scratch-owner model is broader than the near-term storage problem. The safer embedded path is a narrow, typed workspace for SD/PTLOG path workflows, preserving deterministic behavior and avoiding a new allocator/concurrency abstraction before the project has proved it needs one.
 
 ### Consequences
 
-* Future 2B-3B-1 planning must design the storage scratch owner before read-only scan facts are added on top of existing stack path buffers.
-* Future implementation must document ownership, lifetime, required capacity, buffer sizes, lock/task-safety assumptions, fail-closed behavior, and diagnostics for each scratch slot and named internal buffer.
-* Future 2B-3B-1 execution must include stack, static, heap, and PSRAM buffer accounting.
-* Large per-entry arrays, large candidate arrays, recursive traversal, broad allocators, and generalized pools remain prohibited.
-* Scratch-buffer mechanism remains separate from PTLOG scan facts, reclaim thresholds, display wording, ntfy behavior, FRAM semantics, and retry policy.
+* Future SD/PTLOG path-buffer work must inventory current stack path/candidate buffers and move only the scoped path-workflow buffers off task stacks.
+* Large per-entry arrays, large candidate arrays, recursive traversal, generic allocators, slot pools, broad borrow/release APIs, and unnecessary concurrency frameworks remain prohibited.
+* The path workspace remains separate from PTLOG scan facts, reclaim thresholds, CSV tail repair, file-buffer sizing, SD format changes, reclaim policy, display wording, ntfy behavior, FRAM semantics, retry policy, and host-tool ingestion changes.
+* Future code review must verify stack, static, heap, and PSRAM placement and document task-safety/ownership assumptions.
 
 ### Validation needed
 
@@ -113,8 +116,9 @@ Prior stack pressure issues make path-buffer growth risky. Storage traversal may
 
 ### Exclusions
 
-* This decision does not implement the scratch-buffer mechanism.
-* This decision does not approve reclaim thresholds, display progress, create/open retry policy, ntfy/display changes, FRAM semantic changes, or SD format changes.
+* This decision does not implement the path workspace.
+* This decision does not remove existing runtime tail repair/resume scanning.
+* This decision does not approve reclaim thresholds, display progress, create/open retry policy, ntfy/display changes, FRAM semantic changes, host-tool ingestion changes, or SD format changes.
 
 ---
 
@@ -370,7 +374,7 @@ A cumulative overrun total is useful audit data, but it should not necessarily b
 
 * Future FRAM work should introduce or clarify fields for current pressure, session overrun, lifetime overrun, unacknowledged historical loss, and notification state.
 * ntfy/display behavior should not spam active alerts for stale historical state.
-* Storage scratch owner planning and implementation must not mix in FRAM active-vs-historical behavior changes.
+* Static SD/PTLOG path-workspace planning and implementation must not mix in FRAM active-vs-historical behavior changes.
 
 ### Rejected alternatives
 
@@ -544,6 +548,43 @@ These assumptions are deprecated and should not guide future work:
 8. Local branch name `work` identifies the product branch.
 9. Existing comments and helper names define current product intent.
 10. Same-day revision files may be deleted automatically without a product decision.
+
+---
+
+## Decision 11 — Remove firmware tail repair/resume scanning in a future scoped task
+
+Status: accepted direction; not implemented by this documentation task
+Reference: Task 2B-3B-DOC3
+
+### Decision
+
+Runtime firmware tail repair/resume scanning is abandoned and should be removed in a later dedicated code task. Firmware should not spend RAM or runtime repairing uncertain previous log tails. On boot, SD remount, recovery, restart, header/signature uncertainty, or prior-file uncertainty, firmware should create a new same-day revision file instead of appending to and repairing the old one.
+
+Old, corrupt, or partial revision files shall be preserved for host-side recovery. Firmware must still avoid consuming or discarding FRAM records until append and verify to the current active revision succeeds. Runtime tail-repair code and large tail-scan buffers are historical baggage from the earlier CSV sequence-resume design.
+
+Suggested future implementation name: `2B-3B-2 — Remove firmware tail repair/resume scan and always create new revision on uncertainty`.
+
+### Consequences
+
+* Do not remove tail-repair code in documentation-only tasks.
+* Future removal must preserve FRAM records until the active revision append/verify succeeds.
+* Host tools become the recovery location for partial/corrupt prior revisions.
+* CSV tail-scan buffer sizing/removal review remains a future scoped task, not part of the path-workspace implementation.
+
+---
+
+## Decision 12 — Host tools must tolerate corrupt PTLOG tails and deduplicate records
+
+Status: accepted requirement for future host-tool work
+Reference: Task 2B-3B-DOC3
+
+### Decision
+
+Host tools must provide tolerant PTLOG ingestion for approved revision files. They must scan all approved compact nested PTLOG revision files, tolerate partial or corrupt trailing records/lines, extract all valid records that can be parsed safely, and deduplicate by `record_id`.
+
+They must preserve auditability by reporting skipped/corrupt records, file names, offsets or line numbers when available, and reason codes. One corrupt revision or file must not prevent processing of other valid files. Host tools must support the compact nested PTLOG layout `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`. Firmware-created root/legacy files remain ignored by firmware; any host-tool support for historical files must remain separate and explicit.
+
+Suggested future task: `5A-PTLOG-HOST-RECOVER — Host-side tolerant PTLOG ingestion and corrupt-tail handling`.
 
 # Misleading implementation artifacts discovered
 
