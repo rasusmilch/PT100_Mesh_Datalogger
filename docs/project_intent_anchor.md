@@ -62,8 +62,8 @@ The product should behave as follows:
   * `/sdcard/logs/YYYY-MM`
 * Reclaim should select candidates by parsed date/revision, not directory enumeration order.
 * Reclaim should use fixed-size buffers and fail closed on truncation or ambiguous paths.
-* Storage code must preserve task stack headroom. Large SD/PTLOG traversal path and scratch buffers should be moved out of task stack in future implementation rather than accommodated by increasing task stack sizes.
-* Reusable storage scratch/path buffers should be centrally owned, preferably PSRAM-backed when the target configuration can guarantee it, and guarded by explicit ownership, lifetime, and locking rules.
+* Storage code must preserve task stack headroom. Large SD/PTLOG traversal path buffers should be moved to a narrow centrally owned static path workspace where practical rather than accommodated by increasing task stack sizes.
+* Reusable SD/PTLOG path-workflow buffers should use the narrow static path-workspace model, preferably PSRAM-backed when safe and available, and guarded by explicit ownership, lifetime, and serialization rules.
 * FRAM should preserve records while SD is unavailable and should distinguish current pressure from historical overrun/data-loss state.
 * Diagnostics should preserve low-level error detail where practical, especially operation, path, errno, and ESP error state.
 * Display and alert states should communicate the actual condition rather than overloaded or stale symptoms.
@@ -83,7 +83,7 @@ As of the latest reviewed context:
 * Current FRAM overrun semantics are still known to be potentially misleading: historical cumulative overrun can appear as an active condition.
 * Current `SDOUT` terminology is overloaded and should not be treated as precise out-of-space terminology.
 * Hardware SD-card runtime validation for the recent reclaim/path changes remains unverified in the available context.
-* Upcoming 2B-3B storage work must account for the newly documented non-stack storage scratch/path-buffer rule before adding or preserving large PTLOG traversal buffers on task stack. Host tests do not prove ESP32 task-stack safety; future validation must inspect stack, static, heap, and PSRAM buffer behavior.
+* Upcoming 2B-3B storage work must use the revised static SD/PTLOG path-workspace direction before adding or preserving large PTLOG traversal buffers on task stack. Host tests do not prove ESP32 task-stack safety; future validation must inspect stack, static, heap, and PSRAM buffer behavior. The generic scratch-owner approach from PR #376 is abandoned for now and preserved only as reference.
 
 ## Explicit non-goals and exclusions
 

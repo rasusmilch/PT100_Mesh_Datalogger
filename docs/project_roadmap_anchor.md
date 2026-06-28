@@ -11,7 +11,7 @@ The immediate workstream is the SD/FAT16 and FRAM-overrun recovery sequence trig
 1. SD failure was most likely FAT directory-entry pressure from many long PTLOG filenames, especially at SD root.
 2. FRAM later reported misleading active overrun state because historical cumulative overrun was treated like current live pressure.
 3. SD storage mechanism fixes should be completed and validated before FRAM semantic fixes.
-4. Each task should remain narrow to conserve Codex usage and prevent scope drift.
+4. Each task should remain narrow to conserve Codex usage and prevent scope drift. Product intent remains unattended data preservation: avoid losing records, avoid firmware getting wedged by SD/FAT/path issues, avoid risky broad refactors, prefer bounded deterministic embedded behavior, and defer complex recovery/repair to host tools when that preserves data and reduces firmware risk.
 
 ## Current active feature / fix
 
@@ -518,7 +518,7 @@ Needs read-only planning first:
 
 Why:
 
-* This changes status/alert semantics and must not hide real data loss. The stale FRAM ntfy symptom is known and deferred; it is not part of storage scratch owner work.
+* This changes status/alert semantics and must not hide real data loss. The stale FRAM ntfy symptom is known and deferred; it is not part of static SD/PTLOG path-workspace work.
 
 Dependencies:
 
@@ -618,6 +618,20 @@ Scope:
 * Preserve explicit user file selection behavior where present.
 * Add tests with root and nested sample files.
 
+### 5A-PTLOG-HOST-RECOVER — Host-side tolerant PTLOG ingestion and corrupt-tail handling
+
+Status: deferred, required after firmware tail-repair direction changes.
+
+Requirements:
+
+* Scan all approved compact nested PTLOG revision files: `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR`.
+* Tolerate partial or corrupt trailing records/lines.
+* Extract all valid records that can be parsed safely.
+* Deduplicate by `record_id`.
+* Report skipped/corrupt records with file names, offsets or line numbers when available, and reason codes.
+* Do not let one corrupt revision/file prevent processing of other valid files.
+* Keep any historical root/legacy file support separate and explicit because firmware ignores firmware-created root/legacy files.
+
 Branch/PR:
 
 * Separate host-tool PR.
@@ -690,11 +704,11 @@ Rejected/deprecated unless a later decision reverses them:
 
 Current recommended sequence:
 
-1. Human-review the storage scratch/FRAM-anchor documentation checkpoint.
-2. Plan Task 2B-3B-1 read-only: PSRAM-backed centrally owned storage scratch owner.
-3. Execute only the approved storage scratch owner foundation after that plan is accepted.
-4. Plan and execute read-only bounded PTLOG pressure/status scan facts after the scratch owner path is clear.
-5. Validate PR #368/#369 and storage scratch behavior on local firmware build and target hardware when implementation exists.
+1. Complete the documentation correction that abandons the generic scratch-owner direction and records the revised static SD/PTLOG path-workspace roadmap.
+2. Implement `2B-3B-1R` static PSRAM-backed SD/PTLOG path workspace only.
+3. Implement `2B-3B-2` firmware tail-repair/resume removal and always-new-revision-on-uncertainty policy.
+4. Implement `5A-PTLOG-HOST-RECOVER` host-side tolerant corrupt-log ingestion and `record_id` deduplication.
+5. Plan and execute read-only bounded PTLOG pressure/status scan facts.
 6. Plan Task 2B read-only: file-count/directory-entry-aware retention triggers.
 7. Execute Task 2B after threshold policy approval.
 8. Hardware validate Task 2B.
@@ -721,7 +735,7 @@ Tasks that should be separate PRs:
 * SD display/ntfy status split.
 * FRAM active-vs-historical overrun semantic fix.
 * `LOG_RECORD_FLAG_FRAM_FULL` fix/removal.
-* Host tool nested PTLOG discovery.
+* Host tool nested PTLOG discovery and tolerant corrupt-tail recovery/deduplication.
 
 Do not combine:
 
@@ -734,14 +748,14 @@ Do not combine:
 
 Require read-only planning first:
 
-1. Task 2B-3B-1: PSRAM-backed storage scratch owner.
+1. Task 2B-3B-1R: static PSRAM-backed SD/PTLOG path workspace.
 2. Task 2B: file-count/directory-entry-aware retention triggers.
 3. Task 2C: create/open reclaim retry.
 4. Task 2D: SD diagnostic propagation/status specificity.
 5. Task 2E: SD display/status code split.
 6. Task 4A/4B: FRAM active-vs-historical overrun model.
 7. Task 4D: `LOG_RECORD_FLAG_FRAM_FULL` fix/removal.
-8. Task 5A: host tools nested PTLOG discovery.
+8. Task 5A / 5A-PTLOG-HOST-RECOVER: host tools nested PTLOG discovery and tolerant corrupt-tail ingestion/deduplication.
 9. Any FAT32 migration or short 8.3 filename change.
 10. Any automatic deletion of current-date or same-day revision PTLOGs.
 
@@ -802,13 +816,35 @@ Completed but not fully integrated-validated:
    * Roadmap anchor drafted here.
    * Repository commits unverified.
 
+## Deferred/future scoped tasks that must remain visible
+
+* `2B-3B-1R` static PSRAM-backed SD/PTLOG path workspace implementation.
+* `2B-3B-2` firmware tail-repair/resume removal and always-new-revision-on-uncertainty policy.
+* `5A-PTLOG-HOST-RECOVER` host-side corrupt log handling and `record_id` deduplication.
+* PTLOG pressure/read-only scan facts.
+* File-count/directory-entry-aware retention triggers.
+* Daily create/open failure retry/reclaim policy.
+* SD diagnostic/status specificity.
+* Display/ntfy status wording split.
+* FRAM active-vs-historical overrun semantic fix, including stale `fram_overrun` active alerts after recovery/drain.
+* `LOG_RECORD_FLAG_FRAM_FULL` ordering/fix/removal if still applicable.
+* Host tools nested PTLOG discovery/ingestion.
+* Runtime file-buffer sizing review, including old 64 KiB fallback versus current Kconfig defaults.
+* CSV tail-scan buffer sizing/removal review, including old 256 KiB fallback versus current configured default.
+* Hardware validation after SD/PTLOG changes.
+* Long-duration pilot validation.
+
 ## Current next required action
 
-Recommended next action:
+Recommended next actions, in order:
 
-Human-review this documentation checkpoint, then create the next Codex task as read-only planning for `2B-3B-1 — PSRAM-backed storage scratch owner`. That plan must inventory all storage/path/scratch buffers, design the centrally owned PSRAM-backed scratch owner, keep the initial compile-time slot count at 1 if appropriate, allow multiple named buffers inside a slot where simultaneous paths are needed, and preserve future expansion without building a broad allocator or changing runtime behavior.
+1. Documentation correction to abandon the generic scratch-owner direction and record the revised static SD/PTLOG path-workspace direction.
+2. `2B-3B-1R — Replace SD/PTLOG stack path buffers with static PSRAM-backed path workspace`.
+3. `2B-3B-2 — Remove firmware tail repair/resume scan and always create new revision on uncertainty`.
+4. `5A-PTLOG-HOST-RECOVER — Host-side tolerant PTLOG ingestion and corrupt-tail handling`.
+5. Resume the broader SD pressure/reclaim/status roadmap: read-only pressure scan facts, file-count/directory-entry retention triggers, create/open retry/reclaim policy, SD diagnostic specificity, display/ntfy wording split, FRAM semantic fixes, hardware validation, and long-duration pilot validation.
 
-Do not start read-only PTLOG pressure/status scan facts, retention thresholds, create/open retry, display/ntfy changes, FRAM semantic fixes, or SD format changes before the scratch-owner plan is reviewed. The repeated stale `fram_overrun - active` ntfy after SD recovery and FRAM drain remains a known deferred FRAM active-vs-historical semantic defect, not part of the storage scratch task.
+Do not merge PR #376 as-is. Its scratch-owner implementation is abandoned for now and preserved only on `archive/scratch-owner-pr376-0819853` for reference. Do not start read-only PTLOG pressure/status scan facts, retention thresholds, create/open retry, display/ntfy changes, FRAM semantic fixes, host-tool ingestion changes, or SD format changes as part of the path-workspace implementation. The repeated stale `fram_overrun - active` ntfy after SD recovery and FRAM drain remains a known deferred FRAM active-vs-historical semantic defect.
 
 ## Last updated context
 
@@ -841,17 +877,25 @@ Unverified at this update:
 
 Status: implemented in this branch. New nested firmware PTLOG files use `/sdcard/logs/YYYY-MM/YYYYMMDD.RRR` with decimal revisions `000` through `999`; legacy/root long-name `.ptlog` compatibility is removed; old files are ignored by firmware. PTLOG identity is formalized around the first-line `#PT100_LOG_V1` magic. No migration, display progress, read-only pressure expansion, create/open retry, or reclaim policy change is included.
 
-### 2B-3B-DOC1 — Storage scratch-buffer/anchor update
+### 2B-3B-DOC1 / DOC2 — Superseded storage scratch-owner documentation
 
-Status: implemented by the documentation-only anchor update. The anchors now record that large storage path/scratch buffers are unacceptable on task stack, storage scratch/path buffers should be centrally owned outside task stack where feasible, PSRAM-backed reusable scratch is preferred when guaranteed, and future storage tasks must report stack/static/heap/PSRAM buffer placement.
+Status: superseded by Task 2B-3B-DOC3. Earlier anchors described a centrally owned PSRAM-backed storage scratch owner with a future slot-style design. That direction is abandoned for now.
 
-### 2B-3B-1 — Plan PSRAM-backed storage scratch owner
+### 2B-3B-DOC3 — Abandon scratch owner and record revised SD/PTLOG roadmap
 
-Status: next planning task before read-only pressure/status scan implementation. Option A is approved directionally: inventory all storage/path/scratch buffers and design a centrally owned PSRAM-backed storage scratch owner covering logger daily path/revision paths, PTLOG traversal, reclaim, scan facts, diagnostics, CSV append/verify/resume scratch, and related SD helper buffers where applicable. The design may hard-code a compile-time scratch slot count of 1 initially, may put multiple named internal path/scratch buffers inside that slot when workflows require simultaneous live buffers, and should preserve a future path for additional slots/consumers without implementing concurrency or a broad allocator/pool now. Ownership, lifetime, required sizes, locking/task-safety, fail-closed behavior, and diagnostics must be explicit. Excludes thresholds, reclaim policy, create/open retry, display/ntfy behavior, FRAM semantic fixes, SD format changes, broad allocators, and task stack increases.
+Status: documentation-only correction. Record that PR #376 is not the intended architecture and must not be merged as-is; preserve it only on `archive/scratch-owner-pr376-0819853`; replace the generic scratch-owner path with a narrow static SD/PTLOG path-workspace direction; record the tail-repair removal decision; and add host-tool corrupt-log recovery/deduplication requirements.
+
+### 2B-3B-1R — Replace SD/PTLOG stack path buffers with static PSRAM-backed path workspace
+
+Status: next implementation after the documentation correction. Move SD/PTLOG path, filename, month directory, candidate path, and related path-workflow buffers that are currently local stack arrays to centrally owned static storage where practical. Prefer PSRAM-backed storage on target when safe and available. Keep the implementation narrow: path/candidate buffer placement only. Do not create a generic allocator, slot pool, borrow/release API, concurrency framework, CSV tail repair change, file-buffer sizing change, SD format change, reclaim policy change, display/ntfy wording change, FRAM semantic change, or host-tool ingestion change. Explicitly document ownership, lifetime, capacity, and runtime serialization/locking assumptions.
+
+### 2B-3B-2 — Remove firmware tail repair/resume scan and always create new revision on uncertainty
+
+Status: future dedicated implementation. Runtime firmware tail repair/resume scanning is abandoned. On boot, SD remount, recovery, restart, header/signature uncertainty, or prior-file uncertainty, firmware should create a new same-day revision file instead of repairing/appending to the uncertain old one. Old/corrupt/partial revision files are preserved for host-side recovery. Firmware must still avoid consuming or discarding FRAM records until append/verify to the active revision succeeds. This removes historical CSV sequence-resume baggage and associated large tail-scan buffers in a scoped code task, not in documentation.
 
 ### 2B-3B — Read-only bounded pressure/status scan model
 
-Status: after 2B-3B-1 scratch owner plan/foundation. Add richer read-only scan facts without deletion or full-card recursion, but do not merely add scan facts on top of large task-stack PTLOG path buffers.
+Status: after 2B-3B-1R path-workspace implementation and tail-repair/host-recovery sequencing as approved. Add richer read-only scan facts without deletion or full-card recursion, but do not merely add scan facts on top of large task-stack PTLOG path buffers.
 
 ### 2B-3C — Compact MAX7219 scan progress
 

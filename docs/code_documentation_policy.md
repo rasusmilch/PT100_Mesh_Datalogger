@@ -159,9 +159,9 @@ Document the following when relevant:
 * Locking assumptions.
 * Allocation behavior.
 * Stack usage when a helper uses more than small scalar or path-fragment locals.
-* Buffer ownership, lifetime, and required capacity for scratch/path buffers.
-* Whether a scratch/path buffer is stack, static, heap, PSRAM, or caller-owned.
-* Task/lock assumptions for shared scratch buffers, including whether the function may run while holding the SD I/O lock.
+* Buffer ownership, lifetime, and required capacity for static SD/PTLOG path-workspace buffers.
+* Whether an SD/PTLOG path-workspace buffer is stack, static, heap, PSRAM, or caller-owned.
+* Task/lock assumptions for shared static SD/PTLOG path-workspace buffers, including whether the function may run while holding the SD I/O lock.
 * Truncation and fail-closed behavior for path construction.
 * Allocation failure behavior and fallback allocation caps.
 * Whether a function may log.
@@ -172,7 +172,7 @@ Document the following when relevant:
 Storage-specific documentation requirements:
 
 * Do not add comments that normalize large task-stack buffers in storage code.
-* Public structs, public helpers, and nontrivial static helpers that use or receive storage scratch/path buffers must document buffer ownership, lifetime, required capacity, placement (stack/static/heap/PSRAM/caller-owned), task/lock assumptions, SD I/O lock expectations, truncation/fail-closed behavior, and allocation failure behavior.
+* Public structs, public helpers, and nontrivial static helpers that use or receive SD/PTLOG path-workspace buffers must document buffer ownership, lifetime, required capacity, placement (stack/static/heap/PSRAM/caller-owned), task/lock assumptions, SD I/O lock expectations, truncation/fail-closed behavior, and allocation failure behavior.
 * If a function intentionally uses a stack buffer larger than a small scalar/path-fragment buffer, the source comment must justify why that stack use is safe and the task receipt must report the file, function, and size.
 * Documentation must not claim target stack high-water, heap, PSRAM, FAT, or hardware validation unless that validation was actually performed and described.
 
