@@ -10,6 +10,13 @@
 static void make_dir(const char* path) { assert(mkdir(path, 0777) == 0 || access(path, F_OK) == 0); }
 static void make_file(const char* path) { FILE* f = fopen(path, "wb"); assert(f != NULL); fclose(f); }
 static bool exists_path(const char* path) { return access(path, F_OK) == 0; }
+static sd_ptlog_path_workspace_t* make_workspace(void)
+{
+  sd_ptlog_path_workspace_t* workspace =
+    (sd_ptlog_path_workspace_t*)calloc(1, sizeof(*workspace));
+  assert(workspace != NULL);
+  return workspace;
+}
 static void assert_zero_stats(const sd_ptlog_stats_t* stats)
 {
   assert(stats->total_ptlog_files == 0);
@@ -64,6 +71,54 @@ static void test_paths(void)
   char tiny[10] = "unchanged";
   assert(!SdPtlogBuildNestedPath("/sdcard", 1782432000, 0, date, sizeof(date), month, sizeof(month), tiny, sizeof(tiny)));
   assert(tiny[0] == '\0');
+}
+
+static void test_workspace_paths(void)
+{
+  sd_ptlog_path_workspace_t* workspace = make_workspace();
+  char date[16];
+  char month[16];
+  char path[128];
+  assert(SdPtlogBuildNestedPathWithWorkspace(workspace,
+                                             "/sdcard",
+                                             1782432000,
+                                             12,
+                                             date,
+                                             sizeof(date),
+                                             month,
+                                             sizeof(month),
+                                             path,
+                                             sizeof(path)));
+  assert(strcmp(date, "2026-06-26Z") == 0);
+  assert(strcmp(month, "2026-06") == 0);
+  assert(strcmp(path, "/sdcard/logs/2026-06/20260626.012") == 0);
+
+  strcpy(path, "unchanged");
+  assert(!SdPtlogBuildNestedPathWithWorkspace(workspace,
+                                              "/sdcard",
+                                              1782432000,
+                                              1000,
+                                              date,
+                                              sizeof(date),
+                                              month,
+                                              sizeof(month),
+                                              path,
+                                              sizeof(path)));
+  assert(path[0] == '\0');
+
+  strcpy(path, "unchanged");
+  assert(!SdPtlogBuildNestedPathWithWorkspace(NULL,
+                                              "/sdcard",
+                                              1782432000,
+                                              0,
+                                              date,
+                                              sizeof(date),
+                                              month,
+                                              sizeof(month),
+                                              path,
+                                              sizeof(path)));
+  assert(path[0] == '\0');
+  free(workspace);
 }
 
 static void test_parse(void)
@@ -137,6 +192,45 @@ static void test_traversal_compact_nested_only(void)
   assert(SdPtlogFindOldestCandidate(root, current_path, "2026-06-23Z", &candidate));
   assert(strcmp(candidate.date, "2025-06-23Z") == 0);
   assert(candidate.revision == 0);
+}
+
+static void test_workspace_traversal_and_stats(void)
+{
+  char templ[] = "/tmp/ptlog_workspace_XXXXXX";
+  char* root = mkdtemp(templ);
+  assert(root != NULL);
+  char path[256];
+  snprintf(path, sizeof(path), "%s/20230101.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/2023-01-01Z.ptlog", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/not-a-month", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/not-a-month/20200101.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/20240101.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2024-01/20240102.000", root); make_file(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06", root); make_dir(path);
+  snprintf(path, sizeof(path), "%s/logs/2026-06/20260623.000", root); make_file(path);
+
+  sd_ptlog_path_workspace_t* workspace = make_workspace();
+  sd_ptlog_candidate_t candidate;
+  assert(SdPtlogFindOldestCandidateWithWorkspace(
+    workspace, root, NULL, "2026-06-23Z", &candidate));
+  assert(strcmp(candidate.date, "2024-01-01Z") == 0);
+  assert(strcmp(candidate.name, "20240101.000") == 0);
+
+  sd_ptlog_stats_t stats;
+  assert(SdPtlogCollectStatsWithWorkspace(
+    workspace, root, NULL, "2026-06-23Z", &stats));
+  assert(stats.total_ptlog_files == 3);
+  assert(stats.current_date_ptlog_files == 1);
+  assert(stats.eligible_ptlog_files == 2);
+  assert(stats.valid_month_directories == 2);
+
+  assert(!SdPtlogFindOldestCandidateWithWorkspace(
+    NULL, root, NULL, "2026-06-23Z", &candidate));
+  assert(!SdPtlogCollectStatsWithWorkspace(
+    NULL, root, NULL, "2026-06-23Z", &stats));
+  free(workspace);
 }
 
 static void test_current_date_only_is_protected(void)
@@ -296,8 +390,10 @@ static void test_stats_current_date_and_path_separation(void)
 int main(void)
 {
   test_paths();
+  test_workspace_paths();
   test_parse();
   test_traversal_compact_nested_only();
+  test_workspace_traversal_and_stats();
   test_current_date_only_is_protected();
   test_reclaim_deletes_only_nested_compact();
   test_reclaim_unlink_failure_does_not_count();
