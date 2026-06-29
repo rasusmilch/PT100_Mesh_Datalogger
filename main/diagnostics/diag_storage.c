@@ -23,9 +23,10 @@ static const char* kRecordIdKey = "diag_recid";
 /**
  * @brief Build the compact nested PTLOG path used by storage diagnostics.
  *
- * The diagnostic path is delegated to SdPtlogBuildNestedPath() with revision 0
- * so self-tests exercise the same /logs/YYYY-MM/YYYYMMDD.RRR layout as normal
- * firmware-created PTLOG files. Invalid arguments leave path_out empty.
+ * The diagnostic path is delegated to SdPtlogBuildNestedPathWithWorkspace()
+ * with revision 0 so self-tests exercise the same /logs/YYYY-MM/YYYYMMDD.RRR
+ * layout as normal firmware-created PTLOG files. Invalid arguments or a
+ * missing logger-owned workspace leave path_out empty.
  */
 static void
 BuildDailyPtlogPath(const sd_logger_t* logger,
@@ -36,21 +37,23 @@ BuildDailyPtlogPath(const sd_logger_t* logger,
   if (path_out != NULL && path_out_size > 0) {
     path_out[0] = '\0';
   }
-  if (logger == NULL || path_out == NULL || path_out_size == 0) {
+  if (logger == NULL || logger->ptlog_workspace == NULL || path_out == NULL ||
+      path_out_size == 0) {
     return;
   }
 
   char date_string[SD_PTLOG_DATE_LEN + 1u];
   char month_string[SD_PTLOG_MONTH_LEN + 1u];
-  (void)SdPtlogBuildNestedPath(logger->mount_point,
-                               epoch_seconds,
-                               0,
-                               date_string,
-                               sizeof(date_string),
-                               month_string,
-                               sizeof(month_string),
-                               path_out,
-                               path_out_size);
+  (void)SdPtlogBuildNestedPathWithWorkspace(logger->ptlog_workspace,
+                                            logger->mount_point,
+                                            epoch_seconds,
+                                            0,
+                                            date_string,
+                                            sizeof(date_string),
+                                            month_string,
+                                            sizeof(month_string),
+                                            path_out,
+                                            path_out_size);
 }
 
 /**

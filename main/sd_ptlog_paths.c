@@ -8,51 +8,12 @@
 
 #include <dirent.h>
 #include <inttypes.h>
-#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <time.h>
 
-#if defined(__has_include)
-#if __has_include("esp_heap_caps.h")
-#include "esp_heap_caps.h"
-#define SD_PTLOG_PATHS_HAS_ESP_HEAP_CAPS 1
-#endif
-#endif
-
 static const char kLogsDirName[] = "logs";
-
-/**
- * @brief Allocate a private workspace for legacy public SdPtlog* wrappers.
- *
- * Runtime logger code does not use this path; it passes its logger-owned PSRAM
- * workspace explicitly.  On target firmware the temporary compatibility
- * workspace is PSRAM-only and fails closed when unavailable.  Host tests use
- * calloc because ESP heap capabilities are unavailable.  The allocation is not
- * a buffer handout: wrappers free it before return and copy results into
- * caller-owned outputs.
- */
-static sd_ptlog_path_workspace_t*
-AllocateTemporaryWorkspace(void)
-{
-#if SD_PTLOG_PATHS_HAS_ESP_HEAP_CAPS
-  return (sd_ptlog_path_workspace_t*)heap_caps_calloc(
-    1, sizeof(sd_ptlog_path_workspace_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-  return (sd_ptlog_path_workspace_t*)calloc(1, sizeof(sd_ptlog_path_workspace_t));
-#endif
-}
-
-static void
-FreeTemporaryWorkspace(sd_ptlog_path_workspace_t* workspace)
-{
-#if SD_PTLOG_PATHS_HAS_ESP_HEAP_CAPS
-  heap_caps_free(workspace);
-#else
-  free(workspace);
-#endif
-}
 
 static bool
 IsDigit(char c)
@@ -131,23 +92,6 @@ SdPtlogBuildLogRootPath(const char* mount_point, char* out_path, size_t out_path
 }
 
 bool
-SdPtlogBuildMonthDirPath(const char* mount_point,
-                         const char* month_string,
-                         char* out_path,
-                         size_t out_path_size)
-{
-  sd_ptlog_path_workspace_t* workspace = AllocateTemporaryWorkspace();
-  if (workspace == NULL) {
-    if (out_path != NULL && out_path_size > 0) out_path[0] = '\0';
-    return false;
-  }
-  const bool result = SdPtlogBuildMonthDirPathWithWorkspace(
-    workspace, mount_point, month_string, out_path, out_path_size);
-  FreeTemporaryWorkspace(workspace);
-  return result;
-}
-
-bool
 SdPtlogBuildMonthDirPathWithWorkspace(sd_ptlog_path_workspace_t* workspace,
                                       const char* mount_point,
                                       const char* month_string,
@@ -161,37 +105,6 @@ SdPtlogBuildMonthDirPathWithWorkspace(sd_ptlog_path_workspace_t* workspace,
     return false;
   }
   return JoinPath(workspace->log_root, month_string, out_path, out_path_size);
-}
-
-bool
-SdPtlogBuildNestedPath(const char* mount_point,
-                       int64_t epoch_seconds,
-                       uint32_t revision,
-                       char* date_out,
-                       size_t date_out_size,
-                       char* month_out,
-                       size_t month_out_size,
-                       char* path_out,
-                       size_t path_out_size)
-{
-  sd_ptlog_path_workspace_t* workspace = AllocateTemporaryWorkspace();
-  if (workspace == NULL) {
-    if (path_out != NULL && path_out_size > 0) path_out[0] = '\0';
-    return false;
-  }
-  const bool result = SdPtlogBuildNestedPathWithWorkspace(
-    workspace,
-    mount_point,
-    epoch_seconds,
-    revision,
-    date_out,
-    date_out_size,
-    month_out,
-    month_out_size,
-    path_out,
-    path_out_size);
-  FreeTemporaryWorkspace(workspace);
-  return result;
 }
 
 bool
@@ -465,20 +378,6 @@ ScanPtlogStatsDirectory(const char* dir_path,
  * protected here so later deletion policies cannot select them accidentally.
  */
 bool
-SdPtlogFindOldestCandidate(const char* mount_point,
-                           const char* current_path,
-                           const char* current_date,
-                           sd_ptlog_candidate_t* candidate_out)
-{
-  sd_ptlog_path_workspace_t* workspace = AllocateTemporaryWorkspace();
-  if (workspace == NULL) return false;
-  const bool result = SdPtlogFindOldestCandidateWithWorkspace(
-    workspace, mount_point, current_path, current_date, candidate_out);
-  FreeTemporaryWorkspace(workspace);
-  return result;
-}
-
-bool
 SdPtlogFindOldestCandidateWithWorkspace(sd_ptlog_path_workspace_t* workspace,
                                         const char* mount_point,
                                         const char* current_path,
@@ -510,20 +409,6 @@ SdPtlogFindOldestCandidateWithWorkspace(sd_ptlog_path_workspace_t* workspace,
 
   if (found) *candidate_out = workspace->best;
   return found;
-}
-
-bool
-SdPtlogCollectStats(const char* mount_point,
-                    const char* current_path,
-                    const char* current_date,
-                    sd_ptlog_stats_t* stats_out)
-{
-  sd_ptlog_path_workspace_t* workspace = AllocateTemporaryWorkspace();
-  if (workspace == NULL) return false;
-  const bool result = SdPtlogCollectStatsWithWorkspace(
-    workspace, mount_point, current_path, current_date, stats_out);
-  FreeTemporaryWorkspace(workspace);
-  return result;
 }
 
 bool

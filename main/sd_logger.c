@@ -709,7 +709,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     if (!SdPtlogAccumulateNextRevision(parsed_revision, revision_out)) {
       SdLoggerDailyDiagSet(logger,
                            SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
-                           candidate_path,
+                           workspace->candidate_path,
                            date_string,
                            month_string,
                            parsed_revision,
@@ -718,7 +718,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
       ESP_LOGE(kTag,
                "PTLOG revision limit reached in %s rev=%" PRIu32
                "; refusing to wrap beyond %u",
-               candidate_path,
+               workspace->candidate_path,
                parsed_revision,
                (unsigned)SD_PTLOG_MAX_REVISION);
       closedir(dir);

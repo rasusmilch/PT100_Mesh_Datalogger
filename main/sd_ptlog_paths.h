@@ -108,12 +108,6 @@ bool SdPtlogBuildLogRootPath(const char* mount_point,
                              char* out_path,
                              size_t out_path_size);
 
-/** Build /<mount>/logs/YYYY-MM from a month string already validated as YYYY-MM. */
-bool SdPtlogBuildMonthDirPath(const char* mount_point,
-                              const char* month_string,
-                              char* out_path,
-                              size_t out_path_size);
-
 /**
  * @brief Workspace-backed /<mount>/logs/YYYY-MM builder.
  *
@@ -128,17 +122,6 @@ bool SdPtlogBuildMonthDirPathWithWorkspace(sd_ptlog_path_workspace_t* workspace,
                                            const char* month_string,
                                            char* out_path,
                                            size_t out_path_size);
-
-/** Build canonical date/month strings and nested /logs/YYYY-MM/YYYYMMDD.RRR path. */
-bool SdPtlogBuildNestedPath(const char* mount_point,
-                            int64_t epoch_seconds,
-                            uint32_t revision,
-                            char* date_out,
-                            size_t date_out_size,
-                            char* month_out,
-                            size_t month_out_size,
-                            char* path_out,
-                            size_t path_out_size);
 
 /**
  * @brief Workspace-backed canonical nested PTLOG path builder.
@@ -178,12 +161,6 @@ bool SdPtlogAccumulateNextRevision(uint32_t existing_revision,
 /** Return true only for bounded traversal month directory names in YYYY-MM form. */
 bool SdPtlogIsMonthDirectoryName(const char* name);
 
-/** Find the oldest safe compact PTLOG candidate in /logs/YYYY-MM only. */
-bool SdPtlogFindOldestCandidate(const char* mount_point,
-                                const char* current_path,
-                                const char* current_date,
-                                sd_ptlog_candidate_t* candidate_out);
-
 /**
  * @brief Workspace-backed bounded oldest-candidate scan.
  *
@@ -198,8 +175,9 @@ bool SdPtlogFindOldestCandidateWithWorkspace(sd_ptlog_path_workspace_t* workspac
                                              sd_ptlog_candidate_t* candidate_out);
 
 /**
- * @brief Collect read-only PTLOG counts using the bounded retention traversal.
+ * @brief Workspace-backed bounded PTLOG stats scan.
  *
+ * @param workspace Caller-owned serialized PTLOG path workspace.
  * @param mount_point Mounted SD root path, such as "/sdcard".
  * @param current_path Optional exact PTLOG path to exclude from eligibility.
  * @param current_date Optional current UTC date string in "YYYY-MM-DDZ" form.
@@ -212,21 +190,9 @@ bool SdPtlogFindOldestCandidateWithWorkspace(sd_ptlog_path_workspace_t* workspac
  * @note Traversal is intentionally limited to /logs and /logs/YYYY-MM.
  * Missing /logs and unreadable month directories produce no counts rather than
  * a threshold policy decision. Root-level PTLOG-looking files are ignored.
- * @warning This function never deletes files and never decides retention
- * thresholds.  Future policy code must compare these facts against approved
- * thresholds outside the PTLOG path/scanner layer.
- */
-bool SdPtlogCollectStats(const char* mount_point,
-                         const char* current_path,
-                         const char* current_date,
-                         sd_ptlog_stats_t* stats_out);
-
-/**
- * @brief Workspace-backed bounded PTLOG stats scan.
- *
- * The caller owns and serializes workspace for the full scan.  This helper may
- * block on directory/stat I/O, mutates only stats_out/workspace, and returns
- * false on invalid arguments or approved-path truncation.
+ * @warning The caller owns and serializes workspace for the full scan. This
+ * helper may block on directory/stat I/O, mutates only stats_out/workspace,
+ * never deletes files, and never decides retention thresholds.
  */
 bool SdPtlogCollectStatsWithWorkspace(sd_ptlog_path_workspace_t* workspace,
                                       const char* mount_point,
