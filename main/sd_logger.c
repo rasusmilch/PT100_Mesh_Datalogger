@@ -1206,14 +1206,18 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
     }
   }
 
+  /*
+   * Any open that is not the trusted same-session file above is treated as
+   * uncertain. Scan compact same-day names only, preserving existing revisions
+   * as historical data and failing closed if the day is already at .999.
+   * SdLoggerFindNextRevisionInMonthLocked() uses logger->ptlog_workspace and
+   * must remain under the same SD logger serialization as this daily-open path.
+   */
   uint32_t revision = 0;
-  if (logger->current_date[0] != '\0' &&
-      strcmp(date_string, logger->current_date) == 0 && !same_signature) {
-    esp_err_t revision_result = SdLoggerFindNextRevisionInMonthLocked(
-      logger, date_string, month_string, &revision);
-    if (revision_result != ESP_OK) {
-      return revision_result;
-    }
+  esp_err_t revision_result = SdLoggerFindNextRevisionInMonthLocked(
+    logger, date_string, month_string, &revision);
+  if (revision_result != ESP_OK) {
+    return revision_result;
   }
 
   BuildDailyPtlogPath(logger,
