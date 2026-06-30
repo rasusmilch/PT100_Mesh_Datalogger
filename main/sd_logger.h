@@ -10,6 +10,7 @@
 #include "esp_err.h"
 #include "ptlog_format.h"
 #include "sd_csv_verify.h"
+#include "sd_ptlog_paths.h"
 #include "sdmmc_cmd.h"
 
 #ifdef __cplusplus
@@ -91,6 +92,15 @@ extern "C"
     size_t io_bounce_capacity;
     uint8_t* verify_readback_bytes;
     size_t verify_readback_capacity;
+    /**
+     * Logger-owned SD/PTLOG path workspace.
+     *
+     * Target firmware allocates this once from PSRAM-capable 8-bit heap in
+     * SdLoggerInit and runtime PTLOG helpers fail closed when it is absent.
+     * Access is serialized by the logger/SD operation; pointers into the
+     * workspace must not escape the active operation.
+     */
+    sd_ptlog_path_workspace_t* ptlog_workspace;
 
     // Saved slot configuration so we can retry mounting on hot-insert.
     spi_host_device_t host_id;
