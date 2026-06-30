@@ -23,9 +23,13 @@ static const char* kRecordIdKey = "diag_recid";
 /**
  * @brief Build the compact nested PTLOG path used by storage diagnostics.
  *
- * The diagnostic path is delegated to SdPtlogBuildNestedPath() with revision 0
- * so self-tests exercise the same /logs/YYYY-MM/YYYYMMDD.RRR layout as normal
- * firmware-created PTLOG files. Invalid arguments leave path_out empty.
+ * The diagnostic path is delegated to SdPtlogBuildNestedPathWithWorkspace()
+ * with revision 0 so self-tests exercise the same /logs/YYYY-MM/YYYYMMDD.RRR
+ * layout as normal firmware-created PTLOG files. The caller must hold
+ * RuntimeSdIoLock() because the helper uses the shared logger-owned PTLOG path
+ * workspace. The final path is copied into the caller-owned path_out buffer;
+ * no workspace pointer escapes. Invalid arguments or a missing logger-owned
+ * workspace leave path_out empty.
  */
 static void
 BuildDailyPtlogPath(const sd_logger_t* logger,
@@ -36,21 +40,23 @@ BuildDailyPtlogPath(const sd_logger_t* logger,
   if (path_out != NULL && path_out_size > 0) {
     path_out[0] = '\0';
   }
-  if (logger == NULL || path_out == NULL || path_out_size == 0) {
+  if (logger == NULL || logger->ptlog_workspace == NULL || path_out == NULL ||
+      path_out_size == 0) {
     return;
   }
 
   char date_string[SD_PTLOG_DATE_LEN + 1u];
   char month_string[SD_PTLOG_MONTH_LEN + 1u];
-  (void)SdPtlogBuildNestedPath(logger->mount_point,
-                               epoch_seconds,
-                               0,
-                               date_string,
-                               sizeof(date_string),
-                               month_string,
-                               sizeof(month_string),
-                               path_out,
-                               path_out_size);
+  (void)SdPtlogBuildNestedPathWithWorkspace(logger->ptlog_workspace,
+                                            logger->mount_point,
+                                            epoch_seconds,
+                                            0,
+                                            date_string,
+                                            sizeof(date_string),
+                                            month_string,
+                                            sizeof(month_string),
+                                            path_out,
+                                            path_out_size);
 }
 
 /**
@@ -461,8 +467,16 @@ RunMidnightSplitTest(const app_runtime_t* runtime,
 
   char path_day1[128];
   char path_day2[128];
+  runtime_state_t* state = RuntimeGetState();
+  if (state == NULL || !RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
+    snprintf(details,
+             details_len,
+             "sd io lock failed while building diagnostic PTLOG paths");
+    return false;
+  }
   BuildDailyPtlogPath(logger, epoch_day1, path_day1, sizeof(path_day1));
   BuildDailyPtlogPath(logger, epoch_day2, path_day2, sizeof(path_day2));
+  RuntimeSdIoUnlock(state);
 
   bool found_day1 = false;
   bool found_day2 = false;

@@ -79,6 +79,23 @@ AllocatePreferPsram(size_t bytes)
 }
 
 /**
+ * @brief Allocate the logger-owned SD/PTLOG path workspace from PSRAM only.
+ *
+ * The workspace has stable non-stack lifetime for runtime logger PTLOG path,
+ * filename, month-directory, candidate-path, and candidate structs.  Target
+ * firmware must not fall back to internal heap or task stack: a NULL result
+ * makes later SD/PTLOG operations fail closed before path I/O.  The owning
+ * sd_logger_t serializes access through its SD/logger operations, and no
+ * pointer into the workspace may outlive the active operation.
+ */
+static sd_ptlog_path_workspace_t*
+AllocatePtlogWorkspacePsram(void)
+{
+  return (sd_ptlog_path_workspace_t*)heap_caps_calloc(
+    1, sizeof(sd_ptlog_path_workspace_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+/**
  * @brief Execute DefaultOr.
  * @param value Parameter value.
  * @param fallback Parameter fallback.
@@ -266,6 +283,10 @@ SdLoggerInit(sd_logger_t* logger, const sd_logger_config_t* config)
       logger->resume_tail_capacity = resume_bytes;
     }
   }
+  logger->ptlog_workspace = AllocatePtlogWorkspacePsram();
+  if (logger->ptlog_workspace == NULL) {
+    ESP_LOGE(kTag, "Failed to allocate PSRAM SD/PTLOG path workspace");
+  }
 
   logger->host_id = (spi_host_device_t)0;
   logger->cs_gpio = -1;
@@ -302,16 +323,21 @@ BuildDailyPtlogPath(const sd_logger_t* logger,
   if (logger == NULL) {
     return;
   }
+  sd_ptlog_path_workspace_t* workspace = logger->ptlog_workspace;
+  if (workspace == NULL) {
+    return;
+  }
 
-  if (!SdPtlogBuildNestedPath(logger->mount_point,
-                              epoch_seconds,
-                              revision,
-                              date_out,
-                              date_out_size,
-                              month_out,
-                              month_out_size,
-                              path_out,
-                              path_out_size)) {
+  if (!SdPtlogBuildNestedPathWithWorkspace(workspace,
+                                           logger->mount_point,
+                                           epoch_seconds,
+                                           revision,
+                                           date_out,
+                                           date_out_size,
+                                           month_out,
+                                           month_out_size,
+                                           path_out,
+                                           path_out_size)) {
     if (path_out != NULL && path_out_size > 0) {
       path_out[0] = '\0';
     }
@@ -505,10 +531,14 @@ SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
   if (logger == NULL || month_string == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+  sd_ptlog_path_workspace_t* workspace = logger->ptlog_workspace;
+  if (workspace == NULL) {
+    ESP_LOGE(kTag, "PTLOG path workspace unavailable");
+    return ESP_ERR_NO_MEM;
+  }
 
-  char log_root[SD_PTLOG_MAX_PATH_LEN];
   if (!SdPtlogBuildLogRootPath(
-        logger->mount_point, log_root, sizeof(log_root))) {
+        logger->mount_point, workspace->log_root, sizeof(workspace->log_root))) {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_LOG_ROOT_BUILD,
                          logger->mount_point,
@@ -522,7 +552,7 @@ SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
   }
   esp_err_t result = SdLoggerEnsureDirectoryPath_(
     logger,
-    log_root,
+    workspace->log_root,
     "PTLOG log root",
     SD_LOGGER_DAILY_STAGE_LOG_ROOT_STAT,
     SD_LOGGER_DAILY_STAGE_LOG_ROOT_MKDIR,
@@ -534,9 +564,11 @@ SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
     return result;
   }
 
-  char month_dir[SD_PTLOG_MAX_PATH_LEN];
-  if (!SdPtlogBuildMonthDirPath(
-        logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
+  if (!SdPtlogBuildMonthDirPathWithWorkspace(workspace,
+                                             logger->mount_point,
+                                             month_string,
+                                             workspace->month_dir,
+                                             sizeof(workspace->month_dir))) {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_MONTH_DIR_BUILD,
                          logger->mount_point,
@@ -550,7 +582,7 @@ SdLoggerEnsurePtlogDirectoryLocked(sd_logger_t* logger,
   }
   return SdLoggerEnsureDirectoryPath_(
     logger,
-    month_dir,
+    workspace->month_dir,
     "PTLOG month",
     SD_LOGGER_DAILY_STAGE_MONTH_DIR_STAT,
     SD_LOGGER_DAILY_STAGE_MONTH_DIR_MKDIR,
@@ -579,9 +611,24 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
   }
 
   *revision_out = 0u;
-  char month_dir[SD_PTLOG_MAX_PATH_LEN];
-  if (!SdPtlogBuildMonthDirPath(
-        logger->mount_point, month_string, month_dir, sizeof(month_dir))) {
+  sd_ptlog_path_workspace_t* workspace = logger->ptlog_workspace;
+  if (workspace == NULL) {
+    SdLoggerDailyDiagSet(logger,
+                         SD_LOGGER_DAILY_STAGE_REVISION_DIR_BUILD,
+                         logger->mount_point,
+                         date_string,
+                         month_string,
+                         *revision_out,
+                         0,
+                         ESP_ERR_NO_MEM);
+    ESP_LOGE(kTag, "PTLOG path workspace unavailable");
+    return ESP_ERR_NO_MEM;
+  }
+  if (!SdPtlogBuildMonthDirPathWithWorkspace(workspace,
+                                             logger->mount_point,
+                                             month_string,
+                                             workspace->month_dir,
+                                             sizeof(workspace->month_dir))) {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_REVISION_DIR_BUILD,
                          logger->mount_point,
@@ -594,7 +641,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     return ESP_FAIL;
   }
 
-  DIR* dir = opendir(month_dir);
+  DIR* dir = opendir(workspace->month_dir);
   if (dir == NULL) {
     if (errno == ENOENT) {
       return ESP_OK;
@@ -602,7 +649,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     const int dir_errno = errno;
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_REVISION_DIR_OPEN,
-                         month_dir,
+                         workspace->month_dir,
                          date_string,
                          month_string,
                          *revision_out,
@@ -610,7 +657,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
                          ESP_FAIL);
     ESP_LOGE(kTag,
              "Failed to open PTLOG revision directory %s: %s (%d)",
-             month_dir,
+             workspace->month_dir,
              strerror(dir_errno),
              dir_errno);
     return ESP_FAIL;
@@ -618,27 +665,31 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
 
   struct dirent* entry = NULL;
   while ((entry = readdir(dir)) != NULL) {
-    char parsed_date[SD_PTLOG_DATE_LEN + 1u];
     uint32_t parsed_revision = 0;
     if (!SdPtlogParseName(
-          entry->d_name, parsed_date, sizeof(parsed_date), &parsed_revision)) {
+          entry->d_name,
+          workspace->parsed_date,
+          sizeof(workspace->parsed_date),
+          &parsed_revision)) {
       continue;
     }
-    if (strcmp(parsed_date, date_string) != 0) {
+    if (strcmp(workspace->parsed_date, date_string) != 0) {
       continue;
     }
 
-    char candidate_path[SD_PTLOG_MAX_PATH_LEN];
     if (!SdLoggerJoinPath(
-          month_dir, entry->d_name, candidate_path, sizeof(candidate_path))) {
+          workspace->month_dir,
+          entry->d_name,
+          workspace->candidate_path,
+          sizeof(workspace->candidate_path))) {
       continue;
     }
     struct stat stat_buffer;
-    if (stat(candidate_path, &stat_buffer) != 0) {
+    if (stat(workspace->candidate_path, &stat_buffer) != 0) {
       const int stat_errno = errno;
       SdLoggerDailyDiagSet(logger,
                            SD_LOGGER_DAILY_STAGE_REVISION_FILE_STAT,
-                           candidate_path,
+                           workspace->candidate_path,
                            date_string,
                            month_string,
                            *revision_out,
@@ -646,7 +697,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
                            ESP_FAIL);
       ESP_LOGE(kTag,
                "Failed to stat PTLOG revision candidate %s: %s (%d)",
-               candidate_path,
+               workspace->candidate_path,
                strerror(stat_errno),
                stat_errno);
       closedir(dir);
@@ -658,7 +709,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
     if (!SdPtlogAccumulateNextRevision(parsed_revision, revision_out)) {
       SdLoggerDailyDiagSet(logger,
                            SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
-                           candidate_path,
+                           workspace->candidate_path,
                            date_string,
                            month_string,
                            parsed_revision,
@@ -667,7 +718,7 @@ SdLoggerFindNextRevisionInMonthLocked(sd_logger_t* logger,
       ESP_LOGE(kTag,
                "PTLOG revision limit reached in %s rev=%" PRIu32
                "; refusing to wrap beyond %u",
-               candidate_path,
+               workspace->candidate_path,
                parsed_revision,
                (unsigned)SD_PTLOG_MAX_REVISION);
       closedir(dir);
@@ -732,22 +783,29 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
   uint32_t deletes = 0;
   while (free_bytes < required_free_bytes &&
          deletes < kSdReclaimMaxDeletesPerAttempt) {
-    sd_ptlog_candidate_t candidate;
+    sd_ptlog_path_workspace_t* workspace = logger->ptlog_workspace;
+    if (workspace == NULL) {
+      ESP_LOGE(kTag, "PTLOG path workspace unavailable");
+      return ESP_ERR_NO_MEM;
+    }
     /* Task 2A intentionally relies on broad current-date protection because
      * sd_logger_t does not yet track the open path.  The bounded scanner only
      * returns parsed regular compact PTLOG files from /logs/YYYY-MM only. */
-    if (!SdPtlogFindOldestCandidate(
-          logger->mount_point, NULL, logger->current_date, &candidate)) {
+    if (!SdPtlogFindOldestCandidateWithWorkspace(workspace,
+                                                 logger->mount_point,
+                                                 NULL,
+                                                 logger->current_date,
+                                                 &workspace->candidate)) {
       break;
     }
 
-    if (unlink(candidate.path) != 0) {
+    if (unlink(workspace->candidate.path) != 0) {
       ESP_LOGW(kTag,
                "Failed to delete old nested PTLOG %s date=%s rev=%" PRIu32
                ": %s (%d)",
-               candidate.path,
-               candidate.date,
-               candidate.revision,
+               workspace->candidate.path,
+               workspace->candidate.date,
+               workspace->candidate.revision,
                strerror(errno),
                errno);
       break;
@@ -755,9 +813,9 @@ SdLoggerReclaimSpaceLocked(sd_logger_t* logger,
     deletes++;
     ESP_LOGW(kTag,
              "Deleted old nested PTLOG to reclaim space: %s date=%s rev=%" PRIu32,
-             candidate.path,
-             candidate.date,
-             candidate.revision);
+             workspace->candidate.path,
+             workspace->candidate.date,
+             workspace->candidate.revision);
 
     space_result =
       SdLoggerGetSpaceInfoLocked(logger, &total_bytes, &free_bytes);
@@ -891,6 +949,10 @@ SdLoggerMountInternal(sd_logger_t* logger,
                       int cs_gpio,
                       bool format_if_mount_failed)
 {
+  if (logger->ptlog_workspace == NULL) {
+    ESP_LOGE(kTag, "SD mount blocked: PSRAM PTLOG path workspace unavailable");
+    return ESP_ERR_NO_MEM;
+  }
   sdmmc_host_t sd_host = SDSPI_HOST_DEFAULT();
   sd_host.slot = host;
   // Hot-insert and longer wiring runs are significantly more reliable at a
@@ -1101,21 +1163,26 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   if (!logger->is_mounted) {
     return ESP_ERR_INVALID_STATE;
   }
+  sd_ptlog_path_workspace_t* workspace = logger->ptlog_workspace;
+  if (workspace == NULL) {
+    ESP_LOGE(kTag, "PTLOG path workspace unavailable");
+    return ESP_ERR_NO_MEM;
+  }
   SdLoggerDailyDiagClear(logger);
 
-  char date_string[16];
-  char month_string[16];
-  char path[128];
+  char* date_string = workspace->date;
+  char* month_string = workspace->month;
+  char* path = workspace->daily_path;
   const bool same_signature = (logger->current_header_signature == header_signature);
   BuildDailyPtlogPath(logger,
                       epoch_utc,
                       0,
                       date_string,
-                      sizeof(date_string),
+                      sizeof(workspace->date),
                       month_string,
-                      sizeof(month_string),
+                      sizeof(workspace->month),
                       path,
-                      sizeof(path));
+                      sizeof(workspace->daily_path));
   if (path[0] == '\0') {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_PATH_BUILD,
@@ -1153,11 +1220,11 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
                       epoch_utc,
                       revision,
                       date_string,
-                      sizeof(date_string),
+                      sizeof(workspace->date),
                       month_string,
-                      sizeof(month_string),
+                      sizeof(workspace->month),
                       path,
-                      sizeof(path));
+                      sizeof(workspace->daily_path));
   if (path[0] == '\0') {
     SdLoggerDailyDiagSet(logger,
                          SD_LOGGER_DAILY_STAGE_PATH_BUILD,

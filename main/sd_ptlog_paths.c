@@ -92,33 +92,36 @@ SdPtlogBuildLogRootPath(const char* mount_point, char* out_path, size_t out_path
 }
 
 bool
-SdPtlogBuildMonthDirPath(const char* mount_point,
-                         const char* month_string,
-                         char* out_path,
-                         size_t out_path_size)
+SdPtlogBuildMonthDirPathWithWorkspace(sd_ptlog_path_workspace_t* workspace,
+                                      const char* mount_point,
+                                      const char* month_string,
+                                      char* out_path,
+                                      size_t out_path_size)
 {
-  char log_root[SD_PTLOG_MAX_PATH_LEN];
-  if (!SdPtlogIsMonthDirectoryName(month_string) ||
-      !SdPtlogBuildLogRootPath(mount_point, log_root, sizeof(log_root))) {
+  if (workspace == NULL || !SdPtlogIsMonthDirectoryName(month_string) ||
+      !SdPtlogBuildLogRootPath(
+        mount_point, workspace->log_root, sizeof(workspace->log_root))) {
     if (out_path != NULL && out_path_size > 0) out_path[0] = '\0';
     return false;
   }
-  return JoinPath(log_root, month_string, out_path, out_path_size);
+  return JoinPath(workspace->log_root, month_string, out_path, out_path_size);
 }
 
 bool
-SdPtlogBuildNestedPath(const char* mount_point,
-                       int64_t epoch_seconds,
-                       uint32_t revision,
-                       char* date_out,
-                       size_t date_out_size,
-                       char* month_out,
-                       size_t month_out_size,
-                       char* path_out,
-                       size_t path_out_size)
+SdPtlogBuildNestedPathWithWorkspace(sd_ptlog_path_workspace_t* workspace,
+                                    const char* mount_point,
+                                    int64_t epoch_seconds,
+                                    uint32_t revision,
+                                    char* date_out,
+                                    size_t date_out_size,
+                                    char* month_out,
+                                    size_t month_out_size,
+                                    char* path_out,
+                                    size_t path_out_size)
 {
-  if (date_out == NULL || month_out == NULL || path_out == NULL ||
-      date_out_size < SD_PTLOG_DATE_LEN + 1u || month_out_size < SD_PTLOG_MONTH_LEN + 1u) {
+  if (workspace == NULL || date_out == NULL || month_out == NULL ||
+      path_out == NULL || date_out_size < SD_PTLOG_DATE_LEN + 1u ||
+      month_out_size < SD_PTLOG_MONTH_LEN + 1u) {
     if (path_out != NULL && path_out_size > 0) path_out[0] = '\0';
     return false;
   }
@@ -146,22 +149,21 @@ SdPtlogBuildNestedPath(const char* mount_point,
     path_out[0] = '\0';
     return false;
   }
-  char daily_name[SD_PTLOG_MAX_NAME_LEN];
-  int written = snprintf(daily_name,
-                         sizeof(daily_name),
+  int written = snprintf(workspace->daily_name,
+                         sizeof(workspace->daily_name),
                          "%s.%03" PRIu32,
                          compact_date,
                          revision);
-  if (written < 0 || written >= (int)sizeof(daily_name)) {
+  if (written < 0 || written >= (int)sizeof(workspace->daily_name)) {
     path_out[0] = '\0';
     return false;
   }
-  char month_dir[SD_PTLOG_MAX_PATH_LEN];
-  if (!SdPtlogBuildMonthDirPath(mount_point, month_out, month_dir, sizeof(month_dir))) {
+  if (!SdPtlogBuildMonthDirPathWithWorkspace(
+        workspace, mount_point, month_out, workspace->month_dir, sizeof(workspace->month_dir))) {
     path_out[0] = '\0';
     return false;
   }
-  return JoinPath(month_dir, daily_name, path_out, path_out_size);
+  return JoinPath(workspace->month_dir, workspace->daily_name, path_out, path_out_size);
 }
 
 bool
@@ -238,33 +240,41 @@ ConsiderCandidate(const char* dir_path,
                   const char* name,
                   const char* current_path,
                   const char* current_date,
+                  sd_ptlog_path_workspace_t* workspace,
                   bool* found,
                   sd_ptlog_candidate_t* best)
 {
-  char date[SD_PTLOG_DATE_LEN + 1u];
   uint32_t revision = 0;
-  if (!SdPtlogParseName(name, date, sizeof(date), &revision)) return;
-  char path[SD_PTLOG_MAX_PATH_LEN];
-  if (!JoinPath(dir_path, name, path, sizeof(path))) return;
+  if (workspace == NULL ||
+      !SdPtlogParseName(
+        name, workspace->parsed_date, sizeof(workspace->parsed_date), &revision)) return;
+  if (!JoinPath(
+        dir_path, name, workspace->candidate_path, sizeof(workspace->candidate_path))) return;
   struct stat stat_buffer;
-  if (stat(path, &stat_buffer) != 0 || !S_ISREG(stat_buffer.st_mode)) return;
+  if (stat(workspace->candidate_path, &stat_buffer) != 0 ||
+      !S_ISREG(stat_buffer.st_mode)) return;
   /* Later retention code may delete candidates, so PTLOG-looking directories
    * or special files must fail closed even when their basenames parse. */
-  const bool current_open = (current_path != NULL && strcmp(path, current_path) == 0);
+  const bool current_open =
+    (current_path != NULL && strcmp(workspace->candidate_path, current_path) == 0);
   if (current_open) return;
-  if (current_date != NULL && current_date[0] != '\0' && strcmp(date, current_date) == 0) return;
-  sd_ptlog_candidate_t candidate;
-  memset(&candidate, 0, sizeof(candidate));
-  if (!CopyString(path, candidate.path, sizeof(candidate.path)) ||
-      !CopyString(name, candidate.name, sizeof(candidate.name)) ||
-      !CopyString(date, candidate.date, sizeof(candidate.date))) {
+  if (current_date != NULL && current_date[0] != '\0' &&
+      strcmp(workspace->parsed_date, current_date) == 0) return;
+  memset(&workspace->candidate, 0, sizeof(workspace->candidate));
+  if (!CopyString(workspace->candidate_path,
+                  workspace->candidate.path,
+                  sizeof(workspace->candidate.path)) ||
+      !CopyString(name, workspace->candidate.name, sizeof(workspace->candidate.name)) ||
+      !CopyString(workspace->parsed_date,
+                  workspace->candidate.date,
+                  sizeof(workspace->candidate.date))) {
     return;
   }
-  candidate.revision = revision;
-  candidate.legacy_root = false;
-  candidate.current_open = false;
-  if (!*found || CandidateIsOlder(&candidate, best)) {
-    *best = candidate;
+  workspace->candidate.revision = revision;
+  workspace->candidate.legacy_root = false;
+  workspace->candidate.current_open = false;
+  if (!*found || CandidateIsOlder(&workspace->candidate, best)) {
+    *best = workspace->candidate;
     *found = true;
   }
 }
@@ -273,6 +283,7 @@ static void
 ScanPtlogDirectory(const char* dir_path,
                    const char* current_path,
                    const char* current_date,
+                   sd_ptlog_path_workspace_t* workspace,
                    bool* found,
                    sd_ptlog_candidate_t* best)
 {
@@ -281,7 +292,8 @@ ScanPtlogDirectory(const char* dir_path,
   struct dirent* entry;
   while ((entry = readdir(dir)) != NULL) {
     if (IsSystemDirectoryName(entry->d_name)) continue;
-    ConsiderCandidate(dir_path, entry->d_name, current_path, current_date, found, best);
+    ConsiderCandidate(
+      dir_path, entry->d_name, current_path, current_date, workspace, found, best);
   }
   closedir(dir);
 }
@@ -291,23 +303,28 @@ StatsCountPtlogFile(const char* dir_path,
                     const char* name,
                     const char* current_path,
                     const char* current_date,
+                    sd_ptlog_path_workspace_t* workspace,
                     sd_ptlog_stats_t* stats)
 {
-  char date[SD_PTLOG_DATE_LEN + 1u];
   uint32_t revision = 0;
   (void)revision;
-  if (!SdPtlogParseName(name, date, sizeof(date), &revision)) return true;
-  char path[SD_PTLOG_MAX_PATH_LEN];
-  if (!JoinPath(dir_path, name, path, sizeof(path))) return false;
+  if (workspace == NULL) return false;
+  if (!SdPtlogParseName(
+        name, workspace->parsed_date, sizeof(workspace->parsed_date), &revision)) return true;
+  if (!JoinPath(
+        dir_path, name, workspace->candidate_path, sizeof(workspace->candidate_path))) return false;
   struct stat stat_buffer;
-  if (stat(path, &stat_buffer) != 0 || !S_ISREG(stat_buffer.st_mode)) return true;
+  if (stat(workspace->candidate_path, &stat_buffer) != 0 ||
+      !S_ISREG(stat_buffer.st_mode)) return true;
 
   stats->total_ptlog_files++;
   stats->nested_month_ptlog_files++;
 
-  const bool current_open = (current_path != NULL && strcmp(path, current_path) == 0);
+  const bool current_open =
+    (current_path != NULL && strcmp(workspace->candidate_path, current_path) == 0);
   const bool current_date_match =
-    (current_date != NULL && current_date[0] != '\0' && strcmp(date, current_date) == 0);
+    (current_date != NULL && current_date[0] != '\0' &&
+     strcmp(workspace->parsed_date, current_date) == 0);
   if (current_date_match) {
     stats->current_date_ptlog_files++;
   }
@@ -321,6 +338,7 @@ static bool
 ScanPtlogStatsDirectory(const char* dir_path,
                         const char* current_path,
                         const char* current_date,
+                        sd_ptlog_path_workspace_t* workspace,
                         sd_ptlog_stats_t* stats,
                         uint32_t* directory_ptlog_files,
                         bool* opened_out)
@@ -339,7 +357,7 @@ ScanPtlogStatsDirectory(const char* dir_path,
     if (IsSystemDirectoryName(entry->d_name)) continue;
     const uint32_t before = stats->total_ptlog_files;
     if (!StatsCountPtlogFile(
-          dir_path, entry->d_name, current_path, current_date, stats)) {
+          dir_path, entry->d_name, current_path, current_date, workspace, stats)) {
       closedir(dir);
       return false;
     }
@@ -360,50 +378,55 @@ ScanPtlogStatsDirectory(const char* dir_path,
  * protected here so later deletion policies cannot select them accidentally.
  */
 bool
-SdPtlogFindOldestCandidate(const char* mount_point,
-                           const char* current_path,
-                           const char* current_date,
-                           sd_ptlog_candidate_t* candidate_out)
+SdPtlogFindOldestCandidateWithWorkspace(sd_ptlog_path_workspace_t* workspace,
+                                        const char* mount_point,
+                                        const char* current_path,
+                                        const char* current_date,
+                                        sd_ptlog_candidate_t* candidate_out)
 {
-  if (mount_point == NULL || candidate_out == NULL) return false;
+  if (workspace == NULL || mount_point == NULL || candidate_out == NULL) return false;
   bool found = false;
-  sd_ptlog_candidate_t best;
-  memset(&best, 0, sizeof(best));
+  memset(&workspace->best, 0, sizeof(workspace->best));
 
-  char log_root[SD_PTLOG_MAX_PATH_LEN];
-  if (SdPtlogBuildLogRootPath(mount_point, log_root, sizeof(log_root))) {
-    DIR* logs = opendir(log_root);
+  if (SdPtlogBuildLogRootPath(
+        mount_point, workspace->log_root, sizeof(workspace->log_root))) {
+    DIR* logs = opendir(workspace->log_root);
     if (logs != NULL) {
       struct dirent* entry;
       while ((entry = readdir(logs)) != NULL) {
         if (IsSystemDirectoryName(entry->d_name) || !SdPtlogIsMonthDirectoryName(entry->d_name)) continue;
-        char month_dir[SD_PTLOG_MAX_PATH_LEN];
-        if (!JoinPath(log_root, entry->d_name, month_dir, sizeof(month_dir))) continue;
-        ScanPtlogDirectory(month_dir, current_path, current_date, &found, &best);
+        if (!JoinPath(
+              workspace->log_root,
+              entry->d_name,
+              workspace->month_dir,
+              sizeof(workspace->month_dir))) continue;
+        ScanPtlogDirectory(
+          workspace->month_dir, current_path, current_date, workspace, &found, &workspace->best);
       }
       closedir(logs);
     }
   }
 
-  if (found) *candidate_out = best;
+  if (found) *candidate_out = workspace->best;
   return found;
 }
 
 bool
-SdPtlogCollectStats(const char* mount_point,
-                    const char* current_path,
-                    const char* current_date,
-                    sd_ptlog_stats_t* stats_out)
+SdPtlogCollectStatsWithWorkspace(sd_ptlog_path_workspace_t* workspace,
+                                 const char* mount_point,
+                                 const char* current_path,
+                                 const char* current_date,
+                                 sd_ptlog_stats_t* stats_out)
 {
-  if (mount_point == NULL || stats_out == NULL) return false;
+  if (workspace == NULL || mount_point == NULL || stats_out == NULL) return false;
   memset(stats_out, 0, sizeof(*stats_out));
 
-  char log_root[SD_PTLOG_MAX_PATH_LEN];
-  if (!SdPtlogBuildLogRootPath(mount_point, log_root, sizeof(log_root))) {
+  if (!SdPtlogBuildLogRootPath(
+        mount_point, workspace->log_root, sizeof(workspace->log_root))) {
     return false;
   }
 
-  DIR* logs = opendir(log_root);
+  DIR* logs = opendir(workspace->log_root);
   if (logs == NULL) return true;
 
   struct dirent* entry;
@@ -412,17 +435,18 @@ SdPtlogCollectStats(const char* mount_point,
         !SdPtlogIsMonthDirectoryName(entry->d_name)) {
       continue;
     }
-    char month_dir[SD_PTLOG_MAX_PATH_LEN];
-    if (!JoinPath(log_root, entry->d_name, month_dir, sizeof(month_dir))) {
+    if (!JoinPath(
+          workspace->log_root, entry->d_name, workspace->month_dir, sizeof(workspace->month_dir))) {
       closedir(logs);
       return false;
     }
     uint32_t month_count = 0;
     bool month_opened = false;
     if (!ScanPtlogStatsDirectory(
-          month_dir,
+          workspace->month_dir,
           current_path,
           current_date,
+          workspace,
           stats_out,
           &month_count,
           &month_opened)) {
