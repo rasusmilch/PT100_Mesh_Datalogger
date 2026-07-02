@@ -175,8 +175,6 @@ SdLoggerDailyStageName(sd_logger_daily_stage_t stage)
       return "access_existing";
     case SD_LOGGER_DAILY_STAGE_FOPEN_DAILY:
       return "fopen_daily";
-    case SD_LOGGER_DAILY_STAGE_RESUME:
-      return "resume";
     case SD_LOGGER_DAILY_STAGE_HEADER_COMMIT:
       return "header_commit";
     case SD_LOGGER_DAILY_STAGE_EMPTY_FILE_UNLINK:
