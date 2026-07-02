@@ -175,8 +175,6 @@ SdLoggerDailyStageName(sd_logger_daily_stage_t stage)
       return "access_existing";
     case SD_LOGGER_DAILY_STAGE_FOPEN_DAILY:
       return "fopen_daily";
-    case SD_LOGGER_DAILY_STAGE_RESUME:
-      return "resume";
     case SD_LOGGER_DAILY_STAGE_HEADER_COMMIT:
       return "header_commit";
     case SD_LOGGER_DAILY_STAGE_EMPTY_FILE_UNLINK:
@@ -1109,43 +1107,6 @@ SdLoggerResetMountState(sd_logger_t* logger)
 }
 
 /**
- * @brief Execute ApplyResumeInfo.
- * @param logger Parameter logger.
- * @param file Parameter file.
- * @param path Parameter path.
- * @return Return the function result.
- */
-static esp_err_t
-ApplyResumeInfo(sd_logger_t* logger, FILE* file, const char* path)
-{
-  SdCsvResumeInfo resume_info = { 0 };
-  sd_csv_resume_scratch_t scratch = {
-    .tail_bytes = logger->resume_tail_bytes,
-    .tail_capacity = logger->resume_tail_capacity,
-  };
-  esp_err_t resume_result = SdCsvFindLastRecordIdAndRepairTail(
-    file, logger->config.tail_scan_bytes, &scratch, &resume_info);
-  if (resume_result != ESP_OK) {
-    ESP_LOGE(kTag,
-             "Failed to scan/repair %s: %s",
-             path,
-             esp_err_to_name(resume_result));
-    return resume_result;
-  }
-  if (resume_info.file_was_truncated) {
-    ESP_LOGW(kTag, "%s tail repaired after power loss", path);
-  }
-  if (resume_info.found_last_record_id) {
-    logger->last_record_id_on_sd = resume_info.last_record_id;
-    ESP_LOGI(kTag,
-             "Resume: last record id on %s = %" PRIu64,
-             path,
-             resume_info.last_record_id);
-  }
-  return ESP_OK;
-}
-
-/**
  * @brief Execute SdLoggerEnsureDailyFile.
  * @param logger Parameter logger.
  * @param epoch_utc Parameter epoch_utc.
@@ -1206,14 +1167,18 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
     }
   }
 
+  /*
+   * Any open that is not the trusted same-session file above is treated as
+   * uncertain. Scan compact same-day names only, preserving existing revisions
+   * as historical data and failing closed if the day is already at .999.
+   * SdLoggerFindNextRevisionInMonthLocked() uses logger->ptlog_workspace and
+   * must remain under the same SD logger serialization as this daily-open path.
+   */
   uint32_t revision = 0;
-  if (logger->current_date[0] != '\0' &&
-      strcmp(date_string, logger->current_date) == 0 && !same_signature) {
-    esp_err_t revision_result = SdLoggerFindNextRevisionInMonthLocked(
-      logger, date_string, month_string, &revision);
-    if (revision_result != ESP_OK) {
-      return revision_result;
-    }
+  esp_err_t revision_result = SdLoggerFindNextRevisionInMonthLocked(
+    logger, date_string, month_string, &revision);
+  if (revision_result != ESP_OK) {
+    return revision_result;
   }
 
   BuildDailyPtlogPath(logger,
@@ -1245,6 +1210,13 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
   }
 
   SdLoggerClose(logger);
+  /*
+   * Daily open no longer repairs or resumes from PTLOG tails. Old, corrupt, or
+   * partial revisions are preserved for host-side recovery, and FRAM remains
+   * authoritative until records are appended and verified to this active
+   * revision. last_record_id_on_sd must therefore advance only in the append
+   * success path, not from scanning an opened file.
+   */
   logger->last_record_id_on_sd = 0;
 
   const int access_result = access(path, F_OK);
@@ -1306,23 +1278,6 @@ SdLoggerEnsureDailyFileWithHeader(sd_logger_t* logger,
             (char*)logger->file_buffer,
             _IOFBF,
             logger->config.file_buffer_bytes);
-  }
-
-  esp_err_t resume_result = ApplyResumeInfo(logger, logger->file, path);
-  if (resume_result != ESP_OK) {
-    SdLoggerDailyDiagSet(logger,
-                         SD_LOGGER_DAILY_STAGE_RESUME,
-                         path,
-                         date_string,
-                         month_string,
-                         revision,
-                         0,
-                         resume_result);
-    logger->last_daily_diag.file_existed_before_open =
-      file_existed_before_open;
-    fclose(logger->file);
-    logger->file = NULL;
-    return resume_result;
   }
 
   bool file_was_empty = false;

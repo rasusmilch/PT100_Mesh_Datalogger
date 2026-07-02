@@ -2,7 +2,10 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -10,7 +13,6 @@
 #include "esp_err.h"
 #include "fram_log.h"
 #include "nvs.h"
-#include "sd_csv_verify.h"
 #include "sd_logger.h"
 #include "sd_ptlog_paths.h"
 
@@ -102,9 +104,10 @@ AppendRecordToFram(fram_log_t* fram, log_record_t* record)
 /**
  * @brief Write and sync a deliberately truncated CSV row to the active PTLOG.
  *
- * Power-loss diagnostics use this helper to create an incomplete tail record so
- * recovery checks can verify that the logger truncates back to the last complete
- * CSV line. full_len_out receives the intended full row length when requested.
+ * Power-loss diagnostics use this helper to create an incomplete tail record.
+ * The expected recovery behavior is preservation: firmware must leave the old
+ * partial revision untouched and select a new same-day revision for replay.
+ * full_len_out receives the intended full row length when requested.
  */
 static esp_err_t
 WritePartialCsvLine(sd_logger_t* logger,
@@ -154,19 +157,66 @@ WritePartialCsvLine(sd_logger_t* logger,
   return ESP_OK;
 }
 
+static bool
+CopyActivePtlogPath(const sd_logger_t* logger, char* path_out, size_t path_out_size)
+{
+  /*
+   * The logger-owned PTLOG workspace is shared scratch storage; callers must
+   * hold RuntimeSdIoLock() while copying the active path out of it.
+   */
+  if (path_out != NULL && path_out_size > 0) {
+    path_out[0] = '\0';
+  }
+  if (logger == NULL || logger->ptlog_workspace == NULL || path_out == NULL ||
+      path_out_size == 0 || logger->ptlog_workspace->daily_path[0] == '\0') {
+    return false;
+  }
+  const int written = snprintf(path_out,
+                               path_out_size,
+                               "%s",
+                               logger->ptlog_workspace->daily_path);
+  return written >= 0 && (size_t)written < path_out_size;
+}
+
+static bool
+GetFileSizeBytes(const char* path, off_t* size_out)
+{
+  if (path == NULL || size_out == NULL) {
+    return false;
+  }
+  struct stat stat_buffer;
+  if (stat(path, &stat_buffer) != 0 || !S_ISREG(stat_buffer.st_mode)) {
+    return false;
+  }
+  *size_out = stat_buffer.st_size;
+  return true;
+}
+
+static const char*
+PathLeaf(const char* path)
+{
+  if (path == NULL) {
+    return "";
+  }
+  const char* leaf = strrchr(path, '/');
+  return (leaf == NULL) ? path : leaf + 1;
+}
+
 /**
- * @brief Execute RunPowerLossTailTest.
- * @param runtime Parameter runtime.
- * @param full Parameter full.
- * @param details Parameter details.
- * @param details_len Parameter details_len.
- * @return Return the function result.
+ * @brief Verify power-loss preservation selects a new revision.
+ *
+ * The diagnostic deliberately leaves a partial CSV row in the active PTLOG,
+ * closes the logger to simulate uncertainty, and reopens through the normal
+ * daily-open path. Passing requires a different same-day revision, unchanged old
+ * file size, and successful replay of the pending FRAM record to the new active
+ * revision. Duplicate records across revisions are acceptable until host-side
+ * recovery and record_id dedupe are implemented.
  */
 static bool
-RunPowerLossTailTest(const app_runtime_t* runtime,
-                     bool full,
-                     char* details,
-                     size_t details_len)
+RunPowerLossPreserveTest(const app_runtime_t* runtime,
+                         bool full,
+                         char* details,
+                         size_t details_len)
 {
   if (runtime == NULL || runtime->sd_logger == NULL ||
       runtime->fram_log == NULL || runtime->flush_callback == NULL) {
@@ -252,12 +302,31 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
     return false;
   }
 
+  char old_path[SD_PTLOG_MAX_PATH_LEN];
+  if (!CopyActivePtlogPath(logger, old_path, sizeof(old_path))) {
+    RuntimeSdIoUnlock(state);
+    snprintf(details, details_len, "active PTLOG path unavailable");
+    return false;
+  }
+  off_t old_size_before = 0;
+  if (!GetFileSizeBytes(old_path, &old_size_before)) {
+    RuntimeSdIoUnlock(state);
+    snprintf(details, details_len, "old PTLOG stat failed");
+    return false;
+  }
+
   SdLoggerClose(logger);
   esp_err_t reopen_result =
     SdLoggerEnsureDailyFileWithHeader(logger,
                                       pending_record.timestamp_epoch_sec,
                                       &ptlog_header,
                                       header_signature);
+  char new_path[SD_PTLOG_MAX_PATH_LEN];
+  const bool copied_new_path =
+    CopyActivePtlogPath(logger, new_path, sizeof(new_path));
+  off_t old_size_after = 0;
+  const bool old_stat_after = GetFileSizeBytes(old_path, &old_size_after);
+  const uint64_t last_sd_after_reopen = SdLoggerLastRecordIdOnSd(logger);
   RuntimeSdIoUnlock(state);
   if (reopen_result != ESP_OK) {
     snprintf(details,
@@ -266,30 +335,47 @@ RunPowerLossTailTest(const app_runtime_t* runtime,
              esp_err_to_name(reopen_result));
     return false;
   }
+  if (!copied_new_path) {
+    snprintf(details, details_len, "new PTLOG path unavailable");
+    return false;
+  }
+  if (!old_stat_after) {
+    snprintf(details, details_len, "old PTLOG stat after reopen failed");
+    return false;
+  }
 
-  const uint64_t last_sd_after_reopen = SdLoggerLastRecordIdOnSd(logger);
   esp_err_t replay_result = runtime->flush_callback(runtime->flush_context);
   const uint64_t last_sd_after_flush = SdLoggerLastRecordIdOnSd(logger);
   const uint32_t fram_buffered = FramLogGetBufferedRecords(fram);
 
-  const bool tail_ok = (last_sd_after_reopen == last_sd_before);
+  const bool new_revision = strcmp(old_path, new_path) != 0;
+  const bool old_preserved = (old_size_before == old_size_after);
+  const bool no_reopen_resume = (last_sd_after_reopen == 0);
   const bool replay_ok = (replay_result == ESP_OK &&
                           last_sd_after_flush == pending_record.record_id);
 
   snprintf(details,
            details_len,
-           "tail_repaired=%s last_sd_before=%" PRIu64
-           " last_sd_after_reopen=%" PRIu64 " pending_id=%" PRIu64
-           " last_sd_after_flush=%" PRIu64 " line_len=%u fram_buffered=%u",
-           tail_ok ? "yes" : "no",
+           "old_preserved=%s new_revision=%s no_reopen_resume=%s"
+           " old_size_before=%" PRIdMAX " old_size_after=%" PRIdMAX
+           " last_sd_before=%" PRIu64 " last_sd_after_reopen=%" PRIu64
+           " pending_id=%" PRIu64 " last_sd_after_flush=%" PRIu64
+           " line_len=%u fram_buffered=%u old=%s new=%s",
+           old_preserved ? "yes" : "no",
+           new_revision ? "yes" : "no",
+           no_reopen_resume ? "yes" : "no",
+           (intmax_t)old_size_before,
+           (intmax_t)old_size_after,
            last_sd_before,
            last_sd_after_reopen,
            pending_record.record_id,
            last_sd_after_flush,
            (unsigned)line_len,
-           (unsigned)fram_buffered);
+           (unsigned)fram_buffered,
+           PathLeaf(old_path),
+           PathLeaf(new_path));
 
-  return tail_ok && replay_ok;
+  return old_preserved && new_revision && no_reopen_resume && replay_ok;
 }
 
 /**
@@ -375,13 +461,35 @@ RunSdPullTest(const app_runtime_t* runtime,
   return expected_fail && backoff_active && buffered_ok && replay_ok;
 }
 
+static bool
+ParseRecordIdFromCsvLine(const char* line, uint64_t* record_id_out)
+{
+  if (line == NULL || record_id_out == NULL) {
+    return false;
+  }
+  const char* comma = strchr(line, ',');
+  if (comma == NULL || comma[1] < '0' || comma[1] > '9') {
+    return false;
+  }
+  uint64_t value = 0;
+  for (const char* cursor = comma + 1; *cursor != '\0' && *cursor != ',';
+       ++cursor) {
+    if (*cursor < '0' || *cursor > '9') {
+      return false;
+    }
+    value = value * 10u + (uint64_t)(*cursor - '0');
+  }
+  *record_id_out = value;
+  return true;
+}
+
 /**
- * @brief Execute ReadLastRecordId.
- * @param path Parameter path.
- * @param tail_scan_bytes Parameter tail_scan_bytes.
- * @param found_out Parameter found_out.
- * @param record_id_out Parameter record_id_out.
- * @return Return the function result.
+ * @brief Read the last complete CSV record id without repairing the file.
+ *
+ * Storage diagnostics use this helper for observation only. It opens PTLOG files
+ * read-only, ignores any incomplete trailing line, and never calls the
+ * destructive tail-repair helper, preserving partial revisions for host-side
+ * recovery.
  */
 static bool
 ReadLastRecordId(const char* path,
@@ -392,31 +500,67 @@ ReadLastRecordId(const char* path,
   if (path == NULL || found_out == NULL || record_id_out == NULL) {
     return false;
   }
-  runtime_state_t* state = RuntimeGetState();
-  if (state == NULL || !RuntimeSdIoLock(state, pdMS_TO_TICKS(2000))) {
-    *found_out = false;
-    *record_id_out = 0;
-    return false;
-  }
-  FILE* file = fopen(path, "r+b");
+  *found_out = false;
+  *record_id_out = 0;
+  FILE* file = fopen(path, "rb");
   if (file == NULL) {
-    RuntimeSdIoUnlock(state);
-    *found_out = false;
-    *record_id_out = 0;
     return false;
   }
-  SdCsvResumeInfo info = { 0 };
-  esp_err_t result =
-    SdCsvFindLastRecordIdAndRepairTail(file, tail_scan_bytes, NULL, &info);
+  if (fseeko(file, 0, SEEK_END) != 0) {
+    fclose(file);
+    return false;
+  }
+  const off_t file_size = ftello(file);
+  if (file_size <= 0) {
+    fclose(file);
+    return true;
+  }
+  const off_t scan_start =
+    (file_size > (off_t)tail_scan_bytes) ? file_size - (off_t)tail_scan_bytes : 0;
+  const size_t scan_length = (size_t)(file_size - scan_start);
+  char* tail_bytes = (char*)malloc(scan_length + 1u);
+  if (tail_bytes == NULL) {
+    fclose(file);
+    return false;
+  }
+  if (fseeko(file, scan_start, SEEK_SET) != 0 ||
+      fread(tail_bytes, 1, scan_length, file) != scan_length) {
+    free(tail_bytes);
+    fclose(file);
+    return false;
+  }
   fclose(file);
-  RuntimeSdIoUnlock(state);
-  if (result != ESP_OK) {
-    *found_out = false;
-    *record_id_out = 0;
-    return false;
+  tail_bytes[scan_length] = '\0';
+
+  ssize_t line_end = (ssize_t)scan_length - 1;
+  if (line_end >= 0 && tail_bytes[(size_t)line_end] != '\n') {
+    while (line_end >= 0 && tail_bytes[(size_t)line_end] != '\n') {
+      --line_end;
+    }
+    --line_end;
+  } else if (line_end >= 0) {
+    --line_end;
   }
-  *found_out = info.found_last_record_id;
-  *record_id_out = info.last_record_id;
+
+  while (line_end >= 0) {
+    ssize_t line_start = line_end;
+    while (line_start >= 0 && tail_bytes[(size_t)line_start] != '\n') {
+      --line_start;
+    }
+    const size_t line_offset = (size_t)(line_start + 1);
+    const size_t line_length = (size_t)(line_end - line_start);
+    tail_bytes[line_offset + line_length] = '\0';
+    uint64_t record_id = 0;
+    if (ParseRecordIdFromCsvLine(&tail_bytes[line_offset], &record_id)) {
+      *found_out = true;
+      *record_id_out = record_id;
+      free(tail_bytes);
+      return true;
+    }
+    line_end = line_start - 1;
+  }
+
+  free(tail_bytes);
   return true;
 }
 
@@ -607,11 +751,11 @@ RunDiagStorageImpl(const app_runtime_t* runtime,
   }
 
   char details[256];
-  bool pass = RunPowerLossTailTest(runtime, full, details, sizeof(details));
+  bool pass = RunPowerLossPreserveTest(runtime, full, details, sizeof(details));
   DiagReportStep(&ctx,
                  step_index++,
                  total_steps,
-                 "powerloss tail",
+                 "revision preserve",
                  pass ? ESP_OK : ESP_FAIL,
                  "%s (last_record_id=%" PRIu64 " fram_buffered=%u)",
                  details,

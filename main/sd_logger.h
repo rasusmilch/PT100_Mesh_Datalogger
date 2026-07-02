@@ -41,7 +41,6 @@ extern "C"
     SD_LOGGER_DAILY_STAGE_REVISION_OVERFLOW,
     SD_LOGGER_DAILY_STAGE_ACCESS_EXISTING,
     SD_LOGGER_DAILY_STAGE_FOPEN_DAILY,
-    SD_LOGGER_DAILY_STAGE_RESUME,
     SD_LOGGER_DAILY_STAGE_HEADER_COMMIT,
     SD_LOGGER_DAILY_STAGE_EMPTY_FILE_UNLINK,
   } sd_logger_daily_stage_t;
@@ -192,8 +191,9 @@ extern "C"
  */
   esp_err_t SdLoggerFormatDestructive(sd_logger_t* logger);
 
-  // Open/create the UTC daily PTLOG for the provided epoch. Repairs tail and
-  // updates last_record_id_on_sd.
+  // Open/create the UTC daily PTLOG for the provided epoch. Reuses only the
+  // trusted same-session file; other opens select the next compact same-day
+  // revision so prior revisions remain preserved for later host recovery.
 /**
  * @brief Execute SdLoggerEnsureDailyFile.
  * @param logger Parameter logger.
